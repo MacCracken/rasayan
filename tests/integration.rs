@@ -87,6 +87,259 @@ fn test_bioenergy_state_serde_roundtrip() {
     assert!((b2.anaerobic_threshold - b.anaerobic_threshold).abs() < f64::EPSILON);
 }
 
+// --- Serde roundtrip tests for ALL remaining Serialize+Deserialize types ---
+
+/// Helper: roundtrip via JSON Value and check structural equality.
+/// Uses Value comparison which handles f64 representation faithfully.
+fn assert_serde_roundtrip<T>(val: &T)
+where
+    T: serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug,
+{
+    let v1 = serde_json::to_value(val).unwrap();
+    let val2: T = serde_json::from_value(v1.clone()).unwrap();
+    let v2 = serde_json::to_value(&val2).unwrap();
+    assert_eq!(v1, v2, "serde roundtrip mismatch for {val:?}");
+}
+
+// -- Signaling module --
+#[test]
+fn test_signaling_config_serde_roundtrip() {
+    assert_serde_roundtrip(&rasayan::signaling::SignalingConfig::default());
+}
+
+#[test]
+fn test_signaling_input_serde_roundtrip() {
+    assert_serde_roundtrip(&rasayan::signaling::SignalingInput {
+        growth_factor: 0.5,
+        cytokine: 0.3,
+        ip3: 0.2,
+    });
+}
+
+#[test]
+fn test_signaling_flux_serde_roundtrip() {
+    let config = rasayan::signaling::SignalingConfig::default();
+    let input = rasayan::signaling::SignalingInput {
+        growth_factor: 0.5,
+        cytokine: 0.3,
+        ip3: 0.2,
+    };
+    let mut net = rasayan::signaling::SignalingNetwork::default();
+    let flux = net.tick(&config, &input, 0.01);
+    assert_serde_roundtrip(&flux);
+}
+
+// -- Nuclear receptor --
+#[test]
+fn test_nuclear_receptor_config_serde_roundtrip() {
+    assert_serde_roundtrip(&rasayan::nuclear_receptor::NuclearReceptorConfig::default());
+}
+
+#[test]
+fn test_nuclear_receptor_flux_serde_roundtrip() {
+    let config = rasayan::nuclear_receptor::NuclearReceptorConfig::default();
+    let mut state = rasayan::nuclear_receptor::NuclearReceptorState::default();
+    let flux = state.tick(&config, 0.5, 0.01);
+    assert_serde_roundtrip(&flux);
+}
+
+// -- Receptor --
+#[test]
+fn test_receptor_config_serde_roundtrip() {
+    assert_serde_roundtrip(&rasayan::receptor::ReceptorConfig::default());
+}
+
+#[test]
+fn test_receptor_flux_serde_roundtrip() {
+    let config = rasayan::receptor::ReceptorConfig::default();
+    let mut state = rasayan::receptor::ReceptorState::default();
+    let flux = state.tick(&config, 0.5, 0.01);
+    assert_serde_roundtrip(&flux);
+}
+
+// -- Calcium --
+#[test]
+fn test_calcium_config_serde_roundtrip() {
+    assert_serde_roundtrip(&rasayan::calcium::CalciumConfig::default());
+}
+
+#[test]
+fn test_calcium_flux_serde_roundtrip() {
+    let config = rasayan::calcium::CalciumConfig::default();
+    let mut state = rasayan::calcium::CalciumState::default();
+    let flux = state.tick(&config, 0.5, 0.01);
+    assert_serde_roundtrip(&flux);
+}
+
+// -- MAPK --
+#[test]
+fn test_mapk_config_serde_roundtrip() {
+    assert_serde_roundtrip(&rasayan::mapk::MapkConfig::default());
+}
+
+#[test]
+fn test_mapk_flux_serde_roundtrip() {
+    let config = rasayan::mapk::MapkConfig::default();
+    let mut state = rasayan::mapk::MapkState::default();
+    let flux = state.tick(&config, 0.5, 0.01);
+    assert_serde_roundtrip(&flux);
+}
+
+// -- JAK-STAT --
+#[test]
+fn test_jak_stat_config_serde_roundtrip() {
+    assert_serde_roundtrip(&rasayan::jak_stat::JakStatConfig::default());
+}
+
+#[test]
+fn test_jak_stat_flux_serde_roundtrip() {
+    let config = rasayan::jak_stat::JakStatConfig::default();
+    let mut state = rasayan::jak_stat::JakStatState::default();
+    let flux = state.tick(&config, 0.5, 0.01);
+    assert_serde_roundtrip(&flux);
+}
+
+// -- PI3K --
+#[test]
+fn test_pi3k_config_serde_roundtrip() {
+    assert_serde_roundtrip(&rasayan::pi3k::Pi3kConfig::default());
+}
+
+#[test]
+fn test_pi3k_flux_serde_roundtrip() {
+    let config = rasayan::pi3k::Pi3kConfig::default();
+    let mut state = rasayan::pi3k::Pi3kState::default();
+    let flux = state.tick(&config, 0.5, 0.01);
+    assert_serde_roundtrip(&flux);
+}
+
+// -- ETC --
+#[test]
+fn test_etc_flux_serde_roundtrip() {
+    let config = rasayan::etc::EtcConfig::default();
+    let mut state = rasayan::etc::EtcState::default();
+    let flux = state.tick(&config, 0.5, 0.1, 1.0, 0.5, 0.01);
+    assert_serde_roundtrip(&flux);
+}
+
+// -- TCA --
+#[test]
+fn test_tca_flux_serde_roundtrip() {
+    let config = rasayan::tca::TcaConfig::default();
+    let mut state = rasayan::tca::TcaState::default();
+    let flux = state.tick(&config, 0.1, 6.0, 0.5, 700.0, 0.01);
+    assert_serde_roundtrip(&flux);
+}
+
+// -- Glycolysis (flux already tested above) --
+
+// -- Beta-oxidation --
+#[test]
+fn test_beta_ox_flux_serde_roundtrip() {
+    let config = rasayan::beta_oxidation::BetaOxConfig::default();
+    let mut state = rasayan::beta_oxidation::BetaOxState::default();
+    let flux = state.tick(&config, 0.0, 700.0, 0.01);
+    assert_serde_roundtrip(&flux);
+}
+
+// -- Amino catabolism --
+#[test]
+fn test_amino_catab_flux_serde_roundtrip() {
+    let config = rasayan::amino_catabolism::AminoCatabConfig::default();
+    let mut state = rasayan::amino_catabolism::AminoCatabState::default();
+    let flux = state.tick(&config, 0.3, 700.0, 0.01);
+    assert_serde_roundtrip(&flux);
+}
+
+#[test]
+fn test_carbon_skeleton_output_serde_roundtrip() {
+    assert_serde_roundtrip(&rasayan::amino_catabolism::CarbonSkeletonOutput {
+        pyruvate: 0.1,
+        acetyl_coa: 0.2,
+        alpha_kg: 0.1,
+        succinyl_coa: 0.05,
+        fumarate: 0.03,
+        oxaloacetate: 0.02,
+    });
+}
+
+// -- Pathway --
+#[test]
+fn test_network_flux_serde_roundtrip() {
+    let config = rasayan::pathway::NetworkConfig::default();
+    let mut net = rasayan::pathway::MetabolicNetwork::default();
+    let flux = net.tick(&config, 0.01);
+    assert_serde_roundtrip(&flux);
+}
+
+// -- Hormonal --
+#[test]
+fn test_hormonal_input_serde_roundtrip() {
+    assert_serde_roundtrip(&rasayan::hormonal::HormonalInput {
+        stress: 0.5,
+        serotonin: 0.4,
+        light: 0.8,
+        social_stimulus: 0.3,
+        neural_activity: 0.6,
+    });
+}
+
+#[test]
+fn test_hormonal_flux_serde_roundtrip() {
+    let config = rasayan::hormonal::HormonalConfig::default();
+    let mut state = rasayan::hormonal::HormonalState::default();
+    let input = rasayan::hormonal::HormonalInput {
+        stress: 0.5,
+        serotonin: 0.4,
+        light: 0.8,
+        social_stimulus: 0.3,
+        neural_activity: 0.6,
+    };
+    let flux = state.tick(&config, &input, 0.01);
+    assert_serde_roundtrip(&flux);
+}
+
+// -- Neurotransmitter --
+#[test]
+fn test_neurotransmitter_flux_serde_roundtrip() {
+    let config = rasayan::neurotransmitter::NeurotransmitterConfig::default();
+    let mut state = rasayan::neurotransmitter::NeurotransmitterState::default();
+    let flux = state.tick(&config, 0.5, 0.5, 0.01);
+    assert_serde_roundtrip(&flux);
+}
+
+// -- Serialize-only types (test that serialization succeeds) --
+
+#[test]
+fn test_alignment_score_serialize() {
+    let score =
+        rasayan::alignment::score_alignment("ACDEF", "ACDEF", rasayan::alignment::Matrix::Blosum62)
+            .unwrap();
+    let json = serde_json::to_string(&score).unwrap();
+    assert!(json.contains("identity"));
+}
+
+#[test]
+fn test_extinction_coefficient_serialize() {
+    let ec = rasayan::protein::extinction_coefficient("WYCC").unwrap();
+    let json = serde_json::to_string(&ec).unwrap();
+    assert!(json.contains("oxidized"));
+}
+
+#[test]
+fn test_amino_acid_serialize() {
+    let aa = rasayan::protein::lookup('A').unwrap();
+    let json = serde_json::to_string(&aa).unwrap();
+    assert!(json.contains("Alanine"));
+}
+
+#[test]
+fn test_known_enzyme_serialize() {
+    let enz = rasayan::enzyme::lookup_enzyme("Catalase").unwrap();
+    let json = serde_json::to_string(&enz).unwrap();
+    assert!(json.contains("Catalase"));
+}
+
 // --- Error display tests ---
 
 #[test]

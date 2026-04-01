@@ -1,40 +1,56 @@
 # Benchmarks
 
-Latest: **2026-04-01T19:34:21Z** -- commit `db10e27`
+Latest: **2026-04-01T20:35:11Z** -- commit `5976e4c`
 
-Tracking: `9db240e` (baseline) -> `daf03bd` (optimized) -> `db10e27` (current)
+Tracking: `9db240e` (baseline) -> `9e6931f` (optimized) -> `5976e4c` (current)
 
-| Benchmark | Baseline (`9db240e`) | Mid (`daf03bd`) | Current (`db10e27`) |
+| Benchmark | Baseline (`9db240e`) | Mid (`9e6931f`) | Current (`5976e4c`) |
 |-----------|------|------|------|
-| `michaelis_menten` | 1.22 ns | 1.24 ns | 1.25 ns |
-| `hill_equation` | 19.09 ns | 18.77 ns | 18.93 ns |
-| `nernst` | 6.38 ns | 6.37 ns | 6.50 ns |
-| `goldman` | 7.24 ns | 7.29 ns | 7.34 ns |
-| `dose_response` | 18.48 ns | 18.97 ns | 18.66 ns |
-| `metabolic_tick` | 10.56 ns | 22.81 ns +116% | 22.81 ns +116% |
-| `protein_lookup` | 3.33 ns | 3.53 ns +6% | 3.72 ns +12% |
-| `molecular_weight` | 16.07 ns | 20.85 ns +30% | 21.88 ns +36% |
-| `bioenergy_tick` | 8.57 ns | 13.25 ns +55% | 13.60 ns +59% |
-| `mixed_inhibition` | -- | 3.41 ns | 3.38 ns |
-| `ping_pong` | -- | 2.12 ns | 2.10 ns |
-| `arrhenius` | -- | 5.52 ns | 5.53 ns |
-| `lineweaver_burk_fit` | -- | 91.78 ns | 83.73 ns |
-| `enzyme_lookup` | -- | 3.69 ns | 4.03 ns |
-| `glycolysis_tick` | -- | 78.37 ns | 81.13 ns |
-| `tca_tick` | -- | 55.09 ns | 57.75 ns |
-| `etc_tick` | -- | 20.05 ns | 21.65 ns |
-| `beta_ox_tick` | -- | -- | 10.18 ns |
-| `amino_catab_tick` | -- | -- | 10.03 ns |
-| `network_tick` | -- | -- | 184.6 ns |
-| `mapk_tick` | -- | -- | 15.48 ns |
+| `michaelis_menten` | 1.22 ns | 1.24 ns | 1.24 ns |
+| `hill_equation` | 19.09 ns | 18.76 ns | 18.93 ns |
+| `nernst` | 6.38 ns | 6.34 ns | 6.49 ns |
+| `goldman` | 7.24 ns | 7.80 ns +8% | 7.68 ns +6% |
+| `dose_response` | 18.48 ns | 19.36 ns +5% | 18.86 ns |
+| `metabolic_tick` | 10.56 ns | 22.11 ns +109% | 22.47 ns +113% |
+| `protein_lookup` | 3.33 ns | 3.51 ns +6% | 3.65 ns +10% |
+| `molecular_weight` | 16.07 ns | 20.91 ns +30% | 21.09 ns +31% |
+| `bioenergy_tick` | 8.57 ns | 9.24 ns +8% | 12.01 ns +40% |
+| `mixed_inhibition` | -- | 3.38 ns | 3.42 ns |
+| `ping_pong` | -- | 2.07 ns | 2.17 ns |
+| `arrhenius` | -- | 5.45 ns | 5.56 ns |
+| `lineweaver_burk_fit` | -- | 81.57 ns | 90.39 ns |
+| `enzyme_lookup` | -- | 3.78 ns | 3.85 ns |
+| `glycolysis_tick` | -- | 81.46 ns | 81.18 ns |
+| `tca_tick` | -- | 56.73 ns | 56.30 ns |
+| `etc_tick` | -- | 21.01 ns | 20.79 ns |
+| `beta_ox_tick` | -- | 9.24 ns | 9.14 ns |
+| `amino_catab_tick` | -- | -- | 10.65 ns |
+| `network_tick` | -- | -- | 180.1 ns |
+| `mapk_tick` | -- | -- | 14.94 ns |
 | `signaling_tick` | -- | -- | 53.29 ns |
-| `isoelectric_point` | -- | -- | 1945.0 ns |
-| `extinction_coefficient` | -- | -- | 33.18 ns |
-| `chou_fasman` | -- | -- | 470.6 ns |
-| `substitution_score` | -- | -- | 2.33 ns |
-| `needleman_wunsch_10` | -- | -- | 684.6 ns |
-| `ptm_scan_20` | -- | -- | 215.9 ns |
-| `domain_scan_20` | -- | -- | 205.4 ns |
+| `isoelectric_point` | -- | -- | 1885.2 ns |
+| `extinction_coefficient` | -- | -- | 30.98 ns |
+| `chou_fasman` | -- | -- | 441.7 ns |
+| `substitution_score` | -- | -- | 2.27 ns |
+| `needleman_wunsch_10` | -- | -- | 617.0 ns |
+| `ptm_scan_20` | -- | -- | 189.2 ns |
+| `domain_scan_20` | -- | -- | 157.1 ns |
+| `competitive_inhibition` | -- | -- | 2.64 ns |
+| `substrate_inhibition` | -- | -- | 2.21 ns |
+| `sequential_bisubstrate` | -- | -- | 2.65 ns |
+| `eadie_hofstee_fit` | -- | -- | 98.58 ns |
+| `receptor_occupancy` | -- | -- | 1.11 ns |
+| `fick_flux` | -- | -- | 1.26 ns |
+| `net_charge` | -- | -- | 125.0 ns |
+| `composition` | -- | -- | 156.7 ns |
+| `score_alignment` | -- | -- | 32.90 ns |
+| `calcium_tick` | -- | -- | 13.81 ns |
+| `jak_stat_tick` | -- | -- | 13.33 ns |
+| `pi3k_tick` | -- | -- | 9.06 ns |
+| `receptor_tick` | -- | -- | 5.23 ns |
+| `nuclear_receptor_tick` | -- | -- | 5.40 ns |
+| `neurotransmitter_tick` | -- | -- | 27.97 ns |
+| `hormonal_tick` | -- | -- | 17.21 ns |
 
 ---
 

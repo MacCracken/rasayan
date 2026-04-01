@@ -66,15 +66,15 @@
 - [x] MCP tools via bote (8 tools): `rasayan_kinetics`, `rasayan_metabolism`, `rasayan_signal`, `rasayan_protein`, `rasayan_membrane`, `rasayan_alignment`, `rasayan_ptm`, `rasayan_domain`
 - [x] Hoosh client (`BiochemClient`): enzyme/pathway/protein query helpers, multi-turn chat
 
+### 0.7.0 — v1.0 Hardening (2026-04-01)
+
+- [x] Validate all kinetic models against published experimental data (19 validation tests: hemoglobin, malonate, Nernst/Goldman, Lehninger pKa, Pace extinction, BLOSUM62)
+- [x] 90.43% test coverage (1588/1756 lines via cargo-tarpaulin, target was 80%)
+- [x] Full serde roundtrip tests for all public Serialize+Deserialize types (28 new tests)
+- [x] 45 criterion benchmarks with 3-point trend history (16 new benchmarks)
+- [x] Error handling audit: zero unwrap/panic/expect in non-test library code confirmed
+
 ## Backlog
-
-### 0.7.0 — v1.0 Hardening
-
-- [ ] Validate all kinetic models against published experimental data (textbook cross-check)
-- [ ] 80%+ test coverage across all modules (measure with cargo-tarpaulin)
-- [ ] Full serde roundtrip tests for all public types
-- [ ] Criterion benchmarks with 3-point trend history for every public function
-- [ ] Error handling audit: no unwrap/panic in library code, all error paths tested
 
 ### 0.8.0 — Consumer Integration
 

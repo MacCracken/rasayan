@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **validation** — 19 validation tests cross-checking models against published experimental data: Michaelis-Menten, Hill (hemoglobin O2 binding), competitive inhibition (malonate), Arrhenius temperature sensitivity, Nernst (K+/Na+ equilibrium potentials), Goldman resting potential, isoelectric point (Lehninger pKa), extinction coefficient (Pace values), BLOSUM62 matrix entries, enzyme database (carbonic anhydrase, catalase, hexokinase)
+- **serde** — 28 new serde roundtrip tests covering all remaining Serialize+Deserialize public types (Config, Flux, Input structs across all modules) + serialization tests for Serialize-only types (AlignmentScore, ExtinctionCoefficient, AminoAcid, KnownEnzyme)
+- **benchmarks** — 16 new criterion benchmarks: competitive_inhibition, substrate_inhibition, sequential_bisubstrate, eadie_hofstee_fit, receptor_occupancy, fick_flux, net_charge, composition, score_alignment, calcium_tick, jak_stat_tick, pi3k_tick, receptor_tick, nuclear_receptor_tick, neurotransmitter_tick, hormonal_tick (total: 45 benchmarks)
+
+### Fixed
+
+- **error handling** — Verified zero unwrap/panic/expect in non-test library code across all 25 modules
+
+### Performance
+
+- Test coverage: 90.43% (1588/1756 lines) measured via cargo-tarpaulin
+- 416 total tests (326 unit + 70 integration + 19 validation + 1 doctest)
+- 45 criterion benchmarks with 3-point trend history
+
 ## [0.6.0] - 2026-04-01
 
 ### Added

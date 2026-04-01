@@ -288,6 +288,22 @@ criterion_group!(
     bench_needleman_wunsch,
     bench_ptm_scan,
     bench_domain_scan,
+    bench_competitive_inhibition,
+    bench_substrate_inhibition,
+    bench_sequential_bisubstrate,
+    bench_eadie_hofstee_fit,
+    bench_receptor_occupancy,
+    bench_fick_flux,
+    bench_net_charge,
+    bench_composition,
+    bench_score_alignment,
+    bench_calcium_tick,
+    bench_jak_stat_tick,
+    bench_pi3k_tick,
+    bench_receptor_tick,
+    bench_nuclear_receptor_tick,
+    bench_neurotransmitter_tick,
+    bench_hormonal_tick,
 );
 criterion_main!(benches);
 
@@ -357,6 +373,178 @@ fn bench_beta_ox_tick(c: &mut Criterion) {
                 black_box(700.0),
                 black_box(0.01),
             )
+        })
+    });
+}
+
+fn bench_competitive_inhibition(c: &mut Criterion) {
+    c.bench_function("competitive_inhibition", |b| {
+        b.iter(|| {
+            enzyme::competitive_inhibition(
+                black_box(1.0),
+                black_box(0.5),
+                black_box(10.0),
+                black_box(1.0),
+                black_box(2.0),
+            )
+        })
+    });
+}
+
+fn bench_substrate_inhibition(c: &mut Criterion) {
+    c.bench_function("substrate_inhibition", |b| {
+        b.iter(|| {
+            enzyme::substrate_inhibition(
+                black_box(1.0),
+                black_box(10.0),
+                black_box(1.0),
+                black_box(50.0),
+            )
+        })
+    });
+}
+
+fn bench_sequential_bisubstrate(c: &mut Criterion) {
+    c.bench_function("sequential_bisubstrate", |b| {
+        b.iter(|| {
+            enzyme::sequential_bisubstrate(
+                black_box(1.0),
+                black_box(2.0),
+                black_box(10.0),
+                black_box(0.5),
+                black_box(1.0),
+                black_box(0.5),
+            )
+        })
+    });
+}
+
+fn bench_eadie_hofstee_fit(c: &mut Criterion) {
+    let data: Vec<(f64, f64)> = [0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0]
+        .iter()
+        .map(|&s| (s, enzyme::michaelis_menten(s, 10.0, 1.0)))
+        .collect();
+    c.bench_function("eadie_hofstee_fit", |b| {
+        b.iter(|| enzyme::eadie_hofstee_fit(black_box(&data)))
+    });
+}
+
+fn bench_receptor_occupancy(c: &mut Criterion) {
+    c.bench_function("receptor_occupancy", |b| {
+        b.iter(|| signal::receptor_occupancy(black_box(0.5), black_box(1.0)))
+    });
+}
+
+fn bench_fick_flux(c: &mut Criterion) {
+    c.bench_function("fick_flux", |b| {
+        b.iter(|| membrane::fick_flux(black_box(1e-9), black_box(100.0), black_box(5e-9)))
+    });
+}
+
+fn bench_net_charge(c: &mut Criterion) {
+    c.bench_function("net_charge", |b| {
+        b.iter(|| protein::net_charge(black_box("ACDEFGHIKLMNPQRSTVWY"), black_box(7.0)))
+    });
+}
+
+fn bench_composition(c: &mut Criterion) {
+    c.bench_function("composition", |b| {
+        b.iter(|| protein::composition(black_box("ACDEFGHIKLMNPQRSTVWY")))
+    });
+}
+
+fn bench_score_alignment(c: &mut Criterion) {
+    use rasayan::alignment::{self, Matrix};
+    c.bench_function("score_alignment", |b| {
+        b.iter(|| {
+            alignment::score_alignment(
+                black_box("ACDEFGHIKL"),
+                black_box("ACDEFHIKML"),
+                black_box(Matrix::Blosum62),
+            )
+        })
+    });
+}
+
+fn bench_calcium_tick(c: &mut Criterion) {
+    use rasayan::calcium::{CalciumConfig, CalciumState};
+    let config = CalciumConfig::default();
+    c.bench_function("calcium_tick", |b| {
+        b.iter(|| {
+            let mut state = CalciumState::default();
+            state.tick(black_box(&config), black_box(0.5), black_box(0.01))
+        })
+    });
+}
+
+fn bench_jak_stat_tick(c: &mut Criterion) {
+    use rasayan::jak_stat::{JakStatConfig, JakStatState};
+    let config = JakStatConfig::default();
+    c.bench_function("jak_stat_tick", |b| {
+        b.iter(|| {
+            let mut state = JakStatState::default();
+            state.tick(black_box(&config), black_box(0.5), black_box(0.01))
+        })
+    });
+}
+
+fn bench_pi3k_tick(c: &mut Criterion) {
+    use rasayan::pi3k::{Pi3kConfig, Pi3kState};
+    let config = Pi3kConfig::default();
+    c.bench_function("pi3k_tick", |b| {
+        b.iter(|| {
+            let mut state = Pi3kState::default();
+            state.tick(black_box(&config), black_box(0.5), black_box(0.01))
+        })
+    });
+}
+
+fn bench_receptor_tick(c: &mut Criterion) {
+    use rasayan::receptor::{ReceptorConfig, ReceptorState};
+    let config = ReceptorConfig::default();
+    c.bench_function("receptor_tick", |b| {
+        b.iter(|| {
+            let mut state = ReceptorState::default();
+            state.tick(black_box(&config), black_box(0.5), black_box(0.01))
+        })
+    });
+}
+
+fn bench_nuclear_receptor_tick(c: &mut Criterion) {
+    use rasayan::nuclear_receptor::{NuclearReceptorConfig, NuclearReceptorState};
+    let config = NuclearReceptorConfig::default();
+    c.bench_function("nuclear_receptor_tick", |b| {
+        b.iter(|| {
+            let mut state = NuclearReceptorState::default();
+            state.tick(black_box(&config), black_box(0.5), black_box(0.01))
+        })
+    });
+}
+
+fn bench_neurotransmitter_tick(c: &mut Criterion) {
+    use rasayan::neurotransmitter::{NeurotransmitterConfig, NeurotransmitterState};
+    let config = NeurotransmitterConfig::default();
+    c.bench_function("neurotransmitter_tick", |b| {
+        b.iter(|| {
+            let mut state = NeurotransmitterState::default();
+            state.tick(
+                black_box(&config),
+                black_box(0.5),
+                black_box(0.5),
+                black_box(0.01),
+            )
+        })
+    });
+}
+
+fn bench_hormonal_tick(c: &mut Criterion) {
+    use rasayan::hormonal::{HormonalConfig, HormonalInput, HormonalState};
+    let config = HormonalConfig::default();
+    let input = HormonalInput::default();
+    c.bench_function("hormonal_tick", |b| {
+        b.iter(|| {
+            let mut state = HormonalState::default();
+            state.tick(black_box(&config), black_box(&input), black_box(0.01))
         })
     });
 }
