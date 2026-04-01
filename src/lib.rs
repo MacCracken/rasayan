@@ -7,7 +7,7 @@
 //!
 //! # Architecture
 //!
-//! Seven modules:
+//! Nine modules:
 //!
 //! - [`enzyme`] — Michaelis-Menten kinetics, competitive/uncompetitive/mixed
 //!   inhibition, substrate inhibition, allosteric regulation (Hill equation),
@@ -24,6 +24,12 @@
 //!   composition analysis.
 //! - [`membrane`] — Membrane transport: Nernst potential, Goldman-Hodgkin-Katz
 //!   equation, Fick's first law diffusion, ionic state.
+//! - [`glycolysis`] — 10-step glycolytic pathway with individual enzyme kinetics,
+//!   regulatory checkpoints (hexokinase, PFK, pyruvate kinase), configurable
+//!   parameters, and per-tick ATP/NADH flux accounting.
+//! - [`tca`] — TCA (Krebs) cycle: pyruvate dehydrogenase + 8 cycle steps,
+//!   regulatory checkpoints (citrate synthase, isocitrate DH, α-KG DH),
+//!   NADH/FADH2/GTP/CO2 flux output.
 //! - [`energy`] — Bioenergetics: ATP hydrolysis, phosphocreatine system,
 //!   anaerobic/aerobic thresholds, metabolic equivalent (MET).
 //! - [`constants`] — Shared physical constants (gas constant, Faraday constant).
@@ -51,6 +57,7 @@ pub mod membrane;
 pub mod metabolism;
 pub mod protein;
 pub mod signal;
+pub mod tca;
 
 #[cfg(feature = "logging")]
 pub mod logging;

@@ -19,6 +19,11 @@
 //! | 9 | Enolase | 2PG ⇌ PEP | Reversible |
 //! | 10 | Pyruvate kinase | PEP → Pyruvate | Irreversible, ADP → ATP, regulated |
 //!
+//! # Note on glucose supply
+//!
+//! `tick()` consumes glucose but does not replenish it — the caller is
+//! responsible for modeling glucose supply (e.g., blood glucose, glycogenolysis).
+//!
 //! # Usage
 //!
 //! ```rust
@@ -38,6 +43,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::enzyme;
+use crate::error::RasayanError;
 
 // ---------------------------------------------------------------------------
 // State
@@ -92,6 +98,34 @@ impl Default for GlycolysisState {
     }
 }
 
+impl GlycolysisState {
+    /// Validate that all concentrations are non-negative.
+    #[must_use = "validation errors should be handled"]
+    pub fn validate(&self) -> Result<(), RasayanError> {
+        for (name, value) in [
+            ("glucose", self.glucose),
+            ("g6p", self.g6p),
+            ("f6p", self.f6p),
+            ("f16bp", self.f16bp),
+            ("dhap", self.dhap),
+            ("g3p", self.g3p),
+            ("bpg13", self.bpg13),
+            ("pg3", self.pg3),
+            ("pg2", self.pg2),
+            ("pep", self.pep),
+            ("pyruvate", self.pyruvate),
+        ] {
+            if value < 0.0 {
+                return Err(RasayanError::NegativeConcentration {
+                    name: name.into(),
+                    value,
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Config — enzyme parameters for all 10 steps
 // ---------------------------------------------------------------------------
@@ -131,6 +165,8 @@ pub struct GlycolysisConfig {
     pub pfk_km_f6p: f64,
     /// PFK Hill coefficient (cooperativity).
     pub pfk_hill_n: f64,
+    /// ATP/ADP ratio at which PFK activity is 50% inhibited.
+    pub pfk_atp_half_inhibition: f64,
 
     // Step 4: Aldolase (reversible)
     /// Aldolase forward Vmax (mM/s).
@@ -195,6 +231,10 @@ pub struct GlycolysisConfig {
     pub pk_km_pep: f64,
     /// PK Hill coefficient (cooperativity).
     pub pk_hill_n: f64,
+    /// F1,6BP concentration for half-maximal PK feedforward activation (mM).
+    pub pk_f16bp_ka: f64,
+    /// Maximum fold-activation of PK by F1,6BP.
+    pub pk_f16bp_max_activation: f64,
 }
 
 impl Default for GlycolysisConfig {
@@ -215,6 +255,7 @@ impl Default for GlycolysisConfig {
             pfk_vmax: 0.1,
             pfk_km_f6p: 0.03,
             pfk_hill_n: 3.8,
+            pfk_atp_half_inhibition: 15.0,
 
             // Step 4: Aldolase
             aldo_vmax_f: 0.05,
@@ -254,7 +295,38 @@ impl Default for GlycolysisConfig {
             pk_vmax: 0.5,
             pk_km_pep: 0.2,
             pk_hill_n: 4.0,
+            pk_f16bp_ka: 0.05,
+            pk_f16bp_max_activation: 3.0,
         }
+    }
+}
+
+impl GlycolysisConfig {
+    /// Validate that all parameters are physically meaningful.
+    #[must_use = "validation errors should be handled"]
+    pub fn validate(&self) -> Result<(), RasayanError> {
+        if self.hk_vmax < 0.0 {
+            return Err(RasayanError::InvalidParameter {
+                name: "hk_vmax".into(),
+                value: self.hk_vmax,
+                reason: "must be non-negative".into(),
+            });
+        }
+        if self.pfk_vmax < 0.0 {
+            return Err(RasayanError::InvalidParameter {
+                name: "pfk_vmax".into(),
+                value: self.pfk_vmax,
+                reason: "must be non-negative".into(),
+            });
+        }
+        if self.pk_vmax < 0.0 {
+            return Err(RasayanError::InvalidParameter {
+                name: "pk_vmax".into(),
+                value: self.pk_vmax,
+                reason: "must be non-negative".into(),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -263,7 +335,11 @@ impl Default for GlycolysisConfig {
 // ---------------------------------------------------------------------------
 
 /// Metabolic flux through glycolysis for a single tick.
+///
+/// Returned by [`GlycolysisState::tick`]. Contains ATP/NADH accounting
+/// that the caller should apply to their cofactor pools.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[must_use]
 pub struct GlycolysisFlux {
     /// ATP consumed in preparatory phase (steps 1 + 3, mM).
     pub atp_consumed: f64,
@@ -333,9 +409,7 @@ impl GlycolysisState {
         // Allosteric: Hill kinetics. ATP inhibition modeled by scaling Vmax
         // down when ATP/ADP ratio is high (cells with excess energy slow glycolysis).
         let atp_adp_ratio = if adp > f64::EPSILON { atp / adp } else { 100.0 };
-        // PFK activity decreases sigmoidally with ATP/ADP ratio
-        // At ratio ~10 (resting), activity is ~50%. At ratio >20, strongly inhibited.
-        let pfk_atp_factor = 1.0 / (1.0 + (atp_adp_ratio / 15.0).powi(2));
+        let pfk_atp_factor = 1.0 / (1.0 + (atp_adp_ratio / config.pfk_atp_half_inhibition).powi(2));
         let v3 = enzyme::hill_equation(
             self.f6p,
             config.pfk_vmax * pfk_atp_factor,
@@ -344,15 +418,13 @@ impl GlycolysisState {
         );
 
         // Step 4: Aldolase — F1,6BP ⇌ DHAP + G3P
-        // Use effective product concentration as sum of DHAP and G3P
-        let v4 = enzyme::reversible_michaelis_menten(
-            self.f16bp,
-            self.dhap * self.g3p / 0.1_f64.max(self.dhap + self.g3p),
-            config.aldo_vmax_f,
-            config.aldo_km_f,
-            config.aldo_vmax_r,
-            config.aldo_km_r,
-        );
+        // Reverse rate depends on the product of triose concentrations (ordered
+        // bi-substrate reverse: DHAP + G3P → F1,6BP).
+        let v4_forward = enzyme::michaelis_menten(self.f16bp, config.aldo_vmax_f, config.aldo_km_f);
+        let triose_product = (self.dhap * self.g3p).sqrt();
+        let v4_reverse =
+            enzyme::michaelis_menten(triose_product, config.aldo_vmax_r, config.aldo_km_r);
+        let v4 = v4_forward - v4_reverse;
 
         // Step 5: TPI — DHAP ⇌ G3P (very fast, maintains equilibrium)
         let v5 = enzyme::reversible_michaelis_menten(
@@ -405,10 +477,11 @@ impl GlycolysisState {
 
         // Step 10: Pyruvate kinase — PEP → Pyruvate (ADP → ATP)
         // Allosteric: Hill kinetics. F1,6BP feedforward activation.
-        let f16bp_activation = 1.0 + self.f16bp / 0.05;
+        let f16bp_activation =
+            (1.0 + self.f16bp / config.pk_f16bp_ka).min(config.pk_f16bp_max_activation);
         let v10 = enzyme::hill_equation(
             self.pep,
-            config.pk_vmax * f16bp_activation.min(3.0),
+            config.pk_vmax * f16bp_activation,
             config.pk_km_pep,
             config.pk_hill_n,
         );
@@ -495,7 +568,7 @@ mod tests {
             total_flux.net_atp += flux.net_atp;
             total_flux.nadh_produced += flux.nadh_produced;
             total_flux.pyruvate_produced += flux.pyruvate_produced;
-            total_flux.step_rates = flux.step_rates; // last step rates
+            total_flux.step_rates = flux.step_rates;
         }
         (state, total_flux)
     }
@@ -517,11 +590,25 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_state() {
+        assert!(GlycolysisState::default().validate().is_ok());
+        let bad = GlycolysisState {
+            glucose: -1.0,
+            ..GlycolysisState::default()
+        };
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_config() {
+        assert!(GlycolysisConfig::default().validate().is_ok());
+    }
+
+    #[test]
     fn test_single_tick_produces_flux() {
         let mut state = GlycolysisState::default();
         let config = GlycolysisConfig::default();
         let flux = state.tick(&config, 6.0, 0.5, 700.0, 0.01);
-        // All step rates should be non-negative at steady state
         for (i, &rate) in flux.step_rates.iter().enumerate() {
             assert!(rate >= 0.0, "Step {} rate is negative: {}", i + 1, rate);
         }
@@ -543,7 +630,6 @@ mod tests {
     #[test]
     fn test_net_atp_positive() {
         let (_, flux) = run_glycolysis(100, 0.1);
-        // Glycolysis should produce net ATP (2 per glucose at steady state)
         assert!(
             flux.net_atp > 0.0,
             "Net ATP should be positive: {}",
@@ -585,10 +671,8 @@ mod tests {
     fn test_high_atp_inhibits_pfk() {
         let mut state = GlycolysisState::default();
         let config = GlycolysisConfig::default();
-        // Normal ATP/ADP
         let flux_normal = state.tick(&config, 6.0, 0.5, 700.0, 0.1);
         let mut state2 = GlycolysisState::default();
-        // Very high ATP/ADP ratio — should inhibit PFK (step 3)
         let flux_high_atp = state2.tick(&config, 20.0, 0.1, 700.0, 0.1);
         assert!(
             flux_high_atp.step_rates[2] < flux_normal.step_rates[2],
@@ -599,10 +683,8 @@ mod tests {
     #[test]
     fn test_g6p_inhibits_hexokinase() {
         let config = GlycolysisConfig::default();
-        // Normal G6P
         let mut state1 = GlycolysisState::default();
         let flux1 = state1.tick(&config, 6.0, 0.5, 700.0, 0.1);
-        // Very high G6P — should inhibit hexokinase (step 1)
         let mut state2 = GlycolysisState {
             g6p: 50.0,
             ..GlycolysisState::default()
@@ -621,11 +703,9 @@ mod tests {
             ..GlycolysisState::default()
         };
         let config = GlycolysisConfig::default();
-        // Run long enough for intermediates to drain
         for _ in 0..1000 {
-            state.tick(&config, 6.0, 0.5, 700.0, 0.1);
+            let _ = state.tick(&config, 6.0, 0.5, 700.0, 0.1);
         }
-        // Step 1 rate should be zero
         let flux = state.tick(&config, 6.0, 0.5, 700.0, 0.1);
         assert!(
             flux.step_rates[0] < 1e-10,
@@ -666,7 +746,6 @@ mod tests {
         let state = GlycolysisState::default();
         let total = state.total_intermediates();
         assert!(total > 0.0);
-        // Sum of default intermediate concentrations (excluding glucose and pyruvate)
         let expected = 0.083 + 0.014 + 0.031 + 0.14 + 0.019 + 0.001 + 0.12 + 0.03 + 0.023;
         assert!((total - expected).abs() < 0.01);
     }

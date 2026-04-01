@@ -2,9 +2,11 @@
 
 use rasayan::energy::BioenergyState;
 use rasayan::enzyme::{self, EnzymeParams};
+use rasayan::glycolysis::{GlycolysisConfig, GlycolysisState};
 use rasayan::membrane::{self, IonicState, MembranePermeability};
 use rasayan::metabolism::MetabolicState;
 use rasayan::signal::{self, SecondMessenger};
+use rasayan::tca::{TcaConfig, TcaState};
 
 // --- Serde roundtrip tests ---
 
@@ -326,4 +328,46 @@ fn test_arrhenius_temperature_sensitivity() {
     let ratio = k2 / k1;
     // For Ea=50kJ/mol, ratio should be ~1.9 over 10K
     assert!(ratio > 1.5 && ratio < 3.0, "Ratio={ratio}");
+}
+
+// --- Glycolysis → TCA integration ---
+
+#[test]
+fn test_glycolysis_feeds_tca() {
+    let glyco_config = GlycolysisConfig::default();
+    let tca_config = TcaConfig::default();
+    let mut glyco = GlycolysisState::default();
+    let mut tca = TcaState::default();
+
+    let mut total_nadh = 0.0;
+    let mut total_atp = 0.0;
+
+    // Run 50 seconds: glycolysis produces pyruvate, TCA consumes it
+    for _ in 0..500 {
+        let gflux = glyco.tick(&glyco_config, 6.0, 0.5, 700.0, 0.1);
+        let tflux = tca.tick(&tca_config, glyco.pyruvate, 6.0, 0.5, 700.0, 0.1);
+
+        // TCA consumed some pyruvate — deduct it
+        glyco.pyruvate = (glyco.pyruvate - tflux.pyruvate_consumed).max(0.0);
+
+        total_nadh += gflux.nadh_produced + tflux.nadh_produced;
+        total_atp += gflux.net_atp + tflux.gtp_produced;
+    }
+
+    // Both pathways should have produced meaningful output
+    assert!(total_nadh > 0.0, "Combined NADH should be positive");
+    assert!(total_atp > 0.0, "Combined ATP+GTP should be positive");
+    // TCA should have consumed some pyruvate
+    assert!(
+        glyco.pyruvate < 5.0,
+        "Pyruvate should not accumulate unbounded when TCA is consuming it"
+    );
+}
+
+#[test]
+fn test_glycolysis_tca_pathway_validation() {
+    assert!(GlycolysisState::default().validate().is_ok());
+    assert!(GlycolysisConfig::default().validate().is_ok());
+    assert!(TcaState::default().validate().is_ok());
+    assert!(TcaConfig::default().validate().is_ok());
 }
