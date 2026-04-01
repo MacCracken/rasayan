@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-04-01
+
+### Added
+
+- **mcp** — MCP tool definitions via bote: 8 tools (`rasayan_kinetics`, `rasayan_metabolism`, `rasayan_signal`, `rasayan_protein`, `rasayan_membrane`, `rasayan_alignment`, `rasayan_ptm`, `rasayan_domain`) with JSON Schema parameter validation, `register_tools()` and `create_dispatcher()` convenience functions. Feature-gated on `mcp`
+- **ai** — Hoosh client wrapper (`BiochemClient`): biochemistry-focused system prompt, single query and multi-turn chat, specialized helpers (`enzyme_query`, `pathway_query`, `protein_query`), health check and model listing. Feature-gated on `ai`
+
+### Changed
+
+- Added `mcp` and `ai` feature flags; `full` feature now includes both
+- Added `bote`, `hoosh`, `serde_json`, `tokio` as optional dependencies
+
+## [0.5.0] - 2026-04-01
+
+### Added
+
+- **protein** — Isoelectric point (pI) calculation via bisection over Henderson-Hasselbalch equation (Lehninger pKa values), net charge at arbitrary pH
+- **protein** — Extinction coefficient estimation at 280nm (Pace et al., 1995): Trp/Tyr/Cystine contributions, oxidized and reduced estimates
+- **protein** — Chou-Fasman secondary structure prediction (1978): per-residue helix/sheet/turn/coil assignment with nucleation, extension, and overlap resolution
+- **alignment** — BLOSUM62 and PAM250 substitution matrices (20×20 symmetric), single-residue lookup, pairwise alignment scoring with identity calculation
+- **alignment** — Needleman-Wunsch global alignment with linear gap penalty (dynamic programming)
+- **ptm** — Post-translational modification site scanning: N-glycosylation (N-X-S/T, X≠P), phospho-Ser/Thr/Tyr, PKA sites (RK-RK-X-ST), CK2 sites (ST-XX-DE), disulfide bond potential, N-myristoylation (G-XXXX-ST)
+- **domain** — Protein domain motif detection: C2H2 zinc finger, leucine zipper (4-heptad), EF-hand calcium-binding, Walker A/P-loop ATP-binding, RGD cell-adhesion, DEAD-box helicase, nuclear localization signal (NLS), KDEL ER retention signal
+
+### Performance
+
+- `isoelectric_point` (20 residues): 1.85 µs
+- `extinction_coefficient` (20 residues): 32 ns
+- `chou_fasman` (19 residues): 433 ns
+- `substitution_score`: 2.2 ns
+- `needleman_wunsch` (10×10): 651 ns
+- `ptm_scan` (20 residues): 200 ns
+- `domain_scan` (20 residues): 175 ns
+
 ## [0.4.0] - 2026-03-31
 
 ### Added

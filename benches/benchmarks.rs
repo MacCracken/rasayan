@@ -198,6 +198,65 @@ fn bench_etc_tick(c: &mut Criterion) {
     });
 }
 
+fn bench_substitution_score(c: &mut Criterion) {
+    use rasayan::alignment::{self, Matrix};
+    c.bench_function("substitution_score", |b| {
+        b.iter(|| {
+            alignment::substitution_score(
+                black_box('W'),
+                black_box('Y'),
+                black_box(Matrix::Blosum62),
+            )
+        })
+    });
+}
+
+fn bench_needleman_wunsch(c: &mut Criterion) {
+    use rasayan::alignment::{self, Matrix};
+    c.bench_function("needleman_wunsch_10", |b| {
+        b.iter(|| {
+            alignment::needleman_wunsch(
+                black_box("ACDEFGHIKL"),
+                black_box("ACDEFHIKML"),
+                black_box(Matrix::Blosum62),
+                black_box(-4),
+            )
+        })
+    });
+}
+
+fn bench_ptm_scan(c: &mut Criterion) {
+    use rasayan::ptm;
+    c.bench_function("ptm_scan_20", |b| {
+        b.iter(|| ptm::scan_ptm_sites(black_box("ACDEFGHIKLMNPQRSTVWY")))
+    });
+}
+
+fn bench_domain_scan(c: &mut Criterion) {
+    use rasayan::domain;
+    c.bench_function("domain_scan_20", |b| {
+        b.iter(|| domain::scan_domains(black_box("ACDEFGHIKLMNPQRSTVWY")))
+    });
+}
+
+fn bench_isoelectric_point(c: &mut Criterion) {
+    c.bench_function("isoelectric_point", |b| {
+        b.iter(|| protein::isoelectric_point(black_box("ACDEFGHIKLMNPQRSTVWY")))
+    });
+}
+
+fn bench_extinction_coefficient(c: &mut Criterion) {
+    c.bench_function("extinction_coefficient", |b| {
+        b.iter(|| protein::extinction_coefficient(black_box("ACDEFGHIKLMNPQRSTVWY")))
+    });
+}
+
+fn bench_chou_fasman(c: &mut Criterion) {
+    c.bench_function("chou_fasman", |b| {
+        b.iter(|| protein::chou_fasman(black_box("AAAAAELLLLVVVIIYNGPS")))
+    });
+}
+
 criterion_group!(
     benches,
     bench_michaelis_menten,
@@ -222,6 +281,13 @@ criterion_group!(
     bench_network_tick,
     bench_mapk_tick,
     bench_signaling_tick,
+    bench_isoelectric_point,
+    bench_extinction_coefficient,
+    bench_chou_fasman,
+    bench_substitution_score,
+    bench_needleman_wunsch,
+    bench_ptm_scan,
+    bench_domain_scan,
 );
 criterion_main!(benches);
 

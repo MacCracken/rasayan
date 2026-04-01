@@ -7,7 +7,7 @@
 //!
 //! # Architecture
 //!
-//! Twenty-two core modules (plus optional `logging`):
+//! Twenty-five core modules (plus optional `logging`, `mcp`, `ai`):
 //!
 //! - [`enzyme`] — Michaelis-Menten kinetics, competitive/uncompetitive/mixed
 //!   inhibition, substrate inhibition, allosteric regulation (Hill equation),
@@ -19,9 +19,16 @@
 //! - [`signal`] — Signal transduction: ligand-receptor binding, dose-response
 //!   (Hill function), second messengers (cAMP, Ca2+, IP3), Gs/Gq/Gi pathway
 //!   activation, messenger decay.
-//! - [`protein`] — Protein structure primitives: 20 amino acid properties
-//!   (molecular weight, hydrophobicity, pKa), sequence molecular weight,
-//!   composition analysis.
+//! - [`protein`] — Protein analysis: 20 amino acid properties (molecular
+//!   weight, hydrophobicity, pKa), sequence molecular weight, composition,
+//!   isoelectric point (pI), extinction coefficient (280nm), Chou-Fasman
+//!   secondary structure prediction.
+//! - [`alignment`] — Sequence alignment scoring: BLOSUM62/PAM250 substitution
+//!   matrices, pairwise alignment scoring, Needleman-Wunsch global alignment.
+//! - [`ptm`] — Post-translational modification site prediction: N-glycosylation,
+//!   phosphorylation (Ser/Thr/Tyr), PKA/CK2 sites, disulfide bonds, myristoylation.
+//! - [`domain`] — Protein domain classification: zinc finger (C2H2), leucine
+//!   zipper, EF-hand, Walker A/P-loop, RGD, DEAD-box, NLS, KDEL motifs.
 //! - [`neurotransmitter`] — Neurotransmitter synthesis: serotonin (TPH),
 //!   dopamine (TH), norepinephrine (DBH), GABA (GAD), glutamate, ACh (ChAT),
 //!   endorphins (POMC). Bridge functions for mastishk/bhava.
@@ -49,6 +56,11 @@
 //! - [`energy`] — Bioenergetics: ATP hydrolysis, phosphocreatine system,
 //!   anaerobic/aerobic thresholds, metabolic equivalent (MET).
 //! - [`constants`] — Shared physical constants (gas constant, Faraday constant).
+//! - [`mcp`] — MCP tool definitions via bote (feature-gated: `mcp`): 8 tools
+//!   for enzyme kinetics, metabolism, signaling, protein, membrane, alignment,
+//!   PTM, and domain analysis.
+//! - [`ai`] — Hoosh client for LLM-powered biochemistry queries (feature-gated:
+//!   `ai`): `BiochemClient` with enzyme, pathway, and protein query helpers.
 //!
 //! # Relationship to Other Crates
 //!
@@ -64,10 +76,12 @@
 //! sharira — physiology (muscle bioenergetics, fatigue)
 //! ```
 
+pub mod alignment;
 pub mod amino_catabolism;
 pub mod beta_oxidation;
 pub mod calcium;
 pub mod constants;
+pub mod domain;
 pub mod energy;
 pub mod enzyme;
 pub mod error;
@@ -83,6 +97,7 @@ pub mod nuclear_receptor;
 pub mod pathway;
 pub mod pi3k;
 pub mod protein;
+pub mod ptm;
 pub mod receptor;
 pub mod signal;
 pub mod signaling;
@@ -90,5 +105,11 @@ pub mod tca;
 
 #[cfg(feature = "logging")]
 pub mod logging;
+
+#[cfg(feature = "mcp")]
+pub mod mcp;
+
+#[cfg(feature = "ai")]
+pub mod ai;
 
 pub use error::RasayanError;
