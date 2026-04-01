@@ -1,85 +1,15 @@
 # Development Roadmap
 
-> **Status**: Pre-1.0 | **Current**: 0.6.0
-
-## Completed
-
-### 0.1.0 — Scaffold (2026-03-31)
-
-- [x] Enzyme kinetics: Michaelis-Menten, competitive/uncompetitive inhibition, Hill equation, Q10
-- [x] Metabolic state: ATP/ADP tracking, energy charge, aerobic/anaerobic yield, metabolic rate
-- [x] Signal transduction: dose-response (Hill), receptor occupancy, second messengers (cAMP, Ca2+, IP3)
-- [x] Protein primitives: 20 amino acids, molecular weight, hydrophobicity, composition
-- [x] Membrane transport: Nernst potential, Goldman equation, Fick's law, ionic state
-- [x] Bioenergetics: phosphocreatine, glycogen, MET levels, anaerobic threshold
-- [x] Error types with thiserror
-- [x] Optional structured logging
-- [x] Initial criterion benchmarks
-
-### 0.2.0 — Expanded Kinetics (2026-03-31)
-
-- [x] Mixed (noncompetitive) inhibition
-- [x] Substrate inhibition
-- [x] Reversible reactions (Haldane relationship)
-- [x] Multi-substrate kinetics (ping-pong, sequential)
-- [x] Lineweaver-Burk and Eadie-Hofstee transformations
-- [x] Arrhenius equation for temperature dependence
-- [x] Enzyme database: 12 common enzymes with published Km/kcat values
-
-### 0.3.0 — Metabolic Pathways + Bhava Bridge (2026-03-31)
-
-- [x] Full glycolysis pathway (10 steps with individual enzyme kinetics)
-- [x] TCA cycle with regulatory checkpoints (PDH + 8 steps)
-- [x] Electron transport chain model (complexes I-IV, ATP synthase, pmf)
-- [x] Beta-oxidation of fatty acids (CPT-I regulation, configurable chain length)
-- [x] Amino acid catabolism (transamination, deamination, carbon skeleton routing)
-- [x] Metabolic flux analysis (steady-state via MetabolicNetwork)
-- [x] Pathway interconnection graph (unified network with shared cofactor pools)
-- [x] Neurotransmitter synthesis: serotonin (TPH), dopamine (TH), NE (DBH), GABA (GAD), glutamate, ACh (ChAT), endorphins (POMC)
-- [x] HPA axis cortisol model (CRH → ACTH → cortisol, negative feedback)
-- [x] Melatonin synthesis (serotonin → melatonin, light-gated suppression)
-- [x] Oxytocin (hypothalamic synthesis, stimulus-dependent release)
-- [x] BDNF (activity-dependent transcription)
-- [x] Bridge output API: serotonin_synthesis_rate, dopamine_level, norepinephrine_level, gaba_glutamate_ratio, acetylcholine_level, endorphin_level, cortisol_from_hpa, melatonin_from_serotonin
-
-### 0.4.0 — Advanced Signaling (2026-03-31)
-
-- [x] MAPK cascade (Ras→Raf→MEK→ERK, dual phosphorylation, ERK negative feedback)
-- [x] PI3K/Akt/mTOR pathway (PTEN regulation)
-- [x] JAK-STAT pathway (SOCS negative feedback)
-- [x] Calcium oscillation dynamics (IP3R, CICR, SERCA)
-- [x] Receptor desensitization and internalization (GRK, β-arrestin, recycling)
-- [x] Nuclear receptor signaling (hormone→translocation→gene expression delay)
-- [x] Signaling crosstalk network (Ras↔PI3K, Akt→Raf, Ca2+→Ras)
-
-### 0.5.0 — Protein Analysis (2026-04-01)
-
-- [x] Isoelectric point calculation (bisection over Henderson-Hasselbalch, Lehninger pKa)
-- [x] Secondary structure propensity (Chou-Fasman 1978: helix/sheet/turn prediction)
-- [x] Extinction coefficient estimation (Pace method, 280nm: Trp/Tyr/Cystine)
-- [x] Sequence alignment scoring (BLOSUM62, PAM250, Needleman-Wunsch global alignment)
-- [x] Post-translational modification sites (N-glycosylation, phospho-S/T/Y, PKA, CK2, myristoylation)
-- [x] Protein domain classification (zinc finger C2H2, leucine zipper, EF-hand, Walker A, RGD, DEAD-box, NLS, KDEL)
-
-### 0.6.0 — MCP + AI Integration (2026-04-01)
-
-- [x] MCP tools via bote (8 tools): `rasayan_kinetics`, `rasayan_metabolism`, `rasayan_signal`, `rasayan_protein`, `rasayan_membrane`, `rasayan_alignment`, `rasayan_ptm`, `rasayan_domain`
-- [x] Hoosh client (`BiochemClient`): enzyme/pathway/protein query helpers, multi-turn chat
-
-### 0.7.0 — v1.0 Hardening (2026-04-01)
-
-- [x] Validate all kinetic models against published experimental data (19 validation tests: hemoglobin, malonate, Nernst/Goldman, Lehninger pKa, Pace extinction, BLOSUM62)
-- [x] 90.43% test coverage (1588/1756 lines via cargo-tarpaulin, target was 80%)
-- [x] Full serde roundtrip tests for all public Serialize+Deserialize types (28 new tests)
-- [x] 45 criterion benchmarks with 3-point trend history (16 new benchmarks)
-- [x] Error handling audit: zero unwrap/panic/expect in non-test library code confirmed
+> **Status**: Pre-1.0
 
 ## Backlog
 
 ### 0.8.0 — Consumer Integration
 
-- [ ] mastishk consuming rasayan for neurotransmitter synthesis models
-- [ ] sharira consuming rasayan for muscle bioenergetics / fatigue models
+- [x] Bridge API audit: 8 neurotransmitter/hormonal bridge functions verified (mastishk)
+- [x] Bridge API for sharira: 4 energy bridge functions added (`atp_demand_from_power`, `fatigue_rate_from_energy`, `recovery_rate_modifier`, `met_from_power`)
+- [ ] mastishk adding `rasayan` dependency and wiring neurotransmitter bridge (work in mastishk repo)
+- [ ] sharira adding `rasayan` dependency and wiring energy/fatigue bridge (work in sharira repo)
 - [ ] Consumer integration tests (cross-crate compatibility)
 - [ ] API stability review: breaking change audit before 1.0 freeze
 
@@ -97,7 +27,7 @@
 - [ ] Published on crates.io
 - [ ] All v1.0 criteria met (see below)
 
-## Post-1.0 Roadmap
+## Post-1.0
 
 ### 1.1.0 — Pharmacokinetics
 
@@ -140,10 +70,10 @@
 
 ## v1.0 Criteria
 
-- [ ] All kinetic models validated against published experimental data
-- [ ] All modules have 80%+ test coverage
-- [ ] Criterion benchmarks with 3-point trend history
-- [ ] Full serde roundtrip tests for all public types
+- [x] All kinetic models validated against published experimental data
+- [x] All modules have 80%+ test coverage (90.43%)
+- [x] Criterion benchmarks with 3-point trend history (45 benchmarks)
+- [x] Full serde roundtrip tests for all public types
 - [ ] mastishk + sharira consuming rasayan for neurotransmitter/muscle models
 - [ ] Documentation: architecture overview, usage guide, API docs
 - [ ] Published on crates.io

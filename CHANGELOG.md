@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **serde** — 28 new serde roundtrip tests covering all remaining Serialize+Deserialize public types (Config, Flux, Input structs across all modules) + serialization tests for Serialize-only types (AlignmentScore, ExtinctionCoefficient, AminoAcid, KnownEnzyme)
 - **benchmarks** — 16 new criterion benchmarks: competitive_inhibition, substrate_inhibition, sequential_bisubstrate, eadie_hofstee_fit, receptor_occupancy, fick_flux, net_charge, composition, score_alignment, calcium_tick, jak_stat_tick, pi3k_tick, receptor_tick, nuclear_receptor_tick, neurotransmitter_tick, hormonal_tick (total: 45 benchmarks)
 
+- **energy** — 4 bridge functions for sharira integration: `atp_demand_from_power` (mechanical watts → ATP mM/s), `fatigue_rate_from_energy` (energy depletion → fatigue multiplier), `recovery_rate_modifier` (aerobic/anaerobic → recovery scaling), `met_from_power` (watts + body mass → MET value)
+
 ### Fixed
 
 - **error handling** — Verified zero unwrap/panic/expect in non-test library code across all 25 modules
@@ -20,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Performance
 
 - Test coverage: 90.43% (1588/1756 lines) measured via cargo-tarpaulin
-- 416 total tests (326 unit + 70 integration + 19 validation + 1 doctest)
+- 422 total tests (332 unit + 70 integration + 19 validation + 1 doctest)
 - 45 criterion benchmarks with 3-point trend history
 
 ## [0.6.0] - 2026-04-01

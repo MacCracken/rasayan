@@ -139,6 +139,69 @@ impl BioenergyState {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Bridge functions — plain f64 outputs for sharira/kiran
+// ---------------------------------------------------------------------------
+
+/// ATP demand rate (mM/s) for a given mechanical power output (watts).
+///
+/// Assumes ~40% efficiency of ATP→mechanical work, and ΔG of ATP hydrolysis
+/// ≈ 30.5 kJ/mol. Higher power → higher ATP turnover. Convenience function
+/// for sharira muscle bioenergetics integration.
+#[must_use]
+#[inline]
+pub fn atp_demand_from_power(mechanical_power_w: f64) -> f64 {
+    // Metabolic power = mechanical / efficiency
+    // ATP demand (mol/s) = metabolic_power / |ΔG_ATP| (J/mol)
+    // Convert to mM/s assuming ~1L cytoplasmic volume
+    let efficiency = 0.40;
+    let metabolic_power = mechanical_power_w / efficiency;
+    (metabolic_power / (ATP_HYDROLYSIS_DG.abs() * 1000.0)) * 1000.0 // mol/s → mM/s
+}
+
+/// Fatigue rate modifier based on energy availability.
+///
+/// Returns a multiplier (≥1.0) that increases fatigue accumulation when energy
+/// stores are depleted. At full energy → 1.0 (baseline fatigue). At zero
+/// energy → `max_multiplier`. For sharira fatigue model integration.
+#[must_use]
+#[inline]
+pub fn fatigue_rate_from_energy(energy_available: f64, max_multiplier: f64) -> f64 {
+    let energy_clamped = energy_available.clamp(0.0, 1.0);
+    1.0 + (max_multiplier - 1.0) * (1.0 - energy_clamped)
+}
+
+/// Recovery rate modifier based on whether metabolism is aerobic.
+///
+/// Aerobic recovery is faster. Returns a multiplier (0.0-1.0) where
+/// 1.0 = full aerobic recovery rate, `anaerobic_fraction` = reduced rate
+/// during anaerobic metabolism. For sharira fatigue recovery integration.
+#[must_use]
+#[inline]
+pub fn recovery_rate_modifier(is_anaerobic: bool, anaerobic_fraction: f64) -> f64 {
+    if is_anaerobic {
+        anaerobic_fraction.clamp(0.0, 1.0)
+    } else {
+        1.0
+    }
+}
+
+/// MET value from mechanical power output and body mass.
+///
+/// 1 MET = 3.5 mL O2/kg/min (resting). Power-to-MET conversion using
+/// standard oxygen cost of mechanical work (~20 mL O2 per watt at steady state).
+#[must_use]
+#[inline]
+pub fn met_from_power(mechanical_power_w: f64, body_mass_kg: f64) -> f64 {
+    if body_mass_kg <= 0.0 {
+        return 1.0;
+    }
+    // ~20 mL O2/min per watt of mechanical power (steady state)
+    let vo2_ml_per_min = MET_O2_RATE * body_mass_kg + mechanical_power_w * 20.0;
+    let vo2_per_kg = vo2_ml_per_min / body_mass_kg;
+    (vo2_per_kg / MET_O2_RATE).max(1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,5 +273,58 @@ mod tests {
         }
         assert!(b.phosphocreatine.abs() < f64::EPSILON);
         assert!(b.glycogen.abs() < f64::EPSILON);
+    }
+
+    // --- Bridge function tests ---
+
+    #[test]
+    fn test_atp_demand_from_power() {
+        let demand = atp_demand_from_power(100.0); // 100W
+        assert!(demand > 0.0, "100W should produce positive ATP demand");
+        let demand_200 = atp_demand_from_power(200.0);
+        assert!(
+            demand_200 > demand,
+            "200W should require more ATP than 100W"
+        );
+    }
+
+    #[test]
+    fn test_atp_demand_zero_power() {
+        let demand = atp_demand_from_power(0.0);
+        assert!((demand - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_fatigue_rate_from_energy() {
+        // Full energy → baseline (1.0)
+        assert!((fatigue_rate_from_energy(1.0, 5.0) - 1.0).abs() < f64::EPSILON);
+        // Zero energy → max multiplier
+        assert!((fatigue_rate_from_energy(0.0, 5.0) - 5.0).abs() < f64::EPSILON);
+        // Half energy → midpoint
+        assert!((fatigue_rate_from_energy(0.5, 5.0) - 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_recovery_rate_modifier() {
+        assert!((recovery_rate_modifier(false, 0.3) - 1.0).abs() < f64::EPSILON);
+        assert!((recovery_rate_modifier(true, 0.3) - 0.3).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_met_from_power() {
+        // At rest (0W), MET should be ~1.0
+        let met_rest = met_from_power(0.0, 70.0);
+        assert!(
+            (met_rest - 1.0).abs() < 0.1,
+            "Rest MET should be ~1.0, got {met_rest}"
+        );
+        // At 100W, MET should be significantly higher
+        let met_100w = met_from_power(100.0, 70.0);
+        assert!(met_100w > 5.0, "100W MET should be >5, got {met_100w}");
+    }
+
+    #[test]
+    fn test_met_from_power_zero_mass() {
+        assert!((met_from_power(100.0, 0.0) - 1.0).abs() < f64::EPSILON);
     }
 }
