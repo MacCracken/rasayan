@@ -39,24 +39,6 @@ use crate::error::RasayanError;
 // Carbon skeleton routing
 // ---------------------------------------------------------------------------
 
-/// Destination for a carbon skeleton entering central metabolism.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub enum CarbonDestination {
-    /// Enters as pyruvate (Ala, Cys, Gly, Ser, Thr, Trp).
-    Pyruvate,
-    /// Enters as acetyl-CoA (Ile, Leu, Lys, Thr, Trp).
-    AcetylCoA,
-    /// Enters as α-ketoglutarate (Arg, Glu, Gln, His, Pro).
-    AlphaKetoglutarate,
-    /// Enters as succinyl-CoA (Ile, Met, Val).
-    SuccinylCoA,
-    /// Enters as fumarate (Phe, Tyr).
-    Fumarate,
-    /// Enters as oxaloacetate (Asn, Asp).
-    Oxaloacetate,
-}
-
 /// Fractional output of carbon skeleton routing per unit amino acid catabolized.
 ///
 /// Represents the weighted average of all 20 amino acids' carbon skeleton
@@ -154,6 +136,8 @@ pub struct AminoCatabConfig {
     pub gdh_km_glutamate: f64,
     /// Carbon skeleton routing fractions.
     pub carbon_routing: CarbonSkeletonOutput,
+    /// Effective Km for α-ketoglutarate in transamination (mM).
+    pub transaminase_km_alpha_kg: f64,
     /// Ammonium clearance rate (mM/s). Urea cycle / glutamine synthetase.
     pub nh4_clearance_rate: f64,
     /// Km for ammonium clearance (mM).
@@ -165,6 +149,7 @@ impl Default for AminoCatabConfig {
         Self {
             transaminase_vmax: 0.05,
             transaminase_km: 1.0,
+            transaminase_km_alpha_kg: 0.3,
             gdh_vmax: 0.08,
             gdh_km_glutamate: 0.5,
             carbon_routing: CarbonSkeletonOutput::default(),
@@ -183,6 +168,7 @@ impl AminoCatabConfig {
             ("transaminase_km", self.transaminase_km),
             ("gdh_vmax", self.gdh_vmax),
             ("gdh_km_glutamate", self.gdh_km_glutamate),
+            ("transaminase_km_alpha_kg", self.transaminase_km_alpha_kg),
             ("nh4_clearance_rate", self.nh4_clearance_rate),
             ("nh4_clearance_km", self.nh4_clearance_km),
         ] {
@@ -193,6 +179,17 @@ impl AminoCatabConfig {
                     reason: "must be non-negative".into(),
                 });
             }
+        }
+        // Validate carbon routing sums to ~1.0
+        let r = &self.carbon_routing;
+        let routing_sum =
+            r.pyruvate + r.acetyl_coa + r.alpha_kg + r.succinyl_coa + r.fumarate + r.oxaloacetate;
+        if (routing_sum - 1.0).abs() > 0.01 {
+            return Err(RasayanError::InvalidParameter {
+                name: "carbon_routing".into(),
+                value: routing_sum,
+                reason: "fractions must sum to 1.0".into(),
+            });
         }
         Ok(())
     }
@@ -278,7 +275,7 @@ impl AminoCatabState {
             alpha_kg,
             config.transaminase_vmax,
             config.transaminase_km,
-            0.3, // effective Km for α-KG in transamination
+            config.transaminase_km_alpha_kg,
         );
 
         // --- Oxidative deamination: Glutamate → α-KG + NH4+ + NADH ---
@@ -485,10 +482,17 @@ mod tests {
     }
 
     #[test]
-    fn test_carbon_destination_non_exhaustive() {
-        // Verify the enum is usable
-        let dest = CarbonDestination::Pyruvate;
-        assert_eq!(dest, CarbonDestination::Pyruvate);
+    fn test_bad_carbon_routing_fails_validation() {
+        let config = AminoCatabConfig {
+            carbon_routing: CarbonSkeletonOutput {
+                pyruvate: 0.5,
+                acetyl_coa: 0.5,
+                alpha_kg: 0.5,
+                ..CarbonSkeletonOutput::default()
+            },
+            ..AminoCatabConfig::default()
+        };
+        assert!(config.validate().is_err());
     }
 
     #[test]
