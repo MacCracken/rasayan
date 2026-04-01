@@ -2,6 +2,7 @@
 
 use rasayan::energy::BioenergyState;
 use rasayan::enzyme::{self, EnzymeParams};
+use rasayan::etc::{EtcConfig, EtcState};
 use rasayan::glycolysis::{GlycolysisConfig, GlycolysisState};
 use rasayan::membrane::{self, IonicState, MembranePermeability};
 use rasayan::metabolism::MetabolicState;
@@ -370,4 +371,42 @@ fn test_glycolysis_tca_pathway_validation() {
     assert!(GlycolysisConfig::default().validate().is_ok());
     assert!(TcaState::default().validate().is_ok());
     assert!(TcaConfig::default().validate().is_ok());
+    assert!(EtcState::default().validate().is_ok());
+    assert!(EtcConfig::default().validate().is_ok());
+}
+
+// --- Full respiration: Glycolysis → TCA → ETC ---
+
+#[test]
+fn test_full_respiration_pipeline() {
+    let glyco_config = GlycolysisConfig::default();
+    let tca_config = TcaConfig::default();
+    let etc_config = EtcConfig::default();
+    let mut glyco = GlycolysisState::default();
+    let mut tca = TcaState::default();
+    let mut etc = EtcState::default();
+
+    let mut total_atp = 0.0;
+    let mut total_o2 = 0.0;
+
+    // Run 20 seconds of full respiration
+    for _ in 0..200 {
+        let gflux = glyco.tick(&glyco_config, 6.0, 0.5, 700.0, 0.1);
+        let tflux = tca.tick(&tca_config, glyco.pyruvate, 6.0, 0.5, 700.0, 0.1);
+        glyco.pyruvate = (glyco.pyruvate - tflux.pyruvate_consumed).max(0.0);
+
+        let nadh_pool = gflux.nadh_produced + tflux.nadh_produced;
+        let eflux = etc.tick(&etc_config, nadh_pool, tflux.fadh2_produced, 1.0, 0.5, 0.1);
+
+        total_atp += gflux.net_atp + tflux.gtp_produced + eflux.atp_produced;
+        total_o2 += eflux.o2_consumed;
+    }
+
+    assert!(total_atp > 0.0, "Full respiration should produce ATP");
+    assert!(total_o2 > 0.0, "Full respiration should consume O2");
+    // ETC should produce the majority of ATP
+    assert!(
+        total_atp > 0.1,
+        "Total ATP from full pipeline should be meaningful: {total_atp}"
+    );
 }

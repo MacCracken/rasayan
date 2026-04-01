@@ -1,27 +1,28 @@
 # Benchmarks
 
-Latest: **2026-04-01T04:03:17Z** -- commit `c2522aa`
+Latest: **2026-04-01T04:18:12Z** -- commit `daf03bd`
 
-Tracking: `9db240e` (baseline) -> `3abb884` (optimized) -> `c2522aa` (current)
+Tracking: `9db240e` (baseline) -> `3abb884` (optimized) -> `daf03bd` (current)
 
-| Benchmark | Baseline (`9db240e`) | Mid (`3abb884`) | Current (`c2522aa`) |
+| Benchmark | Baseline (`9db240e`) | Mid (`3abb884`) | Current (`daf03bd`) |
 |-----------|------|------|------|
 | `michaelis_menten` | 1.22 ns | 1.22 ns | 1.24 ns |
-| `hill_equation` | 19.09 ns | 18.66 ns | 18.44 ns **-3%** |
-| `nernst` | 6.38 ns | 6.28 ns | 6.38 ns |
-| `goldman` | 7.24 ns | 7.65 ns +6% | 7.25 ns |
-| `dose_response` | 18.48 ns | 19.05 ns +3% | 18.50 ns |
-| `metabolic_tick` | 10.56 ns | 22.27 ns +111% | 21.98 ns +108% |
-| `protein_lookup` | 3.33 ns | 3.59 ns +8% | 3.56 ns +7% |
-| `molecular_weight` | 16.07 ns | 20.96 ns +30% | 20.44 ns +27% |
-| `bioenergy_tick` | 8.57 ns | 10.90 ns +27% | 13.17 ns +54% |
-| `mixed_inhibition` | -- | 3.44 ns | 3.37 ns |
-| `ping_pong` | -- | 2.08 ns | 2.07 ns |
-| `arrhenius` | -- | 5.48 ns | 5.54 ns |
-| `lineweaver_burk_fit` | -- | 82.55 ns | 89.33 ns |
-| `enzyme_lookup` | -- | 3.69 ns | 3.75 ns |
-| `glycolysis_tick` | -- | 83.22 ns | 79.22 ns |
-| `tca_tick` | -- | -- | 55.32 ns |
+| `hill_equation` | 19.09 ns | 18.66 ns | 18.77 ns |
+| `nernst` | 6.38 ns | 6.28 ns | 6.37 ns |
+| `goldman` | 7.24 ns | 7.65 ns +6% | 7.29 ns |
+| `dose_response` | 18.48 ns | 19.05 ns +3% | 18.97 ns |
+| `metabolic_tick` | 10.56 ns | 22.27 ns +111% | 22.81 ns +116% |
+| `protein_lookup` | 3.33 ns | 3.59 ns +8% | 3.53 ns +6% |
+| `molecular_weight` | 16.07 ns | 20.96 ns +30% | 20.85 ns +30% |
+| `bioenergy_tick` | 8.57 ns | 10.90 ns +27% | 13.25 ns +55% |
+| `mixed_inhibition` | -- | 3.44 ns | 3.41 ns |
+| `ping_pong` | -- | 2.08 ns | 2.12 ns |
+| `arrhenius` | -- | 5.48 ns | 5.52 ns |
+| `lineweaver_burk_fit` | -- | 82.55 ns | 91.78 ns |
+| `enzyme_lookup` | -- | 3.69 ns | 3.69 ns |
+| `glycolysis_tick` | -- | 83.22 ns | 78.37 ns |
+| `tca_tick` | -- | -- | 55.09 ns |
+| `etc_tick` | -- | -- | 20.05 ns |
 
 ---
 

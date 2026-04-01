@@ -7,7 +7,7 @@
 //!
 //! # Architecture
 //!
-//! Nine modules:
+//! Ten modules:
 //!
 //! - [`enzyme`] — Michaelis-Menten kinetics, competitive/uncompetitive/mixed
 //!   inhibition, substrate inhibition, allosteric regulation (Hill equation),
@@ -30,6 +30,8 @@
 //! - [`tca`] — TCA (Krebs) cycle: pyruvate dehydrogenase + 8 cycle steps,
 //!   regulatory checkpoints (citrate synthase, isocitrate DH, α-KG DH),
 //!   NADH/FADH2/GTP/CO2 flux output.
+//! - [`etc`] — Electron transport chain: complexes I-IV, ATP synthase, proton
+//!   motive force, respiratory control, ubiquinone and cytochrome c carrier pools.
 //! - [`energy`] — Bioenergetics: ATP hydrolysis, phosphocreatine system,
 //!   anaerobic/aerobic thresholds, metabolic equivalent (MET).
 //! - [`constants`] — Shared physical constants (gas constant, Faraday constant).
@@ -52,6 +54,7 @@ pub mod constants;
 pub mod energy;
 pub mod enzyme;
 pub mod error;
+pub mod etc;
 pub mod glycolysis;
 pub mod membrane;
 pub mod metabolism;
