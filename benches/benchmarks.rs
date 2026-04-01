@@ -145,6 +145,23 @@ fn bench_enzyme_lookup(c: &mut Criterion) {
     });
 }
 
+fn bench_glycolysis_tick(c: &mut Criterion) {
+    use rasayan::glycolysis::{GlycolysisConfig, GlycolysisState};
+    let config = GlycolysisConfig::default();
+    c.bench_function("glycolysis_tick", |b| {
+        b.iter(|| {
+            let mut state = GlycolysisState::default();
+            state.tick(
+                black_box(&config),
+                black_box(6.0),
+                black_box(0.5),
+                black_box(700.0),
+                black_box(0.01),
+            )
+        })
+    });
+}
+
 criterion_group!(
     benches,
     bench_michaelis_menten,
@@ -161,5 +178,6 @@ criterion_group!(
     bench_molecular_weight,
     bench_bioenergy_tick,
     bench_enzyme_lookup,
+    bench_glycolysis_tick,
 );
 criterion_main!(benches);

@@ -1,25 +1,26 @@
 # Benchmarks
 
-Latest: **2026-04-01T03:15:39Z** -- commit `0b4b2a7`
+Latest: **2026-04-01T03:37:15Z** -- commit `3abb884`
 
-Tracking: `9db240e` (baseline) -> `e52c858` (optimized) -> `0b4b2a7` (current)
+Tracking: `9db240e` (baseline) -> `0b4b2a7` (optimized) -> `3abb884` (current)
 
-| Benchmark | Baseline (`9db240e`) | Mid (`e52c858`) | Current (`0b4b2a7`) |
+| Benchmark | Baseline (`9db240e`) | Mid (`0b4b2a7`) | Current (`3abb884`) |
 |-----------|------|------|------|
-| `michaelis_menten` | 1.22 ns | 1.21 ns | 1.24 ns |
-| `hill_equation` | 19.09 ns | 18.33 ns **-4%** | 18.99 ns |
-| `nernst` | 6.38 ns | 6.29 ns | 6.39 ns |
-| `goldman` | 7.24 ns | 7.07 ns | 7.28 ns |
-| `dose_response` | 18.48 ns | 18.56 ns | 18.68 ns |
-| `metabolic_tick` | 10.56 ns | 10.59 ns | 22.44 ns +112% |
-| `protein_lookup` | 3.33 ns | 3.44 ns +3% | 3.60 ns +8% |
-| `molecular_weight` | 16.07 ns | 16.11 ns | 21.43 ns +33% |
-| `bioenergy_tick` | 8.57 ns | 12.96 ns +51% | 12.58 ns +47% |
-| `mixed_inhibition` | -- | 3.30 ns | 3.43 ns |
-| `ping_pong` | -- | 2.05 ns | 2.06 ns |
-| `arrhenius` | -- | 5.43 ns | 5.47 ns |
-| `lineweaver_burk_fit` | -- | 84.44 ns | 87.99 ns |
-| `enzyme_lookup` | -- | 3.88 ns | 3.84 ns |
+| `michaelis_menten` | 1.22 ns | 1.24 ns | 1.22 ns |
+| `hill_equation` | 19.09 ns | 18.99 ns | 18.66 ns |
+| `nernst` | 6.38 ns | 6.39 ns | 6.28 ns |
+| `goldman` | 7.24 ns | 7.28 ns | 7.65 ns +6% |
+| `dose_response` | 18.48 ns | 18.68 ns | 19.05 ns +3% |
+| `metabolic_tick` | 10.56 ns | 22.44 ns +112% | 22.27 ns +111% |
+| `protein_lookup` | 3.33 ns | 3.60 ns +8% | 3.59 ns +8% |
+| `molecular_weight` | 16.07 ns | 21.43 ns +33% | 20.96 ns +30% |
+| `bioenergy_tick` | 8.57 ns | 12.58 ns +47% | 10.90 ns +27% |
+| `mixed_inhibition` | -- | 3.43 ns | 3.44 ns |
+| `ping_pong` | -- | 2.06 ns | 2.08 ns |
+| `arrhenius` | -- | 5.47 ns | 5.48 ns |
+| `lineweaver_burk_fit` | -- | 87.99 ns | 82.55 ns |
+| `enzyme_lookup` | -- | 3.84 ns | 3.69 ns |
+| `glycolysis_tick` | -- | -- | 83.22 ns |
 
 ---
 

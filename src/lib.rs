@@ -46,6 +46,7 @@ pub mod constants;
 pub mod energy;
 pub mod enzyme;
 pub mod error;
+pub mod glycolysis;
 pub mod membrane;
 pub mod metabolism;
 pub mod protein;
