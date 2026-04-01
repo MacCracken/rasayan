@@ -34,6 +34,7 @@ pub fn lookup(code: char) -> Option<AminoAcid> {
 }
 
 /// Look up an amino acid by single-letter code, returning an error on failure.
+#[must_use = "returns Err for unknown amino acid codes"]
 pub fn try_lookup(code: char) -> Result<AminoAcid, RasayanError> {
     lookup(code).ok_or(RasayanError::UnknownAminoAcid(code))
 }

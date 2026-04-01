@@ -7,7 +7,7 @@
 //!
 //! # Architecture
 //!
-//! Twelve modules:
+//! Fifteen modules:
 //!
 //! - [`enzyme`] — Michaelis-Menten kinetics, competitive/uncompetitive/mixed
 //!   inhibition, substrate inhibition, allosteric regulation (Hill equation),
@@ -22,6 +22,15 @@
 //! - [`protein`] — Protein structure primitives: 20 amino acid properties
 //!   (molecular weight, hydrophobicity, pKa), sequence molecular weight,
 //!   composition analysis.
+//! - [`neurotransmitter`] — Neurotransmitter synthesis: serotonin (TPH),
+//!   dopamine (TH), norepinephrine (DBH), GABA (GAD), glutamate, ACh (ChAT),
+//!   endorphins (POMC). Bridge functions for mastishk/bhava.
+//! - [`hormonal`] — Hormonal pathways: HPA axis cortisol (CRH→ACTH→cortisol,
+//!   negative feedback), melatonin (serotonin→melatonin, light suppression),
+//!   oxytocin, BDNF. Bridge functions for bhava.
+//! - [`pathway`] — Metabolic network: unified simulation connecting all
+//!   pathways with shared cofactor pools, steady-state flux analysis,
+//!   respiratory quotient.
 //! - [`membrane`] — Membrane transport: Nernst potential, Goldman-Hodgkin-Katz
 //!   equation, Fick's first law diffusion, ionic state.
 //! - [`glycolysis`] — 10-step glycolytic pathway with individual enzyme kinetics,
@@ -63,8 +72,11 @@ pub mod enzyme;
 pub mod error;
 pub mod etc;
 pub mod glycolysis;
+pub mod hormonal;
 pub mod membrane;
 pub mod metabolism;
+pub mod neurotransmitter;
+pub mod pathway;
 pub mod protein;
 pub mod signal;
 pub mod tca;

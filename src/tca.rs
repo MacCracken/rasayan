@@ -342,6 +342,7 @@ impl TcaState {
     /// * `adp` — current ADP (mM), for regulatory feedback
     /// * `nad_ratio` — NAD+/NADH ratio, scales oxidative steps
     /// * `dt` — timestep in seconds (recommend <= 0.1s for stability)
+    #[must_use = "flux contains cofactor accounting that should be applied"]
     pub fn tick(
         &mut self,
         config: &TcaConfig,

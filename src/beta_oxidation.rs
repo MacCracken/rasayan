@@ -216,6 +216,7 @@ impl BetaOxState {
     /// * `malonyl_coa` — malonyl-CoA concentration (mM), inhibits CPT-I
     /// * `nad_ratio` — NAD+/NADH ratio, scales oxidation rate
     /// * `dt` — timestep in seconds
+    #[must_use = "flux contains acetyl-CoA/NADH/FADH2 accounting that should be applied"]
     pub fn tick(
         &mut self,
         config: &BetaOxConfig,

@@ -219,6 +219,7 @@ criterion_group!(
     bench_etc_tick,
     bench_beta_ox_tick,
     bench_amino_catab_tick,
+    bench_network_tick,
 );
 criterion_main!(benches);
 
@@ -234,6 +235,17 @@ fn bench_amino_catab_tick(c: &mut Criterion) {
                 black_box(700.0),
                 black_box(0.01),
             )
+        })
+    });
+}
+
+fn bench_network_tick(c: &mut Criterion) {
+    use rasayan::pathway::{MetabolicNetwork, NetworkConfig};
+    let config = NetworkConfig::default();
+    c.bench_function("network_tick", |b| {
+        b.iter(|| {
+            let mut net = MetabolicNetwork::default();
+            net.tick(black_box(&config), black_box(0.01))
         })
     });
 }

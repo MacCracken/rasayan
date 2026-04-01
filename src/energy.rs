@@ -17,17 +17,17 @@ pub const MET_O2_RATE: f64 = 3.5;
 // slower, larger energy reserve.
 
 /// PCr depletion rate coefficient (per MET-minute above threshold).
-const PCR_DEPLETION_RATE: f64 = 0.02;
+pub const PCR_DEPLETION_RATE: f64 = 0.02;
 /// PCr recovery rate (per minute at low demand).
-const PCR_RECOVERY_RATE: f64 = 0.05;
+pub const PCR_RECOVERY_RATE: f64 = 0.05;
 /// MET demand threshold above which PCr depletes instead of recovering.
-const PCR_DEMAND_THRESHOLD: f64 = 4.0;
+pub const PCR_DEMAND_THRESHOLD: f64 = 4.0;
 /// Glycogen depletion rate coefficient (per MET-minute).
-const GLYCOGEN_DEPLETION_RATE: f64 = 0.005;
+pub const GLYCOGEN_DEPLETION_RATE: f64 = 0.005;
 /// Glycogen recovery rate (per minute at rest).
-const GLYCOGEN_RECOVERY_RATE: f64 = 0.002;
+pub const GLYCOGEN_RECOVERY_RATE: f64 = 0.002;
 /// MET threshold below which glycogen recovers.
-const GLYCOGEN_RECOVERY_THRESHOLD: f64 = 1.5;
+pub const GLYCOGEN_RECOVERY_THRESHOLD: f64 = 1.5;
 
 /// Bioenergetic state of an entity.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -415,6 +415,7 @@ impl GlycolysisState {
     /// * `adp` — current ADP concentration (mM), substrate for ATP-producing steps
     /// * `nad_ratio` — NAD+/NADH ratio, scales GAPDH (step 6) activity
     /// * `dt` — timestep in seconds (recommend <= 0.1s for stability)
+    #[must_use = "flux contains ATP/NADH accounting that should be applied to cofactor pools"]
     pub fn tick(
         &mut self,
         config: &GlycolysisConfig,

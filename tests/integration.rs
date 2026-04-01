@@ -473,3 +473,123 @@ fn test_amino_catab_validation() {
     assert!(AminoCatabState::default().validate().is_ok());
     assert!(AminoCatabConfig::default().validate().is_ok());
 }
+
+// --- Long-run stability tests ---
+
+#[test]
+fn test_network_long_run_stability() {
+    use rasayan::pathway::{MetabolicNetwork, NetworkConfig};
+    let mut net = MetabolicNetwork::default();
+    let config = NetworkConfig::default();
+    // Run for 100 simulated seconds
+    for _ in 0..1000 {
+        let _ = net.tick(&config, 0.1);
+    }
+    assert!(net.atp >= 0.0, "ATP went negative: {}", net.atp);
+    assert!(net.adp >= 0.0, "ADP went negative: {}", net.adp);
+    assert!(
+        net.nad_ratio >= 1.0,
+        "NAD ratio collapsed: {}",
+        net.nad_ratio
+    );
+    assert!(net.glycolysis.validate().is_ok());
+    assert!(net.tca.validate().is_ok());
+    assert!(net.etc.validate().is_ok());
+}
+
+#[test]
+fn test_neurotransmitter_long_run_stability() {
+    use rasayan::neurotransmitter::{NeurotransmitterConfig, NeurotransmitterState};
+    let mut state = NeurotransmitterState::default();
+    let config = NeurotransmitterConfig::default();
+    for _ in 0..1000 {
+        let _ = state.tick(&config, 0.05, 1.0, 0.1);
+    }
+    assert!(state.validate().is_ok());
+    // All NTs should still be positive after 100s
+    assert!(state.serotonin > 0.0);
+    assert!(state.dopamine > 0.0);
+    assert!(state.gaba > 0.0);
+    assert!(state.glutamate > 0.0);
+}
+
+#[test]
+fn test_hormonal_long_run_stability() {
+    use rasayan::hormonal::{HormonalConfig, HormonalInput, HormonalState};
+    let mut state = HormonalState::default();
+    let config = HormonalConfig::default();
+    let input = HormonalInput::default();
+    for _ in 0..1000 {
+        let _ = state.tick(&config, &input, 0.1);
+    }
+    assert!(state.validate().is_ok());
+    assert!(state.cortisol > 0.0);
+}
+
+#[test]
+fn test_network_zero_glucose_graceful() {
+    use rasayan::pathway::{MetabolicNetwork, NetworkConfig};
+    let mut net = MetabolicNetwork::default();
+    net.glycolysis.glucose = 0.0;
+    let config = NetworkConfig::default();
+    for _ in 0..500 {
+        let _ = net.tick(&config, 0.1);
+    }
+    // Should not panic or produce NaN
+    assert!(net.atp.is_finite());
+    assert!(net.adp.is_finite());
+}
+
+#[test]
+fn test_network_zero_oxygen_graceful() {
+    use rasayan::pathway::{MetabolicNetwork, NetworkConfig};
+    let mut net = MetabolicNetwork {
+        oxygen: 0.0,
+        ..MetabolicNetwork::default()
+    };
+    let config = NetworkConfig::default();
+    for _ in 0..500 {
+        let _ = net.tick(&config, 0.1);
+    }
+    assert!(net.atp.is_finite());
+    // Without O2 for 50s, pmf should be very low
+    assert!(
+        net.etc.pmf < 0.5,
+        "PMF should drop without O2: {}",
+        net.etc.pmf
+    );
+}
+
+#[test]
+fn test_nt_stress_response_chain() {
+    use rasayan::hormonal::{HormonalConfig, HormonalInput, HormonalState};
+    use rasayan::neurotransmitter::{NeurotransmitterConfig, NeurotransmitterState};
+
+    let mut nt = NeurotransmitterState::default();
+    let nt_config = NeurotransmitterConfig::default();
+    let mut horm = HormonalState::default();
+    let horm_config = HormonalConfig::default();
+
+    // Simulate stress response: high stimulus
+    for _ in 0..100 {
+        let nt_flux = nt.tick(&nt_config, 0.05, 2.0, 0.1);
+        let input = HormonalInput {
+            stress: 2.0,
+            serotonin: nt.serotonin,
+            ..HormonalInput::default()
+        };
+        let _ = horm.tick(&horm_config, &input, 0.1);
+        let _ = nt_flux; // used for accounting
+    }
+
+    // Cortisol should be elevated from stress
+    assert!(
+        horm.cortisol > HormonalState::default().cortisol,
+        "Cortisol should rise under stress"
+    );
+    // NE should be elevated from high stimulus
+    assert!(
+        nt.norepinephrine > 0.0,
+        "NE should be present during stress"
+    );
+}

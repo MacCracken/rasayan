@@ -252,6 +252,7 @@ impl AminoCatabState {
     /// * `alpha_kg` — available α-ketoglutarate (mM), consumed by transamination
     /// * `nad_ratio` — NAD+/NADH ratio, drives GDH
     /// * `dt` — timestep in seconds
+    #[must_use = "flux contains carbon skeleton routing that should be applied to TCA"]
     pub fn tick(
         &mut self,
         config: &AminoCatabConfig,

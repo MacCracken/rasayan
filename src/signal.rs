@@ -57,21 +57,21 @@ impl Default for SecondMessenger {
 // stimulation, exponential-ish decay back to resting levels.
 
 /// Fractional increase in messenger per unit activation intensity.
-const ACTIVATION_GAIN: f64 = 0.3;
+pub const ACTIVATION_GAIN: f64 = 0.3;
 /// IP3 → Ca2+ coupling factor (fraction of IP3 that triggers Ca2+ release).
-const IP3_CA_COUPLING: f64 = 0.5;
+pub const IP3_CA_COUPLING: f64 = 0.5;
 /// cAMP decay rate per unit time.
-const CAMP_DECAY_RATE: f64 = 0.1;
+pub const CAMP_DECAY_RATE: f64 = 0.1;
 /// IP3 decay rate per unit time.
-const IP3_DECAY_RATE: f64 = 0.15;
+pub const IP3_DECAY_RATE: f64 = 0.15;
 /// Ca2+ decay rate per unit time (fastest — active re-sequestration by SERCA).
-const CA_DECAY_RATE: f64 = 0.2;
+pub const CA_DECAY_RATE: f64 = 0.2;
 /// Resting cAMP floor (basal adenylyl cyclase activity).
-const CAMP_FLOOR: f64 = 0.05;
+pub const CAMP_FLOOR: f64 = 0.05;
 /// Resting IP3 floor.
-const IP3_FLOOR: f64 = 0.02;
+pub const IP3_FLOOR: f64 = 0.02;
 /// Resting Ca2+ floor.
-const CA_FLOOR: f64 = 0.02;
+pub const CA_FLOOR: f64 = 0.02;
 
 impl SecondMessenger {
     /// Validate that all messenger levels are in valid range.
