@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Dose-response using the Hill function (same math as enzyme Hill, different context).
-/// response = Emax * [L]^n / (EC50^n + [L]^n)
+/// `response = Emax * [L]^n / (EC50^n + [L]^n)`
 #[must_use]
 #[inline]
 pub fn dose_response(ligand: f64, emax: f64, ec50: f64, hill_n: f64) -> f64 {
@@ -15,7 +15,7 @@ pub fn dose_response(ligand: f64, emax: f64, ec50: f64, hill_n: f64) -> f64 {
     emax * l_n / (e_n + l_n)
 }
 
-/// Receptor occupancy (fraction bound): [L] / (Kd + [L]).
+/// Receptor occupancy (fraction bound): `[L] / (Kd + [L])`.
 #[must_use]
 #[inline]
 pub fn receptor_occupancy(ligand: f64, kd: f64) -> f64 {
@@ -28,11 +28,11 @@ pub fn receptor_occupancy(ligand: f64, kd: f64) -> f64 {
 /// Second messenger state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecondMessenger {
-    /// cAMP level (normalized 0.0–1.0).
+    /// cAMP level (normalized 0.0-1.0).
     pub camp: f64,
-    /// Intracellular Ca²⁺ (normalized 0.0–1.0).
+    /// Intracellular Ca2+ (normalized 0.0-1.0).
     pub calcium: f64,
-    /// IP3 (inositol trisphosphate, normalized 0.0–1.0).
+    /// IP3 (inositol trisphosphate, normalized 0.0-1.0).
     pub ip3: f64,
 }
 
@@ -49,17 +49,25 @@ impl Default for SecondMessenger {
 impl SecondMessenger {
     /// Activate Gs-coupled pathway (increases cAMP).
     pub fn activate_gs(&mut self, intensity: f64) {
+        tracing::trace!(intensity, camp_before = self.camp, "activate_gs");
         self.camp = (self.camp + intensity * 0.3).min(1.0);
     }
 
-    /// Activate Gq-coupled pathway (increases IP3 and Ca²⁺).
+    /// Activate Gq-coupled pathway (increases IP3 and Ca2+).
     pub fn activate_gq(&mut self, intensity: f64) {
+        tracing::trace!(
+            intensity,
+            ip3_before = self.ip3,
+            ca_before = self.calcium,
+            "activate_gq"
+        );
         self.ip3 = (self.ip3 + intensity * 0.3).min(1.0);
         self.calcium = (self.calcium + self.ip3 * 0.5).min(1.0);
     }
 
     /// Decay messengers toward resting levels.
     pub fn tick(&mut self, dt: f64) {
+        tracing::trace!(dt, "second_messenger_tick");
         self.camp = (self.camp - 0.1 * dt).max(0.05);
         self.ip3 = (self.ip3 - 0.15 * dt).max(0.02);
         self.calcium = (self.calcium - 0.2 * dt).max(0.02);
@@ -109,5 +117,24 @@ mod tests {
         let json = serde_json::to_string(&sm).unwrap();
         let sm2: SecondMessenger = serde_json::from_str(&json).unwrap();
         assert!((sm2.camp - sm.camp).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_dose_response_zero_ligand() {
+        assert!(dose_response(0.0, 1.0, 1.0, 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_receptor_occupancy_zero_ligand() {
+        assert!(receptor_occupancy(0.0, 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_messenger_tick_decay() {
+        let mut sm = SecondMessenger::default();
+        sm.activate_gs(1.0);
+        let camp_before = sm.camp;
+        sm.tick(1.0);
+        assert!(sm.camp < camp_before);
     }
 }

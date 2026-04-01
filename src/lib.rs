@@ -15,7 +15,7 @@
 //! - [`metabolism`] — Metabolic pathway modeling: glycolysis, TCA cycle,
 //!   oxidative phosphorylation. ATP yield, NAD+/NADH balance, metabolic rate.
 //! - [`signal`] — Signal transduction cascades: ligand-receptor binding,
-//!   second messengers (cAMP, Ca²⁺, IP3), kinase cascades, dose-response
+//!   second messengers (cAMP, Ca2+, IP3), kinase cascades, dose-response
 //!   (Hill function).
 //! - [`protein`] — Protein structure primitives: amino acid properties,
 //!   hydrophobicity scales, isoelectric point, molecular weight, secondary
@@ -30,23 +30,23 @@
 //!
 //! ```text
 //! rasayan (this) — enzyme kinetics, metabolism, signal transduction
-//!   ↓ metabolic state feeds into
+//!   | metabolic state feeds into
 //! mastishk — neuroscience (neurotransmitter synthesis depends on precursors)
-//!   ↓ neurotransmitter levels feed into
+//!   | neurotransmitter levels feed into
 //! bhava — emotion/personality
-//!   ↑ also:
+//!   also:
 //! kimiya — general chemistry (rasayan uses reaction kinetics from kimiya)
 //! jivanu — microbiology (microbial metabolism, pharmacokinetics)
 //! sharira — physiology (muscle bioenergetics, fatigue)
 //! ```
 
-pub mod error;
-pub mod enzyme;
-pub mod metabolism;
-pub mod signal;
-pub mod protein;
-pub mod membrane;
 pub mod energy;
+pub mod enzyme;
+pub mod error;
+pub mod membrane;
+pub mod metabolism;
+pub mod protein;
+pub mod signal;
 
 #[cfg(feature = "logging")]
 pub mod logging;

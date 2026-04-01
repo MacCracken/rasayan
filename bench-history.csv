@@ -1,0 +1,10 @@
+timestamp,commit,branch,benchmark,estimate_ns
+2026-04-01T02:20:37Z,9db240e,main,michaelis_menten,1.2232
+2026-04-01T02:20:37Z,9db240e,main,hill_equation,19.095
+2026-04-01T02:20:37Z,9db240e,main,nernst,6.3817
+2026-04-01T02:20:37Z,9db240e,main,goldman,7.2420
+2026-04-01T02:20:37Z,9db240e,main,dose_response,18.483
+2026-04-01T02:20:37Z,9db240e,main,metabolic_tick,10.564
+2026-04-01T02:20:37Z,9db240e,main,protein_lookup,3.3290
+2026-04-01T02:20:37Z,9db240e,main,molecular_weight,16.070
+2026-04-01T02:20:37Z,9db240e,main,bioenergy_tick,8.5696

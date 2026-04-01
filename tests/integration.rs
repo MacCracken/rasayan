@@ -2,7 +2,7 @@
 
 use rasayan::energy::BioenergyState;
 use rasayan::enzyme::{self, EnzymeParams};
-use rasayan::membrane::{self, IonicState};
+use rasayan::membrane::{self, IonicState, MembranePermeability};
 use rasayan::metabolism::MetabolicState;
 use rasayan::signal::{self, SecondMessenger};
 
@@ -62,6 +62,16 @@ fn test_ionic_state_serde_roundtrip() {
 }
 
 #[test]
+fn test_membrane_permeability_serde_roundtrip() {
+    let perm = MembranePermeability::default();
+    let json = serde_json::to_string(&perm).unwrap();
+    let perm2: MembranePermeability = serde_json::from_str(&json).unwrap();
+    assert!((perm2.p_na - perm.p_na).abs() < f64::EPSILON);
+    assert!((perm2.p_k - perm.p_k).abs() < f64::EPSILON);
+    assert!((perm2.p_cl - perm.p_cl).abs() < f64::EPSILON);
+}
+
+#[test]
 fn test_bioenergy_state_serde_roundtrip() {
     let b = BioenergyState::default();
     let json = serde_json::to_string(&b).unwrap();
@@ -115,14 +125,12 @@ fn test_error_display_unknown_pathway() {
 
 #[test]
 fn test_michaelis_menten_half_vmax_at_km() {
-    // At [S] = Km, rate = Vmax/2
     let rate = enzyme::michaelis_menten(1.0, 10.0, 1.0);
     assert!((rate - 5.0).abs() < 0.01);
 }
 
 #[test]
 fn test_michaelis_menten_saturation() {
-    // At very high [S], rate -> Vmax
     let rate = enzyme::michaelis_menten(10000.0, 10.0, 1.0);
     assert!((rate - 10.0).abs() < 0.01);
 }
@@ -135,31 +143,26 @@ fn test_michaelis_menten_zero_substrate() {
 
 #[test]
 fn test_nernst_potassium() {
-    // K+: [out]=4, [in]=155, z=1, T=310K -> ~-97 mV
     let e = membrane::nernst(310.0, 1, 4.0, 155.0);
     assert!(e < -80.0 && e > -110.0, "Nernst K+ = {e} mV");
 }
 
 #[test]
 fn test_nernst_sodium() {
-    // Na+: [out]=145, [in]=12, z=1, T=310K -> ~+67 mV
     let e = membrane::nernst(310.0, 1, 145.0, 12.0);
     assert!(e > 50.0 && e < 80.0, "Nernst Na+ = {e} mV");
 }
 
 #[test]
 fn test_dose_response_at_ec50() {
-    // At [L] = EC50, response = Emax/2
     let r = signal::dose_response(1.0, 1.0, 1.0, 1.0);
     assert!((r - 0.5).abs() < 0.01);
 }
 
 #[test]
 fn test_dose_response_steep_hill() {
-    // High Hill coefficient = steeper curve
     let r_low = signal::dose_response(0.5, 1.0, 1.0, 1.0);
     let r_high = signal::dose_response(0.5, 1.0, 1.0, 4.0);
-    // Below EC50 with high n -> lower response
     assert!(r_high < r_low);
 }
 
@@ -169,18 +172,14 @@ fn test_dose_response_steep_hill() {
 fn test_metabolic_energy_charge_consistency() {
     let m = MetabolicState::default();
     let ec = m.energy_charge();
-    // Energy charge should be between 0 and 1
-    assert!(ec >= 0.0 && ec <= 1.0);
-    // Resting cell should have high energy charge (>0.9)
+    assert!((0.0..=1.0).contains(&ec));
     assert!(ec > 0.9);
 }
 
 #[test]
 fn test_bioenergy_and_metabolism_alignment() {
-    // Both modules model energy: verify they agree on resting state
     let met = MetabolicState::default();
     let bio = BioenergyState::default();
-    // Both should be aerobic at rest
     assert!(!met.is_anaerobic());
     assert!(!bio.is_anaerobic());
 }
@@ -189,9 +188,51 @@ fn test_bioenergy_and_metabolism_alignment() {
 fn test_membrane_potential_physiological_range() {
     let ions = IonicState::default();
     let vm = ions.resting_potential();
-    // Resting membrane potential: -60 to -90 mV
     assert!(
         vm < -50.0 && vm > -100.0,
         "Resting potential {vm} mV out of physiological range"
     );
+}
+
+// --- Validation integration ---
+
+#[test]
+fn test_all_defaults_validate() {
+    assert!(MetabolicState::default().validate().is_ok());
+    assert!(BioenergyState::default().validate().is_ok());
+    assert!(
+        EnzymeParams {
+            vmax: 10.0,
+            km: 1.0,
+            hill_n: 1.0,
+            kcat: 100.0,
+        }
+        .validate()
+        .is_ok()
+    );
+}
+
+#[test]
+fn test_goldman_with_custom_permeability() {
+    let ions = IonicState::default();
+    // All-K+ permeability should give Nernst K+ potential
+    let k_only = MembranePermeability {
+        p_na: 0.0,
+        p_k: 1.0,
+        p_cl: 0.0,
+    };
+    let vm = membrane::goldman(310.0, &ions, &k_only);
+    let e_k = membrane::nernst(310.0, 1, ions.k_out, ions.k_in);
+    // Goldman with only K+ permeability should approximate Nernst K+
+    assert!(
+        (vm - e_k).abs() < 1.0,
+        "Goldman K+-only ({vm:.1}) should ~ Nernst K+ ({e_k:.1})"
+    );
+}
+
+#[test]
+fn test_nernst_zero_concentrations() {
+    assert!(membrane::nernst(310.0, 1, 0.0, 155.0).abs() < f64::EPSILON);
+    assert!(membrane::nernst(310.0, 1, 4.0, 0.0).abs() < f64::EPSILON);
+    assert!(membrane::nernst(310.0, 0, 4.0, 155.0).abs() < f64::EPSILON);
 }

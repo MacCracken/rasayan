@@ -25,7 +25,10 @@ fn main() {
     println!("-------    ----------   ------");
     for &s in &[0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 50.0] {
         let rate = params.rate(s);
-        println!("{s:6.2}     {rate:8.4}     {pct:5.1}%", pct = rate / params.vmax * 100.0);
+        println!(
+            "{s:6.2}     {rate:8.4}     {pct:5.1}%",
+            pct = rate / params.vmax * 100.0
+        );
     }
     println!();
 
@@ -56,7 +59,10 @@ fn main() {
     println!("Energy charge: {:.3}", met.energy_charge());
     println!("Aerobic ATP yield: {:.0}", met.aerobic_atp_yield());
     met.consume_atp(3.0);
-    println!("After consuming 3 ATP: ATP={:.1}, ADP={:.1}", met.atp, met.adp);
+    println!(
+        "After consuming 3 ATP: ATP={:.1}, ADP={:.1}",
+        met.atp, met.adp
+    );
     println!();
 
     // --- Dose-response ---
