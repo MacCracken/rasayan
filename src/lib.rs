@@ -7,7 +7,7 @@
 //!
 //! # Architecture
 //!
-//! Eleven modules:
+//! Twelve modules:
 //!
 //! - [`enzyme`] — Michaelis-Menten kinetics, competitive/uncompetitive/mixed
 //!   inhibition, substrate inhibition, allosteric regulation (Hill equation),
@@ -32,6 +32,9 @@
 //!   NADH/FADH2/GTP/CO2 flux output.
 //! - [`etc`] — Electron transport chain: complexes I-IV, ATP synthase, proton
 //!   motive force, respiratory control, ubiquinone and cytochrome c carrier pools.
+//! - [`amino_catabolism`] — Amino acid catabolism: transamination,
+//!   oxidative deamination (GDH), carbon skeleton routing to TCA entry
+//!   points, NH4+ clearance.
 //! - [`beta_oxidation`] — Fatty acid beta-oxidation: acyl-CoA activation,
 //!   CPT-I malonyl-CoA regulation, spiral producing acetyl-CoA/NADH/FADH2.
 //! - [`energy`] — Bioenergetics: ATP hydrolysis, phosphocreatine system,
@@ -52,6 +55,7 @@
 //! sharira — physiology (muscle bioenergetics, fatigue)
 //! ```
 
+pub mod amino_catabolism;
 pub mod beta_oxidation;
 pub mod constants;
 pub mod energy;

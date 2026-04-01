@@ -1,5 +1,6 @@
 //! Integration tests for rasayan — cross-module behavior and serde roundtrips.
 
+use rasayan::amino_catabolism::{AminoCatabConfig, AminoCatabState};
 use rasayan::beta_oxidation::{BetaOxConfig, BetaOxState};
 use rasayan::energy::BioenergyState;
 use rasayan::enzyme::{self, EnzymeParams};
@@ -439,4 +440,36 @@ fn test_beta_ox_feeds_tca() {
 fn test_beta_ox_validation() {
     assert!(BetaOxState::default().validate().is_ok());
     assert!(BetaOxConfig::default().validate().is_ok());
+}
+
+// --- Amino acid catabolism integration ---
+
+#[test]
+fn test_amino_catab_feeds_tca() {
+    let aa_config = AminoCatabConfig::default();
+    let tca_config = TcaConfig::default();
+    let mut aa = AminoCatabState::default();
+    let mut tca = TcaState::default();
+
+    for _ in 0..200 {
+        let aflux = aa.tick(&aa_config, tca.alpha_kg, 700.0, 0.1);
+        // Route carbon skeletons to TCA intermediates
+        tca.acetyl_coa += aflux.to_acetyl_coa;
+        tca.oxaloacetate += aflux.to_oxaloacetate;
+        tca.alpha_kg += aflux.to_alpha_kg;
+        tca.succinyl_coa += aflux.to_succinyl_coa;
+        tca.fumarate += aflux.to_fumarate;
+        let _ = tca.tick(&tca_config, aflux.to_pyruvate, 6.0, 0.5, 700.0, 0.1);
+    }
+
+    assert!(
+        aa.amino_acid_pool < AminoCatabState::default().amino_acid_pool,
+        "AA pool should deplete as catabolism feeds TCA"
+    );
+}
+
+#[test]
+fn test_amino_catab_validation() {
+    assert!(AminoCatabState::default().validate().is_ok());
+    assert!(AminoCatabConfig::default().validate().is_ok());
 }

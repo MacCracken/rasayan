@@ -218,8 +218,25 @@ criterion_group!(
     bench_tca_tick,
     bench_etc_tick,
     bench_beta_ox_tick,
+    bench_amino_catab_tick,
 );
 criterion_main!(benches);
+
+fn bench_amino_catab_tick(c: &mut Criterion) {
+    use rasayan::amino_catabolism::{AminoCatabConfig, AminoCatabState};
+    let config = AminoCatabConfig::default();
+    c.bench_function("amino_catab_tick", |b| {
+        b.iter(|| {
+            let mut state = AminoCatabState::default();
+            state.tick(
+                black_box(&config),
+                black_box(0.3),
+                black_box(700.0),
+                black_box(0.01),
+            )
+        })
+    });
+}
 
 fn bench_beta_ox_tick(c: &mut Criterion) {
     use rasayan::beta_oxidation::{BetaOxConfig, BetaOxState};
