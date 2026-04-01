@@ -31,7 +31,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::constants::RESTING_NAD_RATIO;
+use crate::constants::{MAX_NAD_FACTOR, RESTING_NAD_RATIO};
 use crate::enzyme;
 use crate::error::RasayanError;
 
@@ -267,7 +267,7 @@ impl AminoCatabState {
             "amino_catabolism_tick"
         );
 
-        let nad_factor = (nad_ratio / RESTING_NAD_RATIO).min(2.0);
+        let nad_factor = (nad_ratio / RESTING_NAD_RATIO).min(MAX_NAD_FACTOR);
 
         // --- Transamination: AA + α-KG → Keto acid + Glutamate ---
         // Rate depends on amino acid and α-KG availability (ping-pong mechanism)
@@ -303,6 +303,7 @@ impl AminoCatabState {
         self.glutamate += transaminated - deaminated;
         self.ammonium += deaminated - cleared;
 
+        // Clamp non-negative (numerical safety)
         self.amino_acid_pool = self.amino_acid_pool.max(0.0);
         self.glutamate = self.glutamate.max(0.0);
         self.ammonium = self.ammonium.max(0.0);

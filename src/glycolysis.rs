@@ -44,7 +44,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::constants::RESTING_NAD_RATIO;
+use crate::constants::{MAX_ATP_ADP_RATIO, MAX_NAD_FACTOR, RESTING_NAD_RATIO};
 use crate::enzyme;
 use crate::error::RasayanError;
 
@@ -451,7 +451,11 @@ impl GlycolysisState {
         // Step 3: PFK-1 — F6P → F1,6BP (ATP → ADP)
         // Allosteric: Hill kinetics. ATP inhibition modeled by scaling Vmax
         // down when ATP/ADP ratio is high (cells with excess energy slow glycolysis).
-        let atp_adp_ratio = if adp > f64::EPSILON { atp / adp } else { 100.0 };
+        let atp_adp_ratio = if adp > f64::EPSILON {
+            atp / adp
+        } else {
+            MAX_ATP_ADP_RATIO
+        };
         let pfk_atp_factor = 1.0 / (1.0 + (atp_adp_ratio / config.pfk_atp_half_inhibition).powi(2));
         let v3 = enzyme::hill_equation(
             self.f6p,
@@ -481,7 +485,7 @@ impl GlycolysisState {
 
         // Step 6: GAPDH — G3P → 1,3BPG (NAD+ → NADH)
         // Rate scales with NAD+ availability (approximated by nad_ratio)
-        let nad_factor = (nad_ratio / RESTING_NAD_RATIO).min(2.0);
+        let nad_factor = (nad_ratio / RESTING_NAD_RATIO).min(MAX_NAD_FACTOR);
         let v6 = enzyme::michaelis_menten(
             self.g3p,
             config.gapdh_vmax * nad_factor,

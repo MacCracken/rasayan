@@ -231,7 +231,8 @@ impl BetaOxState {
             "beta_oxidation_tick"
         );
 
-        let nad_factor = (nad_ratio / crate::constants::RESTING_NAD_RATIO).min(2.0);
+        let nad_factor =
+            (nad_ratio / crate::constants::RESTING_NAD_RATIO).min(crate::constants::MAX_NAD_FACTOR);
         let cycles = config.cycles() as f64;
         let accoa_per_fa = config.acetyl_coa_per_fa() as f64;
 
@@ -265,6 +266,7 @@ impl BetaOxState {
         self.free_fatty_acid -= activated;
         self.acyl_coa += activated - oxidized;
 
+        // Clamp non-negative (numerical safety)
         self.free_fatty_acid = self.free_fatty_acid.max(0.0);
         self.acyl_coa = self.acyl_coa.max(0.0);
 

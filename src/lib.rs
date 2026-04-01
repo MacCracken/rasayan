@@ -7,7 +7,7 @@
 //!
 //! # Architecture
 //!
-//! Fifteen modules:
+//! Sixteen core modules (plus optional `logging`):
 //!
 //! - [`enzyme`] — Michaelis-Menten kinetics, competitive/uncompetitive/mixed
 //!   inhibition, substrate inhibition, allosteric regulation (Hill equation),

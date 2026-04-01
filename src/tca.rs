@@ -26,7 +26,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::constants::RESTING_NAD_RATIO;
+use crate::constants::{MAX_ATP_ADP_RATIO, MAX_NAD_FACTOR, RESTING_NAD_RATIO};
 use crate::enzyme;
 use crate::error::RasayanError;
 
@@ -354,8 +354,12 @@ impl TcaState {
     ) -> TcaFlux {
         tracing::trace!(dt, pyruvate, atp, acetyl_coa = self.acetyl_coa, "tca_tick");
 
-        let nad_factor = (nad_ratio / RESTING_NAD_RATIO).min(2.0);
-        let atp_adp_ratio = if adp > f64::EPSILON { atp / adp } else { 100.0 };
+        let nad_factor = (nad_ratio / RESTING_NAD_RATIO).min(MAX_NAD_FACTOR);
+        let atp_adp_ratio = if adp > f64::EPSILON {
+            atp / adp
+        } else {
+            MAX_ATP_ADP_RATIO
+        };
         let energy_inhibition =
             1.0 / (1.0 + (atp_adp_ratio / config.energy_half_inhibition).powi(2));
 
