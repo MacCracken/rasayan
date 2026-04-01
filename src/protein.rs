@@ -2,13 +2,15 @@
 
 use serde::Serialize;
 
+use crate::error::RasayanError;
+
 /// Standard amino acid with biochemical properties.
 ///
 /// This type intentionally does not implement `Deserialize` — amino acids
 /// should be looked up from [`AMINO_ACIDS`] via [`lookup`], not deserialized
 /// from external data. The `&'static str` fields require a static lifetime
 /// that prevents practical deserialization.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct AminoAcid {
     /// Single-letter code.
     pub code: char,
@@ -27,11 +29,17 @@ pub struct AminoAcid {
 /// Look up an amino acid by single-letter code.
 #[must_use]
 pub fn lookup(code: char) -> Option<AminoAcid> {
-    AMINO_ACIDS.iter().find(|a| a.code == code).copied()
+    let upper = code.to_ascii_uppercase();
+    AMINO_ACIDS.iter().find(|a| a.code == upper).copied()
+}
+
+/// Look up an amino acid by single-letter code, returning an error on failure.
+pub fn try_lookup(code: char) -> Result<AminoAcid, RasayanError> {
+    lookup(code).ok_or(RasayanError::UnknownAminoAcid(code))
 }
 
 /// Calculate molecular weight of a peptide sequence (Da).
-/// Subtracts water for each peptide bond.
+/// Subtracts water for each peptide bond. Accepts upper or lowercase codes.
 #[must_use]
 pub fn molecular_weight(sequence: &str) -> Option<f64> {
     if sequence.is_empty() {
@@ -44,13 +52,14 @@ pub fn molecular_weight(sequence: &str) -> Option<f64> {
     Some(total)
 }
 
-/// Count of each amino acid type in a sequence.
+/// Count of each amino acid type in a sequence. Accepts upper or lowercase codes.
 #[must_use]
 pub fn composition(sequence: &str) -> Vec<(char, usize)> {
     let mut counts = [0usize; 26];
     for c in sequence.chars() {
-        if c.is_ascii_uppercase() {
-            counts[(c as u8 - b'A') as usize] += 1;
+        let upper = c.to_ascii_uppercase();
+        if upper.is_ascii_uppercase() {
+            counts[(upper as u8 - b'A') as usize] += 1;
         }
     }
     counts
@@ -236,15 +245,39 @@ mod tests {
     }
 
     #[test]
+    fn test_lookup_lowercase() {
+        let ala = lookup('a').unwrap();
+        assert_eq!(ala.name, "Alanine");
+    }
+
+    #[test]
     fn test_lookup_unknown() {
         assert!(lookup('X').is_none());
     }
 
     #[test]
+    fn test_try_lookup_ok() {
+        let ala = try_lookup('A').unwrap();
+        assert_eq!(ala.name, "Alanine");
+    }
+
+    #[test]
+    fn test_try_lookup_err() {
+        let err = try_lookup('X').unwrap_err();
+        assert!(matches!(err, RasayanError::UnknownAminoAcid('X')));
+    }
+
+    #[test]
     fn test_molecular_weight() {
         let mw = molecular_weight("AG").unwrap();
-        // Ala (89.09) + Gly (75.03) - H2O (18.015) = 146.105
         assert!((mw - 146.105).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_molecular_weight_lowercase() {
+        let upper = molecular_weight("AG").unwrap();
+        let lower = molecular_weight("ag").unwrap();
+        assert!((upper - lower).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -253,6 +286,13 @@ mod tests {
         assert!(comp.contains(&('A', 2)));
         assert!(comp.contains(&('C', 1)));
         assert!(comp.contains(&('G', 1)));
+    }
+
+    #[test]
+    fn test_composition_lowercase() {
+        let upper = composition("AACG");
+        let lower = composition("aacg");
+        assert_eq!(upper, lower);
     }
 
     #[test]

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::RasayanError;
 
 /// Metabolic state tracking ATP/ADP balance and pathway activity.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MetabolicState {
     /// ATP concentration (mM, typical resting: 5-8 mM).
     pub atp: f64,
@@ -36,6 +36,7 @@ impl Default for MetabolicState {
 
 impl MetabolicState {
     /// Validate that all concentrations are non-negative.
+    #[must_use = "validation errors should be handled"]
     pub fn validate(&self) -> Result<(), RasayanError> {
         for (name, value) in [
             ("atp", self.atp),
@@ -108,19 +109,32 @@ impl MetabolicState {
     }
 
     /// Regenerate ATP from ADP (via oxidative phosphorylation or glycolysis).
+    ///
+    /// Oxygen availability scales regeneration efficiency: full aerobic
+    /// respiration (O2=1.0) yields ~30 ATP/glucose, while pure anaerobic
+    /// glycolysis (O2=0.0) yields only ~2 ATP/glucose (~7% efficiency).
+    /// Under hypoxia, lactate accumulates as a glycolytic byproduct.
     pub fn regenerate_atp(&mut self, dt: f64) {
         tracing::trace!(
             dt,
             atp_before = self.atp,
             adp_before = self.adp,
+            oxygen = self.oxygen,
             "regenerate_atp"
         );
-        let rate = self.metabolic_rate() * 0.5 * dt;
+        // Oxygen efficiency: linear from ~7% (anaerobic) to 100% (full aerobic)
+        // At O2=0: 2/30 ≈ 0.067, at O2=1: 30/30 = 1.0
+        let o2_factor = self.oxygen.clamp(0.0, 1.0) * (28.0 / 30.0) + 2.0 / 30.0;
+        let rate = self.metabolic_rate() * 0.5 * o2_factor * dt;
         let regen = rate.min(self.adp).min(self.glucose * 30.0);
         self.atp += regen;
         self.adp -= regen;
         // Glucose consumption
         self.glucose = (self.glucose - regen / 30.0).max(0.0);
+        // Anaerobic glycolysis produces lactate
+        if self.oxygen < 0.5 {
+            self.lactate += regen * 0.1;
+        }
     }
 }
 
@@ -132,7 +146,7 @@ mod tests {
     fn test_energy_charge_resting() {
         let m = MetabolicState::default();
         let ec = m.energy_charge();
-        assert!(ec > 0.9); // resting cell is well-charged
+        assert!(ec > 0.9);
     }
 
     #[test]
@@ -164,7 +178,7 @@ mod tests {
         let m = MetabolicState::default();
         let json = serde_json::to_string(&m).unwrap();
         let m2: MetabolicState = serde_json::from_str(&json).unwrap();
-        assert!((m2.atp - m.atp).abs() < f64::EPSILON);
+        assert_eq!(m, m2);
     }
 
     #[test]
@@ -208,7 +222,34 @@ mod tests {
         m.consume_atp(3.0);
         let atp_before = m.atp;
         m.regenerate_atp(1.0);
-        // Should not regenerate without glucose
         assert!((m.atp - atp_before).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_regenerate_impaired_by_hypoxia() {
+        let mut normoxic = MetabolicState::default();
+        normoxic.consume_atp(3.0);
+        let mut hypoxic = MetabolicState {
+            oxygen: 0.0,
+            ..MetabolicState::default()
+        };
+        hypoxic.consume_atp(3.0);
+
+        normoxic.regenerate_atp(1.0);
+        hypoxic.regenerate_atp(1.0);
+        // Normoxic should regenerate more ATP
+        assert!(normoxic.atp > hypoxic.atp);
+    }
+
+    #[test]
+    fn test_anaerobic_produces_lactate() {
+        let mut m = MetabolicState {
+            oxygen: 0.1,
+            ..MetabolicState::default()
+        };
+        let lactate_before = m.lactate;
+        m.consume_atp(2.0);
+        m.regenerate_atp(1.0);
+        assert!(m.lactate > lactate_before);
     }
 }

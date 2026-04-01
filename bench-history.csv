@@ -22,3 +22,17 @@ timestamp,commit,branch,benchmark,estimate_ns
 2026-04-01T02:36:05Z,e52c858,main,molecular_weight,16.106
 2026-04-01T02:36:05Z,e52c858,main,bioenergy_tick,12.956
 2026-04-01T02:36:05Z,e52c858,main,enzyme_lookup,3.8798
+2026-04-01T03:15:39Z,0b4b2a7,main,michaelis_menten,1.2377
+2026-04-01T03:15:39Z,0b4b2a7,main,hill_equation,18.989
+2026-04-01T03:15:39Z,0b4b2a7,main,mixed_inhibition,3.4282
+2026-04-01T03:15:39Z,0b4b2a7,main,ping_pong,2.0608
+2026-04-01T03:15:39Z,0b4b2a7,main,arrhenius,5.4718
+2026-04-01T03:15:39Z,0b4b2a7,main,lineweaver_burk_fit,87.990
+2026-04-01T03:15:39Z,0b4b2a7,main,nernst,6.3882
+2026-04-01T03:15:39Z,0b4b2a7,main,goldman,7.2814
+2026-04-01T03:15:39Z,0b4b2a7,main,dose_response,18.675
+2026-04-01T03:15:39Z,0b4b2a7,main,metabolic_tick,22.438
+2026-04-01T03:15:39Z,0b4b2a7,main,protein_lookup,3.6033
+2026-04-01T03:15:39Z,0b4b2a7,main,molecular_weight,21.427
+2026-04-01T03:15:39Z,0b4b2a7,main,bioenergy_tick,12.581
+2026-04-01T03:15:39Z,0b4b2a7,main,enzyme_lookup,3.8404

@@ -10,8 +10,27 @@ pub const ATP_HYDROLYSIS_DG: f64 = -30.5;
 /// Metabolic equivalent (MET) — 1 MET = 3.5 mL O2/kg/min (resting).
 pub const MET_O2_RATE: f64 = 3.5;
 
+// Tick rate constants for BioenergyState.
+// These are simplified game-engine tuning values calibrated for minute-scale
+// simulation steps. They produce qualitatively correct dynamics: PCr depletes
+// fast under burst demand and recovers fast at rest, while glycogen is the
+// slower, larger energy reserve.
+
+/// PCr depletion rate coefficient (per MET-minute above threshold).
+const PCR_DEPLETION_RATE: f64 = 0.02;
+/// PCr recovery rate (per minute at low demand).
+const PCR_RECOVERY_RATE: f64 = 0.05;
+/// MET demand threshold above which PCr depletes instead of recovering.
+const PCR_DEMAND_THRESHOLD: f64 = 4.0;
+/// Glycogen depletion rate coefficient (per MET-minute).
+const GLYCOGEN_DEPLETION_RATE: f64 = 0.005;
+/// Glycogen recovery rate (per minute at rest).
+const GLYCOGEN_RECOVERY_RATE: f64 = 0.002;
+/// MET threshold below which glycogen recovers.
+const GLYCOGEN_RECOVERY_THRESHOLD: f64 = 1.5;
+
 /// Bioenergetic state of an entity.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BioenergyState {
     /// Phosphocreatine reserve (0.0-1.0). Immediate energy buffer.
     pub phosphocreatine: f64,
@@ -36,6 +55,7 @@ impl Default for BioenergyState {
 
 impl BioenergyState {
     /// Validate that all fields are in valid ranges.
+    #[must_use = "validation errors should be handled"]
     pub fn validate(&self) -> Result<(), RasayanError> {
         if self.phosphocreatine < 0.0 || self.phosphocreatine > 1.0 {
             return Err(RasayanError::InvalidParameter {
@@ -94,19 +114,20 @@ impl BioenergyState {
         let demand = (self.met - 1.0).max(0.0);
 
         // Phosphocreatine used first for burst (depletes fast, recovers fast)
-        if demand > 4.0 {
-            self.phosphocreatine = (self.phosphocreatine - demand * 0.02 * dt_minutes).max(0.0);
+        if demand > PCR_DEMAND_THRESHOLD {
+            self.phosphocreatine =
+                (self.phosphocreatine - demand * PCR_DEPLETION_RATE * dt_minutes).max(0.0);
         } else {
             // Recovery when demand is low
-            self.phosphocreatine = (self.phosphocreatine + 0.05 * dt_minutes).min(1.0);
+            self.phosphocreatine = (self.phosphocreatine + PCR_RECOVERY_RATE * dt_minutes).min(1.0);
         }
 
         // Glycogen depletion (slower, proportional to demand)
-        self.glycogen = (self.glycogen - demand * 0.005 * dt_minutes).max(0.0);
+        self.glycogen = (self.glycogen - demand * GLYCOGEN_DEPLETION_RATE * dt_minutes).max(0.0);
 
         // Glycogen recovery at rest
-        if self.met <= 1.5 {
-            self.glycogen = (self.glycogen + 0.002 * dt_minutes).min(1.0);
+        if self.met <= GLYCOGEN_RECOVERY_THRESHOLD {
+            self.glycogen = (self.glycogen + GLYCOGEN_RECOVERY_RATE * dt_minutes).min(1.0);
         }
     }
 
@@ -156,7 +177,7 @@ mod tests {
         let b = BioenergyState::default();
         let json = serde_json::to_string(&b).unwrap();
         let b2: BioenergyState = serde_json::from_str(&json).unwrap();
-        assert!((b2.met - b.met).abs() < f64::EPSILON);
+        assert_eq!(b, b2);
     }
 
     #[test]

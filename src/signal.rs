@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::RasayanError;
+
 /// Dose-response using the Hill function (same math as enzyme Hill, different context).
 /// `response = Emax * [L]^n / (EC50^n + [L]^n)`
 #[must_use]
@@ -26,7 +28,10 @@ pub fn receptor_occupancy(ligand: f64, kd: f64) -> f64 {
 }
 
 /// Second messenger state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// All levels are normalized to 0.0-1.0 range. Resting levels are
+/// maintained by basal activity and decay in [`SecondMessenger::tick`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SecondMessenger {
     /// cAMP level (normalized 0.0-1.0).
     pub camp: f64,
@@ -46,11 +51,58 @@ impl Default for SecondMessenger {
     }
 }
 
+// Activation/decay rate constants for second messengers.
+// These are simplified game-engine tuning values, not direct biophysical
+// measurements. They produce qualitatively correct dynamics: fast rise on
+// stimulation, exponential-ish decay back to resting levels.
+
+/// Fractional increase in messenger per unit activation intensity.
+const ACTIVATION_GAIN: f64 = 0.3;
+/// IP3 → Ca2+ coupling factor (fraction of IP3 that triggers Ca2+ release).
+const IP3_CA_COUPLING: f64 = 0.5;
+/// cAMP decay rate per unit time.
+const CAMP_DECAY_RATE: f64 = 0.1;
+/// IP3 decay rate per unit time.
+const IP3_DECAY_RATE: f64 = 0.15;
+/// Ca2+ decay rate per unit time (fastest — active re-sequestration by SERCA).
+const CA_DECAY_RATE: f64 = 0.2;
+/// Resting cAMP floor (basal adenylyl cyclase activity).
+const CAMP_FLOOR: f64 = 0.05;
+/// Resting IP3 floor.
+const IP3_FLOOR: f64 = 0.02;
+/// Resting Ca2+ floor.
+const CA_FLOOR: f64 = 0.02;
+
 impl SecondMessenger {
-    /// Activate Gs-coupled pathway (increases cAMP).
+    /// Validate that all messenger levels are in valid range.
+    #[must_use = "validation errors should be handled"]
+    pub fn validate(&self) -> Result<(), RasayanError> {
+        for (name, value) in [
+            ("camp", self.camp),
+            ("calcium", self.calcium),
+            ("ip3", self.ip3),
+        ] {
+            if !(0.0..=1.0).contains(&value) {
+                return Err(RasayanError::InvalidParameter {
+                    name: name.into(),
+                    value,
+                    reason: "must be in range 0.0-1.0".into(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Activate Gs-coupled pathway (stimulatory — increases cAMP).
     pub fn activate_gs(&mut self, intensity: f64) {
         tracing::trace!(intensity, camp_before = self.camp, "activate_gs");
-        self.camp = (self.camp + intensity * 0.3).min(1.0);
+        self.camp = (self.camp + intensity * ACTIVATION_GAIN).min(1.0);
+    }
+
+    /// Activate Gi-coupled pathway (inhibitory — decreases cAMP).
+    pub fn activate_gi(&mut self, intensity: f64) {
+        tracing::trace!(intensity, camp_before = self.camp, "activate_gi");
+        self.camp = (self.camp - intensity * ACTIVATION_GAIN).max(CAMP_FLOOR);
     }
 
     /// Activate Gq-coupled pathway (increases IP3 and Ca2+).
@@ -61,16 +113,16 @@ impl SecondMessenger {
             ca_before = self.calcium,
             "activate_gq"
         );
-        self.ip3 = (self.ip3 + intensity * 0.3).min(1.0);
-        self.calcium = (self.calcium + self.ip3 * 0.5).min(1.0);
+        self.ip3 = (self.ip3 + intensity * ACTIVATION_GAIN).min(1.0);
+        self.calcium = (self.calcium + self.ip3 * IP3_CA_COUPLING).min(1.0);
     }
 
     /// Decay messengers toward resting levels.
     pub fn tick(&mut self, dt: f64) {
         tracing::trace!(dt, "second_messenger_tick");
-        self.camp = (self.camp - 0.1 * dt).max(0.05);
-        self.ip3 = (self.ip3 - 0.15 * dt).max(0.02);
-        self.calcium = (self.calcium - 0.2 * dt).max(0.02);
+        self.camp = (self.camp - CAMP_DECAY_RATE * dt).max(CAMP_FLOOR);
+        self.ip3 = (self.ip3 - IP3_DECAY_RATE * dt).max(IP3_FLOOR);
+        self.calcium = (self.calcium - CA_DECAY_RATE * dt).max(CA_FLOOR);
     }
 
     /// Overall signaling intensity.
@@ -104,6 +156,22 @@ mod tests {
     }
 
     #[test]
+    fn test_gi_pathway() {
+        let mut sm = SecondMessenger::default();
+        sm.activate_gs(1.0); // raise cAMP first
+        let camp_high = sm.camp;
+        sm.activate_gi(1.0); // then inhibit
+        assert!(sm.camp < camp_high);
+    }
+
+    #[test]
+    fn test_gi_does_not_go_below_floor() {
+        let mut sm = SecondMessenger::default();
+        sm.activate_gi(10.0); // massive inhibition
+        assert!(sm.camp >= CAMP_FLOOR);
+    }
+
+    #[test]
     fn test_gq_pathway() {
         let mut sm = SecondMessenger::default();
         sm.activate_gq(1.0);
@@ -116,7 +184,7 @@ mod tests {
         let sm = SecondMessenger::default();
         let json = serde_json::to_string(&sm).unwrap();
         let sm2: SecondMessenger = serde_json::from_str(&json).unwrap();
-        assert!((sm2.camp - sm.camp).abs() < f64::EPSILON);
+        assert_eq!(sm, sm2);
     }
 
     #[test]
@@ -136,5 +204,19 @@ mod tests {
         let camp_before = sm.camp;
         sm.tick(1.0);
         assert!(sm.camp < camp_before);
+    }
+
+    #[test]
+    fn test_validate_valid() {
+        assert!(SecondMessenger::default().validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_out_of_range() {
+        let sm = SecondMessenger {
+            camp: 1.5,
+            ..SecondMessenger::default()
+        };
+        assert!(sm.validate().is_err());
     }
 }

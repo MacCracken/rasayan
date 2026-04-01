@@ -6,10 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::constants::R_GAS;
 use crate::error::RasayanError;
-
-// Gas constant (J/(mol*K)) — used for Arrhenius calculations.
-const R_GAS: f64 = 8.314;
 
 // ---------------------------------------------------------------------------
 // Single-substrate rate equations
@@ -141,9 +139,13 @@ pub fn substrate_inhibition(substrate: f64, vmax: f64, km: f64, ks: f64) -> f64 
 // Reversible kinetics
 // ---------------------------------------------------------------------------
 
-/// Reversible Michaelis-Menten rate equation.
+/// Reversible Michaelis-Menten rate equation (simplified form).
 ///
 /// `v = (Vf * [S]/Km_f - Vr * [P]/Km_r) / (1 + [S]/Km_f + [P]/Km_r)`
+///
+/// This is the Haldane-simplified form without the dead-end inhibition
+/// cross-term `[S]*[P]/(Km_f*Ki_p)`. Suitable for most biological
+/// reactions; for dead-end complex modeling, use the full Cleland equation.
 ///
 /// Positive v = net forward, negative v = net reverse.
 ///
@@ -291,7 +293,7 @@ pub fn arrhenius_relative(rate_at_t1: f64, activation_energy: f64, t1: f64, t2: 
 // ---------------------------------------------------------------------------
 
 /// Result of fitting kinetic data via a linearization method.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct KineticFit {
     /// Estimated Michaelis constant (M).
     pub km: f64,
@@ -390,7 +392,7 @@ pub fn eadie_hofstee_fit(data: &[(f64, f64)]) -> Option<KineticFit> {
 // ---------------------------------------------------------------------------
 
 /// Enzyme parameters for a single reaction.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EnzymeParams {
     /// Maximum velocity (M/s).
     pub vmax: f64,
@@ -404,6 +406,7 @@ pub struct EnzymeParams {
 
 impl EnzymeParams {
     /// Validate that all parameters are physically meaningful.
+    #[must_use = "validation errors should be handled"]
     pub fn validate(&self) -> Result<(), RasayanError> {
         if self.vmax < 0.0 {
             return Err(RasayanError::InvalidParameter {
@@ -467,7 +470,7 @@ impl EnzymeParams {
 ///
 /// Values are textbook consensus figures suitable for simulation. For
 /// precise work, consult primary literature or BRENDA.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct KnownEnzyme {
     /// Common name.
     pub name: &'static str,

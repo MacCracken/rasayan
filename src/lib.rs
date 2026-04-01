@@ -7,24 +7,26 @@
 //!
 //! # Architecture
 //!
-//! Six domain modules:
+//! Seven modules:
 //!
 //! - [`enzyme`] — Michaelis-Menten kinetics, competitive/uncompetitive/mixed
-//!   inhibition, allosteric regulation (Hill equation), temperature dependence
-//!   (Arrhenius, Q10).
-//! - [`metabolism`] — Metabolic pathway modeling: glycolysis, TCA cycle,
-//!   oxidative phosphorylation. ATP yield, NAD+/NADH balance, metabolic rate.
-//! - [`signal`] — Signal transduction cascades: ligand-receptor binding,
-//!   second messengers (cAMP, Ca2+, IP3), kinase cascades, dose-response
-//!   (Hill function).
-//! - [`protein`] — Protein structure primitives: amino acid properties,
-//!   hydrophobicity scales, isoelectric point, molecular weight, secondary
-//!   structure propensity.
-//! - [`membrane`] — Membrane transport: passive diffusion (Fick's law),
-//!   facilitated transport (Michaelis-Menten), active transport (ATP-coupled),
-//!   Nernst potential, Goldman equation.
+//!   inhibition, substrate inhibition, allosteric regulation (Hill equation),
+//!   reversible reactions (Haldane), multi-substrate kinetics (ping-pong,
+//!   sequential), temperature dependence (Arrhenius, Q10), linearization
+//!   transforms (Lineweaver-Burk, Eadie-Hofstee), enzyme database.
+//! - [`metabolism`] — Metabolic state: ATP/ADP balance, energy charge,
+//!   aerobic/anaerobic yield, oxygen-dependent ATP regeneration, metabolic rate.
+//! - [`signal`] — Signal transduction: ligand-receptor binding, dose-response
+//!   (Hill function), second messengers (cAMP, Ca2+, IP3), Gs/Gq/Gi pathway
+//!   activation, messenger decay.
+//! - [`protein`] — Protein structure primitives: 20 amino acid properties
+//!   (molecular weight, hydrophobicity, pKa), sequence molecular weight,
+//!   composition analysis.
+//! - [`membrane`] — Membrane transport: Nernst potential, Goldman-Hodgkin-Katz
+//!   equation, Fick's first law diffusion, ionic state.
 //! - [`energy`] — Bioenergetics: ATP hydrolysis, phosphocreatine system,
 //!   anaerobic/aerobic thresholds, metabolic equivalent (MET).
+//! - [`constants`] — Shared physical constants (gas constant, Faraday constant).
 //!
 //! # Relationship to Other Crates
 //!
@@ -40,6 +42,7 @@
 //! sharira — physiology (muscle bioenergetics, fatigue)
 //! ```
 
+pub mod constants;
 pub mod energy;
 pub mod enzyme;
 pub mod error;
