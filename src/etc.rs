@@ -16,8 +16,8 @@
 //!
 //! # Stoichiometry
 //!
-//! - Per NADH: 10 H+ pumped (4 + 4 + 2) → ~2.5 ATP
-//! - Per FADH2: 6 H+ pumped (0 + 4 + 2) → ~1.5 ATP
+//! - Per NADH: 10 H+ pumped (CI=4, CIII=4, CIV=2) → ~2.5 ATP
+//! - Per FADH2: 6 H+ pumped (CII=0, CIII=4, CIV=2) → ~1.5 ATP
 //! - ATP synthase: ~4 H+ per ATP
 
 use serde::{Deserialize, Serialize};
@@ -101,11 +101,18 @@ pub struct EtcConfig {
     pub atp_synthase_vmax: f64,
     /// Minimum pmf for ATP synthase to operate (threshold).
     pub atp_synthase_pmf_threshold: f64,
+    /// ATP synthase Km for ADP (mM).
+    pub atp_synthase_km_adp: f64,
     /// Proton leak rate constant (s^-1). Basal uncoupling.
     pub proton_leak_rate: f64,
-    /// H+ pumped per NADH oxidized (through complexes I + III + IV).
+    /// H+ equivalents dissipated per unit leak rate. Converts leak flux to H+ units.
+    pub proton_leak_h_per_unit: f64,
+    /// Proton pool capacity (mM equivalent). Normalizes H+ flux to pmf units.
+    /// Higher values = more sluggish pmf response.
+    pub pmf_capacity: f64,
+    /// H+ pumped per NADH oxidized (CI=4 + CIII=4 + CIV=2 = 10).
     pub h_per_nadh: f64,
-    /// H+ pumped per FADH2 oxidized (through complexes II + III + IV).
+    /// H+ pumped per FADH2 oxidized (CII=0 + CIII=4 + CIV=2 = 6).
     pub h_per_fadh2: f64,
     /// H+ consumed per ATP synthesized.
     pub h_per_atp: f64,
@@ -121,7 +128,10 @@ impl Default for EtcConfig {
             complex_iv_km_o2: 0.01,
             atp_synthase_vmax: 1.0,
             atp_synthase_pmf_threshold: 0.3,
+            atp_synthase_km_adp: 0.1,
             proton_leak_rate: 0.05,
+            proton_leak_h_per_unit: 10.0,
+            pmf_capacity: 100.0,
             h_per_nadh: 10.0,
             h_per_fadh2: 6.0,
             h_per_atp: 4.0,
@@ -144,7 +154,10 @@ impl EtcConfig {
                 "atp_synthase_pmf_threshold",
                 self.atp_synthase_pmf_threshold,
             ),
+            ("atp_synthase_km_adp", self.atp_synthase_km_adp),
             ("proton_leak_rate", self.proton_leak_rate),
+            ("proton_leak_h_per_unit", self.proton_leak_h_per_unit),
+            ("pmf_capacity", self.pmf_capacity),
             ("h_per_nadh", self.h_per_nadh),
             ("h_per_fadh2", self.h_per_fadh2),
             ("h_per_atp", self.h_per_atp),
@@ -220,12 +233,23 @@ impl EtcState {
         // Complexes slow as pmf approaches 1.0 (thermodynamic backpressure).
         let pumping_capacity = (1.0 - self.pmf).max(0.0);
 
+        // H+ pumped per electron through each complex segment:
+        // CI pumps 4, CIII pumps 4, CIV pumps 2. Total for NADH path = 10.
+        // For FADH2 path (skips CI): CIII=4 + CIV=2 = 6.
+        // These ratios are encoded in h_per_nadh/h_per_fadh2 but the per-complex
+        // split is fixed at 4:4:2 for the pmf calculation.
+        let ci_h = 4.0;
+        let ciii_h = 4.0;
+        let civ_h = 2.0;
+
         // --- Complex I: NADH → QH2 (pumps 4 H+) ---
         // Rate depends on NADH availability, Q availability, and pmf backpressure
         let q_available = 1.0 - self.qh2_fraction;
         let v_ci = config.complex_i_vmax * nadh.min(1.0) * q_available * pumping_capacity;
 
-        // --- Complex II: FADH2 → QH2 (no proton pumping, but feeds Q pool) ---
+        // --- Complex II: FADH2 → QH2 (feeds Q pool, does NOT pump protons) ---
+        // No pumping_capacity term: CII is not a proton pump, so it is not
+        // subject to pmf backpressure. It transfers electrons to Q only.
         let v_cii = config.complex_ii_vmax * fadh2.min(1.0) * q_available;
 
         // --- Complex III: QH2 → Cyt c (pumps 4 H+) ---
@@ -245,7 +269,7 @@ impl EtcState {
         } else {
             0.0
         };
-        let adp_factor = adp / (0.1 + adp); // Michaelis-like ADP dependence
+        let adp_factor = adp / (config.atp_synthase_km_adp + adp);
         let v_atp = config.atp_synthase_vmax * pmf_drive * adp_factor;
 
         // --- Proton leak (uncoupling) ---
@@ -261,12 +285,9 @@ impl EtcState {
         self.cytc_reduced = self.cytc_reduced.clamp(0.0, 1.0);
 
         // Proton motive force: pumping increases, synthase + leak decrease
-        // Normalize by a capacity factor (total H+ that represent pmf=1.0)
-        let h_pumped = v_ci * 4.0 + v_ciii * 4.0 + v_civ * 2.0;
-        let h_consumed = v_atp * config.h_per_atp + v_leak * 10.0;
-        // Scale to pmf units (H+ pool capacity ~100 mM equivalent)
-        let pmf_capacity = 100.0;
-        self.pmf += (h_pumped - h_consumed) / pmf_capacity * dt;
+        let h_pumped = v_ci * ci_h + v_ciii * ciii_h + v_civ * civ_h;
+        let h_consumed = v_atp * config.h_per_atp + v_leak * config.proton_leak_h_per_unit;
+        self.pmf += (h_pumped - h_consumed) / config.pmf_capacity * dt;
         self.pmf = self.pmf.clamp(0.0, 1.0);
 
         // --- Compute flux ---
@@ -378,13 +399,11 @@ mod tests {
     #[test]
     fn test_respiratory_control() {
         let config = EtcConfig::default();
-        // Low pmf = fast electron flow
         let mut state_low = EtcState {
             pmf: 0.2,
             ..EtcState::default()
         };
         let flux_low = state_low.tick(&config, 0.5, 0.1, 1.0, 0.5, 0.1);
-        // High pmf = slow electron flow (backpressure)
         let mut state_high = EtcState {
             pmf: 0.9,
             ..EtcState::default()
@@ -419,7 +438,6 @@ mod tests {
 
     #[test]
     fn test_atp_per_nadh_ratio() {
-        // Run with only NADH, no FADH2
         let mut state = EtcState::default();
         let config = EtcConfig::default();
         let mut total_nadh = 0.0;
@@ -431,7 +449,6 @@ mod tests {
         }
         if total_nadh > 0.01 {
             let ratio = total_atp / total_nadh;
-            // Should be roughly ~2-3 ATP per NADH (theoretical 2.5)
             assert!(
                 ratio > 1.0 && ratio < 4.0,
                 "ATP/NADH ratio = {ratio:.2}, expected ~2.5"

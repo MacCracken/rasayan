@@ -128,7 +128,11 @@ impl BetaOxConfig {
     /// Palmitate (C16) = 8 acetyl-CoA.
     #[must_use]
     pub fn acetyl_coa_per_fa(&self) -> u32 {
-        self.chain_length / 2
+        if self.chain_length >= 4 {
+            self.chain_length / 2
+        } else {
+            0
+        }
     }
 
     /// Validate that all parameters are physically meaningful.
@@ -202,6 +206,10 @@ impl BetaOxState {
     ///
     /// CPT-I regulation: malonyl-CoA inhibits mitochondrial import, providing
     /// fed-state suppression of fatty acid oxidation.
+    ///
+    /// The beta-oxidation spiral is modeled as a single effective step per
+    /// tick: each mM of acyl-CoA consumed produces all its acetyl-CoA, NADH,
+    /// and FADH2 in one tick (the spiral is fast relative to simulation dt).
     ///
     /// # Arguments
     /// * `config` — kinetic parameters
