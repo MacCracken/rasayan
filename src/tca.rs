@@ -26,6 +26,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::constants::RESTING_NAD_RATIO;
 use crate::enzyme;
 use crate::error::RasayanError;
 
@@ -243,21 +244,55 @@ impl Default for TcaConfig {
 }
 
 impl TcaConfig {
-    /// Validate that key parameters are physically meaningful.
+    /// Validate that all parameters are physically meaningful.
     #[must_use = "validation errors should be handled"]
     pub fn validate(&self) -> Result<(), RasayanError> {
-        if self.cs_vmax < 0.0 {
-            return Err(RasayanError::InvalidParameter {
-                name: "cs_vmax".into(),
-                value: self.cs_vmax,
-                reason: "must be non-negative".into(),
-            });
+        for (name, value) in [
+            ("pdh_vmax", self.pdh_vmax),
+            ("pdh_km_pyruvate", self.pdh_km_pyruvate),
+            ("cs_vmax", self.cs_vmax),
+            ("cs_km_oaa", self.cs_km_oaa),
+            ("cs_km_accoa", self.cs_km_accoa),
+            ("cs_ki_oaa", self.cs_ki_oaa),
+            ("cs_ki_citrate", self.cs_ki_citrate),
+            ("acon_vmax_f", self.acon_vmax_f),
+            ("acon_km_f", self.acon_km_f),
+            ("acon_vmax_r", self.acon_vmax_r),
+            ("acon_km_r", self.acon_km_r),
+            ("idh_vmax", self.idh_vmax),
+            ("idh_km_isocitrate", self.idh_km_isocitrate),
+            ("idh_adp_ka", self.idh_adp_ka),
+            ("idh_adp_max_activation", self.idh_adp_max_activation),
+            ("kgdh_vmax", self.kgdh_vmax),
+            ("kgdh_km_akg", self.kgdh_km_akg),
+            ("kgdh_ki_succoa", self.kgdh_ki_succoa),
+            ("scs_vmax", self.scs_vmax),
+            ("scs_km", self.scs_km),
+            ("sdh_vmax", self.sdh_vmax),
+            ("sdh_km", self.sdh_km),
+            ("fum_vmax_f", self.fum_vmax_f),
+            ("fum_km_f", self.fum_km_f),
+            ("fum_vmax_r", self.fum_vmax_r),
+            ("fum_km_r", self.fum_km_r),
+            ("mdh_vmax_f", self.mdh_vmax_f),
+            ("mdh_km_f", self.mdh_km_f),
+            ("mdh_vmax_r", self.mdh_vmax_r),
+            ("mdh_km_r", self.mdh_km_r),
+            ("energy_half_inhibition", self.energy_half_inhibition),
+        ] {
+            if value < 0.0 {
+                return Err(RasayanError::InvalidParameter {
+                    name: name.into(),
+                    value,
+                    reason: "must be non-negative".into(),
+                });
+            }
         }
-        if self.idh_vmax < 0.0 {
+        if self.idh_hill_n <= 0.0 {
             return Err(RasayanError::InvalidParameter {
-                name: "idh_vmax".into(),
-                value: self.idh_vmax,
-                reason: "must be non-negative".into(),
+                name: "idh_hill_n".into(),
+                value: self.idh_hill_n,
+                reason: "must be positive".into(),
             });
         }
         Ok(())
@@ -318,7 +353,7 @@ impl TcaState {
     ) -> TcaFlux {
         tracing::trace!(dt, pyruvate, atp, acetyl_coa = self.acetyl_coa, "tca_tick");
 
-        let nad_factor = (nad_ratio / 700.0).min(2.0);
+        let nad_factor = (nad_ratio / RESTING_NAD_RATIO).min(2.0);
         let atp_adp_ratio = if adp > f64::EPSILON { atp / adp } else { 100.0 };
         let energy_inhibition =
             1.0 / (1.0 + (atp_adp_ratio / config.energy_half_inhibition).powi(2));

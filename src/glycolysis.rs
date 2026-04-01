@@ -33,8 +33,10 @@
 //! let config = GlycolysisConfig::default();
 //!
 //! // Simulate 10 seconds at resting ATP/ADP/NAD+ levels
+//! let mut total_atp = 0.0;
 //! for _ in 0..100 {
-//!     state.tick(&config, 6.0, 0.5, 700.0, 0.1);
+//!     let flux = state.tick(&config, 6.0, 0.5, 700.0, 0.1);
+//!     total_atp += flux.net_atp;
 //! }
 //! // Pyruvate accumulates as glycolysis processes glucose
 //! assert!(state.pyruvate > 0.051); // above resting level
@@ -42,6 +44,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::constants::RESTING_NAD_RATIO;
 use crate::enzyme;
 use crate::error::RasayanError;
 
@@ -305,25 +308,64 @@ impl GlycolysisConfig {
     /// Validate that all parameters are physically meaningful.
     #[must_use = "validation errors should be handled"]
     pub fn validate(&self) -> Result<(), RasayanError> {
-        if self.hk_vmax < 0.0 {
+        for (name, value) in [
+            ("hk_vmax", self.hk_vmax),
+            ("hk_km_glucose", self.hk_km_glucose),
+            ("hk_ki_g6p", self.hk_ki_g6p),
+            ("pgi_vmax_f", self.pgi_vmax_f),
+            ("pgi_km_f", self.pgi_km_f),
+            ("pgi_vmax_r", self.pgi_vmax_r),
+            ("pgi_km_r", self.pgi_km_r),
+            ("pfk_vmax", self.pfk_vmax),
+            ("pfk_km_f6p", self.pfk_km_f6p),
+            ("pfk_atp_half_inhibition", self.pfk_atp_half_inhibition),
+            ("aldo_vmax_f", self.aldo_vmax_f),
+            ("aldo_km_f", self.aldo_km_f),
+            ("aldo_vmax_r", self.aldo_vmax_r),
+            ("aldo_km_r", self.aldo_km_r),
+            ("tpi_vmax_f", self.tpi_vmax_f),
+            ("tpi_km_f", self.tpi_km_f),
+            ("tpi_vmax_r", self.tpi_vmax_r),
+            ("tpi_km_r", self.tpi_km_r),
+            ("gapdh_vmax", self.gapdh_vmax),
+            ("gapdh_km_g3p", self.gapdh_km_g3p),
+            ("pgk_vmax_f", self.pgk_vmax_f),
+            ("pgk_km_f", self.pgk_km_f),
+            ("pgk_vmax_r", self.pgk_vmax_r),
+            ("pgk_km_r", self.pgk_km_r),
+            ("pgm_vmax_f", self.pgm_vmax_f),
+            ("pgm_km_f", self.pgm_km_f),
+            ("pgm_vmax_r", self.pgm_vmax_r),
+            ("pgm_km_r", self.pgm_km_r),
+            ("eno_vmax_f", self.eno_vmax_f),
+            ("eno_km_f", self.eno_km_f),
+            ("eno_vmax_r", self.eno_vmax_r),
+            ("eno_km_r", self.eno_km_r),
+            ("pk_vmax", self.pk_vmax),
+            ("pk_km_pep", self.pk_km_pep),
+            ("pk_f16bp_ka", self.pk_f16bp_ka),
+            ("pk_f16bp_max_activation", self.pk_f16bp_max_activation),
+        ] {
+            if value < 0.0 {
+                return Err(RasayanError::InvalidParameter {
+                    name: name.into(),
+                    value,
+                    reason: "must be non-negative".into(),
+                });
+            }
+        }
+        if self.pfk_hill_n <= 0.0 {
             return Err(RasayanError::InvalidParameter {
-                name: "hk_vmax".into(),
-                value: self.hk_vmax,
-                reason: "must be non-negative".into(),
+                name: "pfk_hill_n".into(),
+                value: self.pfk_hill_n,
+                reason: "must be positive".into(),
             });
         }
-        if self.pfk_vmax < 0.0 {
+        if self.pk_hill_n <= 0.0 {
             return Err(RasayanError::InvalidParameter {
-                name: "pfk_vmax".into(),
-                value: self.pfk_vmax,
-                reason: "must be non-negative".into(),
-            });
-        }
-        if self.pk_vmax < 0.0 {
-            return Err(RasayanError::InvalidParameter {
-                name: "pk_vmax".into(),
-                value: self.pk_vmax,
-                reason: "must be non-negative".into(),
+                name: "pk_hill_n".into(),
+                value: self.pk_hill_n,
+                reason: "must be positive".into(),
             });
         }
         Ok(())
@@ -438,7 +480,7 @@ impl GlycolysisState {
 
         // Step 6: GAPDH — G3P → 1,3BPG (NAD+ → NADH)
         // Rate scales with NAD+ availability (approximated by nad_ratio)
-        let nad_factor = (nad_ratio / 700.0).min(2.0);
+        let nad_factor = (nad_ratio / RESTING_NAD_RATIO).min(2.0);
         let v6 = enzyme::michaelis_menten(
             self.g3p,
             config.gapdh_vmax * nad_factor,
