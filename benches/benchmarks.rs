@@ -217,5 +217,22 @@ criterion_group!(
     bench_glycolysis_tick,
     bench_tca_tick,
     bench_etc_tick,
+    bench_beta_ox_tick,
 );
 criterion_main!(benches);
+
+fn bench_beta_ox_tick(c: &mut Criterion) {
+    use rasayan::beta_oxidation::{BetaOxConfig, BetaOxState};
+    let config = BetaOxConfig::default();
+    c.bench_function("beta_ox_tick", |b| {
+        b.iter(|| {
+            let mut state = BetaOxState::default();
+            state.tick(
+                black_box(&config),
+                black_box(0.0),
+                black_box(700.0),
+                black_box(0.01),
+            )
+        })
+    });
+}

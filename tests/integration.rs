@@ -1,5 +1,6 @@
 //! Integration tests for rasayan — cross-module behavior and serde roundtrips.
 
+use rasayan::beta_oxidation::{BetaOxConfig, BetaOxState};
 use rasayan::energy::BioenergyState;
 use rasayan::enzyme::{self, EnzymeParams};
 use rasayan::etc::{EtcConfig, EtcState};
@@ -409,4 +410,33 @@ fn test_full_respiration_pipeline() {
         total_atp > 0.1,
         "Total ATP from full pipeline should be meaningful: {total_atp}"
     );
+}
+
+#[test]
+fn test_beta_ox_feeds_tca() {
+    let box_config = BetaOxConfig::default();
+    let tca_config = TcaConfig::default();
+    let mut beta_ox = BetaOxState::default();
+    let mut tca = TcaState::default();
+
+    let mut total_accoa = 0.0;
+    let mut total_nadh = 0.0;
+
+    for _ in 0..200 {
+        let bflux = beta_ox.tick(&box_config, 0.0, 700.0, 0.1);
+        // Feed beta-ox acetyl-CoA into TCA
+        tca.acetyl_coa += bflux.acetyl_coa_produced;
+        let tflux = tca.tick(&tca_config, 0.0, 6.0, 0.5, 700.0, 0.1);
+        total_accoa += bflux.acetyl_coa_produced;
+        total_nadh += bflux.nadh_produced + tflux.nadh_produced;
+    }
+
+    assert!(total_accoa > 0.0, "Beta-ox should produce acetyl-CoA");
+    assert!(total_nadh > 0.0, "Combined NADH from beta-ox + TCA");
+}
+
+#[test]
+fn test_beta_ox_validation() {
+    assert!(BetaOxState::default().validate().is_ok());
+    assert!(BetaOxConfig::default().validate().is_ok());
 }
