@@ -8,3 +8,17 @@ timestamp,commit,branch,benchmark,estimate_ns
 2026-04-01T02:20:37Z,9db240e,main,protein_lookup,3.3290
 2026-04-01T02:20:37Z,9db240e,main,molecular_weight,16.070
 2026-04-01T02:20:37Z,9db240e,main,bioenergy_tick,8.5696
+2026-04-01T02:36:05Z,e52c858,main,michaelis_menten,1.2133
+2026-04-01T02:36:05Z,e52c858,main,hill_equation,18.331
+2026-04-01T02:36:05Z,e52c858,main,mixed_inhibition,3.3030
+2026-04-01T02:36:05Z,e52c858,main,ping_pong,2.0517
+2026-04-01T02:36:05Z,e52c858,main,arrhenius,5.4270
+2026-04-01T02:36:05Z,e52c858,main,lineweaver_burk_fit,84.438
+2026-04-01T02:36:05Z,e52c858,main,nernst,6.2931
+2026-04-01T02:36:05Z,e52c858,main,goldman,7.0720
+2026-04-01T02:36:05Z,e52c858,main,dose_response,18.557
+2026-04-01T02:36:05Z,e52c858,main,metabolic_tick,10.593
+2026-04-01T02:36:05Z,e52c858,main,protein_lookup,3.4379
+2026-04-01T02:36:05Z,e52c858,main,molecular_weight,16.106
+2026-04-01T02:36:05Z,e52c858,main,bioenergy_tick,12.956
+2026-04-01T02:36:05Z,e52c858,main,enzyme_lookup,3.8798

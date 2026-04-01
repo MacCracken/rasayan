@@ -1,18 +1,23 @@
 # Benchmarks
 
-Latest: **2026-04-01T02:20:37Z** -- commit `9db240e`
+Latest: **2026-04-01T02:36:05Z** -- commit `e52c858`
 
-| Benchmark | Current (`9db240e`) |
-|-----------|------|
-| `michaelis_menten` | 1.22 ns |
-| `hill_equation` | 19.09 ns |
-| `nernst` | 6.38 ns |
-| `goldman` | 7.24 ns |
-| `dose_response` | 18.48 ns |
-| `metabolic_tick` | 10.56 ns |
-| `protein_lookup` | 3.33 ns |
-| `molecular_weight` | 16.07 ns |
-| `bioenergy_tick` | 8.57 ns |
+| Benchmark | Baseline (`9db240e`) | Current (`e52c858`) |
+|-----------|------|------|
+| `michaelis_menten` | 1.22 ns | 1.21 ns |
+| `hill_equation` | 19.09 ns | 18.33 ns **-4%** |
+| `nernst` | 6.38 ns | 6.29 ns |
+| `goldman` | 7.24 ns | 7.07 ns |
+| `dose_response` | 18.48 ns | 18.56 ns |
+| `metabolic_tick` | 10.56 ns | 10.59 ns |
+| `protein_lookup` | 3.33 ns | 3.44 ns +3% |
+| `molecular_weight` | 16.07 ns | 16.11 ns |
+| `bioenergy_tick` | 8.57 ns | 12.96 ns +51% |
+| `mixed_inhibition` | -- | 3.30 ns |
+| `ping_pong` | -- | 2.05 ns |
+| `arrhenius` | -- | 5.43 ns |
+| `lineweaver_burk_fit` | -- | 84.44 ns |
+| `enzyme_lookup` | -- | 3.88 ns |
 
 ---
 

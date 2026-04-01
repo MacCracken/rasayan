@@ -236,3 +236,94 @@ fn test_nernst_zero_concentrations() {
     assert!(membrane::nernst(310.0, 1, 4.0, 0.0).abs() < f64::EPSILON);
     assert!(membrane::nernst(310.0, 0, 4.0, 155.0).abs() < f64::EPSILON);
 }
+
+// --- 0.2.0 Expanded kinetics integration ---
+
+#[test]
+fn test_inhibition_hierarchy() {
+    // All inhibition types should reduce rate below uninhibited
+    let base = enzyme::michaelis_menten(1.0, 10.0, 1.0);
+    let comp = enzyme::competitive_inhibition(1.0, 1.0, 10.0, 1.0, 1.0);
+    let uncomp = enzyme::uncompetitive_inhibition(1.0, 1.0, 10.0, 1.0, 1.0);
+    let mixed = enzyme::mixed_inhibition(1.0, 1.0, 10.0, 1.0, 1.0, 1.0);
+    assert!(comp < base);
+    assert!(uncomp < base);
+    assert!(mixed < base);
+}
+
+#[test]
+fn test_reversible_haldane_consistency() {
+    // At equilibrium, the rate should be ~zero
+    let vf = 10.0;
+    let kmf = 1.0;
+    let vr = 5.0;
+    let kmr = 2.0;
+    let keq = enzyme::haldane_keq(vf, kmf, vr, kmr);
+    // At equilibrium: [P]/[S] = Keq, so [P] = Keq * [S]
+    let s = 1.0;
+    let p = keq * s;
+    let rate = enzyme::reversible_michaelis_menten(s, p, vf, kmf, vr, kmr);
+    assert!(
+        rate.abs() < 0.01,
+        "Rate at equilibrium should be ~0, got {rate}"
+    );
+}
+
+#[test]
+fn test_enzyme_db_params_produce_valid_rates() {
+    // Every enzyme in the database should produce a valid rate
+    for enz in enzyme::KNOWN_ENZYMES {
+        let params = enz.params(1e-6);
+        assert!(params.validate().is_ok(), "Invalid params for {}", enz.name);
+        let rate = params.rate(enz.km); // rate at Km
+        assert!(rate > 0.0, "Zero rate for {} at Km", enz.name);
+        assert!(rate.is_finite(), "Non-finite rate for {}", enz.name);
+    }
+}
+
+#[test]
+fn test_lineweaver_burk_and_eadie_hofstee_agree() {
+    let data: Vec<(f64, f64)> = [0.2, 0.5, 1.0, 2.0, 5.0, 10.0]
+        .iter()
+        .map(|&s| (s, enzyme::michaelis_menten(s, 8.0, 0.5)))
+        .collect();
+    let lb = enzyme::lineweaver_burk_fit(&data).unwrap();
+    let eh = enzyme::eadie_hofstee_fit(&data).unwrap();
+    // Both should recover the same Km and Vmax from ideal data
+    assert!(
+        (lb.km - eh.km).abs() < 0.05,
+        "Km mismatch: LB={} EH={}",
+        lb.km,
+        eh.km
+    );
+    assert!(
+        (lb.vmax - eh.vmax).abs() < 0.05,
+        "Vmax mismatch: LB={} EH={}",
+        lb.vmax,
+        eh.vmax
+    );
+}
+
+#[test]
+fn test_kinetic_fit_serde_roundtrip() {
+    let fit = enzyme::lineweaver_burk_fit(&[
+        (0.5, enzyme::michaelis_menten(0.5, 10.0, 1.0)),
+        (1.0, enzyme::michaelis_menten(1.0, 10.0, 1.0)),
+        (5.0, enzyme::michaelis_menten(5.0, 10.0, 1.0)),
+    ])
+    .unwrap();
+    let json = serde_json::to_string(&fit).unwrap();
+    let fit2: enzyme::KineticFit = serde_json::from_str(&json).unwrap();
+    assert!((fit2.km - fit.km).abs() < f64::EPSILON);
+    assert!((fit2.vmax - fit.vmax).abs() < f64::EPSILON);
+}
+
+#[test]
+fn test_arrhenius_temperature_sensitivity() {
+    // Enzyme rate should roughly double for every 10K increase (typical biological range)
+    let k1 = enzyme::arrhenius(1e10, 50_000.0, 300.0);
+    let k2 = enzyme::arrhenius(1e10, 50_000.0, 310.0);
+    let ratio = k2 / k1;
+    // For Ea=50kJ/mol, ratio should be ~1.9 over 10K
+    assert!(ratio > 1.5 && ratio < 3.0, "Ratio={ratio}");
+}
