@@ -7,7 +7,7 @@
 //!
 //! # Architecture
 //!
-//! Sixteen core modules (plus optional `logging`):
+//! Twenty-two core modules (plus optional `logging`):
 //!
 //! - [`enzyme`] — Michaelis-Menten kinetics, competitive/uncompetitive/mixed
 //!   inhibition, substrate inhibition, allosteric regulation (Hill equation),
@@ -66,6 +66,7 @@
 
 pub mod amino_catabolism;
 pub mod beta_oxidation;
+pub mod calcium;
 pub mod constants;
 pub mod energy;
 pub mod enzyme;
@@ -73,12 +74,18 @@ pub mod error;
 pub mod etc;
 pub mod glycolysis;
 pub mod hormonal;
+pub mod jak_stat;
+pub mod mapk;
 pub mod membrane;
 pub mod metabolism;
 pub mod neurotransmitter;
+pub mod nuclear_receptor;
 pub mod pathway;
+pub mod pi3k;
 pub mod protein;
+pub mod receptor;
 pub mod signal;
+pub mod signaling;
 pub mod tca;
 
 #[cfg(feature = "logging")]

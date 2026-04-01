@@ -1,6 +1,6 @@
 # Development Roadmap
 
-> **Status**: Pre-1.0 | **Current**: 0.3.0
+> **Status**: Pre-1.0 | **Current**: 0.4.0
 
 ## Completed
 
@@ -42,17 +42,17 @@
 - [x] BDNF (activity-dependent transcription)
 - [x] Bridge output API: serotonin_synthesis_rate, dopamine_level, norepinephrine_level, gaba_glutamate_ratio, acetylcholine_level, endorphin_level, cortisol_from_hpa, melatonin_from_serotonin
 
+### 0.4.0 — Advanced Signaling (2026-03-31)
+
+- [x] MAPK cascade (Ras→Raf→MEK→ERK, dual phosphorylation, ERK negative feedback)
+- [x] PI3K/Akt/mTOR pathway (PTEN regulation)
+- [x] JAK-STAT pathway (SOCS negative feedback)
+- [x] Calcium oscillation dynamics (IP3R, CICR, SERCA)
+- [x] Receptor desensitization and internalization (GRK, β-arrestin, recycling)
+- [x] Nuclear receptor signaling (hormone→translocation→gene expression delay)
+- [x] Signaling crosstalk network (Ras↔PI3K, Akt→Raf, Ca2+→Ras)
+
 ## Backlog
-
-### 0.4.0 — Advanced Signaling
-
-- [ ] MAPK cascade modeling
-- [ ] JAK-STAT pathway
-- [ ] PI3K/Akt/mTOR pathway
-- [ ] Nuclear receptor signaling
-- [ ] Calcium oscillation dynamics
-- [ ] Receptor desensitization and internalization
-- [ ] Crosstalk between signaling pathways
 
 ### 0.5.0 — Protein Analysis
 

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-03-31
+
+### Added
+
+- **mapk** — MAPK cascade: Ras→Raf→MEK→ERK with dual phosphorylation ultrasensitivity, ERK→Raf negative feedback, growth factor input
+- **pi3k** — PI3K/Akt/mTOR pathway: receptor→PI3K→PIP3→Akt→mTOR growth/survival signaling, PTEN tumor suppressor negative regulation
+- **jak_stat** — JAK-STAT pathway: cytokine→JAK→STAT phosphorylation→dimerization→nuclear translocation, SOCS delayed negative feedback
+- **calcium** — Calcium oscillation dynamics: IP3R-mediated ER release, CICR positive feedback, SERCA reuptake, IP3R Ca2+-dependent inactivation
+- **receptor** — Receptor desensitization: GRK phosphorylation→β-arrestin→internalization→recycling/degradation lifecycle
+- **nuclear_receptor** — Nuclear receptor signaling: hormone binding→nuclear translocation→delayed gene expression, steroid/thyroid receptor model
+- **signaling** — Signaling network: unified simulation of MAPK/PI3K/JAK-STAT/Ca2+ with crosstalk (Ras→PI3K, Akt→Raf inhibition, Ca2+→Ras via RasGRP)
+
 ## [0.3.0] - 2026-03-31
 
 ### Added

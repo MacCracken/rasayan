@@ -1,31 +1,33 @@
 # Benchmarks
 
-Latest: **2026-04-01T05:23:41Z** -- commit `cd0f5a3`
+Latest: **2026-04-01T06:39:28Z** -- commit `e981bac`
 
-Tracking: `9db240e` (baseline) -> `c2522aa` (optimized) -> `cd0f5a3` (current)
+Tracking: `9db240e` (baseline) -> `c2522aa` (optimized) -> `e981bac` (current)
 
-| Benchmark | Baseline (`9db240e`) | Mid (`c2522aa`) | Current (`cd0f5a3`) |
+| Benchmark | Baseline (`9db240e`) | Mid (`c2522aa`) | Current (`e981bac`) |
 |-----------|------|------|------|
-| `michaelis_menten` | 1.22 ns | 1.24 ns | 1.30 ns +6% |
-| `hill_equation` | 19.09 ns | 18.44 ns **-3%** | 19.34 ns |
-| `nernst` | 6.38 ns | 6.38 ns | 6.59 ns +3% |
-| `goldman` | 7.24 ns | 7.25 ns | 7.36 ns |
-| `dose_response` | 18.48 ns | 18.50 ns | 18.55 ns |
-| `metabolic_tick` | 10.56 ns | 21.98 ns +108% | 22.17 ns +110% |
-| `protein_lookup` | 3.33 ns | 3.56 ns +7% | 3.62 ns +9% |
-| `molecular_weight` | 16.07 ns | 20.44 ns +27% | 20.72 ns +29% |
-| `bioenergy_tick` | 8.57 ns | 13.17 ns +54% | 10.80 ns +26% |
-| `mixed_inhibition` | -- | 3.37 ns | 3.51 ns |
-| `ping_pong` | -- | 2.07 ns | 2.47 ns |
-| `arrhenius` | -- | 5.54 ns | 5.66 ns |
-| `lineweaver_burk_fit` | -- | 89.33 ns | 91.14 ns |
-| `enzyme_lookup` | -- | 3.75 ns | 3.87 ns |
-| `glycolysis_tick` | -- | 79.22 ns | 79.95 ns |
-| `tca_tick` | -- | 55.32 ns | 54.61 ns |
-| `etc_tick` | -- | -- | 20.48 ns |
-| `beta_ox_tick` | -- | -- | 8.86 ns |
-| `amino_catab_tick` | -- | -- | 9.62 ns |
-| `network_tick` | -- | -- | 176.9 ns |
+| `michaelis_menten` | 1.22 ns | 1.24 ns | 1.20 ns |
+| `hill_equation` | 19.09 ns | 18.44 ns **-3%** | 18.15 ns **-5%** |
+| `nernst` | 6.38 ns | 6.38 ns | 6.20 ns |
+| `goldman` | 7.24 ns | 7.25 ns | 7.21 ns |
+| `dose_response` | 18.48 ns | 18.50 ns | 18.04 ns |
+| `metabolic_tick` | 10.56 ns | 21.98 ns +108% | 21.57 ns +104% |
+| `protein_lookup` | 3.33 ns | 3.56 ns +7% | 3.41 ns |
+| `molecular_weight` | 16.07 ns | 20.44 ns +27% | 20.32 ns +26% |
+| `bioenergy_tick` | 8.57 ns | 13.17 ns +54% | 12.86 ns +50% |
+| `mixed_inhibition` | -- | 3.37 ns | 3.27 ns |
+| `ping_pong` | -- | 2.07 ns | 2.02 ns |
+| `arrhenius` | -- | 5.54 ns | 5.58 ns |
+| `lineweaver_burk_fit` | -- | 89.33 ns | 80.47 ns |
+| `enzyme_lookup` | -- | 3.75 ns | 3.68 ns |
+| `glycolysis_tick` | -- | 79.22 ns | 77.46 ns |
+| `tca_tick` | -- | 55.32 ns | 54.05 ns |
+| `etc_tick` | -- | -- | 19.83 ns |
+| `beta_ox_tick` | -- | -- | 8.63 ns |
+| `amino_catab_tick` | -- | -- | 9.22 ns |
+| `network_tick` | -- | -- | 171.6 ns |
+| `mapk_tick` | -- | -- | 13.89 ns |
+| `signaling_tick` | -- | -- | 49.25 ns |
 
 ---
 

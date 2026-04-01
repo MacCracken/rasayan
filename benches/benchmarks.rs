@@ -220,8 +220,37 @@ criterion_group!(
     bench_beta_ox_tick,
     bench_amino_catab_tick,
     bench_network_tick,
+    bench_mapk_tick,
+    bench_signaling_tick,
 );
 criterion_main!(benches);
+
+fn bench_mapk_tick(c: &mut Criterion) {
+    use rasayan::mapk::{MapkConfig, MapkState};
+    let config = MapkConfig::default();
+    c.bench_function("mapk_tick", |b| {
+        b.iter(|| {
+            let mut state = MapkState::default();
+            state.tick(black_box(&config), black_box(0.5), black_box(0.01))
+        })
+    });
+}
+
+fn bench_signaling_tick(c: &mut Criterion) {
+    use rasayan::signaling::{SignalingConfig, SignalingInput, SignalingNetwork};
+    let config = SignalingConfig::default();
+    let input = SignalingInput {
+        growth_factor: 0.5,
+        cytokine: 0.3,
+        ip3: 0.2,
+    };
+    c.bench_function("signaling_tick", |b| {
+        b.iter(|| {
+            let mut net = SignalingNetwork::default();
+            net.tick(black_box(&config), black_box(&input), black_box(0.01))
+        })
+    });
+}
 
 fn bench_amino_catab_tick(c: &mut Criterion) {
     use rasayan::amino_catabolism::{AminoCatabConfig, AminoCatabState};
