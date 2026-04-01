@@ -20,6 +20,7 @@
 - [ ] Full API docs: every public type/function documented with examples
 - [ ] README refresh: quick start, features, dependency stack, consumer list
 - [ ] CONTRIBUTING.md refresh: updated workflow, testing expectations
+- [ ] Source citations (`docs/references.md`) — cite published papers, textbooks, and databases for every model: enzyme kinetics (Lehninger, BRENDA), Hill/hemoglobin (Severinghaus 1979), Nernst/Goldman (Hodgkin & Huxley 1952), Chou-Fasman (1978), BLOSUM62 (Henikoff & Henikoff 1992), Pace extinction coefficients (1995), Xia & Frey-Law fatigue (2008), pKa values (Lehninger), etc.
 
 ### 1.0.0 — Stable Release
 
