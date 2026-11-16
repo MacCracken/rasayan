@@ -28,6 +28,25 @@ metabolic pathways, signal transduction, protein structure, membrane transport, 
 and bioenergetics with precise, quantitative answers. Cite published Km, kcat, \
 and Ki values when relevant. Use standard biochemistry nomenclature.";
 
+/// Make sure a process-wide rustls crypto provider exists before hoosh builds
+/// its HTTP client.
+///
+/// hoosh 1.3 compiles reqwest with `rustls-no-provider`; with no default
+/// provider installed, `HooshClient::new` panics inside reqwest. This installs
+/// ring's provider once. A provider the application installed itself is kept.
+fn ensure_crypto_provider() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            // `Err` means another thread installed one first, which is fine.
+            let installed = rustls::crypto::ring::default_provider()
+                .install_default()
+                .is_ok();
+            tracing::debug!(installed, "rasayan::ai rustls crypto provider");
+        }
+    });
+}
+
 /// A biochemistry-focused AI client wrapping hoosh.
 #[derive(Clone)]
 pub struct BiochemClient {
@@ -44,6 +63,7 @@ impl BiochemClient {
     /// - `model` — model identifier (e.g., `"llama3"`, `"claude-sonnet-4-20250514"`)
     #[must_use]
     pub fn new(base_url: impl Into<String>, model: impl Into<String>) -> Self {
+        ensure_crypto_provider();
         Self {
             client: HooshClient::new(base_url),
             model: model.into(),
@@ -63,6 +83,7 @@ impl BiochemClient {
     /// Returns the full [`InferenceResponse`] including text, token usage,
     /// and latency.
     pub async fn query(&self, question: &str) -> Result<InferenceResponse, hoosh::HooshError> {
+        tracing::debug!(model = %self.model, prompt_len = question.len(), "rasayan::ai query");
         let request = InferenceRequest {
             model: self.model.clone(),
             prompt: question.to_string(),
@@ -82,7 +103,9 @@ impl BiochemClient {
         &self,
         messages: Vec<Message>,
     ) -> Result<InferenceResponse, hoosh::HooshError> {
-        let mut all_messages = vec![Message::new(Role::System, &self.system_prompt)];
+        tracing::debug!(model = %self.model, turns = messages.len(), "rasayan::ai chat");
+        let mut all_messages = Vec::with_capacity(messages.len() + 1);
+        all_messages.push(Message::new(Role::System, &self.system_prompt));
         all_messages.extend(messages);
 
         let request = InferenceRequest {
@@ -167,5 +190,14 @@ mod tests {
     fn test_client_clone() {
         let client = BiochemClient::new("http://localhost:8088", "llama3");
         let _clone = client.clone();
+    }
+
+    #[test]
+    fn test_crypto_provider_installed() {
+        // Regression: hoosh 1.3 + reqwest `rustls-no-provider` panicked in
+        // `HooshClient::new` when no provider was installed.
+        let _a = BiochemClient::new("http://localhost:8088", "llama3");
+        let _b = BiochemClient::new("http://localhost:8089", "llama3");
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
     }
 }

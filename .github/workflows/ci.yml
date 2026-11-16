@@ -58,11 +58,18 @@ jobs:
       - run: cargo test --doc
 
   msrv:
-    name: MSRV (1.89)
+    name: MSRV (1.100)
     runs-on: ubuntu-latest
+    # rust-toolchain.toml pins channel "stable", which outranks the default
+    # toolchain the action sets, so without this the job silently ran stable.
+    # RUSTUP_TOOLCHAIN outranks rust-toolchain.toml.
+    env:
+      RUSTUP_TOOLCHAIN: "1.100"
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.89.0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.100"
       - run: cargo check --all-features
       - run: cargo test --all-features
 

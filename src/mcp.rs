@@ -22,8 +22,24 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bote::dispatch::ToolHandler;
-use bote::{Dispatcher, ToolDef, ToolRegistry, ToolSchema};
+use bote::{Dispatcher, ToolAnnotations, ToolDef, ToolRegistry, ToolSchema};
 use serde_json::{Value, json};
+
+// ---------------------------------------------------------------------------
+// Input limits
+// ---------------------------------------------------------------------------
+
+/// Longest sequence (in bytes, i.e. residues for valid input) any tool accepts.
+///
+/// Titin, the largest known human protein, is ~34,350 residues; this leaves
+/// headroom while bounding the work an untrusted caller can request.
+pub const MAX_SEQUENCE_LEN: usize = 100_000;
+
+/// Largest Needleman-Wunsch DP problem (`len(seq_a) × len(seq_b)`) accepted.
+///
+/// Alignment is O(m·n) time, so this caps a single call at roughly tens of
+/// milliseconds (e.g. two 5,000-residue sequences).
+pub const MAX_ALIGNMENT_CELLS: usize = 25_000_000;
 
 // ---------------------------------------------------------------------------
 // Schema helpers
@@ -81,6 +97,10 @@ fn kinetics_def() -> ToolDef {
     props.insert("temp".into(), prop_f64("Temperature in Kelvin"));
     props.insert("q10_value".into(), prop_f64("Q10 coefficient"));
     props.insert(
+        "temp_ref".into(),
+        prop_f64("Reference temperature in Kelvin for q10 (default 310)"),
+    );
+    props.insert(
         "substrate_b".into(),
         prop_f64("Second substrate [B] (ping_pong/sequential)"),
     );
@@ -105,11 +125,15 @@ fn metabolism_def() -> ToolDef {
     );
     props.insert(
         "amount".into(),
-        prop_f64("Amount of ATP to consume or glucose for regeneration"),
+        prop_f64("Amount of ATP to consume (consume_atp), >= 0"),
+    );
+    props.insert(
+        "dt".into(),
+        prop_f64("Time step in seconds for regenerate_atp, >= 0 (default 1.0)"),
     );
     props.insert(
         "oxygen".into(),
-        prop_f64("Oxygen fraction (0-1) for regeneration"),
+        prop_f64("Oxygen fraction (0-1) for regenerate_atp"),
     );
 
     ToolDef::new(
@@ -269,8 +293,50 @@ fn get_i64(params: &Value, key: &str) -> Option<i64> {
     params.get(key).and_then(Value::as_i64)
 }
 
+/// Read an integer parameter that must fit in `i32`.
+///
+/// `Ok(None)` if absent, `Err` if present but out of range (rather than
+/// silently truncating with `as`).
+fn get_i32(params: &Value, key: &str) -> Result<Option<i32>, Value> {
+    match get_i64(params, key) {
+        None => Ok(None),
+        Some(v) => i32::try_from(v)
+            .map(Some)
+            .map_err(|_| err(&format!("'{key}' out of range: {v}"))),
+    }
+}
+
+/// Read a sequence parameter, enforcing [`MAX_SEQUENCE_LEN`].
+fn get_seq<'a>(params: &'a Value, key: &str, usage: &str) -> Result<&'a str, Value> {
+    let seq = get_str(params, key).ok_or_else(|| err(usage))?;
+    if seq.len() > MAX_SEQUENCE_LEN {
+        return Err(err(&format!(
+            "'{key}' too long: {} bytes (max {MAX_SEQUENCE_LEN})",
+            seq.len()
+        )));
+    }
+    Ok(seq)
+}
+
+/// Reject non-finite results (division by zero, ln of 0, overflow) instead
+/// of letting them serialize as JSON `null`.
+fn finite(name: &str, value: f64) -> Result<f64, Value> {
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(err(&format!(
+            "{name} is not finite ({value}) — check inputs for zero/negative constants"
+        )))
+    }
+}
+
 fn err(msg: &str) -> Value {
     json!({"error": msg})
+}
+
+/// Collapse a handler body's `Result` into the JSON reply.
+fn reply(result: Result<Value, Value>) -> Value {
+    result.unwrap_or_else(|e| e)
 }
 
 fn kinetics_handler(params: Value) -> Value {
@@ -289,8 +355,10 @@ fn kinetics_handler(params: Value) -> Value {
                 (Some(s), Some(v), Some(k)) => (s, v, k),
                 _ => return err("michaelis_menten requires: substrate, vmax, km"),
             };
-            let rate = crate::enzyme::michaelis_menten(s, vmax, km);
-            json!({"rate": rate, "function": "michaelis_menten"})
+            reply(
+                finite("rate", crate::enzyme::michaelis_menten(s, vmax, km))
+                    .map(|rate| json!({"rate": rate, "function": "michaelis_menten"})),
+            )
         }
         "hill" => {
             let (s, vmax, km, n) = match (
@@ -302,8 +370,10 @@ fn kinetics_handler(params: Value) -> Value {
                 (Some(s), Some(v), Some(k), Some(n)) => (s, v, k, n),
                 _ => return err("hill requires: substrate, vmax, km, n"),
             };
-            let rate = crate::enzyme::hill_equation(s, vmax, km, n);
-            json!({"rate": rate, "function": "hill"})
+            reply(
+                finite("rate", crate::enzyme::hill_equation(s, vmax, km, n))
+                    .map(|rate| json!({"rate": rate, "function": "hill"})),
+            )
         }
         "competitive_inhibition" => {
             let (s, i, vmax, km, ki) = match (
@@ -320,8 +390,13 @@ fn kinetics_handler(params: Value) -> Value {
                     );
                 }
             };
-            let rate = crate::enzyme::competitive_inhibition(s, i, vmax, km, ki);
-            json!({"rate": rate, "function": "competitive_inhibition"})
+            reply(
+                finite(
+                    "rate",
+                    crate::enzyme::competitive_inhibition(s, i, vmax, km, ki),
+                )
+                .map(|rate| json!({"rate": rate, "function": "competitive_inhibition"})),
+            )
         }
         "mixed_inhibition" => {
             let (s, i, vmax, km, ki, ki_p) = match (
@@ -339,8 +414,13 @@ fn kinetics_handler(params: Value) -> Value {
                     );
                 }
             };
-            let rate = crate::enzyme::mixed_inhibition(s, i, vmax, km, ki, ki_p);
-            json!({"rate": rate, "function": "mixed_inhibition"})
+            reply(
+                finite(
+                    "rate",
+                    crate::enzyme::mixed_inhibition(s, i, vmax, km, ki, ki_p),
+                )
+                .map(|rate| json!({"rate": rate, "function": "mixed_inhibition"})),
+            )
         }
         "substrate_inhibition" => {
             let (s, vmax, km, ksi) = match (
@@ -352,8 +432,13 @@ fn kinetics_handler(params: Value) -> Value {
                 (Some(s), Some(v), Some(k), Some(ksi)) => (s, v, k, ksi),
                 _ => return err("substrate_inhibition requires: substrate, vmax, km, ksi"),
             };
-            let rate = crate::enzyme::substrate_inhibition(s, vmax, km, ksi);
-            json!({"rate": rate, "function": "substrate_inhibition"})
+            reply(
+                finite(
+                    "rate",
+                    crate::enzyme::substrate_inhibition(s, vmax, km, ksi),
+                )
+                .map(|rate| json!({"rate": rate, "function": "substrate_inhibition"})),
+            )
         }
         "arrhenius" => {
             let (a, ea, temp) = match (
@@ -364,8 +449,10 @@ fn kinetics_handler(params: Value) -> Value {
                 (Some(a), Some(ea), Some(t)) => (a, ea, t),
                 _ => return err("arrhenius requires: a, ea, temp"),
             };
-            let rate = crate::enzyme::arrhenius(a, ea, temp);
-            json!({"rate": rate, "function": "arrhenius"})
+            reply(
+                finite("rate", crate::enzyme::arrhenius(a, ea, temp))
+                    .map(|rate| json!({"rate": rate, "function": "arrhenius"})),
+            )
         }
         "q10" => {
             let (rate, q10, temp) = match (
@@ -380,9 +467,15 @@ fn kinetics_handler(params: Value) -> Value {
                     );
                 }
             };
-            let temp_ref = get_f64(&params, "km").unwrap_or(310.0); // reuse km field as ref temp
-            let result = crate::enzyme::q10_rate(rate, q10, temp, temp_ref);
-            json!({"rate": result, "function": "q10"})
+            // `km` was the original (undocumented) carrier for the reference
+            // temperature; still honoured when `temp_ref` is absent.
+            let temp_ref = get_f64(&params, "temp_ref")
+                .or_else(|| get_f64(&params, "km"))
+                .unwrap_or(310.0);
+            reply(
+                finite("rate", crate::enzyme::q10_rate(rate, q10, temp, temp_ref))
+                    .map(|r| json!({"rate": r, "function": "q10", "temp_ref": temp_ref})),
+            )
         }
         "ping_pong" => {
             let (a, b, vmax, km_a, km_b) = match (
@@ -395,8 +488,10 @@ fn kinetics_handler(params: Value) -> Value {
                 (Some(a), Some(b), Some(v), Some(ka), Some(kb)) => (a, b, v, ka, kb),
                 _ => return err("ping_pong requires: substrate, substrate_b, vmax, km, km_b"),
             };
-            let rate = crate::enzyme::ping_pong(a, b, vmax, km_a, km_b);
-            json!({"rate": rate, "function": "ping_pong"})
+            reply(
+                finite("rate", crate::enzyme::ping_pong(a, b, vmax, km_a, km_b))
+                    .map(|rate| json!({"rate": rate, "function": "ping_pong"})),
+            )
         }
         "sequential" => {
             let (a, b, vmax, km_a, km_b, ki_a) = match (
@@ -410,8 +505,13 @@ fn kinetics_handler(params: Value) -> Value {
                 (Some(a), Some(b), Some(v), Some(ka), Some(kb), Some(ki)) => (a, b, v, ka, kb, ki),
                 _ => return err("sequential requires: substrate, substrate_b, vmax, km, km_b, ki"),
             };
-            let rate = crate::enzyme::sequential_bisubstrate(a, b, vmax, km_a, km_b, ki_a);
-            json!({"rate": rate, "function": "sequential"})
+            reply(
+                finite(
+                    "rate",
+                    crate::enzyme::sequential_bisubstrate(a, b, vmax, km_a, km_b, ki_a),
+                )
+                .map(|rate| json!({"rate": rate, "function": "sequential"})),
+            )
         }
         _ => err(&format!("unknown kinetics function: {func}")),
     }
@@ -438,7 +538,10 @@ fn metabolism_handler(params: Value) -> Value {
         }
         "consume_atp" => {
             let amount = get_f64(&params, "amount").unwrap_or(1.0);
-            state.consume_atp(amount);
+            if !(amount.is_finite() && amount >= 0.0) {
+                return err("consume_atp: 'amount' must be a finite number >= 0");
+            }
+            let _consumed = state.consume_atp(amount);
             json!({
                 "atp": state.atp,
                 "adp": state.adp,
@@ -446,8 +549,20 @@ fn metabolism_handler(params: Value) -> Value {
             })
         }
         "regenerate_atp" => {
-            let glucose = get_f64(&params, "amount").unwrap_or(1.0);
-            state.regenerate_atp(glucose);
+            // `amount` was historically passed through as the time step.
+            let dt = get_f64(&params, "dt")
+                .or_else(|| get_f64(&params, "amount"))
+                .unwrap_or(1.0);
+            if !(dt.is_finite() && dt >= 0.0) {
+                return err("regenerate_atp: 'dt' must be a finite number >= 0");
+            }
+            if let Some(o2) = get_f64(&params, "oxygen") {
+                if !(0.0..=1.0).contains(&o2) {
+                    return err("regenerate_atp: 'oxygen' must be in [0, 1]");
+                }
+                state.oxygen = o2;
+            }
+            state.regenerate_atp(dt);
             json!({
                 "atp": state.atp,
                 "adp": state.adp,
@@ -476,16 +591,20 @@ fn signal_handler(params: Value) -> Value {
                 (Some(l), Some(e), Some(m), Some(n)) => (l, e, m, n),
                 _ => return err("dose_response requires: ligand, ec50, emax, n"),
             };
-            let response = crate::signal::dose_response(lig, ec50, emax, n);
-            json!({"response": response, "function": "dose_response"})
+            reply(
+                finite("response", crate::signal::dose_response(lig, emax, ec50, n))
+                    .map(|r| json!({"response": r, "function": "dose_response"})),
+            )
         }
         "receptor_occupancy" => {
             let (lig, kd) = match (get_f64(&params, "ligand"), get_f64(&params, "ec50")) {
                 (Some(l), Some(k)) => (l, k),
                 _ => return err("receptor_occupancy requires: ligand, ec50 (as Kd)"),
             };
-            let occupancy = crate::signal::receptor_occupancy(lig, kd);
-            json!({"occupancy": occupancy, "function": "receptor_occupancy"})
+            reply(
+                finite("occupancy", crate::signal::receptor_occupancy(lig, kd))
+                    .map(|o| json!({"occupancy": o, "function": "receptor_occupancy"})),
+            )
         }
         _ => err(&format!("unknown signal function: {func}")),
     }
@@ -499,29 +618,34 @@ fn protein_handler(params: Value) -> Value {
 
     match func {
         "molecular_weight" => {
-            let seq = match get_str(&params, "sequence") {
-                Some(s) => s,
-                None => return err("molecular_weight requires: sequence"),
+            let seq = match get_seq(&params, "sequence", "molecular_weight requires: sequence") {
+                Ok(s) => s,
+                Err(e) => return e,
             };
+            if seq.is_empty() {
+                return err("molecular_weight: empty sequence");
+            }
             match crate::protein::molecular_weight(seq) {
-                Some(mw) => json!({"molecular_weight_da": mw, "sequence_length": seq.len()}),
+                Some(mw) => {
+                    json!({"molecular_weight_da": mw, "sequence_length": seq.chars().count()})
+                }
                 None => err("invalid sequence — contains unknown residues"),
             }
         }
         "composition" => {
-            let seq = match get_str(&params, "sequence") {
-                Some(s) => s,
-                None => return err("composition requires: sequence"),
+            let seq = match get_seq(&params, "sequence", "composition requires: sequence") {
+                Ok(s) => s,
+                Err(e) => return e,
             };
             let comp = crate::protein::composition(seq);
             let map: HashMap<String, usize> =
                 comp.into_iter().map(|(c, n)| (c.to_string(), n)).collect();
-            json!({"composition": map, "sequence_length": seq.len()})
+            json!({"composition": map, "sequence_length": seq.chars().count()})
         }
         "isoelectric_point" => {
-            let seq = match get_str(&params, "sequence") {
-                Some(s) => s,
-                None => return err("isoelectric_point requires: sequence"),
+            let seq = match get_seq(&params, "sequence", "isoelectric_point requires: sequence") {
+                Ok(s) => s,
+                Err(e) => return e,
             };
             match crate::protein::isoelectric_point(seq) {
                 Some(pi) => json!({"pI": pi}),
@@ -529,9 +653,13 @@ fn protein_handler(params: Value) -> Value {
             }
         }
         "extinction_coefficient" => {
-            let seq = match get_str(&params, "sequence") {
-                Some(s) => s,
-                None => return err("extinction_coefficient requires: sequence"),
+            let seq = match get_seq(
+                &params,
+                "sequence",
+                "extinction_coefficient requires: sequence",
+            ) {
+                Ok(s) => s,
+                Err(e) => return e,
             };
             match crate::protein::extinction_coefficient(seq) {
                 Some(ec) => json!({"oxidized": ec.oxidized, "reduced": ec.reduced}),
@@ -539,9 +667,9 @@ fn protein_handler(params: Value) -> Value {
             }
         }
         "chou_fasman" => {
-            let seq = match get_str(&params, "sequence") {
-                Some(s) => s,
-                None => return err("chou_fasman requires: sequence"),
+            let seq = match get_seq(&params, "sequence", "chou_fasman requires: sequence") {
+                Ok(s) => s,
+                Err(e) => return e,
             };
             match crate::protein::chou_fasman(seq) {
                 Some(ss) => {
@@ -560,18 +688,22 @@ fn protein_handler(params: Value) -> Value {
             }
         }
         "net_charge" => {
-            let seq = match get_str(&params, "sequence") {
-                Some(s) => s,
-                None => return err("net_charge requires: sequence"),
+            let seq = match get_seq(&params, "sequence", "net_charge requires: sequence") {
+                Ok(s) => s,
+                Err(e) => return e,
             };
             let ph = get_f64(&params, "ph").unwrap_or(7.0);
+            if !(0.0..=14.0).contains(&ph) {
+                return err("net_charge: 'ph' must be in [0, 14]");
+            }
             let charge = crate::protein::net_charge(seq, ph);
             json!({"net_charge": charge, "ph": ph})
         }
         "lookup" => {
-            let code = match get_str(&params, "code").and_then(|s| s.chars().next()) {
-                Some(c) => c,
-                None => return err("lookup requires: code (single letter)"),
+            let mut chars = get_str(&params, "code").unwrap_or_default().chars();
+            let code = match (chars.next(), chars.next()) {
+                (Some(c), None) => c,
+                _ => return err("lookup requires: code (exactly one letter)"),
             };
             match crate::protein::lookup(code) {
                 Some(aa) => json!({
@@ -597,24 +729,44 @@ fn membrane_handler(params: Value) -> Value {
 
     match func {
         "nernst" => {
+            let z = match get_i32(&params, "z") {
+                Ok(z) => z,
+                Err(e) => return e,
+            };
             let (temp, z, c_out, c_in) = match (
                 get_f64(&params, "temp"),
-                get_i64(&params, "z"),
+                z,
                 get_f64(&params, "c_out"),
                 get_f64(&params, "c_in"),
             ) {
-                (Some(t), Some(z), Some(co), Some(ci)) => (t, z as i32, co, ci),
+                (Some(t), Some(z), Some(co), Some(ci)) => (t, z, co, ci),
                 _ => return err("nernst requires: temp, z, c_out, c_in"),
             };
-            let v = crate::membrane::nernst(temp, z, c_out, c_in);
-            json!({"potential_v": v, "potential_mv": v * 1000.0})
+            if z == 0 || temp <= 0.0 || c_out <= 0.0 || c_in <= 0.0 {
+                return err("nernst requires z != 0, temp > 0, c_out > 0, c_in > 0");
+            }
+            reply(
+                finite("potential", crate::membrane::nernst(temp, z, c_out, c_in))
+                    // The library returns millivolts.
+                    .map(|mv| json!({"potential_v": mv / 1000.0, "potential_mv": mv})),
+            )
         }
         "goldman" => {
             let temp = get_f64(&params, "temp").unwrap_or(310.0);
             let ions = crate::membrane::IonicState::default();
             let perm = crate::membrane::MembranePermeability::default();
-            let v = crate::membrane::goldman(temp, &ions, &perm);
-            json!({"potential_v": v, "potential_mv": v * 1000.0, "note": "using default neuron ionic state"})
+            if temp <= 0.0 {
+                return err("goldman requires temp > 0");
+            }
+            reply(
+                finite("potential", crate::membrane::goldman(temp, &ions, &perm)).map(|mv| {
+                    json!({
+                        "potential_v": mv / 1000.0,
+                        "potential_mv": mv,
+                        "note": "using default neuron ionic state",
+                    })
+                }),
+            )
         }
         "fick" => {
             let (d, dc, dx) = match (
@@ -629,8 +781,7 @@ fn membrane_handler(params: Value) -> Value {
                     );
                 }
             };
-            let flux = crate::membrane::fick_flux(d, dc, dx);
-            json!({"flux": flux})
+            reply(finite("flux", crate::membrane::fick_flux(d, dc, dx)).map(|f| json!({"flux": f})))
         }
         _ => err(&format!("unknown membrane function: {func}")),
     }
@@ -643,8 +794,13 @@ fn alignment_handler(params: Value) -> Value {
     };
 
     let matrix = match get_str(&params, "matrix").unwrap_or("blosum62") {
+        "blosum62" => crate::alignment::Matrix::Blosum62,
         "pam250" => crate::alignment::Matrix::Pam250,
-        _ => crate::alignment::Matrix::Blosum62,
+        other => {
+            return err(&format!(
+                "unknown matrix: {other} (expected blosum62 or pam250)"
+            ));
+        }
     };
 
     match func {
@@ -664,9 +820,13 @@ fn alignment_handler(params: Value) -> Value {
             }
         }
         "score" => {
-            let (a, b) = match (get_str(&params, "seq_a"), get_str(&params, "seq_b")) {
-                (Some(a), Some(b)) => (a, b),
-                _ => return err("score requires: seq_a, seq_b (equal length)"),
+            const USAGE: &str = "score requires: seq_a, seq_b (equal length)";
+            let (a, b) = match (
+                get_seq(&params, "seq_a", USAGE),
+                get_seq(&params, "seq_b", USAGE),
+            ) {
+                (Ok(a), Ok(b)) => (a, b),
+                (Err(e), _) | (_, Err(e)) => return e,
             };
             match crate::alignment::score_alignment(a, b, matrix) {
                 Some(r) => json!({
@@ -681,11 +841,25 @@ fn alignment_handler(params: Value) -> Value {
             }
         }
         "needleman_wunsch" => {
-            let (a, b) = match (get_str(&params, "seq_a"), get_str(&params, "seq_b")) {
-                (Some(a), Some(b)) => (a, b),
-                _ => return err("needleman_wunsch requires: seq_a, seq_b"),
+            const USAGE: &str = "needleman_wunsch requires: seq_a, seq_b";
+            let (a, b) = match (
+                get_seq(&params, "seq_a", USAGE),
+                get_seq(&params, "seq_b", USAGE),
+            ) {
+                (Ok(a), Ok(b)) => (a, b),
+                (Err(e), _) | (_, Err(e)) => return e,
             };
-            let gap = get_i64(&params, "gap_penalty").unwrap_or(-4) as i32;
+            if a.len().saturating_mul(b.len()) > MAX_ALIGNMENT_CELLS {
+                return err(&format!(
+                    "needleman_wunsch: {} x {} exceeds {MAX_ALIGNMENT_CELLS} DP cells",
+                    a.len(),
+                    b.len()
+                ));
+            }
+            let gap = match get_i32(&params, "gap_penalty") {
+                Ok(g) => g.unwrap_or(-4),
+                Err(e) => return e,
+            };
             match crate::alignment::needleman_wunsch(a, b, matrix, gap) {
                 Some(s) => json!({"score": s, "gap_penalty": gap}),
                 None => err("alignment failed — check sequences contain valid residues"),
@@ -696,9 +870,9 @@ fn alignment_handler(params: Value) -> Value {
 }
 
 fn ptm_handler(params: Value) -> Value {
-    let seq = match get_str(&params, "sequence") {
-        Some(s) => s,
-        None => return err("missing 'sequence' parameter"),
+    let seq = match get_seq(&params, "sequence", "missing 'sequence' parameter") {
+        Ok(s) => s,
+        Err(e) => return e,
     };
     match crate::ptm::scan_ptm_sites(seq) {
         Some(sites) => {
@@ -720,9 +894,9 @@ fn ptm_handler(params: Value) -> Value {
 }
 
 fn domain_handler(params: Value) -> Value {
-    let seq = match get_str(&params, "sequence") {
-        Some(s) => s,
-        None => return err("missing 'sequence' parameter"),
+    let seq = match get_seq(&params, "sequence", "missing 'sequence' parameter") {
+        Ok(s) => s,
+        Err(e) => return e,
     };
     match crate::domain::scan_domains(seq) {
         Some(hits) => {
@@ -747,10 +921,8 @@ fn domain_handler(params: Value) -> Value {
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Register all rasayan MCP tools with the given dispatcher.
-///
-/// Returns the number of tools registered (currently 8).
-pub fn register_tools(dispatcher: &mut Dispatcher) -> usize {
+/// Every tool definition paired with its handler, annotated read-only.
+fn tools() -> Vec<(ToolDef, ToolHandler)> {
     let tools: Vec<(ToolDef, ToolHandler)> = vec![
         (kinetics_def(), Arc::new(kinetics_handler)),
         (metabolism_def(), Arc::new(metabolism_handler)),
@@ -761,14 +933,30 @@ pub fn register_tools(dispatcher: &mut Dispatcher) -> usize {
         (ptm_def(), Arc::new(ptm_handler)),
         (domain_def(), Arc::new(domain_handler)),
     ];
+    tools
+        .into_iter()
+        .map(|(def, handler)| (def.with_annotations(ToolAnnotations::read_only()), handler))
+        .collect()
+}
 
-    let count = tools.len();
-    for (def, handler) in tools {
+/// Register all rasayan MCP tools with the given dispatcher.
+///
+/// Every tool is a pure computation, so each is annotated read-only and
+/// idempotent. Returns the number of tools successfully registered
+/// (currently 8); failures are logged at `warn`.
+pub fn register_tools(dispatcher: &mut Dispatcher) -> usize {
+    let mut registered = 0;
+    for (def, handler) in tools() {
         let name = def.name.clone();
-        let _ = dispatcher.register_tool(def, handler);
-        tracing::debug!(tool = %name, "registered MCP tool");
+        match dispatcher.register_tool(def, handler) {
+            Ok(()) => {
+                registered += 1;
+                tracing::debug!(tool = %name, "registered MCP tool");
+            }
+            Err(e) => tracing::warn!(tool = %name, error = %e, "failed to register MCP tool"),
+        }
     }
-    count
+    registered
 }
 
 /// Create a new dispatcher pre-loaded with all rasayan tools.
@@ -802,8 +990,145 @@ mod tests {
     #[test]
     fn test_create_dispatcher() {
         let dispatcher = create_dispatcher();
-        // Verify tools are registered by dispatching a request
-        let _ = dispatcher; // just ensure it compiles and doesn't panic
+        let req = bote::JsonRpcRequest::new(1, "tools/list");
+        let resp = dispatcher.dispatch(&req).expect("tools/list response");
+        let result = resp.result.expect("tools/list result");
+        let tools = result["tools"].as_array().expect("tools array");
+        assert_eq!(tools.len(), tool_names().len());
+        for name in tool_names() {
+            assert!(tools.iter().any(|t| t["name"] == name), "{name} not listed");
+        }
+    }
+
+    #[test]
+    fn test_tools_annotated_read_only() {
+        let defs = tools();
+        assert_eq!(defs.len(), tool_names().len());
+        for (def, _) in &defs {
+            assert!(tool_names().contains(&def.name.as_str()), "{}", def.name);
+            let ann = def.annotations.as_ref().expect("annotations");
+            assert_eq!(ann.read_only_hint, Some(true), "{}", def.name);
+            assert_eq!(ann.destructive_hint, Some(false), "{}", def.name);
+        }
+    }
+
+    #[test]
+    fn test_register_tools_counts_successes() {
+        let mut dispatcher = Dispatcher::new(ToolRegistry::new());
+        assert_eq!(register_tools(&mut dispatcher), 8);
+    }
+
+    #[test]
+    fn test_dispatch_tools_call_end_to_end() {
+        let dispatcher = create_dispatcher();
+        let req = bote::JsonRpcRequest::new(1, "tools/call").with_params(json!({
+            "name": "rasayan_kinetics",
+            "arguments": {"function": "michaelis_menten", "substrate": 1.0, "vmax": 10.0, "km": 1.0},
+        }));
+        let resp = dispatcher.dispatch(&req).expect("response");
+        assert!(resp.error.is_none(), "{:?}", resp.error);
+    }
+
+    #[test]
+    fn test_sequence_length_cap() {
+        let long = "A".repeat(MAX_SEQUENCE_LEN + 1);
+        for result in [
+            protein_handler(json!({"function": "molecular_weight", "sequence": long})),
+            ptm_handler(json!({"sequence": long})),
+            domain_handler(json!({"sequence": long})),
+            alignment_handler(json!({"function": "score", "seq_a": long, "seq_b": long})),
+        ] {
+            let msg = result["error"].as_str().expect("error");
+            assert!(msg.contains("too long"), "{msg}");
+        }
+        // At the limit is fine.
+        let ok = "A".repeat(MAX_SEQUENCE_LEN);
+        assert!(ptm_handler(json!({"sequence": ok})).get("sites").is_some());
+    }
+
+    #[test]
+    fn test_alignment_cell_cap() {
+        let a = "A".repeat(10_000);
+        let b = "A".repeat(2_501);
+        let result =
+            alignment_handler(json!({"function": "needleman_wunsch", "seq_a": a, "seq_b": b}));
+        assert!(result["error"].as_str().unwrap().contains("DP cells"));
+    }
+
+    #[test]
+    fn test_alignment_rejects_unknown_matrix_and_bad_gap() {
+        let r = alignment_handler(json!({
+            "function": "needleman_wunsch", "seq_a": "ACD", "seq_b": "ACD", "matrix": "blosum99",
+        }));
+        assert!(r["error"].as_str().unwrap().contains("unknown matrix"));
+        let r = alignment_handler(json!({
+            "function": "needleman_wunsch", "seq_a": "ACD", "seq_b": "ACD",
+            "gap_penalty": i64::from(i32::MIN) - 1,
+        }));
+        assert!(r["error"].as_str().unwrap().contains("out of range"));
+        let r = alignment_handler(json!({
+            "function": "needleman_wunsch", "seq_a": "ACD", "seq_b": "ACD", "matrix": "pam250",
+        }));
+        assert!(r.get("score").is_some());
+    }
+
+    #[test]
+    fn test_nernst_rejects_truncating_valence() {
+        // 2^32 + 1 used to truncate to z = 1 via `as i32`.
+        let r = membrane_handler(json!({
+            "function": "nernst", "temp": 310.0, "z": 4_294_967_297_i64, "c_out": 4.0, "c_in": 155.0,
+        }));
+        assert!(r["error"].as_str().unwrap().contains("out of range"));
+        let r = membrane_handler(json!({
+            "function": "nernst", "temp": 310.0, "z": 0, "c_out": 4.0, "c_in": 155.0,
+        }));
+        assert!(r.get("error").is_some());
+    }
+
+    #[test]
+    fn test_non_finite_results_are_errors() {
+        // Km = -S → zero denominator.
+        let r = kinetics_handler(json!({
+            "function": "michaelis_menten", "substrate": 1.0, "vmax": 10.0, "km": -1.0,
+        }));
+        assert!(r.get("rate").is_none() || r["rate"].as_f64().is_some_and(f64::is_finite));
+        let r = membrane_handler(json!({"function": "fick", "d": 1.0, "dc": 1.0, "dx": 0.0}));
+        assert!(r.get("flux").is_none() || r["flux"].as_f64().is_some_and(f64::is_finite));
+    }
+
+    #[test]
+    fn test_q10_temp_ref() {
+        let r = kinetics_handler(json!({
+            "function": "q10", "substrate": 1.0, "q10_value": 2.0, "temp": 320.0, "temp_ref": 310.0,
+        }));
+        assert!((r["rate"].as_f64().unwrap() - 2.0).abs() < 1e-9);
+        // Legacy carrier still honoured.
+        let r = kinetics_handler(json!({
+            "function": "q10", "substrate": 1.0, "q10_value": 2.0, "temp": 300.0, "km": 310.0,
+        }));
+        assert!((r["rate"].as_f64().unwrap() - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_metabolism_regenerate_uses_dt_and_oxygen() {
+        let aerobic =
+            metabolism_handler(json!({"action": "regenerate_atp", "dt": 1.0, "oxygen": 1.0}));
+        let anaerobic =
+            metabolism_handler(json!({"action": "regenerate_atp", "dt": 1.0, "oxygen": 0.0}));
+        assert!(aerobic["atp"].as_f64().unwrap() > anaerobic["atp"].as_f64().unwrap());
+        assert_eq!(anaerobic["is_anaerobic"], true);
+        let bad = metabolism_handler(json!({"action": "regenerate_atp", "oxygen": 2.0}));
+        assert!(bad.get("error").is_some());
+        let bad = metabolism_handler(json!({"action": "consume_atp", "amount": -5.0}));
+        assert!(bad.get("error").is_some());
+    }
+
+    #[test]
+    fn test_protein_lookup_requires_single_letter() {
+        let r = protein_handler(json!({"function": "lookup", "code": "AB"}));
+        assert!(r.get("error").is_some());
+        let r = protein_handler(json!({"function": "lookup", "code": ""}));
+        assert!(r.get("error").is_some());
     }
 
     #[test]
@@ -897,6 +1222,21 @@ mod tests {
     }
 
     #[test]
+    fn test_membrane_units() {
+        // Regression: the library returns mV; the tool reported it as volts and
+        // multiplied by 1000 again for "mV".
+        let r = membrane_handler(json!({
+            "function": "nernst", "temp": 310.0, "z": 1, "c_out": 4.0, "c_in": 155.0,
+        }));
+        let mv = r["potential_mv"].as_f64().unwrap();
+        assert!((-110.0..-80.0).contains(&mv), "{mv}");
+        assert!((r["potential_v"].as_f64().unwrap() - mv / 1000.0).abs() < 1e-12);
+        let r = membrane_handler(json!({"function": "goldman", "temp": 310.0}));
+        let mv = r["potential_mv"].as_f64().unwrap();
+        assert!((-90.0..-50.0).contains(&mv), "{mv}");
+    }
+
+    #[test]
     fn test_alignment_substitution() {
         let result = alignment_handler(json!({
             "function": "substitution",
@@ -947,5 +1287,20 @@ mod tests {
         }));
         let resp = result["response"].as_f64().unwrap();
         assert!((resp - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_signal_dose_response_argument_order() {
+        // Regression: ec50 and emax were swapped when calling the library.
+        // [L] = EC50 → half of Emax.
+        let result = signal_handler(json!({
+            "function": "dose_response",
+            "ligand": 2.0,
+            "ec50": 2.0,
+            "emax": 10.0,
+            "n": 1.0,
+        }));
+        let resp = result["response"].as_f64().unwrap();
+        assert!((resp - 5.0).abs() < 1e-9, "got {resp}");
     }
 }

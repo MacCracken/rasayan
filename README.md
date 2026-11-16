@@ -10,40 +10,56 @@ Used by [mastishk](https://github.com/MacCracken/mastishk) (neuroscience), [kimi
 
 | Module | Description |
 |--------|-------------|
-| `enzyme` | Michaelis-Menten kinetics, competitive/uncompetitive/mixed inhibition, Hill equation (allosteric), Q10 temperature dependence |
-| `metabolism` | Metabolic pathway modeling: glycolysis, TCA cycle, oxidative phosphorylation. ATP yield, NAD+/NADH balance, energy charge |
-| `signal` | Signal transduction: ligand-receptor binding, second messengers (cAMP, Ca2+, IP3), Gs/Gq pathways, dose-response (Hill function) |
-| `protein` | Amino acid properties (Kyte-Doolittle hydrophobicity, pKa, MW), molecular weight calculation, sequence composition |
-| `membrane` | Membrane transport: Nernst potential, Goldman-Hodgkin-Katz equation, Fick's diffusion, ionic state modeling |
-| `energy` | Bioenergetics: ATP hydrolysis, phosphocreatine reserves, MET levels, anaerobic/aerobic thresholds, glycogen depletion |
+| `enzyme` | Michaelis-Menten, competitive/uncompetitive/mixed/substrate inhibition, Hill (allosteric), reversible MM + Haldane, ping-pong and sequential bi-substrate, Arrhenius, Q10, Lineweaver-Burk / Eadie-Hofstee fitting, known-enzyme database |
+| `metabolism` | ATP/ADP balance, energy charge, oxygen-dependent ATP regeneration (aerobic vs. glycolytic yield), lactate |
+| `energy` | Bioenergetics: phosphocreatine and glycogen reserves, MET, O2 consumption, anaerobic threshold; sharira bridge functions |
+| `membrane` | Nernst and Goldman-Hodgkin-Katz potentials, Fick diffusion, ionic state |
+| `signal` | Dose-response (Hill), receptor occupancy, second messengers (cAMP, Ca2+, IP3), Gs/Gi/Gq activation |
+| `glycolysis` | 10-step glycolysis with hexokinase / PFK-1 / pyruvate kinase regulation |
+| `tca` | Pyruvate dehydrogenase + 8-step TCA cycle with allosteric checkpoints |
+| `etc` | Electron transport chain: complexes I–IV, proton-motive force, ATP synthase, respiratory control |
+| `beta_oxidation` | Fatty-acid activation, CPT-I / malonyl-CoA control, β-oxidation spiral |
+| `amino_catabolism` | Transamination, glutamate dehydrogenase, carbon-skeleton routing, NH4+ clearance |
+| `pathway` | Metabolic network wiring all pathways through shared cofactor pools; steady state, respiratory quotient |
+| `mapk`, `pi3k`, `jak_stat`, `calcium` | Signaling cascades: Ras→Raf→MEK→ERK, PI3K→Akt→mTOR with PTEN, JAK→STAT with SOCS, IP3R/CICR/SERCA calcium |
+| `receptor`, `nuclear_receptor`, `signaling` | Receptor desensitization/recycling, steroid/thyroid receptor signaling, cross-talk network |
+| `neurotransmitter`, `hormonal` | Serotonin, dopamine, norepinephrine, GABA, glutamate, ACh, endorphins; HPA axis, melatonin, oxytocin, BDNF; mastishk bridge functions |
+| `protein` | Amino acid properties, molecular weight, composition, pI, net charge, A280 extinction coefficient, Chou-Fasman |
+| `alignment` | BLOSUM62 / PAM250, pairwise scoring, Needleman-Wunsch (linear memory) |
+| `ptm`, `domain` | PROSITE-style PTM sites (N-glycosylation, phosphorylation, PKA, CK2, myristoylation, disulfides) and domain motifs (C2H2 zinc finger, leucine zipper, EF-hand, Walker A, RGD, DEAD-box, NLS, KDEL) |
+
+All state types validate with `validate()` (NaN/±inf rejected), and every `tick()` ignores a non-finite or non-positive `dt`, so a bad frame time can't corrupt a simulation.
 
 ## Features
 
 | Feature | Default | Description |
 |---------|---------|-------------|
-| `std` | yes | Standard library support |
-| `logging` | no | Structured logging via `RASAYAN_LOG` env var |
-| `full` | -- | Enables all features |
+| `std` | yes | Standard library support for serde / thiserror |
+| `logging` | no | Structured logging via the `RASAYAN_LOG` env var (`tracing-subscriber`) |
+| `mcp` | no | 8 MCP tools via [bote](https://crates.io/crates/bote) (`rasayan::mcp`), with input size limits for untrusted callers |
+| `ai` | no | `BiochemClient` for LLM-backed queries via [hoosh](https://crates.io/crates/hoosh) |
+| `full` | -- | All of the above |
+
+MSRV: Rust 1.100.
 
 ## Quick Start
 
 ```toml
 [dependencies]
-rasayan = "0.1"
+rasayan = "1"
 ```
 
 ```rust
-use rasayan::enzyme::{self, EnzymeParams};
-use rasayan::membrane;
+use rasayan::enzyme;
 
 // Michaelis-Menten kinetics: rate at [S] = Km is Vmax/2
 let rate = enzyme::michaelis_menten(1.0, 10.0, 1.0);
 assert!((rate - 5.0).abs() < 0.01);
 
-// Calculate resting membrane potential
-let ions = membrane::IonicState::default();
+// Resting membrane potential (Goldman, default neuron ion concentrations)
+let ions = rasayan::membrane::IonicState::default();
 let vm = ions.resting_potential();
-println!("Resting Vm: {:.1} mV", vm); // ~-70 mV
+println!("Resting Vm: {vm:.1} mV"); // about -70 mV
 ```
 
 ## Architecture

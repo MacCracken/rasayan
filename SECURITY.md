@@ -2,24 +2,26 @@
 
 ## Scope
 
-Rasayan is a pure biochemistry computation library providing enzyme kinetics, metabolic modeling, signal transduction, protein analysis, and membrane transport for Rust. The core library performs no I/O and contains no `unsafe` code.
+Rasayan is a pure biochemistry computation library providing enzyme kinetics, metabolic modeling, signal transduction, protein analysis, and membrane transport for Rust. The core library performs no I/O, and `unsafe` code is forbidden crate-wide (`#![forbid(unsafe_code)]`).
 
 ## Attack Surface
 
 | Area | Risk | Mitigation |
 |------|------|------------|
-| Floating-point computation | NaN/infinity propagation from edge-case inputs | Guard clauses on all public functions; return 0.0 for degenerate inputs |
-| Serde deserialization | Crafted JSON with invalid values | Struct validation via domain logic; no raw pointer ops |
-| Amino acid lookup | Linear scan on 20 entries | Bounded by constant-size table |
-| Sequence analysis | Long protein sequences | Consumer responsibility for input bounds |
-| AI client (opt-in) | Network I/O to daimon/hoosh | Feature-gated; not compiled by default |
-| Dependencies | Supply chain compromise | cargo-deny, cargo-audit in CI; minimal core deps |
+| Floating-point computation | NaN/infinity propagation from edge-case inputs | `validate()` rejects NaN/±inf and zero divisors; every `tick()` ignores a non-finite or non-positive `dt` and sanitizes inputs; pure functions return 0.0 for degenerate inputs |
+| Simulation stepping | Large `dt` overshoot creating mass or blowing up | Exact exponential updates for linear rate laws, consumption capped at the source pool, calcium sub-stepped |
+| Serde deserialization | Crafted JSON with invalid values | Call `validate()` on deserialized state/config before ticking |
+| Sequence analysis | Long protein sequences | Scans are linear-time; Needleman-Wunsch is O(m·n) time but O(min(m, n)) memory with saturating scores |
+| MCP tools (opt-in, `mcp`) | Untrusted JSON arguments | Sequences capped at `mcp::MAX_SEQUENCE_LEN` (100,000), alignments at `mcp::MAX_ALIGNMENT_CELLS` (25M); integer arguments range-checked (no truncating casts); unknown enum values rejected; non-finite results returned as errors |
+| AI client (opt-in, `ai`) | Network I/O to a hoosh gateway | Feature-gated; installs rustls' ring crypto provider only if the application has not installed one |
+| Dependencies | Supply chain compromise | cargo-deny and cargo-audit in CI; minimal core deps (serde, thiserror, tracing) |
 
 ## Supported Versions
 
 | Version | Supported |
 |---------|-----------|
-| 0.1.x | Yes |
+| 1.x | Yes |
+| < 1.0 | No |
 
 ## Reporting
 

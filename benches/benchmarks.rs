@@ -1,4 +1,6 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use std::hint::black_box;
+
+use criterion::{Criterion, criterion_group, criterion_main};
 
 use rasayan::energy::BioenergyState;
 use rasayan::enzyme;
@@ -218,6 +220,20 @@ fn bench_needleman_wunsch(c: &mut Criterion) {
             alignment::needleman_wunsch(
                 black_box("ACDEFGHIKL"),
                 black_box("ACDEFHIKML"),
+                black_box(Matrix::Blosum62),
+                black_box(-4),
+            )
+        })
+    });
+    // Realistic domain-length alignment (~300 residues): dominated by the DP
+    // inner loop and table memory, unlike the 10×10 case.
+    let a: String = "MKTAYIAKQRQISFVKSHFSRQ".chars().cycle().take(300).collect();
+    let b: String = "MKVLAAGIVGLLLAQPSHAEKR".chars().cycle().take(280).collect();
+    c.bench_function("needleman_wunsch_300", |bch| {
+        bch.iter(|| {
+            alignment::needleman_wunsch(
+                black_box(&a),
+                black_box(&b),
                 black_box(Matrix::Blosum62),
                 black_box(-4),
             )

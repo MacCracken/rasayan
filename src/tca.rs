@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use crate::constants::{MAX_ATP_ADP_RATIO, MAX_NAD_FACTOR, RESTING_NAD_RATIO};
 use crate::enzyme;
 use crate::error::RasayanError;
+use crate::guard::{self, shift, take};
 
 // ---------------------------------------------------------------------------
 // State
@@ -76,7 +77,7 @@ impl Default for TcaState {
 }
 
 impl TcaState {
-    /// Validate that all concentrations are non-negative.
+    /// Validate that all concentrations are finite and non-negative.
     #[must_use = "validation errors should be handled"]
     pub fn validate(&self) -> Result<(), RasayanError> {
         for (name, value) in [
@@ -90,12 +91,7 @@ impl TcaState {
             ("malate", self.malate),
             ("oxaloacetate", self.oxaloacetate),
         ] {
-            if value < 0.0 {
-                return Err(RasayanError::NegativeConcentration {
-                    name: name.into(),
-                    value,
-                });
-            }
+            guard::non_negative(name, value)?;
         }
         Ok(())
     }
@@ -245,57 +241,53 @@ impl Default for TcaConfig {
 
 impl TcaConfig {
     /// Validate that all parameters are physically meaningful.
+    ///
+    /// Vmax values must be finite and `>= 0`. Every Km, Ki and
+    /// half-saturation constant (including `energy_half_inhibition`) is used
+    /// as a divisor and must be `> 0`, as must `idh_hill_n`.
+    /// `idh_adp_max_activation` is a fold change and must be `>= 1`.
     #[must_use = "validation errors should be handled"]
     pub fn validate(&self) -> Result<(), RasayanError> {
         for (name, value) in [
             ("pdh_vmax", self.pdh_vmax),
-            ("pdh_km_pyruvate", self.pdh_km_pyruvate),
             ("cs_vmax", self.cs_vmax),
+            ("acon_vmax_f", self.acon_vmax_f),
+            ("acon_vmax_r", self.acon_vmax_r),
+            ("idh_vmax", self.idh_vmax),
+            ("kgdh_vmax", self.kgdh_vmax),
+            ("scs_vmax", self.scs_vmax),
+            ("sdh_vmax", self.sdh_vmax),
+            ("fum_vmax_f", self.fum_vmax_f),
+            ("fum_vmax_r", self.fum_vmax_r),
+            ("mdh_vmax_f", self.mdh_vmax_f),
+            ("mdh_vmax_r", self.mdh_vmax_r),
+        ] {
+            guard::non_negative(name, value)?;
+        }
+        for (name, value) in [
+            ("pdh_km_pyruvate", self.pdh_km_pyruvate),
             ("cs_km_oaa", self.cs_km_oaa),
             ("cs_km_accoa", self.cs_km_accoa),
             ("cs_ki_oaa", self.cs_ki_oaa),
             ("cs_ki_citrate", self.cs_ki_citrate),
-            ("acon_vmax_f", self.acon_vmax_f),
             ("acon_km_f", self.acon_km_f),
-            ("acon_vmax_r", self.acon_vmax_r),
             ("acon_km_r", self.acon_km_r),
-            ("idh_vmax", self.idh_vmax),
             ("idh_km_isocitrate", self.idh_km_isocitrate),
+            ("idh_hill_n", self.idh_hill_n),
             ("idh_adp_ka", self.idh_adp_ka),
-            ("idh_adp_max_activation", self.idh_adp_max_activation),
-            ("kgdh_vmax", self.kgdh_vmax),
             ("kgdh_km_akg", self.kgdh_km_akg),
             ("kgdh_ki_succoa", self.kgdh_ki_succoa),
-            ("scs_vmax", self.scs_vmax),
             ("scs_km", self.scs_km),
-            ("sdh_vmax", self.sdh_vmax),
             ("sdh_km", self.sdh_km),
-            ("fum_vmax_f", self.fum_vmax_f),
             ("fum_km_f", self.fum_km_f),
-            ("fum_vmax_r", self.fum_vmax_r),
             ("fum_km_r", self.fum_km_r),
-            ("mdh_vmax_f", self.mdh_vmax_f),
             ("mdh_km_f", self.mdh_km_f),
-            ("mdh_vmax_r", self.mdh_vmax_r),
             ("mdh_km_r", self.mdh_km_r),
             ("energy_half_inhibition", self.energy_half_inhibition),
         ] {
-            if value < 0.0 {
-                return Err(RasayanError::InvalidParameter {
-                    name: name.into(),
-                    value,
-                    reason: "must be non-negative".into(),
-                });
-            }
+            guard::positive(name, value)?;
         }
-        if self.idh_hill_n <= 0.0 {
-            return Err(RasayanError::InvalidParameter {
-                name: "idh_hill_n".into(),
-                value: self.idh_hill_n,
-                reason: "must be positive".into(),
-            });
-        }
-        Ok(())
+        guard::at_least("idh_adp_max_activation", self.idh_adp_max_activation, 1.0)
     }
 }
 
@@ -307,7 +299,7 @@ impl TcaConfig {
 ///
 /// Returned by [`TcaState::tick`]. Contains cofactor accounting that the
 /// caller should apply to their pools.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[must_use]
 pub struct TcaFlux {
     /// Pyruvate consumed by PDH (mM).
@@ -320,7 +312,10 @@ pub struct TcaFlux {
     pub gtp_produced: f64,
     /// CO2 released (PDH + steps 3, 4; mM). 3 per pyruvate.
     pub co2_produced: f64,
-    /// Reaction rates for PDH + 8 steps (mM/s). Index 0 = PDH, 1 = CS, etc.
+    /// Effective reaction rates for PDH + 8 steps (mM/s): the amount each
+    /// step actually moved this tick divided by `dt`, after capping at the
+    /// pool it drains. Index 0 = PDH, 1 = CS, etc. Reversible steps are
+    /// negative when they run backwards.
     pub step_rates: [f64; 9],
 }
 
@@ -335,13 +330,22 @@ impl TcaState {
     /// the 8 cycle steps. External cofactor concentrations drive regulation
     /// but are **not** modified — the caller applies the returned [`TcaFlux`].
     ///
+    /// Rates are evaluated from the concentrations at the start of the tick;
+    /// the steps are then applied in cycle order with each transfer capped at
+    /// the pool it drains. PDH is capped at the `pyruvate` passed in, so
+    /// `pyruvate_consumed <= pyruvate` and the caller can subtract it without
+    /// clamping. No pool goes negative and no carbon is created for any `dt`.
+    /// A non-finite or non-positive `dt` is treated as "no time passed"
+    /// (state untouched, zero flux); NaN, infinite or negative inputs are
+    /// treated as 0.
+    ///
     /// # Arguments
     /// * `config` — enzyme parameters for PDH + 8 TCA steps
     /// * `pyruvate` — available pyruvate concentration (mM), from glycolysis
     /// * `atp` — current ATP (mM), for regulatory feedback
     /// * `adp` — current ADP (mM), for regulatory feedback
     /// * `nad_ratio` — NAD+/NADH ratio, scales oxidative steps
-    /// * `dt` — timestep in seconds (recommend <= 0.1s for stability)
+    /// * `dt` — timestep in seconds (recommend <= 0.1s for accuracy)
     #[must_use = "flux contains cofactor accounting that should be applied"]
     pub fn tick(
         &mut self,
@@ -352,6 +356,13 @@ impl TcaState {
         nad_ratio: f64,
         dt: f64,
     ) -> TcaFlux {
+        if !guard::valid_dt(dt) {
+            return TcaFlux::default();
+        }
+        let pyruvate = guard::conc(pyruvate);
+        let atp = guard::conc(atp);
+        let adp = guard::conc(adp);
+        let nad_ratio = guard::conc(nad_ratio);
         tracing::trace!(dt, pyruvate, atp, acetyl_coa = self.acetyl_coa, "tca_tick");
 
         let nad_factor = (nad_ratio / RESTING_NAD_RATIO).min(MAX_NAD_FACTOR);
@@ -441,47 +452,65 @@ impl TcaState {
             config.mdh_km_r,
         );
 
-        // --- Integrate ---
-        self.acetyl_coa += (v_pdh - v1) * dt;
-        self.citrate += (v1 - v2) * dt;
-        self.isocitrate += (v2 - v3) * dt;
-        self.alpha_kg += (v3 - v4) * dt;
-        self.succinyl_coa += (v4 - v5) * dt;
-        self.succinate += (v5 - v6) * dt;
-        self.fumarate += (v6 - v7) * dt;
-        self.malate += (v7 - v8) * dt;
-        self.oxaloacetate += (v8 - v1) * dt;
+        // --- Integrate (Euler, applied step by step in cycle order) ---
+        // Each transfer is capped at the pool it drains, so no pool can go
+        // negative and no clamp is needed (a clamp would create mass).
 
-        // Clamp non-negative
-        self.acetyl_coa = self.acetyl_coa.max(0.0);
-        self.citrate = self.citrate.max(0.0);
-        self.isocitrate = self.isocitrate.max(0.0);
-        self.alpha_kg = self.alpha_kg.max(0.0);
-        self.succinyl_coa = self.succinyl_coa.max(0.0);
-        self.succinate = self.succinate.max(0.0);
-        self.fumarate = self.fumarate.max(0.0);
-        self.malate = self.malate.max(0.0);
-        self.oxaloacetate = self.oxaloacetate.max(0.0);
+        // PDH: pyruvate (supplied by caller) → acetyl-CoA + CO2
+        let a_pdh = take(v_pdh * dt, pyruvate);
+        self.acetyl_coa += a_pdh;
+        // CS: OAA + acetyl-CoA → citrate
+        let a1 = take(v1 * dt, self.oxaloacetate.min(self.acetyl_coa));
+        self.oxaloacetate -= a1;
+        self.acetyl_coa -= a1;
+        self.citrate += a1;
+        // Aconitase: citrate ⇌ isocitrate
+        let a2 = shift(v2 * dt, self.citrate, self.isocitrate);
+        self.citrate -= a2;
+        self.isocitrate += a2;
+        // IDH: isocitrate → α-KG + CO2
+        let a3 = take(v3 * dt, self.isocitrate);
+        self.isocitrate -= a3;
+        self.alpha_kg += a3;
+        // α-KGDH: α-KG → succinyl-CoA + CO2
+        let a4 = take(v4 * dt, self.alpha_kg);
+        self.alpha_kg -= a4;
+        self.succinyl_coa += a4;
+        // SCS: succinyl-CoA → succinate
+        let a5 = take(v5 * dt, self.succinyl_coa);
+        self.succinyl_coa -= a5;
+        self.succinate += a5;
+        // SDH: succinate → fumarate
+        let a6 = take(v6 * dt, self.succinate);
+        self.succinate -= a6;
+        self.fumarate += a6;
+        // Fumarase: fumarate ⇌ malate
+        let a7 = shift(v7 * dt, self.fumarate, self.malate);
+        self.fumarate -= a7;
+        self.malate += a7;
+        // MDH: malate ⇌ OAA
+        let a8 = shift(v8 * dt, self.malate, self.oxaloacetate);
+        self.malate -= a8;
+        self.oxaloacetate += a8;
 
-        // --- Flux ---
-        let pyruvate_consumed = v_pdh * dt;
-        let nadh_produced = (v_pdh + v3 + v4 + v8) * dt;
-        let fadh2_produced = v6 * dt;
-        let gtp_produced = v5 * dt;
-        let co2_produced = (v_pdh + v3 + v4) * dt;
+        // --- Flux (actual, capped amounts) ---
+        let inv_dt = 1.0 / dt;
 
         TcaFlux {
-            pyruvate_consumed,
-            nadh_produced,
-            fadh2_produced,
-            gtp_produced,
-            co2_produced,
-            step_rates: [v_pdh, v1, v2, v3, v4, v5, v6, v7, v8],
+            pyruvate_consumed: a_pdh,
+            nadh_produced: a_pdh + a3 + a4 + a8,
+            fadh2_produced: a6,
+            gtp_produced: a5,
+            co2_produced: a_pdh + a3 + a4,
+            step_rates: [a_pdh, a1, a2, a3, a4, a5, a6, a7, a8].map(|a| a * inv_dt),
         }
     }
 
-    /// Total concentration of all cycle intermediates (mM).
+    /// Total concentration of all cycle intermediates (mM), excluding
+    /// acetyl-CoA. Constant under the cycle itself (each turn regenerates
+    /// OAA); changes only through anaplerotic/cataplerotic inputs.
     #[must_use]
+    #[inline]
     pub fn total_pool(&self) -> f64 {
         self.citrate
             + self.isocitrate
@@ -662,5 +691,190 @@ mod tests {
     fn test_nadh_gt_fadh2() {
         let (_, flux) = run_tca(200, 0.1);
         assert!(flux.nadh_produced > flux.fadh2_produced);
+    }
+
+    /// Carbon held in the TCA state (mM of carbon atoms).
+    fn tca_carbon(s: &TcaState) -> f64 {
+        2.0 * s.acetyl_coa
+            + 6.0 * (s.citrate + s.isocitrate)
+            + 5.0 * s.alpha_kg
+            + 4.0 * (s.succinyl_coa + s.succinate + s.fumarate + s.malate + s.oxaloacetate)
+    }
+
+    #[test]
+    fn test_invalid_dt_is_noop() {
+        let config = TcaConfig::default();
+        for dt in [0.0, -0.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut state = TcaState::default();
+            let flux = state.tick(&config, 0.1, 6.0, 0.5, 700.0, dt);
+            assert_eq!(state, TcaState::default(), "dt={dt} changed state");
+            assert_eq!(flux, TcaFlux::default(), "dt={dt} produced flux");
+        }
+    }
+
+    #[test]
+    fn test_nan_inputs_sanitized() {
+        let config = TcaConfig::default();
+        for (pyr, atp, adp, nad) in [
+            (f64::NAN, 6.0, 0.5, 700.0),
+            (0.1, f64::NAN, 0.5, 700.0),
+            (0.1, 6.0, f64::NAN, 700.0),
+            (0.1, 6.0, 0.5, f64::NAN),
+            (f64::INFINITY, -1.0, f64::INFINITY, -5.0),
+        ] {
+            let mut state = TcaState::default();
+            let flux = state.tick(&config, pyr, atp, adp, nad, 0.1);
+            assert!(
+                state.validate().is_ok(),
+                "{pyr} {atp} {adp} {nad}: {state:?}"
+            );
+            assert!(flux.step_rates.iter().all(|r| r.is_finite()));
+            assert!(flux.nadh_produced.is_finite() && flux.co2_produced.is_finite());
+        }
+        // A NaN pyruvate supply feeds nothing into PDH.
+        let mut state = TcaState::default();
+        let flux = state.tick(&config, f64::NAN, 6.0, 0.5, 700.0, 0.1);
+        assert_eq!(flux.pyruvate_consumed, 0.0);
+    }
+
+    #[test]
+    fn test_validate_state_rejects_nan() {
+        let s = TcaState {
+            malate: f64::NAN,
+            ..TcaState::default()
+        };
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_config_rejects_bad_values() {
+        let ok = TcaConfig::default();
+        let cases = [
+            TcaConfig {
+                pdh_vmax: f64::NAN,
+                ..ok.clone()
+            },
+            TcaConfig {
+                cs_vmax: -0.1,
+                ..ok.clone()
+            },
+            TcaConfig {
+                pdh_km_pyruvate: 0.0,
+                ..ok.clone()
+            },
+            TcaConfig {
+                cs_ki_citrate: 0.0,
+                ..ok.clone()
+            },
+            TcaConfig {
+                kgdh_ki_succoa: 0.0,
+                ..ok.clone()
+            },
+            TcaConfig {
+                energy_half_inhibition: 0.0,
+                ..ok.clone()
+            },
+            TcaConfig {
+                idh_adp_ka: f64::INFINITY,
+                ..ok.clone()
+            },
+            TcaConfig {
+                idh_hill_n: f64::NAN,
+                ..ok.clone()
+            },
+            TcaConfig {
+                idh_adp_max_activation: 0.9,
+                ..ok.clone()
+            },
+        ];
+        for (i, c) in cases.iter().enumerate() {
+            assert!(c.validate().is_err(), "case {i} should fail");
+        }
+    }
+
+    #[test]
+    fn test_pdh_capped_at_pyruvate_supply() {
+        let config = TcaConfig::default();
+        let mut state = TcaState::default();
+        // 1 µM pyruvate, 10 s step: PDH could move far more than is there.
+        let flux = state.tick(&config, 1e-3, 6.0, 0.5, 700.0, 10.0);
+        assert!(flux.pyruvate_consumed <= 1e-3);
+        assert!((flux.pyruvate_consumed - 1e-3).abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_carbon_balance_exact() {
+        // C(final) + CO2 out = C(initial) + 3 × pyruvate in, for any dt.
+        let config = TcaConfig::default();
+        for dt in [0.01, 0.1, 1.0, 5.0] {
+            let mut state = TcaState::default();
+            let c0 = tca_carbon(&state);
+            let pool0 = state.total_pool();
+            let (mut co2, mut pyr_in) = (0.0, 0.0);
+            for _ in 0..300 {
+                let flux = state.tick(&config, 0.1, 6.0, 0.5, 700.0, dt);
+                co2 += flux.co2_produced;
+                pyr_in += flux.pyruvate_consumed;
+                assert!(state.validate().is_ok(), "dt={dt}: {state:?}");
+            }
+            let balance = tca_carbon(&state) + co2 - (c0 + 3.0 * pyr_in);
+            assert!(balance.abs() < 1e-9, "dt={dt}: carbon imbalance {balance}");
+            // The cycle itself neither creates nor destroys intermediates.
+            assert!((state.total_pool() - pool0).abs() < 1e-9, "dt={dt}");
+        }
+    }
+
+    #[test]
+    fn test_large_dt_no_negative_pools_no_carbon_created() {
+        let config = TcaConfig::default();
+        for dt in [1.0, 5.0] {
+            let mut state = TcaState::default();
+            let c0 = tca_carbon(&state);
+            for _ in 0..200 {
+                // No pyruvate supply: carbon may only leave (as CO2).
+                let flux = state.tick(&config, 0.0, 6.0, 0.5, 700.0, dt);
+                assert!(state.validate().is_ok(), "dt={dt}: {state:?}");
+                assert!(flux.co2_produced >= 0.0);
+            }
+            assert!(tca_carbon(&state) <= c0 * (1.0 + 1e-12), "dt={dt}");
+        }
+    }
+
+    #[test]
+    fn test_cycle_stoichiometry_per_acetyl_coa() {
+        // Feed acetyl-CoA directly (no PDH) and measure at steady state:
+        // per acetyl-CoA entering via citrate synthase the cycle yields
+        // 3 NADH : 1 FADH2 : 1 GTP : 2 CO2.
+        let config = TcaConfig::default();
+        let mut state = TcaState::default();
+        let dt = 0.1;
+        let feed = 0.01; // mM/s
+        for _ in 0..20_000 {
+            state.acetyl_coa += feed * dt;
+            let _ = state.tick(&config, 0.0, 6.0, 0.5, 700.0, dt);
+        }
+        let (mut accoa, mut nadh, mut fadh2, mut gtp, mut co2) = (0.0, 0.0, 0.0, 0.0, 0.0);
+        for _ in 0..10_000 {
+            state.acetyl_coa += feed * dt;
+            let f = state.tick(&config, 0.0, 6.0, 0.5, 700.0, dt);
+            accoa += f.step_rates[1] * dt;
+            nadh += f.nadh_produced;
+            fadh2 += f.fadh2_produced;
+            gtp += f.gtp_produced;
+            co2 += f.co2_produced;
+        }
+        assert!(accoa > 1.0, "cycle should turn over: {accoa}");
+        for (name, value, expected) in [
+            ("NADH", nadh, 3.0),
+            ("FADH2", fadh2, 1.0),
+            ("GTP", gtp, 1.0),
+            ("CO2", co2, 2.0),
+        ] {
+            let per = value / accoa;
+            assert!(
+                (per - expected).abs() < 0.02 * expected,
+                "{name} per acetyl-CoA = {per:.4}, expected {expected}"
+            );
+        }
     }
 }

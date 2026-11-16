@@ -22,11 +22,22 @@
 //! - Produces: 8 Acetyl-CoA + 7 NADH + 7 FADH2
 //! - Costs: 2 ATP equivalents (activation)
 //! - Net via full oxidation: ~106 ATP
+//!
+//! # Odd and short chains
+//!
+//! [`BetaOxConfig::validate`] accepts only even chain lengths `>= 4`. If a
+//! config that fails validation is ticked anyway, carbon is still
+//! conserved: `acetyl_coa_produced` reports `chain_length / 2` acetyl-CoA
+//! **carbon-equivalents** per acyl-CoA oxidized. For an odd chain this
+//! folds the terminal propionyl-CoA (C3, which cells route to succinyl-CoA)
+//! in as 1.5 equivalents, because [`BetaOxFlux`] has no propionyl-CoA
+//! field. NADH and FADH2 follow [`BetaOxConfig::cycles`].
 
 use serde::{Deserialize, Serialize};
 
 use crate::enzyme;
 use crate::error::RasayanError;
+use crate::guard::{self, take};
 
 // ---------------------------------------------------------------------------
 // State
@@ -55,21 +66,11 @@ impl Default for BetaOxState {
 }
 
 impl BetaOxState {
-    /// Validate that all concentrations are non-negative.
+    /// Validate that all concentrations are finite and non-negative.
     #[must_use = "validation errors should be handled"]
     pub fn validate(&self) -> Result<(), RasayanError> {
-        for (name, value) in [
-            ("acyl_coa", self.acyl_coa),
-            ("free_fatty_acid", self.free_fatty_acid),
-        ] {
-            if value < 0.0 {
-                return Err(RasayanError::NegativeConcentration {
-                    name: name.into(),
-                    value,
-                });
-            }
-        }
-        Ok(())
+        guard::non_negative("acyl_coa", self.acyl_coa)?;
+        guard::non_negative("free_fatty_acid", self.free_fatty_acid)
     }
 }
 
@@ -114,8 +115,10 @@ impl Default for BetaOxConfig {
 
 impl BetaOxConfig {
     /// Number of beta-oxidation cycles for this chain length.
-    /// Palmitate (C16) = 7 cycles.
+    /// Palmitate (C16) = 7 cycles. For an odd chain this is `(n − 3) / 2`,
+    /// which is also correct (the last thiolysis yields propionyl-CoA).
     #[must_use]
+    #[inline]
     pub fn cycles(&self) -> u32 {
         if self.chain_length >= 4 {
             self.chain_length / 2 - 1
@@ -126,7 +129,14 @@ impl BetaOxConfig {
 
     /// Acetyl-CoA units produced per fatty acid molecule.
     /// Palmitate (C16) = 8 acetyl-CoA.
+    ///
+    /// Exact only for the even chain lengths `>= 4` that
+    /// [`validate`](Self::validate) accepts; for an odd chain the integer
+    /// division counts the terminal propionyl-CoA as one unit. `tick` does
+    /// not use this count — it reports carbon-equivalents (`chain_length / 2`)
+    /// so no carbon is lost; see the module docs.
     #[must_use]
+    #[inline]
     pub fn acetyl_coa_per_fa(&self) -> u32 {
         if self.chain_length >= 4 {
             self.chain_length / 2
@@ -136,31 +146,33 @@ impl BetaOxConfig {
     }
 
     /// Validate that all parameters are physically meaningful.
+    ///
+    /// `chain_length` must be even and `>= 4` (odd chains end in
+    /// propionyl-CoA, which this model has no output for). Vmax values must
+    /// be finite and `>= 0`; `activation_km`, `cycle_km` and
+    /// `cpt1_ki_malonyl_coa` are divisors and must be `> 0`.
     #[must_use = "validation errors should be handled"]
     pub fn validate(&self) -> Result<(), RasayanError> {
         if self.chain_length < 4 || !self.chain_length.is_multiple_of(2) {
             return Err(RasayanError::InvalidParameter {
                 name: "chain_length".into(),
-                value: self.chain_length as f64,
+                value: f64::from(self.chain_length),
                 reason: "must be even and >= 4".into(),
             });
         }
-        for (name, value) in [
-            ("activation_vmax", self.activation_vmax),
-            ("activation_km", self.activation_km),
-            ("cycle_vmax", self.cycle_vmax),
-            ("cycle_km", self.cycle_km),
-            ("cpt1_ki_malonyl_coa", self.cpt1_ki_malonyl_coa),
-        ] {
-            if value < 0.0 {
-                return Err(RasayanError::InvalidParameter {
-                    name: name.into(),
-                    value,
-                    reason: "must be non-negative".into(),
-                });
-            }
-        }
-        Ok(())
+        guard::non_negative("activation_vmax", self.activation_vmax)?;
+        guard::non_negative("cycle_vmax", self.cycle_vmax)?;
+        guard::positive("activation_km", self.activation_km)?;
+        guard::positive("cycle_km", self.cycle_km)?;
+        guard::positive("cpt1_ki_malonyl_coa", self.cpt1_ki_malonyl_coa)
+    }
+
+    /// Acetyl-CoA carbon-equivalents per acyl-CoA oxidized
+    /// (`chain_length / 2`). Equals [`acetyl_coa_per_fa`](Self::acetyl_coa_per_fa)
+    /// for valid (even) chains and conserves carbon for odd ones.
+    #[inline]
+    fn acetyl_carbon_equivalents(&self) -> f64 {
+        f64::from(self.chain_length) / 2.0
     }
 }
 
@@ -172,14 +184,15 @@ impl BetaOxConfig {
 ///
 /// Returned by [`BetaOxState::tick`]. Contains cofactor accounting that
 /// the caller should apply to their pools.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[must_use]
 pub struct BetaOxFlux {
     /// Free fatty acid consumed by activation (mM).
     pub ffa_consumed: f64,
     /// Acyl-CoA consumed by beta-oxidation (mM).
     pub acyl_coa_consumed: f64,
-    /// Acetyl-CoA produced (mM). Feeds TCA cycle.
+    /// Acetyl-CoA produced (mM). Feeds TCA cycle. `chain_length / 2` per
+    /// acyl-CoA oxidized (carbon-equivalents for an odd chain).
     pub acetyl_coa_produced: f64,
     /// NADH produced (mM). 1 per beta-oxidation cycle.
     pub nadh_produced: f64,
@@ -187,9 +200,9 @@ pub struct BetaOxFlux {
     pub fadh2_produced: f64,
     /// ATP consumed for fatty acid activation (mM). 2 per fatty acid.
     pub atp_consumed: f64,
-    /// Beta-oxidation rate (mM acyl-CoA/s).
+    /// Effective beta-oxidation rate (mM acyl-CoA/s): `acyl_coa_consumed / dt`.
     pub oxidation_rate: f64,
-    /// Activation rate (mM FFA/s).
+    /// Effective activation rate (mM FFA/s): `ffa_consumed / dt`.
     pub activation_rate: f64,
 }
 
@@ -211,6 +224,13 @@ impl BetaOxState {
     /// tick: each mM of acyl-CoA consumed produces all its acetyl-CoA, NADH,
     /// and FADH2 in one tick (the spiral is fast relative to simulation dt).
     ///
+    /// Activation is capped at the free fatty acid pool and oxidation at the
+    /// acyl-CoA pool (including what was activated this tick), so no pool
+    /// goes negative and no carbon is created for any `dt`. A non-finite or
+    /// non-positive `dt` is treated as "no time passed" (state untouched,
+    /// zero flux); NaN, infinite or negative `malonyl_coa`/`nad_ratio` are
+    /// treated as 0.
+    ///
     /// # Arguments
     /// * `config` — kinetic parameters
     /// * `malonyl_coa` — malonyl-CoA concentration (mM), inhibits CPT-I
@@ -224,6 +244,11 @@ impl BetaOxState {
         nad_ratio: f64,
         dt: f64,
     ) -> BetaOxFlux {
+        if !guard::valid_dt(dt) {
+            return BetaOxFlux::default();
+        }
+        let malonyl_coa = guard::conc(malonyl_coa);
+        let nad_ratio = guard::conc(nad_ratio);
         tracing::trace!(
             dt,
             acyl_coa = self.acyl_coa,
@@ -233,8 +258,8 @@ impl BetaOxState {
 
         let nad_factor =
             (nad_ratio / crate::constants::RESTING_NAD_RATIO).min(crate::constants::MAX_NAD_FACTOR);
-        let cycles = config.cycles() as f64;
-        let accoa_per_fa = config.acetyl_coa_per_fa() as f64;
+        let cycles = f64::from(config.cycles());
+        let accoa_per_fa = config.acetyl_carbon_equivalents();
 
         // --- Fatty acid activation: FFA + 2 ATP → Acyl-CoA ---
         let v_activation = enzyme::michaelis_menten(
@@ -259,18 +284,14 @@ impl BetaOxState {
             config.cycle_km,
         );
 
-        // --- Update pools ---
-        let activated = v_activation * dt;
-        let oxidized = v_oxidation * dt;
-
+        // --- Update pools (each transfer capped at the pool it drains) ---
+        let activated = take(v_activation * dt, self.free_fatty_acid);
         self.free_fatty_acid -= activated;
-        self.acyl_coa += activated - oxidized;
+        self.acyl_coa += activated;
+        let oxidized = take(v_oxidation * dt, self.acyl_coa);
+        self.acyl_coa -= oxidized;
 
-        // Clamp non-negative (numerical safety)
-        self.free_fatty_acid = self.free_fatty_acid.max(0.0);
-        self.acyl_coa = self.acyl_coa.max(0.0);
-
-        // --- Flux ---
+        // --- Flux (actual, capped amounts) ---
         BetaOxFlux {
             ffa_consumed: activated,
             acyl_coa_consumed: oxidized,
@@ -278,8 +299,8 @@ impl BetaOxState {
             nadh_produced: oxidized * cycles,
             fadh2_produced: oxidized * cycles,
             atp_consumed: activated * 2.0,
-            oxidation_rate: v_oxidation,
-            activation_rate: v_activation,
+            oxidation_rate: oxidized / dt,
+            activation_rate: activated / dt,
         }
     }
 }
@@ -467,5 +488,151 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let config2: BetaOxConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(config, config2);
+    }
+
+    #[test]
+    fn test_invalid_dt_is_noop() {
+        let config = BetaOxConfig::default();
+        for dt in [0.0, -0.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut state = BetaOxState::default();
+            let flux = state.tick(&config, 0.0, 700.0, dt);
+            assert_eq!(state, BetaOxState::default(), "dt={dt} changed state");
+            assert_eq!(flux, BetaOxFlux::default(), "dt={dt} produced flux");
+        }
+    }
+
+    #[test]
+    fn test_nan_inputs_sanitized() {
+        let config = BetaOxConfig::default();
+        for (malonyl, nad) in [
+            (f64::NAN, 700.0),
+            (0.0, f64::NAN),
+            (f64::INFINITY, f64::NEG_INFINITY),
+            (-1.0, -1.0),
+        ] {
+            let mut state = BetaOxState::default();
+            let flux = state.tick(&config, malonyl, nad, 0.1);
+            assert!(state.validate().is_ok(), "{malonyl} {nad}: {state:?}");
+            assert!(flux.acetyl_coa_produced.is_finite() && flux.oxidation_rate.is_finite());
+        }
+    }
+
+    #[test]
+    fn test_validate_state_rejects_nan() {
+        let s = BetaOxState {
+            acyl_coa: f64::NAN,
+            ..BetaOxState::default()
+        };
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_config_rejects_bad_values() {
+        let ok = BetaOxConfig::default();
+        let cases = [
+            BetaOxConfig {
+                activation_vmax: f64::NAN,
+                ..ok.clone()
+            },
+            BetaOxConfig {
+                cycle_vmax: -1.0,
+                ..ok.clone()
+            },
+            BetaOxConfig {
+                activation_km: 0.0,
+                ..ok.clone()
+            },
+            BetaOxConfig {
+                cycle_km: 0.0,
+                ..ok.clone()
+            },
+            BetaOxConfig {
+                cpt1_ki_malonyl_coa: 0.0,
+                ..ok.clone()
+            },
+            BetaOxConfig {
+                cpt1_ki_malonyl_coa: f64::INFINITY,
+                ..ok.clone()
+            },
+            BetaOxConfig {
+                chain_length: 17,
+                ..ok.clone()
+            },
+        ];
+        for (i, c) in cases.iter().enumerate() {
+            assert!(c.validate().is_err(), "case {i} should fail");
+        }
+    }
+
+    #[test]
+    fn test_palmitate_flux_stoichiometry() {
+        // Per palmitoyl-CoA oxidized: 8 acetyl-CoA, 7 NADH, 7 FADH2.
+        let (_, flux) = run_beta_ox(200, 0.1);
+        let acyl = flux.acyl_coa_consumed;
+        assert!(acyl > 0.0);
+        assert!((flux.acetyl_coa_produced / acyl - 8.0).abs() < 1e-9);
+        assert!((flux.nadh_produced / acyl - 7.0).abs() < 1e-9);
+        assert!((flux.fadh2_produced / acyl - 7.0).abs() < 1e-9);
+    }
+
+    /// Carbon in the state plus acetyl-CoA carbon released so far.
+    fn carbon(state: &BetaOxState, config: &BetaOxConfig, acetyl_out: f64) -> f64 {
+        f64::from(config.chain_length) * (state.acyl_coa + state.free_fatty_acid) + 2.0 * acetyl_out
+    }
+
+    #[test]
+    fn test_large_dt_no_negative_pools_no_carbon_created() {
+        let config = BetaOxConfig::default();
+        for dt in [1.0, 5.0, 100.0] {
+            let mut state = BetaOxState::default();
+            let c0 = carbon(&state, &config, 0.0);
+            let mut acetyl_out = 0.0;
+            for _ in 0..200 {
+                let flux = state.tick(&config, 0.0, 700.0, dt);
+                acetyl_out += flux.acetyl_coa_produced;
+                assert!(state.validate().is_ok(), "dt={dt}: {state:?}");
+            }
+            let c = carbon(&state, &config, acetyl_out);
+            assert!((c - c0).abs() < 1e-9 * c0, "dt={dt}: carbon {c0} -> {c}");
+        }
+    }
+
+    #[test]
+    fn test_oxidation_capped_at_acyl_coa_pool() {
+        let config = BetaOxConfig::default();
+        let mut state = BetaOxState {
+            acyl_coa: 0.001,
+            free_fatty_acid: 0.0,
+        };
+        let flux = state.tick(&config, 0.0, 700.0, 1000.0);
+        assert_eq!(state.acyl_coa, 0.0);
+        assert!((flux.acyl_coa_consumed - 0.001).abs() < 1e-15);
+        assert!((flux.acetyl_coa_produced - 0.008).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_odd_chain_conserves_carbon() {
+        // validate() rejects odd chains, but a tick must not drop a carbon.
+        let config = BetaOxConfig {
+            chain_length: 15,
+            ..BetaOxConfig::default()
+        };
+        assert!(config.validate().is_err());
+        let mut state = BetaOxState::default();
+        let c0 = carbon(&state, &config, 0.0);
+        let mut acetyl_out = 0.0;
+        let mut acyl = 0.0;
+        let mut nadh = 0.0;
+        for _ in 0..200 {
+            let flux = state.tick(&config, 0.0, 700.0, 0.1);
+            acetyl_out += flux.acetyl_coa_produced;
+            acyl += flux.acyl_coa_consumed;
+            nadh += flux.nadh_produced;
+        }
+        let c = carbon(&state, &config, acetyl_out);
+        assert!((c - c0).abs() < 1e-9 * c0, "carbon {c0} -> {c}");
+        // C15: 7.5 acetyl-CoA carbon-equivalents, 6 cycles.
+        assert!((acetyl_out / acyl - 7.5).abs() < 1e-9);
+        assert!((nadh / acyl - 6.0).abs() < 1e-9);
     }
 }

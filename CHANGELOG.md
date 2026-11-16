@@ -7,6 +7,175 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+P(-1) scaffold hardening pass plus a toolchain and dependency update. The public
+API is unchanged apart from additions (verified by diffing every public item
+against 1.0.0); behaviour changes below are bug fixes.
+
+### Breaking (feature `mcp` only)
+
+- **mcp** — `bote` moves 0.50 → 0.92, so `register_tools(&mut bote::Dispatcher)` now takes a
+  bote 0.92 `Dispatcher`. Migration: depend on `bote = "0.92"` alongside `rasayan` with
+  `features = ["mcp"]`. No downstream crate in the ecosystem enables `mcp` today.
+
+### Changed
+
+- **toolchain** — MSRV 1.89 → 1.100 (`rust-version`, CI, CONTRIBUTING, CLAUDE.md). The CI MSRV
+  job now sets `RUSTUP_TOOLCHAIN`; before, `rust-toolchain.toml` (`stable`) outranked the
+  action and the "MSRV" job silently tested stable.
+- **deps** — pinned to current releases: serde 1.0.229, thiserror 2.0.21, tracing 0.1.44,
+  tracing-subscriber 0.3.23, serde_json 1.0.154, tokio 1.54, hoosh 1.3, bote 0.92;
+  criterion 0.5 → 0.8.2 (benches use `std::hint::black_box`). Dropped the redundant
+  `homepage` key (cargo 1.100 manifest lint) and two unused cargo-deny license allowances.
+- **lib** — `#![forbid(unsafe_code)]`.
+- **error** — `RasayanError::NonFinite { name, value }`; `InvalidParameter` message no longer
+  says "kinetic" for non-kinetic parameters.
+- **all `validate()`** — reject NaN/±inf (previously `x < 0.0` let them through) and reject zero
+  for every constant used as a divisor (Km, Ki, K½, capacities, thresholds); multipliers
+  documented as ≥ 1 are enforced. New: `NetworkConfig::validate`, `SignalingConfig::validate`,
+  `CarbonSkeletonOutput::validate`; `MetabolicNetwork::validate` now covers `nad_ratio`,
+  `oxygen`, `malonyl_coa`; β-oxidation rejects odd or < 4 chain lengths.
+- **all `tick()`s and state mutators** — a non-finite or non-positive `dt` is a no-op returning
+  a zero flux (every `*Flux` now derives `Default`), and inputs are sanitized (NaN → 0,
+  concentrations ≥ 0, fractions in [0, 1]). Before, a single NaN frame time zeroed most state
+  through `f64::max` or left ETC/MAPK state NaN forever through `clamp`; a NaN growth factor
+  drove MAPK/PI3K at maximum; a NaN acetyl-CoA drove ACh synthesis at full rate.
+- **mapk, pi3k, jak_stat, hormonal, neurotransmitter, signal, metabolism** — first-order and
+  activation updates use closed-form exponential solutions instead of explicit Euler (a
+  series accurate to ~1e-9 for small `k·dt`, `exp_m1` beyond): stable, non-overshooting and
+  in range for any `dt` (e.g. MAPK at dt = 100 no longer flips 0 ↔ 1), within 1% of the old
+  Euler step at dt = 0.001. `calcium` sub-steps internally (≤ 0.01 s per step, at most 1000 per tick).
+- **glycolysis, tca, etc, beta_oxidation, amino_catabolism, calcium, receptor,
+  nuclear_receptor, neurotransmitter** — each consuming flux is capped at the pool it drains,
+  so a large `dt` can no longer create mass through a post-hoc clamp; fluxes report the
+  amount actually moved. Carbon (glycolysis, TCA, network), electrons (ETC), nitrogen
+  (amino catabolism), STAT, receptor and adenine nucleotide totals are now conserved for any
+  `dt` (tested at dt 0.01–5, some to dt 100).
+- **constants** — `R_GAS` and `FARADAY` use the exact SI 2019 values (8.314462618…,
+  96485.33212…); new `BODY_TEMP_K = 310.15`.
+- **protein** — `lookup` is O(1) (compile-time 26-entry table); `isoelectric_point`/`net_charge`
+  count ionizable groups once (pI bit-identical on 14 reference sequences).
+
+### Fixed
+
+- **ai** — `BiochemClient::new` panicked whenever no rustls crypto provider was installed:
+  hoosh 1.3 builds reqwest with `rustls-no-provider` and only installs one in its own tests.
+  `ai` now installs ring's provider once (keeping any provider the application installed).
+- **mcp** — `rasayan_signal` passed EC50 and Emax to `dose_response` swapped; `rasayan_membrane`
+  reported millivolts as `potential_v` and multiplied by 1000 again for `potential_mv`;
+  `rasayan_metabolism` `regenerate_atp` passed the glucose `amount` as the time step and ignored
+  `oxygen` (now `dt` and `oxygen`, `amount` still accepted); integer arguments (`z`,
+  `gap_penalty`) were truncated with `as i32`; an unknown `matrix` silently fell back to
+  BLOSUM62; `q10` read its reference temperature from `km` (now `temp_ref`, `km` still
+  honoured); non-finite results serialized as `null` (now errors); `sequence_length` counted
+  bytes. New input limits for untrusted callers: `MAX_SEQUENCE_LEN` (100,000) and
+  `MAX_ALIGNMENT_CELLS` (25M). Tools carry read-only MCP annotations; `register_tools` counts
+  and logs registration failures instead of ignoring them.
+- **alignment** — Needleman-Wunsch allocated a full (m+1)×(n+1) table to return only a score
+  (two 50k-residue sequences ≈ 10 GB, an uncatchable abort) and `i * gap_penalty` overflowed
+  i32 (panic in debug, wrong score in release). Now two rolling rows (O(min(m, n)) memory),
+  residues pre-indexed, saturating arithmetic; `score_alignment` saturates too.
+- **enzyme** — `hill_equation` returned NaN for negative or huge substrate and 0 instead of
+  Vmax/2 for tiny S = K (now `vmax / (1 + (K/S)^n)`, shared with `signal::dose_response` and
+  `receptor_occupancy`); MM / bi-substrate / inhibition functions clamp negative inputs (no more
+  negative rates or MM-pole blow-ups); `[I] = 0` means no inhibition for any Ki and
+  `Ki = f64::INFINITY` is documented as "no inhibitor"; `q10_rate` with Q10 ≤ 0 returns 0;
+  `lineweaver_burk_fit` rejected nothing (now `None` for Km/Vmax ≤ 0 or non-finite, like
+  Eadie-Hofstee); `linear_regression` used an absolute ε on the naive denominator and returned
+  `None` for clean slow-enzyme data (Vmax 1e-12 M/s) — now centred sums with a relative
+  tolerance.
+- **metabolism** — hypoxic ATP regeneration charged 30 ATP/glucose and produced 0.1 lactate/ATP
+  at any O2; now 2 + 28·O2 ATP/glucose and 2 lactate per anaerobically processed glucose.
+  `aerobic_atp_yield` jumped 2 → 15 at O2 = 0.5 (now continuous). Lactate never cleared, so
+  `is_anaerobic` latched true forever (now first-order clearance, `LACTATE_CLEARANCE_RATE`).
+  `consume_atp(-x)` created ATP and drove ADP negative.
+- **energy** — `met_from_power` used ~20 mL O2/min/W; now the ACSM leg-ergometry equation
+  (100 W at 70 kg: 9.2 → 6.5 MET; 400 W: 33.6 → 20.0). `fatigue_rate_from_energy` could
+  return < 1 despite its documented ≥ 1. Docs: `ATP_HYDROLYSIS_DG` is ΔG°′ (not cellular);
+  `atp_demand_from_power` returns mmol/s.
+- **membrane** — `nernst`/`goldman` return 0 for non-positive or non-finite temperature;
+  `fick_flux` documents units and sign; default permeabilities are documented as squid-axon
+  ratios (Hodgkin & Katz 1949).
+- **signal** — `activate_gq` added Ca2+ from the IP3 *total* on every call (even at zero
+  intensity); now from the increment. Second-messenger decay is exponential as documented.
+- **etc** — H2O produced was 1 per O2; O2 + 4e⁻ → 2 H2O. Config `h_per_nadh`/`h_per_fadh2` were
+  ignored (pumping hard-coded 4/4/2); they now set the per-complex split (defaults unchanged).
+- **pathway** — clamping ATP and ADP separately created/destroyed adenine nucleotide (now
+  conserved exactly); amino-acid pyruvate not consumed in its tick was lost; FADH2 shifted the
+  NAD+/NADH ratio; `run_to_steady_state(max_steps = 0)` still ticked once.
+- **beta_oxidation** — odd chains silently lost a carbon (now reported as carbon-equivalents).
+- **neurotransmitter** — precursors were consumed and never replenished (glutamine exhausted in
+  ~53 s at full stimulus, so "resting" levels drifted to 0): Trp/Tyr now relax toward plasma
+  levels (`PLASMA_TRYPTOPHAN`, `PLASMA_TYROSINE`, `PRECURSOR_TRANSPORT_RATE`), cleared
+  glutamate and GABA return to glutamine, AChE returns choline (pools conserved to 1e-9).
+  Synthesis can no longer consume more precursor than exists in a step. Bridge functions were
+  discontinuous near zero clearance (1e-12 → 10¹²×, 0 → 100×) and had a pole for small
+  negative inputs (`dopamine_level(-1.9, 1, 0.05)` = −30.4): now `s / max(rate,
+  MIN_CLEARANCE_RATE)` with sanitized inputs. Outputs for mastishk's call shapes are unchanged.
+- **hormonal** — `cortisol_from_hpa` divided by zero at feedback = −2 and flipped sign below;
+  `melatonin_from_serotonin` returned inf/NaN for negative light. Docs now state what the
+  bridges return and that rate constants are compressed simulation time.
+  `test_cortisol_negative_feedback` could not fail; rewritten.
+- **receptor** — constant synthesis grew the receptor pool without bound (total ≈ 37 after 1 h
+  at zero ligand); synthesis is now capacity-limited and binding capped at the surface pool.
+- **nuclear_receptor** — binding ignored the nuclear pool and export went nowhere (total 1.625,
+  nuclear pinned at the clamp); total receptor is now conserved (new `free_receptor()`).
+- **jak_stat** — dimerisation did not consume STAT-P (dimer fraction reached 3.9); 2 STAT-P per
+  dimer now, conserved exactly.
+- **signaling** — Akt→Raf inhibition was a post-step subtraction independent of Raf; it now adds
+  to Raf's deactivation rate. Doc no longer claims ERK→STAT cross-talk.
+- **mapk** — docs claimed "ultrasensitive dual phosphorylation" (each tier is one MM step);
+  ERK feedback Ki is now `ERK_FEEDBACK_KI`.
+- **protein** — Gly mass was the monoisotopic 75.03 (average 75.07); all 20 masses now use
+  ExPASy/IUPAC average values (ubiquitin 8564.78 Da vs ExPASy 8564.84). `molecular_weight("")`
+  returns `None` like the other sequence functions.
+- **ptm** — N-glycosylation ignored PS00001's {P} at +3; myristoylation only checked index 0
+  (missed every Met-initiated protein, e.g. c-Src) and only part of PS00008; results were not
+  sorted by position as documented. Removed the unimplemented signal-peptide claim.
+- **domain** — C2H2 zinc finger matched H-x(2,3)-H instead of PS00028's H-x(3,5)-H, skipped the
+  hydrophobic position and missed C-terminal fingers; Walker A required G instead of [AG];
+  EF-hand used a 7-residue approximation instead of PS00018's 12-residue loop (missed all four
+  calmodulin EF-hands, false hit in its linker). KDEL check no longer allocates.
+
+### Added
+
+- `mcp::MAX_SEQUENCE_LEN`, `mcp::MAX_ALIGNMENT_CELLS`, `constants::BODY_TEMP_K`,
+  `metabolism::LACTATE_CLEARANCE_RATE`, `mapk::ERK_FEEDBACK_KI`, `calcium::SUBSTEP_MAX_DT`,
+  `calcium::MAX_SUBSTEPS`, `neurotransmitter::{PLASMA_TRYPTOPHAN, PLASMA_TYROSINE,
+  PRECURSOR_TRANSPORT_RATE, MIN_CLEARANCE_RATE}`, `GlycolysisState::total_carbon`,
+  `CarbonSkeletonOutput::total`, `NuclearReceptorState::free_receptor`.
+- Internal `guard` (validation, sanitization, pool-capped transfers) and `integrate` (exact
+  one-step solutions) modules replace per-module copies.
+- Tests: 422 → 625 with default features (535 unit, 70 integration, 19 validation, 1 doc;
+  660 with `--all-features`) — NaN/negative/zero-dt
+  and NaN-input cases for every tick, conservation laws at large `dt`, stoichiometry
+  (glycolysis carbon, TCA 3:1:1:2, β-oxidation 8/7/7, ETC P/O), PROSITE motif cases
+  (calmodulin, c-Src, Zif268), Needleman-Wunsch against a full-table reference, MCP limits.
+- Benchmark `needleman_wunsch_300`.
+
+### Performance
+
+Criterion medians, `bench-history.csv` baseline `2026-11-16T20:59:55Z` (1.0.0 code) →
+`2026-11-16T22:18:38Z` (this change, pinned to one core). Ticks are re-checked with interleaved
+A/B runs against a 1.0.0 worktree because other workloads shared the machine.
+
+- Faster: `substitution_score` 7.37 → 2.35 ns (−68%); `molecular_weight` 58.9 → 21.7 ns (−63%);
+  `isoelectric_point` 2.70 → 1.90 µs (−30%); `eadie_hofstee_fit` 128 → 90 ns (−30%);
+  `competitive_inhibition` 4.54 → 3.13 ns (−31%); `protein_lookup` 4.46 → 3.13 ns (−30%);
+  `bioenergy_tick` 13.6 → 8.6 ns (−37%); `receptor_tick` 13.4 → 9.7 ns (−28%);
+  `metabolic_tick` 23.8 → 19.9 ns (−17%); `hill_equation` 20.9 → 17.8 ns (−15%).
+  `needleman_wunsch_300` (new): 345 → 166 µs in interleaved A/B against 1.0.0 (−52%), with
+  O(min(m, n)) instead of O(m·n) memory.
+- Slower — the price of unconditional large-`dt` stability, exact pool capping and input
+  sanitization on tick paths: `etc_tick` 16.0 → 41.9 ns, `pi3k_tick` 10.5 → 26.2 ns,
+  `mapk_tick` 19.6 → 41.0 ns, `jak_stat_tick` 15.0 → 29.2 ns, `signaling_tick` 76 → 135 ns,
+  `beta_ox_tick` 11.2 → 18.5 ns, `neurotransmitter_tick` 33 → 49 ns, `nuclear_receptor_tick`
+  5.9 → 8.8 ns, `network_tick` 225 → 269 ns (+19%); `nernst`/`goldman`/`fick_flux` +1–3 ns
+  from finiteness checks. The closed-form updates were tuned from a first cut (degree-6
+  Horner series: `mapk_tick` 52 ns, `pi3k_tick` 36 ns, `signaling_tick` 162 ns) to a
+  division-free degree-4 Estrin series (41 / 27 / 130 ns).
+
+## [1.0.0] - 2026-04-01
+
 ### Added
 
 - **validation** — 19 validation tests cross-checking models against published experimental data: Michaelis-Menten, Hill (hemoglobin O2 binding), competitive inhibition (malonate), Arrhenius temperature sensitivity, Nernst (K+/Na+ equilibrium potentials), Goldman resting potential, isoelectric point (Lehninger pKa), extinction coefficient (Pace values), BLOSUM62 matrix entries, enzyme database (carbonic anhydrase, catalase, hexokinase)

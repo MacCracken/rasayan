@@ -18,7 +18,9 @@ pub struct AminoAcid {
     pub abbr: &'static str,
     /// Full name.
     pub name: &'static str,
-    /// Molecular weight (Da).
+    /// Average molecular weight of the free amino acid (Da), IUPAC average
+    /// isotopic composition. The residue mass inside a chain is `mw` minus
+    /// one water ([`molecular_weight`] handles that).
     pub mw: f64,
     /// Hydrophobicity (Kyte-Doolittle scale).
     pub hydrophobicity: f64,
@@ -26,29 +28,67 @@ pub struct AminoAcid {
     pub side_chain_pka: Option<f64>,
 }
 
-/// Look up an amino acid by single-letter code.
+/// Sentinel in [`LOOKUP_INDEX`] for letters that are not a standard residue.
+const NO_RESIDUE: u8 = u8::MAX;
+
+/// `'A'..='Z'` → index into [`AMINO_ACIDS`] ([`NO_RESIDUE`] if none).
+/// Built at compile time from the table itself so the two cannot drift.
+const LOOKUP_INDEX: [u8; 26] = build_lookup_index();
+
+const fn build_lookup_index() -> [u8; 26] {
+    let mut table = [NO_RESIDUE; 26];
+    let mut i = 0;
+    while i < AMINO_ACIDS.len() {
+        let slot = AMINO_ACIDS[i].code as u32 - 'A' as u32;
+        table[slot as usize] = i as u8;
+        i += 1;
+    }
+    table
+}
+
+/// Look up an amino acid by single-letter code (upper or lowercase).
+///
+/// O(1) via a 26-entry index table. Returns `None` for anything that is not
+/// one of the 20 standard one-letter codes (including whitespace, digits and
+/// non-ASCII characters).
 #[must_use]
+#[inline]
 pub fn lookup(code: char) -> Option<AminoAcid> {
     let upper = code.to_ascii_uppercase();
-    AMINO_ACIDS.iter().find(|a| a.code == upper).copied()
+    if !upper.is_ascii_uppercase() {
+        return None;
+    }
+    let slot = LOOKUP_INDEX.get(usize::from(upper as u8 - b'A'))?;
+    AMINO_ACIDS.get(usize::from(*slot)).copied()
 }
 
 /// Look up an amino acid by single-letter code, returning an error on failure.
 #[must_use = "returns Err for unknown amino acid codes"]
+#[inline]
 pub fn try_lookup(code: char) -> Result<AminoAcid, RasayanError> {
     lookup(code).ok_or(RasayanError::UnknownAminoAcid(code))
 }
 
-/// Calculate molecular weight of a peptide sequence (Da).
-/// Subtracts water for each peptide bond. Accepts upper or lowercase codes.
+/// Average mass of water (Da), H₂O with IUPAC average atomic weights.
+const WATER_AVG_MASS: f64 = 18.01528;
+
+/// Calculate the average molecular weight of a peptide sequence (Da).
+///
+/// Sum of the free-amino-acid average masses minus one water per peptide
+/// bond (n − 1 waters for n residues), i.e. one water is retained for the
+/// free N- and C-termini of the chain. Accepts upper or lowercase codes.
+///
+/// Returns `None` for an empty sequence (consistent with
+/// [`isoelectric_point`] and [`extinction_coefficient`]) or if any character
+/// is not a standard one-letter code (whitespace included).
 #[must_use]
 pub fn molecular_weight(sequence: &str) -> Option<f64> {
     if sequence.is_empty() {
-        return Some(18.015); // just water
+        return None;
     }
-    let mut total = 18.015; // water for terminal OH + H
+    let mut total = WATER_AVG_MASS; // the one water kept by the chain termini
     for c in sequence.chars() {
-        total += lookup(c)?.mw - 18.015; // subtract water per residue (peptide bond)
+        total += lookup(c)?.mw - WATER_AVG_MASS; // residue mass (water lost per bond)
     }
     Some(total)
 }
@@ -77,7 +117,7 @@ pub const AMINO_ACIDS: &[AminoAcid] = &[
         code: 'A',
         abbr: "Ala",
         name: "Alanine",
-        mw: 89.09,
+        mw: 89.0935,
         hydrophobicity: 1.8,
         side_chain_pka: None,
     },
@@ -85,7 +125,7 @@ pub const AMINO_ACIDS: &[AminoAcid] = &[
         code: 'C',
         abbr: "Cys",
         name: "Cysteine",
-        mw: 121.16,
+        mw: 121.1590,
         hydrophobicity: 2.5,
         side_chain_pka: Some(8.18),
     },
@@ -93,7 +133,7 @@ pub const AMINO_ACIDS: &[AminoAcid] = &[
         code: 'D',
         abbr: "Asp",
         name: "Aspartate",
-        mw: 133.10,
+        mw: 133.1032,
         hydrophobicity: -3.5,
         side_chain_pka: Some(3.65),
     },
@@ -101,7 +141,7 @@ pub const AMINO_ACIDS: &[AminoAcid] = &[
         code: 'E',
         abbr: "Glu",
         name: "Glutamate",
-        mw: 147.13,
+        mw: 147.1299,
         hydrophobicity: -3.5,
         side_chain_pka: Some(4.25),
     },
@@ -109,7 +149,7 @@ pub const AMINO_ACIDS: &[AminoAcid] = &[
         code: 'F',
         abbr: "Phe",
         name: "Phenylalanine",
-        mw: 165.19,
+        mw: 165.1900,
         hydrophobicity: 2.8,
         side_chain_pka: None,
     },
@@ -117,7 +157,7 @@ pub const AMINO_ACIDS: &[AminoAcid] = &[
         code: 'G',
         abbr: "Gly",
         name: "Glycine",
-        mw: 75.03,
+        mw: 75.0669,
         hydrophobicity: -0.4,
         side_chain_pka: None,
     },
@@ -125,7 +165,7 @@ pub const AMINO_ACIDS: &[AminoAcid] = &[
         code: 'H',
         abbr: "His",
         name: "Histidine",
-        mw: 155.16,
+        mw: 155.1552,
         hydrophobicity: -3.2,
         side_chain_pka: Some(6.00),
     },
@@ -133,7 +173,7 @@ pub const AMINO_ACIDS: &[AminoAcid] = &[
         code: 'I',
         abbr: "Ile",
         name: "Isoleucine",
-        mw: 131.17,
+        mw: 131.1736,
         hydrophobicity: 4.5,
         side_chain_pka: None,
     },
@@ -141,7 +181,7 @@ pub const AMINO_ACIDS: &[AminoAcid] = &[
         code: 'K',
         abbr: "Lys",
         name: "Lysine",
-        mw: 146.19,
+        mw: 146.1882,
         hydrophobicity: -3.9,
         side_chain_pka: Some(10.53),
     },
@@ -149,7 +189,7 @@ pub const AMINO_ACIDS: &[AminoAcid] = &[
         code: 'L',
         abbr: "Leu",
         name: "Leucine",
-        mw: 131.17,
+        mw: 131.1736,
         hydrophobicity: 3.8,
         side_chain_pka: None,
     },
@@ -157,7 +197,7 @@ pub const AMINO_ACIDS: &[AminoAcid] = &[
         code: 'M',
         abbr: "Met",
         name: "Methionine",
-        mw: 149.21,
+        mw: 149.2124,
         hydrophobicity: 1.9,
         side_chain_pka: None,
     },
@@ -165,7 +205,7 @@ pub const AMINO_ACIDS: &[AminoAcid] = &[
         code: 'N',
         abbr: "Asn",
         name: "Asparagine",
-        mw: 132.12,
+        mw: 132.1184,
         hydrophobicity: -3.5,
         side_chain_pka: None,
     },
@@ -173,7 +213,7 @@ pub const AMINO_ACIDS: &[AminoAcid] = &[
         code: 'P',
         abbr: "Pro",
         name: "Proline",
-        mw: 115.13,
+        mw: 115.1310,
         hydrophobicity: -1.6,
         side_chain_pka: None,
     },
@@ -181,7 +221,7 @@ pub const AMINO_ACIDS: &[AminoAcid] = &[
         code: 'Q',
         abbr: "Gln",
         name: "Glutamine",
-        mw: 146.15,
+        mw: 146.1451,
         hydrophobicity: -3.5,
         side_chain_pka: None,
     },
@@ -189,7 +229,7 @@ pub const AMINO_ACIDS: &[AminoAcid] = &[
         code: 'R',
         abbr: "Arg",
         name: "Arginine",
-        mw: 174.20,
+        mw: 174.2017,
         hydrophobicity: -4.5,
         side_chain_pka: Some(12.48),
     },
@@ -197,7 +237,7 @@ pub const AMINO_ACIDS: &[AminoAcid] = &[
         code: 'S',
         abbr: "Ser",
         name: "Serine",
-        mw: 105.09,
+        mw: 105.0930,
         hydrophobicity: -0.8,
         side_chain_pka: None,
     },
@@ -205,7 +245,7 @@ pub const AMINO_ACIDS: &[AminoAcid] = &[
         code: 'T',
         abbr: "Thr",
         name: "Threonine",
-        mw: 119.12,
+        mw: 119.1197,
         hydrophobicity: -0.7,
         side_chain_pka: None,
     },
@@ -213,7 +253,7 @@ pub const AMINO_ACIDS: &[AminoAcid] = &[
         code: 'V',
         abbr: "Val",
         name: "Valine",
-        mw: 117.15,
+        mw: 117.1469,
         hydrophobicity: 4.2,
         side_chain_pka: None,
     },
@@ -221,7 +261,7 @@ pub const AMINO_ACIDS: &[AminoAcid] = &[
         code: 'W',
         abbr: "Trp",
         name: "Tryptophan",
-        mw: 204.23,
+        mw: 204.2262,
         hydrophobicity: -0.9,
         side_chain_pka: None,
     },
@@ -229,7 +269,7 @@ pub const AMINO_ACIDS: &[AminoAcid] = &[
         code: 'Y',
         abbr: "Tyr",
         name: "Tyrosine",
-        mw: 181.19,
+        mw: 181.1894,
         hydrophobicity: -1.3,
         side_chain_pka: Some(10.07),
     },
@@ -242,23 +282,94 @@ const PKA_N_TERM: f64 = 9.69;
 /// C-terminal carboxyl group pKa.
 const PKA_C_TERM: f64 = 2.34;
 
-/// pKa values for ionizable side chains.
-///
-/// Returns `(pKa, charge_sign)` where `charge_sign` is +1 for basic residues
-/// (positive when protonated) and -1 for acidic residues (negative when
-/// deprotonated).
+/// Ionizable side chains: `(code, pKa, charge_sign)`. `charge_sign` is +1 for
+/// basic groups (positive when protonated) and −1 for acidic groups (negative
+/// when deprotonated). Lehninger pKa values.
+const SIDE_CHAINS: [(char, f64, f64); 7] = [
+    ('D', 3.65, -1.0),  // Asp
+    ('E', 4.25, -1.0),  // Glu
+    ('C', 8.18, -1.0),  // Cys
+    ('Y', 10.07, -1.0), // Tyr
+    ('H', 6.00, 1.0),   // His
+    ('K', 10.53, 1.0),  // Lys
+    ('R', 12.48, 1.0),  // Arg
+];
+
+/// Slot of an (uppercase) residue in [`SIDE_CHAINS`], if ionizable.
 #[must_use]
 #[inline]
-fn side_chain_pka_charge(code: char) -> Option<(f64, f64)> {
+fn side_chain_slot(code: char) -> Option<usize> {
     match code {
-        'D' => Some((3.65, -1.0)),  // Asp
-        'E' => Some((4.25, -1.0)),  // Glu
-        'C' => Some((8.18, -1.0)),  // Cys
-        'Y' => Some((10.07, -1.0)), // Tyr
-        'H' => Some((6.00, 1.0)),   // His
-        'K' => Some((10.53, 1.0)),  // Lys
-        'R' => Some((12.48, 1.0)),  // Arg
+        'D' => Some(0),
+        'E' => Some(1),
+        'C' => Some(2),
+        'Y' => Some(3),
+        'H' => Some(4),
+        'K' => Some(5),
+        'R' => Some(6),
         _ => None,
+    }
+}
+
+/// Per-group counts of ionizable side chains, gathered in one pass so the
+/// charge at any pH costs at most 9 `powf` calls regardless of length.
+#[derive(Debug, Clone, Copy, Default)]
+struct IonizableCounts([u32; 7]);
+
+impl IonizableCounts {
+    /// Count ionizable groups, ignoring every other character.
+    #[must_use]
+    #[inline]
+    fn lenient(sequence: &str) -> Self {
+        let mut counts = Self::default();
+        for c in sequence.chars() {
+            counts.add(c.to_ascii_uppercase());
+        }
+        counts
+    }
+
+    /// Count ionizable groups; `None` if any character is not a standard
+    /// one-letter code.
+    #[must_use]
+    #[inline]
+    fn strict(sequence: &str) -> Option<Self> {
+        let mut counts = Self::default();
+        for c in sequence.chars() {
+            counts.add(lookup(c)?.code);
+        }
+        Some(counts)
+    }
+
+    #[inline]
+    fn add(&mut self, upper: char) {
+        if let Some(slot) = side_chain_slot(upper)
+            && let Some(n) = self.0.get_mut(slot)
+        {
+            *n = n.saturating_add(1);
+        }
+    }
+
+    /// Net charge at `ph` (Henderson-Hasselbalch for termini + side chains).
+    #[must_use]
+    #[inline]
+    fn charge_at(&self, ph: f64) -> f64 {
+        // N-terminus (basic: positive when protonated)
+        let mut charge = 1.0 / (1.0 + 10_f64.powf(ph - PKA_N_TERM));
+        // C-terminus (acidic: negative when deprotonated)
+        charge -= 1.0 / (1.0 + 10_f64.powf(PKA_C_TERM - ph));
+
+        for (&(_, pka, sign), &count) in SIDE_CHAINS.iter().zip(&self.0) {
+            if count == 0 {
+                continue;
+            }
+            let n = f64::from(count);
+            if sign > 0.0 {
+                charge += n / (1.0 + 10_f64.powf(ph - pka));
+            } else {
+                charge -= n / (1.0 + 10_f64.powf(pka - ph));
+            }
+        }
+        charge
     }
 }
 
@@ -268,40 +379,28 @@ fn side_chain_pka_charge(code: char) -> Option<(f64, f64)> {
 /// - Acidic groups: charge = -1 / (1 + 10^(pKa - pH))
 /// - Basic groups:  charge = +1 / (1 + 10^(pH - pKa))
 /// - N-terminus treated as basic, C-terminus as acidic
+///
+/// Characters that are not ionizable residues (including unknown codes) are
+/// ignored.
 #[must_use]
 #[inline]
 pub fn net_charge(sequence: &str, ph: f64) -> f64 {
-    // N-terminus (basic: positive when protonated)
-    let mut charge = 1.0 / (1.0 + 10_f64.powf(ph - PKA_N_TERM));
-    // C-terminus (acidic: negative when deprotonated)
-    charge -= 1.0 / (1.0 + 10_f64.powf(PKA_C_TERM - ph));
-
-    for c in sequence.chars() {
-        let upper = c.to_ascii_uppercase();
-        if let Some((pka, sign)) = side_chain_pka_charge(upper) {
-            if sign > 0.0 {
-                charge += 1.0 / (1.0 + 10_f64.powf(ph - pka));
-            } else {
-                charge -= 1.0 / (1.0 + 10_f64.powf(pka - ph));
-            }
-        }
-    }
-    charge
+    IonizableCounts::lenient(sequence).charge_at(ph)
 }
 
 /// Isoelectric point (pI) — the pH at which net charge is zero.
 ///
-/// Uses bisection search over pH 0–14 with 0.001 precision.
-/// Returns `None` if the sequence is empty or contains unknown residues.
+/// Uses bisection search over pH 0–14 with 0.001 precision. Ionizable groups
+/// are counted once up front, so each bisection step is O(1) in sequence
+/// length. Returns `None` if the sequence is empty or contains unknown
+/// residues.
 #[must_use]
 pub fn isoelectric_point(sequence: &str) -> Option<f64> {
     if sequence.is_empty() {
         return None;
     }
-    // Validate all residues first
-    for c in sequence.chars() {
-        lookup(c)?;
-    }
+    // Validates every residue and counts ionizable groups in one pass.
+    let counts = IonizableCounts::strict(sequence)?;
 
     let mut lo = 0.0_f64;
     let mut hi = 14.0_f64;
@@ -309,7 +408,7 @@ pub fn isoelectric_point(sequence: &str) -> Option<f64> {
 
     while (hi - lo) > precision {
         let mid = (lo + hi) / 2.0;
-        if net_charge(sequence, mid) > 0.0 {
+        if counts.charge_at(mid) > 0.0 {
             lo = mid;
         } else {
             hi = mid;
@@ -429,16 +528,29 @@ fn chou_fasman_params(code: char) -> Option<ChouFasmanParams> {
     })
 }
 
-/// Predict secondary structure using the Chou-Fasman algorithm (1978).
+/// Predict secondary structure with a simplified Chou-Fasman method.
 ///
 /// Returns a per-residue assignment of [`SecondaryStructure`]. Returns `None`
 /// if the sequence is empty or contains unknown residue codes.
 ///
-/// Algorithm:
-/// 1. Nucleate helices (4+ helix formers in window of 6, extend while avg Pα ≥ 1.0)
-/// 2. Nucleate sheets (3+ sheet formers in window of 5, extend while avg Pβ ≥ 1.0)
-/// 3. Predict turns (4-residue windows where avg Pt > 1.0 and Pt dominates)
-/// 4. Resolve overlaps by highest average propensity
+/// Uses the Chou & Fasman (1978) propensity table, but the rules are a
+/// simplified variant, not a faithful reimplementation:
+/// 1. Nucleate helices (4+ residues with Pα ≥ 1.0 in a window of 6; extend
+///    while the average Pα of a sliding 6-residue window stays ≥ 1.0 and the
+///    next residue is not Pro)
+/// 2. Nucleate sheets (3+ residues with Pβ ≥ 1.0 in a window of 5; extend
+///    while the average Pβ of a sliding 5-residue window stays ≥ 1.0)
+/// 3. Predict turns (4-residue windows where avg Pt > 1.0 and avg Pt exceeds
+///    both avg Pα and avg Pβ)
+/// 4. Resolve helix/sheet overlaps per residue by that residue's own Pα vs Pβ
+///
+/// Not implemented from the 1978 rules: the former/breaker classes
+/// (Hα/hα/Iα/bα/Bα and the β equivalents, with weak formers counting as ½),
+/// tetrapeptide-breaker termination, the ⟨Pα⟩ > ⟨Pβ⟩ (and ⟨Pβ⟩ > ⟨Pα⟩)
+/// segment acceptance conditions and minimum segment lengths, the
+/// bend-frequency product (fᵢ·fᵢ₊₁·fᵢ₊₂·fᵢ₊₃ > 7.5×10⁻⁵) turn criterion, and
+/// segment-average overlap resolution. Expect lower accuracy than the
+/// published method; use it as a quick heuristic only.
 #[must_use]
 pub fn chou_fasman(sequence: &str) -> Option<Vec<SecondaryStructure>> {
     let upper: Vec<char> = sequence.chars().map(|c| c.to_ascii_uppercase()).collect();
@@ -590,6 +702,40 @@ pub fn chou_fasman(sequence: &str) -> Option<Vec<SecondaryStructure>> {
 mod tests {
     use super::*;
 
+    /// Human ubiquitin (UniProt P0CG48, mature chain).
+    const UBIQUITIN: &str =
+        "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG";
+
+    /// Naive per-residue reference: the pre-1.0.1 pI algorithm, kept to
+    /// prove the counted-group version gives the same answers.
+    fn reference_pi(sequence: &str) -> f64 {
+        let charge = |ph: f64| {
+            let mut charge = 1.0 / (1.0 + 10_f64.powf(ph - PKA_N_TERM));
+            charge -= 1.0 / (1.0 + 10_f64.powf(PKA_C_TERM - ph));
+            for c in sequence.chars() {
+                let upper = c.to_ascii_uppercase();
+                if let Some(&(_, pka, sign)) = SIDE_CHAINS.iter().find(|g| g.0 == upper) {
+                    if sign > 0.0 {
+                        charge += 1.0 / (1.0 + 10_f64.powf(ph - pka));
+                    } else {
+                        charge -= 1.0 / (1.0 + 10_f64.powf(pka - ph));
+                    }
+                }
+            }
+            charge
+        };
+        let (mut lo, mut hi) = (0.0_f64, 14.0_f64);
+        while (hi - lo) > 0.001 {
+            let mid = (lo + hi) / 2.0;
+            if charge(mid) > 0.0 {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        (lo + hi) / 2.0
+    }
+
     #[test]
     fn test_lookup() {
         let ala = lookup('A').unwrap();
@@ -621,8 +767,66 @@ mod tests {
 
     #[test]
     fn test_molecular_weight() {
+        // Ala-Gly, C5H10N2O3: average mass 146.1445 Da. The old table used the
+        // Gly monoisotopic mass (75.03) and this test hid it behind ±0.1.
         let mw = molecular_weight("AG").unwrap();
-        assert!((mw - 146.105).abs() < 0.1);
+        assert!((mw - 146.1445).abs() < 0.005, "Ala-Gly = {mw}");
+    }
+
+    #[test]
+    fn test_glycine_average_mass() {
+        // C2H5NO2 average mass ≈ 75.067 (75.03 is the monoisotopic mass).
+        let gly = lookup('G').unwrap();
+        assert!((gly.mw - 75.067).abs() < 0.001, "Gly mw = {}", gly.mw);
+        let single = molecular_weight("G").unwrap();
+        assert!((single - gly.mw).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_amino_acid_average_masses() {
+        // ExPASy/IUPAC average masses of the free amino acids.
+        let expected = [
+            ('A', 89.0935),
+            ('R', 174.2017),
+            ('N', 132.1184),
+            ('D', 133.1032),
+            ('C', 121.1590),
+            ('Q', 146.1451),
+            ('E', 147.1299),
+            ('G', 75.0669),
+            ('H', 155.1552),
+            ('I', 131.1736),
+            ('L', 131.1736),
+            ('K', 146.1882),
+            ('M', 149.2124),
+            ('F', 165.1900),
+            ('P', 115.1310),
+            ('S', 105.0930),
+            ('T', 119.1197),
+            ('W', 204.2262),
+            ('Y', 181.1894),
+            ('V', 117.1469),
+        ];
+        for (code, mw) in expected {
+            let aa = lookup(code).unwrap();
+            assert!((aa.mw - mw).abs() < 1e-9, "{code}: {} vs {mw}", aa.mw);
+        }
+    }
+
+    #[test]
+    fn test_molecular_weight_ubiquitin() {
+        // Human ubiquitin (76 aa), ExPASy ProtParam average MW 8564.84 Da.
+        let mw = molecular_weight(UBIQUITIN).unwrap();
+        assert!((mw - 8564.84).abs() < 0.5, "ubiquitin MW = {mw}");
+    }
+
+    #[test]
+    fn test_molecular_weight_one_water_per_bond() {
+        // n residues lose n − 1 waters.
+        let a = lookup('A').unwrap().mw;
+        let mw = molecular_weight("AAA").unwrap();
+        let expected = 3.0 * a - 2.0 * WATER_AVG_MASS;
+        assert!((mw - expected).abs() < 1e-9);
     }
 
     #[test]
@@ -649,8 +853,8 @@ mod tests {
 
     #[test]
     fn test_molecular_weight_empty() {
-        let mw = molecular_weight("").unwrap();
-        assert!((mw - 18.015).abs() < f64::EPSILON);
+        // No residues → no peptide; consistent with pI / extinction.
+        assert!(molecular_weight("").is_none());
     }
 
     #[test]
@@ -867,5 +1071,71 @@ mod tests {
             helix_with <= helix_without,
             "Pro should reduce helix: {helix_without} vs {helix_with}"
         );
+    }
+
+    // --- lookup table / counted pI / robustness ---
+
+    #[test]
+    fn test_lookup_table_matches_amino_acids() {
+        for aa in AMINO_ACIDS {
+            assert_eq!(lookup(aa.code), Some(*aa));
+            assert_eq!(lookup(aa.code.to_ascii_lowercase()), Some(*aa));
+        }
+        for c in ['B', 'J', 'O', 'U', 'X', 'Z', 'b', 'x', '@', '[', '`', '{'] {
+            assert!(lookup(c).is_none(), "{c} should not resolve");
+        }
+    }
+
+    #[test]
+    fn test_pi_matches_per_residue_reference() {
+        let sequences = [
+            "G",
+            "K",
+            "D",
+            "H",
+            "R",
+            "E",
+            "C",
+            "Y",
+            "ACDK",
+            "ACDEFGHIKLMNPQRSTVWY",
+            "DDDDDDKKKKKK",
+            "RRRRHHHYYCCEED",
+            UBIQUITIN,
+            "MADQLTEEQIAEFKEAFSLFDKDGDGTITTKELGTVMRSLGQNPTEAELQDMINEVDADGNGTIDFPEFLTMMARKMKDTDSEEEIREAFRVFDKDGNGYISAAELRHVMTNLGEKLTDEEVDEMIREADIDGDGQVNYEEFVQMMTAK",
+        ];
+        for seq in sequences {
+            let fast = isoelectric_point(seq).unwrap();
+            let slow = reference_pi(seq);
+            assert!(
+                (fast - slow).abs() < 1e-12,
+                "{seq}: counted {fast} vs per-residue {slow}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_net_charge_matches_counted_groups() {
+        // net_charge ignores unknown characters; isoelectric_point rejects them.
+        let a = net_charge("ACDKX", 7.0);
+        let b = net_charge("ACDK", 7.0);
+        assert!((a - b).abs() < 1e-12);
+        assert!(isoelectric_point("ACDKX").is_none());
+    }
+
+    #[test]
+    fn test_whitespace_and_non_ascii_do_not_panic() {
+        for seq in ["ACD\nEFG", "ACDÉFG", "AC🧬DK", " ", "\u{0}"] {
+            assert!(molecular_weight(seq).is_none(), "{seq:?}");
+            assert!(isoelectric_point(seq).is_none(), "{seq:?}");
+            assert!(extinction_coefficient(seq).is_none(), "{seq:?}");
+            assert!(chou_fasman(seq).is_none(), "{seq:?}");
+            assert!(net_charge(seq, 7.0).is_finite(), "{seq:?}");
+            let _ = composition(seq);
+        }
+        assert!(lookup('é').is_none());
+        assert!(lookup('\n').is_none());
+        // Non-letters are skipped by composition.
+        assert_eq!(composition("A\nÉA"), vec![('A', 2)]);
     }
 }

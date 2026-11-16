@@ -3,11 +3,16 @@
 //!
 //! Models reaction rates for enzyme-catalyzed reactions. All concentrations
 //! in molar (M), rates in M/s, temperatures in Kelvin, energies in J/mol.
+//!
+//! Rate functions treat a NaN, infinite or negative substrate, product or
+//! inhibitor concentration as 0, so a bad input yields a finite rate
+//! instead of propagating NaN into a simulation.
 
 use serde::{Deserialize, Serialize};
 
 use crate::constants::R_GAS;
 use crate::error::RasayanError;
+use crate::guard;
 
 // ---------------------------------------------------------------------------
 // Single-substrate rate equations
@@ -22,43 +27,93 @@ use crate::error::RasayanError;
 #[must_use]
 #[inline]
 pub fn michaelis_menten(substrate: f64, vmax: f64, km: f64) -> f64 {
-    if km + substrate <= 0.0 {
+    let s = guard::conc(substrate);
+    let denom = km + s;
+    if denom > 0.0 { vmax * s / denom } else { 0.0 }
+}
+
+/// Fractional saturation of the Hill equation, `s^n / (k^n + s^n)`, in
+/// `[0, 1]`.
+///
+/// Evaluated as `1 / (1 + (k/s)^n)`, which needs one `powf` and cannot
+/// produce `inf/inf` for large `s` or `0/0` when both `s^n` and `k^n`
+/// underflow. Shared by [`hill_equation`] and the `signal` dose-response
+/// functions.
+///
+/// - `s` NaN, `<= 0` or infinite → 0 (sanitized with `guard::conc`).
+/// - `k == 0` → 1 (saturated at any positive `s`).
+/// - `k` negative, NaN or `+inf` → 0 (no binding).
+/// - `n` NaN → 0.
+#[inline]
+#[must_use]
+pub(crate) fn hill_fraction(s: f64, k: f64, n: f64) -> f64 {
+    let s = guard::conc(s);
+    if s <= 0.0 || n.is_nan() {
         return 0.0;
     }
-    vmax * substrate / (km + substrate)
+    if k == 0.0 {
+        return 1.0;
+    }
+    if k > 0.0 && k < f64::INFINITY {
+        1.0 / (1.0 + (k / s).powf(n))
+    } else {
+        0.0
+    }
 }
 
 /// Hill equation for cooperative/allosteric binding.
 /// `v = Vmax * [S]^n / (K_half^n + [S]^n)`
+///
+/// Computed as `Vmax / (1 + (K_half/[S])^n)`, which is stable for very
+/// large and very small concentrations. A NaN, negative or infinite `[S]`
+/// gives 0; `K_half == 0` gives `Vmax` for any positive `[S]`; a negative
+/// or non-finite `K_half` gives 0.
 #[must_use]
 #[inline]
 pub fn hill_equation(substrate: f64, vmax: f64, k_half: f64, n: f64) -> f64 {
-    let s_n = substrate.powf(n);
-    let k_n = k_half.powf(n);
-    if k_n + s_n <= 0.0 {
-        return 0.0;
-    }
-    vmax * s_n / (k_n + s_n)
+    vmax * hill_fraction(substrate, k_half, n)
 }
 
 // ---------------------------------------------------------------------------
 // Inhibition models
 // ---------------------------------------------------------------------------
+//
+// Inhibition constants: with `[I] == 0` there is no inhibition whatever Ki
+// is. `Ki = f64::INFINITY` means "this mode of inhibition is absent" (e.g.
+// `mixed_inhibition` with `ki = INFINITY` is pure uncompetitive). With
+// `[I] > 0`, a Ki that is `<= 0` or NaN is treated as the limit Ki → 0
+// (infinitely tight binding) and the rate is 0.
+
+/// Inhibition factor `1 + [I]/Ki`, or `None` when the inhibitor is present
+/// and Ki is `<= 0` or NaN (fully inhibited).
+#[inline]
+fn inhibition_factor(inhibitor: f64, ki: f64) -> Option<f64> {
+    let i = guard::conc(inhibitor);
+    if i <= 0.0 {
+        return Some(1.0);
+    }
+    if ki > 0.0 { Some(1.0 + i / ki) } else { None }
+}
 
 /// Competitive inhibition: apparent Km increases, Vmax unchanged.
 /// `v = Vmax * [S] / (Km * (1 + [I]/Ki) + [S])`
+///
+/// `[I] == 0` gives the uninhibited rate for any `ki`; `ki = f64::INFINITY`
+/// means no inhibition.
 #[must_use]
 #[inline]
 pub fn competitive_inhibition(substrate: f64, inhibitor: f64, vmax: f64, km: f64, ki: f64) -> f64 {
-    if ki <= 0.0 {
-        return 0.0;
+    match inhibition_factor(inhibitor, ki) {
+        Some(factor) => michaelis_menten(substrate, vmax, km * factor),
+        None => 0.0,
     }
-    let km_app = km * (1.0 + inhibitor / ki);
-    michaelis_menten(substrate, vmax, km_app)
 }
 
 /// Uncompetitive inhibition: both Vmax and Km decrease proportionally.
 /// `v = Vmax / (1 + [I]/Ki) * [S] / (Km / (1 + [I]/Ki) + [S])`
+///
+/// `[I] == 0` gives the uninhibited rate for any `ki`; `ki = f64::INFINITY`
+/// means no inhibition.
 #[must_use]
 #[inline]
 pub fn uncompetitive_inhibition(
@@ -68,11 +123,10 @@ pub fn uncompetitive_inhibition(
     km: f64,
     ki: f64,
 ) -> f64 {
-    if ki <= 0.0 {
-        return 0.0;
+    match inhibition_factor(inhibitor, ki) {
+        Some(factor) => michaelis_menten(substrate, vmax / factor, km / factor),
+        None => 0.0,
     }
-    let factor = 1.0 + inhibitor / ki;
-    michaelis_menten(substrate, vmax / factor, km / factor)
 }
 
 /// Mixed (noncompetitive) inhibition: inhibitor binds both free enzyme (Ki)
@@ -86,8 +140,11 @@ pub fn uncompetitive_inhibition(
 /// * `inhibitor` — inhibitor concentration (M)
 /// * `vmax` — maximum velocity (M/s)
 /// * `km` — Michaelis constant (M)
-/// * `ki` — inhibition constant for free enzyme (M)
-/// * `ki_prime` — inhibition constant for enzyme-substrate complex (M)
+/// * `ki` — inhibition constant for free enzyme (M); `f64::INFINITY` = none
+/// * `ki_prime` — inhibition constant for enzyme-substrate complex (M);
+///   `f64::INFINITY` = none
+///
+/// `[I] == 0` gives the uninhibited rate for any `ki`/`ki_prime`.
 #[must_use]
 #[inline]
 pub fn mixed_inhibition(
@@ -98,16 +155,15 @@ pub fn mixed_inhibition(
     ki: f64,
     ki_prime: f64,
 ) -> f64 {
-    if ki <= 0.0 || ki_prime <= 0.0 {
+    let (Some(alpha), Some(alpha_prime)) = (
+        inhibition_factor(inhibitor, ki),
+        inhibition_factor(inhibitor, ki_prime),
+    ) else {
         return 0.0;
-    }
-    let alpha = 1.0 + inhibitor / ki;
-    let alpha_prime = 1.0 + inhibitor / ki_prime;
-    let denom = km * alpha + substrate * alpha_prime;
-    if denom <= 0.0 {
-        return 0.0;
-    }
-    vmax * substrate / denom
+    };
+    let s = guard::conc(substrate);
+    let denom = km * alpha + s * alpha_prime;
+    if denom > 0.0 { vmax * s / denom } else { 0.0 }
 }
 
 /// Substrate inhibition: excess substrate inhibits the enzyme.
@@ -122,17 +178,16 @@ pub fn mixed_inhibition(
 /// * `vmax` — maximum velocity (M/s)
 /// * `km` — Michaelis constant (M)
 /// * `ks` — substrate inhibition constant (M)
+/// * `ks` — substrate inhibition constant (M); `f64::INFINITY` = none
 #[must_use]
 #[inline]
 pub fn substrate_inhibition(substrate: f64, vmax: f64, km: f64, ks: f64) -> f64 {
-    if ks <= 0.0 {
+    if ks.is_nan() || ks <= 0.0 {
         return 0.0;
     }
-    let denom = km + substrate + substrate * substrate / ks;
-    if denom <= 0.0 {
-        return 0.0;
-    }
-    vmax * substrate / denom
+    let s = guard::conc(substrate);
+    let denom = km + s + s * s / ks;
+    if denom > 0.0 { vmax * s / denom } else { 0.0 }
 }
 
 // ---------------------------------------------------------------------------
@@ -166,15 +221,13 @@ pub fn reversible_michaelis_menten(
     vmax_r: f64,
     km_r: f64,
 ) -> f64 {
-    if km_f <= 0.0 || km_r <= 0.0 {
+    if !(km_f > 0.0 && km_r > 0.0) {
         return 0.0;
     }
-    let num = vmax_f * substrate / km_f - vmax_r * product / km_r;
-    let den = 1.0 + substrate / km_f + product / km_r;
-    if den <= 0.0 {
-        return 0.0;
-    }
-    num / den
+    let (s, p) = (guard::conc(substrate), guard::conc(product));
+    let num = vmax_f * s / km_f - vmax_r * p / km_r;
+    let den = 1.0 + s / km_f + p / km_r;
+    if den > 0.0 { num / den } else { 0.0 }
 }
 
 /// Haldane relationship: equilibrium constant from kinetic parameters.
@@ -211,11 +264,13 @@ pub fn haldane_keq(vmax_f: f64, km_f: f64, vmax_r: f64, km_r: f64) -> f64 {
 #[must_use]
 #[inline]
 pub fn ping_pong(a: f64, b: f64, vmax: f64, km_a: f64, km_b: f64) -> f64 {
+    let (a, b) = (guard::conc(a), guard::conc(b));
     let denom = km_a * b + km_b * a + a * b;
-    if denom <= 0.0 {
-        return 0.0;
+    if denom > 0.0 {
+        vmax * a * b / denom
+    } else {
+        0.0
     }
-    vmax * a * b / denom
 }
 
 /// Sequential (ordered or random) bi-substrate mechanism.
@@ -234,11 +289,13 @@ pub fn ping_pong(a: f64, b: f64, vmax: f64, km_a: f64, km_b: f64) -> f64 {
 #[must_use]
 #[inline]
 pub fn sequential_bisubstrate(a: f64, b: f64, vmax: f64, km_a: f64, km_b: f64, ki_a: f64) -> f64 {
+    let (a, b) = (guard::conc(a), guard::conc(b));
     let denom = ki_a * km_b + km_b * a + km_a * b + a * b;
-    if denom <= 0.0 {
-        return 0.0;
+    if denom > 0.0 {
+        vmax * a * b / denom
+    } else {
+        0.0
     }
-    vmax * a * b / denom
 }
 
 // ---------------------------------------------------------------------------
@@ -247,10 +304,17 @@ pub fn sequential_bisubstrate(a: f64, b: f64, vmax: f64, km_a: f64, km_b: f64, k
 
 /// Temperature dependence of reaction rate (Q10 model).
 /// `rate_new = rate_ref * Q10^((T - T_ref) / 10)`
+///
+/// A Q10 that is `<= 0` or non-finite is meaningless (a negative base gives
+/// NaN for fractional exponents) and returns 0.0.
 #[must_use]
 #[inline]
 pub fn q10_rate(rate_ref: f64, q10: f64, temp: f64, temp_ref: f64) -> f64 {
-    rate_ref * q10.powf((temp - temp_ref) / 10.0)
+    if q10.is_finite() && q10 > 0.0 {
+        rate_ref * q10.powf((temp - temp_ref) / 10.0)
+    } else {
+        0.0
+    }
 }
 
 /// Arrhenius equation: rate constant from activation energy and temperature.
@@ -303,57 +367,91 @@ pub struct KineticFit {
     pub r_squared: f64,
 }
 
+/// Relative tolerance for a degenerate regression: the x-spread `Sxx` must
+/// exceed this fraction of `Σx²`. Scale-free, so slow enzymes (tiny rates)
+/// and fast ones fit equally well.
+const REGRESSION_REL_TOL: f64 = 1e-12;
+
 /// Ordinary least-squares linear regression on (x, y) points.
-/// Returns `(slope, intercept, r_squared)`, or `None` if < 2 points or degenerate.
+///
+/// Uses centred two-pass sums (`Sxx = Σ(x - x̄)²`, `Sxy = Σ(x - x̄)(y - ȳ)`),
+/// which avoids the catastrophic cancellation of `nΣx² - (Σx)²`, and a
+/// relative degeneracy test (`Sxx <= 1e-12·Σx²`), so the result does not
+/// depend on the units of the data.
+///
+/// Returns `(slope, intercept, r_squared)`, or `None` if there are fewer
+/// than 2 points, any point is non-finite, all x are (numerically) equal,
+/// or the fit overflows.
 fn linear_regression(points: &[(f64, f64)]) -> Option<(f64, f64, f64)> {
     let n = points.len();
     if n < 2 {
         return None;
     }
     let nf = n as f64;
-    let sum_x: f64 = points.iter().map(|(x, _)| x).sum();
-    let sum_y: f64 = points.iter().map(|(_, y)| y).sum();
-    let sum_xy: f64 = points.iter().map(|(x, y)| x * y).sum();
-    let sum_x2: f64 = points.iter().map(|(x, _)| x * x).sum();
-    let denom = nf * sum_x2 - sum_x * sum_x;
-    if denom.abs() < f64::EPSILON {
+    let (mut sum_x, mut sum_y) = (0.0, 0.0);
+    for &(x, y) in points {
+        if !(x.is_finite() && y.is_finite()) {
+            return None;
+        }
+        sum_x += x;
+        sum_y += y;
+    }
+    let (mean_x, mean_y) = (sum_x / nf, sum_y / nf);
+    let (mut sxx, mut sxy, mut syy, mut sum_x2) = (0.0, 0.0, 0.0, 0.0);
+    for &(x, y) in points {
+        let (dx, dy) = (x - mean_x, y - mean_y);
+        sxx += dx * dx;
+        sxy += dx * dy;
+        syy += dy * dy;
+        sum_x2 += x * x;
+    }
+    if !sxx.is_finite() || sxx <= REGRESSION_REL_TOL * sum_x2 {
         return None;
     }
-    let slope = (nf * sum_xy - sum_x * sum_y) / denom;
-    let intercept = (sum_y - slope * sum_x) / nf;
-    let mean_y = sum_y / nf;
-    let ss_tot: f64 = points.iter().map(|(_, y)| (y - mean_y).powi(2)).sum();
-    let ss_res: f64 = points
-        .iter()
-        .map(|(x, y)| (y - (slope * x + intercept)).powi(2))
-        .sum();
-    let r_squared = if ss_tot > 0.0 {
-        1.0 - ss_res / ss_tot
+    let slope = sxy / sxx;
+    let intercept = mean_y - slope * mean_x;
+    if !(slope.is_finite() && intercept.is_finite()) {
+        return None;
+    }
+    // R² = Sxy² / (Sxx·Syy), arranged to avoid under/overflow of the products.
+    let r_squared = if syy > 0.0 {
+        (slope * (sxy / syy)).clamp(0.0, 1.0)
     } else {
         0.0
     };
     Some((slope, intercept, r_squared))
 }
 
+/// `true` when a fitted Km/Vmax pair is physically meaningful.
+#[inline]
+fn valid_fit(km: f64, vmax: f64) -> bool {
+    km.is_finite() && vmax.is_finite() && km > 0.0 && vmax > 0.0
+}
+
+/// `true` for a usable `(substrate, rate)` data point.
+#[inline]
+fn valid_point(s: f64, v: f64) -> bool {
+    s.is_finite() && v.is_finite() && s > 0.0 && v > 0.0
+}
+
 /// Fit Km and Vmax from `(substrate, rate)` data using Lineweaver-Burk
 /// (double-reciprocal) linearization: `1/v = (Km/Vmax) * (1/[S]) + 1/Vmax`.
 ///
-/// Data points with zero or negative substrate or rate are filtered out.
-/// Returns `None` if fewer than 2 valid points remain.
+/// Data points with zero, negative or non-finite substrate or rate are
+/// filtered out. Returns `None` if fewer than 2 valid points remain, the
+/// regression is degenerate, or the fitted Km or Vmax is not a finite
+/// value `> 0` (e.g. noisy data with a non-positive intercept).
 #[must_use]
 pub fn lineweaver_burk_fit(data: &[(f64, f64)]) -> Option<KineticFit> {
     let transformed: Vec<(f64, f64)> = data
         .iter()
-        .filter(|(s, v)| *s > 0.0 && *v > 0.0)
+        .filter(|&&(s, v)| valid_point(s, v))
         .map(|(s, v)| (1.0 / s, 1.0 / v))
         .collect();
     let (slope, intercept, r_squared) = linear_regression(&transformed)?;
-    if intercept <= 0.0 {
-        return None;
-    }
     let vmax = 1.0 / intercept;
     let km = slope * vmax;
-    Some(KineticFit {
+    valid_fit(km, vmax).then_some(KineticFit {
         km,
         vmax,
         r_squared,
@@ -366,21 +464,21 @@ pub fn lineweaver_burk_fit(data: &[(f64, f64)]) -> Option<KineticFit> {
 /// Plots `v` vs `v/[S]`; slope = -Km, intercept = Vmax. Less sensitive
 /// to outliers at extreme substrate concentrations than Lineweaver-Burk.
 ///
-/// Returns `None` if fewer than 2 valid points remain.
+/// Data points with zero, negative or non-finite substrate or rate are
+/// filtered out. Returns `None` if fewer than 2 valid points remain, the
+/// regression is degenerate, or the fitted Km or Vmax is not a finite
+/// value `> 0`.
 #[must_use]
 pub fn eadie_hofstee_fit(data: &[(f64, f64)]) -> Option<KineticFit> {
     let transformed: Vec<(f64, f64)> = data
         .iter()
-        .filter(|(s, v)| *s > 0.0 && *v > 0.0)
+        .filter(|&&(s, v)| valid_point(s, v))
         .map(|(s, v)| (v / s, *v))
         .collect();
     let (slope, intercept, r_squared) = linear_regression(&transformed)?;
     let vmax = intercept;
     let km = -slope;
-    if vmax <= 0.0 || km <= 0.0 {
-        return None;
-    }
-    Some(KineticFit {
+    valid_fit(km, vmax).then_some(KineticFit {
         km,
         vmax,
         r_squared,
@@ -405,37 +503,14 @@ pub struct EnzymeParams {
 }
 
 impl EnzymeParams {
-    /// Validate that all parameters are physically meaningful.
+    /// Validate that all parameters are physically meaningful: every field
+    /// finite, `vmax` and `kcat` `>= 0`, `km` and `hill_n` `> 0`.
     #[must_use = "validation errors should be handled"]
     pub fn validate(&self) -> Result<(), RasayanError> {
-        if self.vmax < 0.0 {
-            return Err(RasayanError::InvalidParameter {
-                name: "vmax".into(),
-                value: self.vmax,
-                reason: "must be non-negative".into(),
-            });
-        }
-        if self.km < 0.0 {
-            return Err(RasayanError::InvalidParameter {
-                name: "km".into(),
-                value: self.km,
-                reason: "must be non-negative".into(),
-            });
-        }
-        if self.kcat < 0.0 {
-            return Err(RasayanError::InvalidParameter {
-                name: "kcat".into(),
-                value: self.kcat,
-                reason: "must be non-negative".into(),
-            });
-        }
-        if self.hill_n <= 0.0 {
-            return Err(RasayanError::InvalidParameter {
-                name: "hill_n".into(),
-                value: self.hill_n,
-                reason: "must be positive".into(),
-            });
-        }
+        guard::non_negative("vmax", self.vmax)?;
+        guard::positive("km", self.km)?;
+        guard::non_negative("kcat", self.kcat)?;
+        guard::positive("hill_n", self.hill_n)?;
         Ok(())
     }
 
@@ -961,5 +1036,285 @@ mod tests {
         assert!(pfk.hill_n > 1.0);
         let pk = lookup_enzyme("Pyruvate kinase").unwrap();
         assert!(pk.hill_n > 1.0);
+    }
+
+    // --- Hardening regressions ---
+
+    const BAD: [f64; 4] = [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0];
+
+    #[test]
+    fn test_validate_rejects_non_finite_and_zero_divisors() {
+        let ok = EnzymeParams {
+            vmax: 10.0,
+            km: 1.0,
+            hill_n: 1.0,
+            kcat: 100.0,
+        };
+        for v in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(
+                EnzymeParams {
+                    vmax: v,
+                    ..ok.clone()
+                }
+                .validate()
+                .is_err()
+            );
+            assert!(
+                EnzymeParams {
+                    km: v,
+                    ..ok.clone()
+                }
+                .validate()
+                .is_err()
+            );
+            assert!(
+                EnzymeParams {
+                    kcat: v,
+                    ..ok.clone()
+                }
+                .validate()
+                .is_err()
+            );
+            assert!(
+                EnzymeParams {
+                    hill_n: v,
+                    ..ok.clone()
+                }
+                .validate()
+                .is_err()
+            );
+        }
+        // Km is a divisor: zero is rejected.
+        assert!(
+            EnzymeParams {
+                km: 0.0,
+                ..ok.clone()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            EnzymeParams {
+                hill_n: 0.0,
+                ..ok.clone()
+            }
+            .validate()
+            .is_err()
+        );
+        // Zero Vmax / kcat (inactive enzyme) is allowed.
+        assert!(
+            EnzymeParams {
+                vmax: 0.0,
+                kcat: 0.0,
+                ..ok
+            }
+            .validate()
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_bad_substrate_gives_zero_rate() {
+        for s in BAD {
+            assert_eq!(michaelis_menten(s, 10.0, 1.0), 0.0, "mm s={s}");
+            assert_eq!(hill_equation(s, 10.0, 1.0, 2.5), 0.0, "hill s={s}");
+            assert_eq!(competitive_inhibition(s, 1.0, 10.0, 1.0, 1.0), 0.0);
+            assert_eq!(uncompetitive_inhibition(s, 1.0, 10.0, 1.0, 1.0), 0.0);
+            assert_eq!(mixed_inhibition(s, 1.0, 10.0, 1.0, 1.0, 2.0), 0.0);
+            assert_eq!(substrate_inhibition(s, 10.0, 1.0, 5.0), 0.0);
+            assert_eq!(ping_pong(s, 1.0, 10.0, 1.0, 1.0), 0.0);
+            assert_eq!(ping_pong(1.0, s, 10.0, 1.0, 1.0), 0.0);
+            assert_eq!(sequential_bisubstrate(s, 1.0, 10.0, 1.0, 1.0, 1.0), 0.0);
+            assert_eq!(sequential_bisubstrate(1.0, s, 10.0, 1.0, 1.0, 1.0), 0.0);
+        }
+    }
+
+    #[test]
+    fn test_reversible_sanitizes_substrate_and_product() {
+        let fwd = reversible_michaelis_menten(1.0, 0.0, 10.0, 1.0, 5.0, 1.0);
+        for bad in BAD {
+            // Bad product behaves like no product.
+            let r = reversible_michaelis_menten(1.0, bad, 10.0, 1.0, 5.0, 1.0);
+            assert!((r - fwd).abs() < 1e-12, "p={bad} -> {r}");
+            // Bad substrate behaves like no substrate (pure reverse).
+            let r = reversible_michaelis_menten(bad, 1.0, 10.0, 1.0, 5.0, 1.0);
+            let rev = reversible_michaelis_menten(0.0, 1.0, 10.0, 1.0, 5.0, 1.0);
+            assert!((r - rev).abs() < 1e-12, "s={bad} -> {r}");
+        }
+        assert_eq!(
+            reversible_michaelis_menten(1.0, 1.0, 10.0, f64::NAN, 5.0, 1.0),
+            0.0
+        );
+    }
+
+    #[test]
+    fn test_bad_inhibitor_means_no_inhibition() {
+        let mm = michaelis_menten(2.0, 10.0, 1.0);
+        for i in BAD {
+            assert!((competitive_inhibition(2.0, i, 10.0, 1.0, 1.0) - mm).abs() < 1e-12);
+            assert!((uncompetitive_inhibition(2.0, i, 10.0, 1.0, 1.0) - mm).abs() < 1e-12);
+            assert!((mixed_inhibition(2.0, i, 10.0, 1.0, 1.0, 1.0) - mm).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn test_zero_inhibitor_ignores_ki() {
+        let mm = michaelis_menten(2.0, 10.0, 1.0);
+        for ki in [0.0, -1.0, f64::NAN, f64::INFINITY, 1e-300] {
+            assert!(
+                (competitive_inhibition(2.0, 0.0, 10.0, 1.0, ki) - mm).abs() < 1e-12,
+                "competitive ki={ki}"
+            );
+            assert!(
+                (uncompetitive_inhibition(2.0, 0.0, 10.0, 1.0, ki) - mm).abs() < 1e-12,
+                "uncompetitive ki={ki}"
+            );
+            assert!(
+                (mixed_inhibition(2.0, 0.0, 10.0, 1.0, ki, ki) - mm).abs() < 1e-12,
+                "mixed ki={ki}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_infinite_ki_means_no_inhibition() {
+        let mm = michaelis_menten(2.0, 10.0, 1.0);
+        let inf = f64::INFINITY;
+        assert!((competitive_inhibition(2.0, 5.0, 10.0, 1.0, inf) - mm).abs() < 1e-12);
+        assert!((uncompetitive_inhibition(2.0, 5.0, 10.0, 1.0, inf) - mm).abs() < 1e-12);
+        assert!((mixed_inhibition(2.0, 5.0, 10.0, 1.0, inf, inf) - mm).abs() < 1e-12);
+        // Ki' = inf reduces mixed to competitive; Ki = inf to uncompetitive.
+        let comp = competitive_inhibition(2.0, 5.0, 10.0, 1.0, 1.0);
+        assert!((mixed_inhibition(2.0, 5.0, 10.0, 1.0, 1.0, inf) - comp).abs() < 1e-12);
+        let unc = uncompetitive_inhibition(2.0, 5.0, 10.0, 1.0, 1.0);
+        assert!((mixed_inhibition(2.0, 5.0, 10.0, 1.0, inf, 1.0) - unc).abs() < 1e-12);
+        // Substrate inhibition with Ks = inf is plain Michaelis-Menten.
+        assert!((substrate_inhibition(2.0, 10.0, 1.0, inf) - mm).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_present_inhibitor_with_invalid_ki_fully_inhibits() {
+        for ki in [0.0, -1.0, f64::NAN] {
+            assert_eq!(competitive_inhibition(2.0, 1.0, 10.0, 1.0, ki), 0.0);
+            assert_eq!(uncompetitive_inhibition(2.0, 1.0, 10.0, 1.0, ki), 0.0);
+            assert_eq!(mixed_inhibition(2.0, 1.0, 10.0, 1.0, ki, 1.0), 0.0);
+            assert_eq!(mixed_inhibition(2.0, 1.0, 10.0, 1.0, 1.0, ki), 0.0);
+        }
+    }
+
+    #[test]
+    fn test_hill_extreme_concentrations() {
+        // Huge s: previously inf/inf = NaN.
+        let v = hill_equation(1e200, 10.0, 1.0, 2.0);
+        assert!((v - 10.0).abs() < 1e-12, "huge s -> {v}");
+        // Tiny s and K: previously 0/0 underflow → 0; true value is Vmax/2.
+        let v = hill_equation(1e-200, 10.0, 1e-200, 2.0);
+        assert!((v - 5.0).abs() < 1e-12, "tiny s,K -> {v}");
+        let v = hill_equation(2e-200, 1.0, 1e-200, 3.0);
+        assert!((v - 8.0 / 9.0).abs() < 1e-12, "tiny ratio 2 -> {v}");
+        // Negative s: previously NaN for fractional n.
+        assert_eq!(hill_equation(-0.5, 10.0, 1.0, 2.5), 0.0);
+        // Matches the textbook form in the normal range.
+        let (s, k, n) = (0.7_f64, 1.3_f64, 2.8_f64);
+        let textbook = s.powf(n) / (k.powf(n) + s.powf(n));
+        assert!((hill_equation(s, 1.0, k, n) - textbook).abs() < 1e-14);
+    }
+
+    #[test]
+    fn test_hill_k_edge_cases() {
+        // K = 0: saturated.
+        assert_eq!(hill_equation(0.5, 10.0, 0.0, 2.0), 10.0);
+        // K = 0 and s = 0: still no substrate.
+        assert_eq!(hill_equation(0.0, 10.0, 0.0, 2.0), 0.0);
+        // Negative / NaN / infinite K: no binding.
+        for k in [-1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(hill_equation(0.5, 10.0, k, 2.0), 0.0, "k={k}");
+        }
+        // NaN n: 0, not NaN.
+        assert_eq!(hill_equation(1.0, 10.0, 1.0, f64::NAN), 0.0);
+        assert_eq!(hill_fraction(1.0, 1.0, f64::NAN), 0.0);
+        assert!((hill_fraction(1.0, 1.0, 4.0) - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_q10_invalid_base_returns_zero() {
+        for q in [0.0, -2.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(q10_rate(1.0, q, 37.0, 27.0), 0.0, "q10={q}");
+        }
+        // Valid Q10 below reference temperature slows the rate.
+        assert!((q10_rate(1.0, 2.0, 17.0, 27.0) - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_lineweaver_burk_rejects_non_positive_fit() {
+        // Rate falling with substrate gives a negative Km.
+        let data = [(1.0, 5.0), (2.0, 4.0), (4.0, 3.0)];
+        assert!(lineweaver_burk_fit(&data).is_none());
+        // Noisy data with a negative intercept (→ negative Vmax).
+        let data = [(0.1, 0.1), (1.0, 2.0), (10.0, 100.0)];
+        assert!(lineweaver_burk_fit(&data).is_none());
+    }
+
+    #[test]
+    fn test_fits_skip_non_finite_points() {
+        let mut data: Vec<(f64, f64)> = [0.5, 1.0, 2.0, 5.0]
+            .iter()
+            .map(|&s| (s, michaelis_menten(s, 10.0, 1.0)))
+            .collect();
+        data.push((f64::NAN, 1.0));
+        data.push((1.0, f64::INFINITY));
+        data.push((f64::INFINITY, 3.0));
+        let lb = lineweaver_burk_fit(&data).unwrap();
+        assert!((lb.km - 1.0).abs() < 1e-6 && (lb.vmax - 10.0).abs() < 1e-6);
+        let eh = eadie_hofstee_fit(&data).unwrap();
+        assert!((eh.km - 1.0).abs() < 1e-6 && (eh.vmax - 10.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_fits_slow_enzyme() {
+        // Vmax = 1e-12 M/s, Km = 1 mM: previously None from the absolute
+        // EPSILON degeneracy test (Σx² ~ 1e-18 for Eadie-Hofstee).
+        let (vmax, km) = (1e-12, 1e-3);
+        let data: Vec<(f64, f64)> = [2e-4, 5e-4, 1e-3, 2e-3, 5e-3, 1e-2]
+            .iter()
+            .map(|&s| (s, michaelis_menten(s, vmax, km)))
+            .collect();
+        let lb = lineweaver_burk_fit(&data).expect("LB fit of slow enzyme");
+        assert!((lb.km - km).abs() / km < 1e-6, "LB km {}", lb.km);
+        assert!((lb.vmax - vmax).abs() / vmax < 1e-6, "LB vmax {}", lb.vmax);
+        assert!(lb.r_squared > 0.999_999);
+        let eh = eadie_hofstee_fit(&data).expect("EH fit of slow enzyme");
+        assert!((eh.km - km).abs() / km < 1e-6, "EH km {}", eh.km);
+        assert!((eh.vmax - vmax).abs() / vmax < 1e-6, "EH vmax {}", eh.vmax);
+        assert!(eh.r_squared > 0.999_999);
+    }
+
+    #[test]
+    fn test_linear_regression_degenerate_and_exact() {
+        // All x equal → degenerate, at any scale.
+        assert!(linear_regression(&[(1e-9, 1.0), (1e-9, 2.0)]).is_none());
+        assert!(linear_regression(&[(1e9, 1.0), (1e9, 2.0), (1e9, 3.0)]).is_none());
+        assert!(linear_regression(&[(0.0, 1.0), (0.0, 2.0)]).is_none());
+        // Non-finite point → None.
+        assert!(linear_regression(&[(1.0, 1.0), (2.0, f64::NAN)]).is_none());
+        // Offset data: centred sums keep the slope exact.
+        let offset = |c: f64| -> Vec<(f64, f64)> {
+            (0..5)
+                .map(|i| {
+                    let x = c + f64::from(i);
+                    (x, 3.0 * x + 2.0)
+                })
+                .collect()
+        };
+        let (slope, intercept, r2) = linear_regression(&offset(1e5)).unwrap();
+        assert!((slope - 3.0).abs() < 1e-9, "slope {slope}");
+        assert!((intercept - 2.0).abs() < 1e-3, "intercept {intercept}");
+        assert!(r2 > 0.999_999);
+        // Spread below 1e-6 of the magnitude is numerically degenerate.
+        assert!(linear_regression(&offset(1e8)).is_none());
+        // Flat y: perfect but uninformative fit → R² = 0, slope 0.
+        let (slope, _, r2) = linear_regression(&[(1.0, 4.0), (2.0, 4.0)]).unwrap();
+        assert_eq!(slope, 0.0);
+        assert_eq!(r2, 0.0);
     }
 }

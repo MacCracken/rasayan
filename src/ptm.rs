@@ -1,8 +1,12 @@
 //! Post-translational modification (PTM) site prediction.
 //!
 //! Pattern-based detection of common PTM motifs in protein sequences:
-//! N-glycosylation, phosphorylation, disulfide bond potential, signal
-//! peptide cleavage sites.
+//! N-glycosylation (PROSITE PS00001), PKA (PS00004) and CK2 (PS00006)
+//! phosphorylation sites, generic Ser/Thr/Tyr phospho-acceptors, disulfide
+//! bond potential (Cys), and N-myristoylation (PS00008, N-terminal only).
+//!
+//! These are short consensus patterns with high false-positive rates; treat
+//! hits as candidates, not predictions of actual modification.
 
 use serde::Serialize;
 
@@ -10,7 +14,7 @@ use serde::Serialize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
 pub enum PtmType {
-    /// N-linked glycosylation (N-X-S/T where X ≠ P).
+    /// N-linked glycosylation, PROSITE PS00001 `N-{P}-[ST]-{P}`.
     NGlycosylation,
     /// Serine phosphorylation (S in context of kinase motifs).
     PhosphoSer,
@@ -24,14 +28,15 @@ pub enum PtmType {
     PkaSite,
     /// Casein kinase II site (S/T-X-X-D/E).
     Ck2Site,
-    /// N-myristoylation (G at position 2 after Met removal: G-X-X-X-S/T).
+    /// N-myristoylation, PROSITE PS00008 `G-{EDRKHPFYW}-x(2)-[STAGCN]-{P}`,
+    /// with the Gly N-terminal (index 0, or index 1 after initiator Met).
     Myristoylation,
 }
 
 /// A predicted PTM site.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PtmSite {
-    /// Zero-based position in the sequence.
+    /// Zero-based position in the sequence (character index).
     pub position: usize,
     /// The residue at this position.
     pub residue: char,
@@ -43,8 +48,12 @@ pub struct PtmSite {
 
 /// Scan a protein sequence for potential PTM sites.
 ///
-/// Returns all detected motifs sorted by position. Returns `None` if the
-/// sequence is empty. Unknown residues are skipped (not validated).
+/// Returns all detected motifs sorted by position (sites at the same position
+/// keep detection order). Returns `None` if the sequence is empty. Unknown
+/// residues, whitespace and non-ASCII characters are not validated: they
+/// never satisfy a position that requires a specific residue, but they do
+/// satisfy wildcard (`x`) and exclusion (`{P}`) positions. Positions are
+/// character indices.
 #[must_use]
 pub fn scan_ptm_sites(sequence: &str) -> Option<Vec<PtmSite>> {
     if sequence.is_empty() {
@@ -56,17 +65,19 @@ pub fn scan_ptm_sites(sequence: &str) -> Option<Vec<PtmSite>> {
     let mut sites = Vec::new();
 
     for i in 0..n {
-        // N-glycosylation: N-X-S/T where X ≠ P
+        // N-glycosylation (PS00001): N-{P}-[ST]-{P}. The {P} at +3 needs a
+        // residue to be present, so a C-terminal N-X-[ST] does not match.
         if chars[i] == 'N'
-            && i + 2 < n
+            && i + 3 < n
             && chars[i + 1] != 'P'
             && (chars[i + 2] == 'S' || chars[i + 2] == 'T')
+            && chars[i + 3] != 'P'
         {
             sites.push(PtmSite {
                 position: i,
                 residue: 'N',
                 ptm_type: PtmType::NGlycosylation,
-                motif: chars[i..=i + 2].iter().collect(),
+                motif: chars[i..=i + 3].iter().collect(),
             });
         }
 
@@ -135,19 +146,43 @@ pub fn scan_ptm_sites(sequence: &str) -> Option<Vec<PtmSite>> {
                 motif: String::from("C"),
             });
         }
-
-        // N-myristoylation: G-X-X-X-[ST] at position 0 (after Met cleavage)
-        if i == 0 && chars[i] == 'G' && n >= 5 && (chars[4] == 'S' || chars[4] == 'T') {
-            sites.push(PtmSite {
-                position: 0,
-                residue: 'G',
-                ptm_type: PtmType::Myristoylation,
-                motif: chars[0..5].iter().collect(),
-            });
-        }
     }
 
+    // N-myristoylation (PS00008): G-{EDRKHPFYW}-x(2)-[STAGCN]-{P}, with the
+    // Gly at the N-terminus — index 0, or index 1 when the initiator Met is
+    // still present (it is removed by methionine aminopeptidase).
+    let gly = if chars.first() == Some(&'M') { 1 } else { 0 };
+    if let Some(window) = chars.get(gly..gly + MYRISTOYL_LEN)
+        && is_myristoylation_motif(window)
+    {
+        sites.push(PtmSite {
+            position: gly,
+            residue: 'G',
+            ptm_type: PtmType::Myristoylation,
+            motif: window.iter().collect(),
+        });
+    }
+
+    // PKA sites are reported at the acceptor (i + 3) and the myristoyl Gly is
+    // appended last, so restore position order (stable: ties keep order).
+    sites.sort_by_key(|s| s.position);
     Some(sites)
+}
+
+/// Length of the PS00008 N-myristoylation pattern.
+const MYRISTOYL_LEN: usize = 6;
+
+/// Match PS00008 `G-{EDRKHPFYW}-x(2)-[STAGCN]-{P}` on an exact 6-residue window.
+#[must_use]
+#[inline]
+fn is_myristoylation_motif(w: &[char]) -> bool {
+    matches!(
+        w,
+        ['G', b, _, _, e, f]
+            if !matches!(b, 'E' | 'D' | 'R' | 'K' | 'H' | 'P' | 'F' | 'Y' | 'W')
+                && matches!(e, 'S' | 'T' | 'A' | 'G' | 'C' | 'N')
+                && *f != 'P'
+    )
 }
 
 /// Count potential disulfide bonds (pairs of Cys residues).
@@ -165,16 +200,27 @@ pub fn disulfide_bond_count(sequence: &str) -> usize {
 mod tests {
     use super::*;
 
+    fn of_type(sites: &[PtmSite], t: PtmType) -> Vec<&PtmSite> {
+        sites.iter().filter(|s| s.ptm_type == t).collect()
+    }
+
     #[test]
     fn test_n_glycosylation() {
-        let sites = scan_ptm_sites("ANST").unwrap();
-        let glyco: Vec<_> = sites
-            .iter()
-            .filter(|s| s.ptm_type == PtmType::NGlycosylation)
-            .collect();
+        // PS00001 needs a non-Pro residue after the [ST].
+        let sites = scan_ptm_sites("ANSTA").unwrap();
+        let glyco = of_type(&sites, PtmType::NGlycosylation);
         assert_eq!(glyco.len(), 1);
         assert_eq!(glyco[0].position, 1);
-        assert_eq!(glyco[0].motif, "NST");
+        assert_eq!(glyco[0].motif, "NSTA");
+    }
+
+    #[test]
+    fn test_n_glycosylation_proline_after_acceptor_excluded() {
+        // N-X-[ST]-P is not a sequon ({P} at +3).
+        let sites = scan_ptm_sites("ANSPA").unwrap();
+        assert!(of_type(&sites, PtmType::NGlycosylation).is_empty());
+        let sites = scan_ptm_sites("NATP").unwrap();
+        assert!(of_type(&sites, PtmType::NGlycosylation).is_empty());
     }
 
     #[test]
@@ -243,13 +289,79 @@ mod tests {
 
     #[test]
     fn test_myristoylation() {
-        let sites = scan_ptm_sites("GAAAS").unwrap();
-        let myr: Vec<_> = sites
-            .iter()
-            .filter(|s| s.ptm_type == PtmType::Myristoylation)
-            .collect();
+        // G-{EDRKHPFYW}-x(2)-[STAGCN]-{P}: needs the 6th residue (≠ P).
+        let sites = scan_ptm_sites("GAAASA").unwrap();
+        let myr = of_type(&sites, PtmType::Myristoylation);
         assert_eq!(myr.len(), 1);
-        assert_eq!(myr[0].motif, "GAAAS");
+        assert_eq!(myr[0].position, 0);
+        assert_eq!(myr[0].motif, "GAAASA");
+        // Too short for the full pattern.
+        let sites = scan_ptm_sites("GAAAS").unwrap();
+        assert!(of_type(&sites, PtmType::Myristoylation).is_empty());
+    }
+
+    #[test]
+    fn test_myristoylation_after_initiator_met() {
+        // c-Src N-terminus: M-G-S-N-K-S-K-P-K-D, myristoylated on Gly2.
+        let sites = scan_ptm_sites("MGSNKSKPKD").unwrap();
+        let myr = of_type(&sites, PtmType::Myristoylation);
+        assert_eq!(myr.len(), 1);
+        assert_eq!(myr[0].position, 1);
+        assert_eq!(myr[0].residue, 'G');
+        assert_eq!(myr[0].motif, "GSNKSK");
+    }
+
+    #[test]
+    fn test_myristoylation_full_pattern() {
+        // [STAGCN] at +4 now includes A/G/C/N.
+        for seq in ["GAAAAA", "GAAAGA", "GAAACA", "GAAANA", "GAAATA"] {
+            let sites = scan_ptm_sites(seq).unwrap();
+            assert_eq!(of_type(&sites, PtmType::Myristoylation).len(), 1, "{seq}");
+        }
+        // Excluded residue at +1, wrong residue at +4, Pro at +5.
+        for seq in ["GKAASA", "GPAASA", "GWAASA", "GAAALA", "GAAASP"] {
+            let sites = scan_ptm_sites(seq).unwrap();
+            assert!(of_type(&sites, PtmType::Myristoylation).is_empty(), "{seq}");
+        }
+        // Not N-terminal: Gly at index 2, or Gly at index 1 without Met.
+        for seq in ["MAGAAASA", "AGAAASA"] {
+            let sites = scan_ptm_sites(seq).unwrap();
+            assert!(of_type(&sites, PtmType::Myristoylation).is_empty(), "{seq}");
+        }
+    }
+
+    #[test]
+    fn test_sorted_by_position() {
+        // PKA@3 used to be pushed before PhosphoSer@2.
+        for seq in ["RRSS", "MGSNKSKPKD", "KRASNSTAYCSAAE"] {
+            let sites = scan_ptm_sites(seq).unwrap();
+            for w in sites.windows(2) {
+                assert!(w[0].position <= w[1].position, "{seq}: {sites:?}");
+            }
+        }
+        let sites = scan_ptm_sites("RRSS").unwrap();
+        let pka = of_type(&sites, PtmType::PkaSite);
+        assert_eq!(pka.len(), 1);
+        assert_eq!(pka[0].position, 3);
+    }
+
+    #[test]
+    fn test_whitespace_and_non_ascii_do_not_panic() {
+        for seq in ["ACD\nEFG", "ACDÉFG", "N🧬SA", "MÉ", "M", "\u{0}"] {
+            let sites = scan_ptm_sites(seq).unwrap();
+            for s in &sites {
+                assert!(s.position < seq.chars().count());
+            }
+        }
+        // Positions are character indices, not byte offsets.
+        let sites = scan_ptm_sites("ÉNASA").unwrap();
+        let glyco = of_type(&sites, PtmType::NGlycosylation);
+        assert_eq!(glyco.len(), 1);
+        assert_eq!(glyco[0].position, 1);
+        // Whitespace in an acceptor slot cannot satisfy [ST].
+        let sites = scan_ptm_sites("NA SA").unwrap();
+        assert!(of_type(&sites, PtmType::NGlycosylation).is_empty());
+        assert_eq!(disulfide_bond_count("CÉC\n"), 1);
     }
 
     #[test]
@@ -266,12 +378,13 @@ mod tests {
 
     #[test]
     fn test_no_false_glycosylation() {
-        // NAS should match, NAP should not
+        // C-terminal NAS no longer matches: PS00001's {P} at +3 requires a
+        // residue there. NASA matches; NAP never did.
         let sites = scan_ptm_sites("NAS").unwrap();
-        let glyco: Vec<_> = sites
-            .iter()
-            .filter(|s| s.ptm_type == PtmType::NGlycosylation)
-            .collect();
-        assert_eq!(glyco.len(), 1);
+        assert!(of_type(&sites, PtmType::NGlycosylation).is_empty());
+        let sites = scan_ptm_sites("NASA").unwrap();
+        assert_eq!(of_type(&sites, PtmType::NGlycosylation).len(), 1);
+        let sites = scan_ptm_sites("NAPA").unwrap();
+        assert!(of_type(&sites, PtmType::NGlycosylation).is_empty());
     }
 }

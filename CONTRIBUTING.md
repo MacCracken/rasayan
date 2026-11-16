@@ -12,7 +12,7 @@ Thank you for your interest in contributing to Rasayan.
 
 ## Prerequisites
 
-- Rust stable (MSRV 1.89)
+- Rust stable (MSRV 1.100)
 - Components: `rustfmt`, `clippy`
 - Optional: `cargo-audit`, `cargo-deny`, `cargo-llvm-cov`
 

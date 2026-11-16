@@ -28,12 +28,25 @@
 //! | Glucogenic | Ala, Arg, Asn, Asp, Cys, Gln, Glu, Gly, His, Met, Pro, Ser, Val | Pyruvate, OAA, α-KG, succinyl-CoA, fumarate |
 //! | Ketogenic | Leu, Lys | Acetyl-CoA |
 //! | Both | Ile, Phe, Trp, Tyr, Thr | Acetyl-CoA + glucogenic intermediate |
+//!
+//! # Simplifications
+//!
+//! - GDH is driven by glutamate and NAD+ only; its allosteric regulation
+//!   (ADP/leucine activation, GTP/ATP inhibition) is not modeled.
+//! - NH4+ clearance is a saturable sink standing in for the urea cycle and
+//!   glutamine synthetase. It has **no ATP cost** yet (the urea cycle spends
+//!   3 ATP / 4 high-energy phosphates per urea), so protein catabolism looks
+//!   slightly more energy-efficient than it is.
+//! - The α-KG co-substrate is read but not debited or credited here: the
+//!   caller supplies `alpha_kg` and transamination/GDH do not report α-KG
+//!   consumed/regenerated.
 
 use serde::{Deserialize, Serialize};
 
 use crate::constants::{MAX_NAD_FACTOR, RESTING_NAD_RATIO};
 use crate::enzyme;
 use crate::error::RasayanError;
+use crate::guard::{self, take};
 
 // ---------------------------------------------------------------------------
 // Carbon skeleton routing
@@ -57,6 +70,45 @@ pub struct CarbonSkeletonOutput {
     pub fumarate: f64,
     /// Fraction routed to oxaloacetate.
     pub oxaloacetate: f64,
+}
+
+impl CarbonSkeletonOutput {
+    /// Sum of all routing fractions (should be ~1.0).
+    #[must_use]
+    #[inline]
+    pub fn total(&self) -> f64 {
+        self.pyruvate
+            + self.acetyl_coa
+            + self.alpha_kg
+            + self.succinyl_coa
+            + self.fumarate
+            + self.oxaloacetate
+    }
+
+    /// Validate the routing: every fraction finite and `>= 0`, and the
+    /// fractions summing to 1.0 (±0.01).
+    #[must_use = "validation errors should be handled"]
+    pub fn validate(&self) -> Result<(), RasayanError> {
+        for (name, value) in [
+            ("carbon_routing.pyruvate", self.pyruvate),
+            ("carbon_routing.acetyl_coa", self.acetyl_coa),
+            ("carbon_routing.alpha_kg", self.alpha_kg),
+            ("carbon_routing.succinyl_coa", self.succinyl_coa),
+            ("carbon_routing.fumarate", self.fumarate),
+            ("carbon_routing.oxaloacetate", self.oxaloacetate),
+        ] {
+            guard::non_negative(name, value)?;
+        }
+        let sum = self.total();
+        if !sum.is_finite() || (sum - 1.0).abs() > 0.01 {
+            return Err(RasayanError::InvalidParameter {
+                name: "carbon_routing".into(),
+                value: sum,
+                reason: "fractions must sum to 1.0".into(),
+            });
+        }
+        Ok(())
+    }
 }
 
 impl Default for CarbonSkeletonOutput {
@@ -100,7 +152,7 @@ impl Default for AminoCatabState {
 }
 
 impl AminoCatabState {
-    /// Validate that all concentrations are non-negative.
+    /// Validate that all concentrations are finite and non-negative.
     #[must_use = "validation errors should be handled"]
     pub fn validate(&self) -> Result<(), RasayanError> {
         for (name, value) in [
@@ -108,12 +160,7 @@ impl AminoCatabState {
             ("glutamate", self.glutamate),
             ("ammonium", self.ammonium),
         ] {
-            if value < 0.0 {
-                return Err(RasayanError::NegativeConcentration {
-                    name: name.into(),
-                    value,
-                });
-            }
+            guard::non_negative(name, value)?;
         }
         Ok(())
     }
@@ -139,6 +186,7 @@ pub struct AminoCatabConfig {
     /// Effective Km for α-ketoglutarate in transamination (mM).
     pub transaminase_km_alpha_kg: f64,
     /// Ammonium clearance rate (mM/s). Urea cycle / glutamine synthetase.
+    /// Modeled as a free sink: the urea cycle's ATP cost is not charged.
     pub nh4_clearance_rate: f64,
     /// Km for ammonium clearance (mM).
     pub nh4_clearance_km: f64,
@@ -161,37 +209,28 @@ impl Default for AminoCatabConfig {
 
 impl AminoCatabConfig {
     /// Validate that all parameters are physically meaningful.
+    ///
+    /// Vmax and clearance rates must be finite and `>= 0`; every Km is a
+    /// divisor and must be `> 0`. The carbon routing must pass
+    /// [`CarbonSkeletonOutput::validate`].
     #[must_use = "validation errors should be handled"]
     pub fn validate(&self) -> Result<(), RasayanError> {
         for (name, value) in [
             ("transaminase_vmax", self.transaminase_vmax),
-            ("transaminase_km", self.transaminase_km),
             ("gdh_vmax", self.gdh_vmax),
+            ("nh4_clearance_rate", self.nh4_clearance_rate),
+        ] {
+            guard::non_negative(name, value)?;
+        }
+        for (name, value) in [
+            ("transaminase_km", self.transaminase_km),
             ("gdh_km_glutamate", self.gdh_km_glutamate),
             ("transaminase_km_alpha_kg", self.transaminase_km_alpha_kg),
-            ("nh4_clearance_rate", self.nh4_clearance_rate),
             ("nh4_clearance_km", self.nh4_clearance_km),
         ] {
-            if value < 0.0 {
-                return Err(RasayanError::InvalidParameter {
-                    name: name.into(),
-                    value,
-                    reason: "must be non-negative".into(),
-                });
-            }
+            guard::positive(name, value)?;
         }
-        // Validate carbon routing sums to ~1.0
-        let r = &self.carbon_routing;
-        let routing_sum =
-            r.pyruvate + r.acetyl_coa + r.alpha_kg + r.succinyl_coa + r.fumarate + r.oxaloacetate;
-        if (routing_sum - 1.0).abs() > 0.01 {
-            return Err(RasayanError::InvalidParameter {
-                name: "carbon_routing".into(),
-                value: routing_sum,
-                reason: "fractions must sum to 1.0".into(),
-            });
-        }
-        Ok(())
+        self.carbon_routing.validate()
     }
 }
 
@@ -203,7 +242,7 @@ impl AminoCatabConfig {
 ///
 /// Returned by [`AminoCatabState::tick`]. Contains cofactor accounting
 /// and carbon skeleton destinations for the caller to route to TCA.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[must_use]
 pub struct AminoCatabFlux {
     /// Amino acids consumed by transamination (mM).
@@ -212,7 +251,8 @@ pub struct AminoCatabFlux {
     pub nadh_produced: f64,
     /// NH4+ produced by deamination (mM).
     pub nh4_produced: f64,
-    /// NH4+ cleared by urea cycle / glutamine synthesis (mM).
+    /// NH4+ cleared by urea cycle / glutamine synthesis (mM). No ATP cost
+    /// is charged for this clearance yet.
     pub nh4_cleared: f64,
     /// Carbon skeletons routed to pyruvate (mM).
     pub to_pyruvate: f64,
@@ -226,9 +266,9 @@ pub struct AminoCatabFlux {
     pub to_fumarate: f64,
     /// Carbon skeletons routed to oxaloacetate (mM).
     pub to_oxaloacetate: f64,
-    /// Transamination rate (mM/s).
+    /// Effective transamination rate (mM/s): `amino_acids_consumed / dt`.
     pub transamination_rate: f64,
-    /// Deamination rate (mM/s).
+    /// Effective deamination rate (mM/s): `nh4_produced / dt`.
     pub deamination_rate: f64,
 }
 
@@ -245,7 +285,15 @@ impl AminoCatabState {
     ///
     /// Carbon skeletons are distributed to TCA entry points according to
     /// the routing fractions in the config. NH4+ is cleared by a simplified
-    /// urea cycle / glutamine synthetase model.
+    /// urea cycle / glutamine synthetase model (no ATP cost charged).
+    ///
+    /// Transamination is capped at both the amino acid pool and the
+    /// `alpha_kg` passed in; deamination at the glutamate pool and clearance
+    /// at the ammonium pool (each including what earlier steps added this
+    /// tick). No pool goes negative and nitrogen is conserved for any `dt`.
+    /// A non-finite or non-positive `dt` is treated as "no time passed"
+    /// (state untouched, zero flux); NaN, infinite or negative
+    /// `alpha_kg`/`nad_ratio` are treated as 0.
     ///
     /// # Arguments
     /// * `config` — kinetic parameters
@@ -260,6 +308,11 @@ impl AminoCatabState {
         nad_ratio: f64,
         dt: f64,
     ) -> AminoCatabFlux {
+        if !guard::valid_dt(dt) {
+            return AminoCatabFlux::default();
+        }
+        let alpha_kg = guard::conc(alpha_kg);
+        let nad_ratio = guard::conc(nad_ratio);
         tracing::trace!(
             dt,
             aa_pool = self.amino_acid_pool,
@@ -280,7 +333,8 @@ impl AminoCatabState {
         );
 
         // --- Oxidative deamination: Glutamate → α-KG + NH4+ + NADH ---
-        // GDH requires NAD+ and is allosterically regulated
+        // GDH needs NAD+ (scaled by nad_ratio). Its allosteric regulation
+        // (ADP/leucine activation, GTP/ATP inhibition) is not modeled.
         let v_gdh = enzyme::michaelis_menten(
             self.glutamate,
             config.gdh_vmax * nad_factor,
@@ -288,25 +342,22 @@ impl AminoCatabState {
         );
 
         // --- NH4+ clearance (urea cycle / glutamine synthetase) ---
+        // A free sink for now: the urea cycle's ATP cost is not charged.
         let v_clearance = enzyme::michaelis_menten(
             self.ammonium,
             config.nh4_clearance_rate,
             config.nh4_clearance_km,
         );
 
-        // --- Update pools ---
-        let transaminated = v_transam * dt;
-        let deaminated = v_gdh * dt;
-        let cleared = v_clearance * dt;
-
+        // --- Update pools (each transfer capped at the pool it drains) ---
+        let transaminated = take(v_transam * dt, self.amino_acid_pool.min(alpha_kg));
         self.amino_acid_pool -= transaminated;
-        self.glutamate += transaminated - deaminated;
-        self.ammonium += deaminated - cleared;
-
-        // Clamp non-negative (numerical safety)
-        self.amino_acid_pool = self.amino_acid_pool.max(0.0);
-        self.glutamate = self.glutamate.max(0.0);
-        self.ammonium = self.ammonium.max(0.0);
+        self.glutamate += transaminated;
+        let deaminated = take(v_gdh * dt, self.glutamate);
+        self.glutamate -= deaminated;
+        self.ammonium += deaminated;
+        let cleared = take(v_clearance * dt, self.ammonium);
+        self.ammonium -= cleared;
 
         // --- Carbon skeleton routing ---
         let r = &config.carbon_routing;
@@ -322,8 +373,8 @@ impl AminoCatabState {
             to_succinyl_coa: transaminated * r.succinyl_coa,
             to_fumarate: transaminated * r.fumarate,
             to_oxaloacetate: transaminated * r.oxaloacetate,
-            transamination_rate: v_transam,
-            deamination_rate: v_gdh,
+            transamination_rate: transaminated / dt,
+            deamination_rate: deaminated / dt,
         }
     }
 }
@@ -511,5 +562,141 @@ mod tests {
             state.ammonium > AminoCatabState::default().ammonium,
             "NH4+ should accumulate without clearance"
         );
+    }
+
+    #[test]
+    fn test_invalid_dt_is_noop() {
+        let config = AminoCatabConfig::default();
+        for dt in [0.0, -0.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut state = AminoCatabState::default();
+            let flux = state.tick(&config, 0.3, 700.0, dt);
+            assert_eq!(state, AminoCatabState::default(), "dt={dt} changed state");
+            assert_eq!(flux, AminoCatabFlux::default(), "dt={dt} produced flux");
+        }
+    }
+
+    #[test]
+    fn test_nan_inputs_sanitized() {
+        let config = AminoCatabConfig::default();
+        for (akg, nad) in [
+            (f64::NAN, 700.0),
+            (0.3, f64::NAN),
+            (f64::INFINITY, f64::NEG_INFINITY),
+            (-1.0, -1.0),
+        ] {
+            let mut state = AminoCatabState::default();
+            let flux = state.tick(&config, akg, nad, 0.1);
+            assert!(state.validate().is_ok(), "{akg} {nad}: {state:?}");
+            assert!(flux.amino_acids_consumed.is_finite() && flux.nadh_produced.is_finite());
+        }
+    }
+
+    #[test]
+    fn test_validate_state_rejects_nan() {
+        let s = AminoCatabState {
+            ammonium: f64::NAN,
+            ..AminoCatabState::default()
+        };
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_config_rejects_bad_values() {
+        let ok = AminoCatabConfig::default();
+        let cases = [
+            AminoCatabConfig {
+                transaminase_vmax: f64::NAN,
+                ..ok.clone()
+            },
+            AminoCatabConfig {
+                transaminase_km: 0.0,
+                ..ok.clone()
+            },
+            AminoCatabConfig {
+                transaminase_km_alpha_kg: 0.0,
+                ..ok.clone()
+            },
+            AminoCatabConfig {
+                gdh_km_glutamate: 0.0,
+                ..ok.clone()
+            },
+            AminoCatabConfig {
+                nh4_clearance_km: f64::INFINITY,
+                ..ok.clone()
+            },
+        ];
+        for (i, c) in cases.iter().enumerate() {
+            assert!(c.validate().is_err(), "case {i} should fail");
+        }
+    }
+
+    #[test]
+    fn test_carbon_routing_validation() {
+        assert!(CarbonSkeletonOutput::default().validate().is_ok());
+        let d = CarbonSkeletonOutput::default();
+        // NaN fraction (and therefore NaN sum) must fail.
+        let nan = CarbonSkeletonOutput {
+            fumarate: f64::NAN,
+            ..d
+        };
+        assert!(nan.validate().is_err());
+        let config = AminoCatabConfig {
+            carbon_routing: nan,
+            ..AminoCatabConfig::default()
+        };
+        assert!(config.validate().is_err());
+        // A negative fraction is rejected even when the sum is still 1.0.
+        let negative = CarbonSkeletonOutput {
+            pyruvate: -0.1,
+            acetyl_coa: 0.55,
+            ..d
+        };
+        assert!((negative.total() - 1.0).abs() < 1e-12);
+        assert!(negative.validate().is_err());
+        let inf = CarbonSkeletonOutput {
+            alpha_kg: f64::INFINITY,
+            ..d
+        };
+        assert!(inf.validate().is_err());
+    }
+
+    #[test]
+    fn test_transamination_capped_at_alpha_kg_and_pool() {
+        let config = AminoCatabConfig::default();
+        let mut state = AminoCatabState::default();
+        let flux = state.tick(&config, 1e-4, 700.0, 1000.0);
+        assert!(flux.amino_acids_consumed <= 1e-4);
+        let mut state = AminoCatabState {
+            amino_acid_pool: 1e-5,
+            ..AminoCatabState::default()
+        };
+        let flux = state.tick(&config, 10.0, 700.0, 1000.0);
+        assert!((flux.amino_acids_consumed - 1e-5).abs() < 1e-18);
+        assert_eq!(state.amino_acid_pool, 0.0);
+    }
+
+    #[test]
+    fn test_large_dt_conserves_nitrogen_and_carbon() {
+        let config = AminoCatabConfig::default();
+        for dt in [1.0, 5.0] {
+            let mut state = AminoCatabState::default();
+            let n0 = state.amino_acid_pool + state.glutamate + state.ammonium;
+            let (mut cleared, mut consumed, mut skeletons) = (0.0, 0.0, 0.0);
+            for _ in 0..200 {
+                let f = state.tick(&config, 0.3, 700.0, dt);
+                assert!(state.validate().is_ok(), "dt={dt}: {state:?}");
+                cleared += f.nh4_cleared;
+                consumed += f.amino_acids_consumed;
+                skeletons += f.to_pyruvate
+                    + f.to_acetyl_coa
+                    + f.to_alpha_kg
+                    + f.to_succinyl_coa
+                    + f.to_fumarate
+                    + f.to_oxaloacetate;
+            }
+            let n = state.amino_acid_pool + state.glutamate + state.ammonium + cleared;
+            assert!((n - n0).abs() < 1e-9, "dt={dt}: nitrogen {n0} -> {n}");
+            assert!((skeletons - consumed).abs() < 1e-9, "dt={dt}");
+        }
     }
 }

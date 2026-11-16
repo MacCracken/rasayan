@@ -108,11 +108,16 @@ const PAM250: [[i8; 20]; 20] = [
 pub fn substitution_score(a: char, b: char, matrix: Matrix) -> Option<i8> {
     let i = aa_index(a)?;
     let j = aa_index(b)?;
-    let m = match matrix {
+    Some(matrix_table(matrix)[i][j])
+}
+
+/// The 20×20 score table backing a [`Matrix`].
+#[inline]
+fn matrix_table(matrix: Matrix) -> &'static [[i8; 20]; 20] {
+    match matrix {
         Matrix::Blosum62 => &BLOSUM62,
         Matrix::Pam250 => &PAM250,
-    };
-    Some(m[i][j])
+    }
 }
 
 /// Result of pairwise alignment scoring.
@@ -146,7 +151,7 @@ pub fn score_alignment(seq_a: &str, seq_b: &str, matrix: Matrix) -> Option<Align
 
     for (a, b) in seq_a.chars().zip(seq_b.chars()) {
         let s = substitution_score(a, b, matrix)?;
-        score += i32::from(s);
+        score = score.saturating_add(i32::from(s));
         if a.eq_ignore_ascii_case(&b) {
             identities += 1;
         }
@@ -165,48 +170,49 @@ pub fn score_alignment(seq_a: &str, seq_b: &str, matrix: Matrix) -> Option<Align
 /// Returns the optimal global alignment score using dynamic programming.
 /// Gap penalty should be negative (e.g., -4 for BLOSUM62).
 /// Returns `None` if either sequence is empty or contains unknown residues.
+///
+/// Runs in O(m·n) time and O(min(m, n)) memory. Scores saturate at the
+/// `i32` bounds rather than overflowing.
 #[must_use]
 pub fn needleman_wunsch(seq_a: &str, seq_b: &str, matrix: Matrix, gap_penalty: i32) -> Option<i32> {
-    let a: Vec<char> = seq_a.chars().map(|c| c.to_ascii_uppercase()).collect();
-    let b: Vec<char> = seq_b.chars().map(|c| c.to_ascii_uppercase()).collect();
-    let m = a.len();
-    let n = b.len();
-
-    if m == 0 || n == 0 {
+    // Map residues to matrix indices once: validates the input and keeps the
+    // inner loop to two table loads instead of two `char` matches per cell.
+    let a: Vec<usize> = seq_a.chars().map(aa_index).collect::<Option<_>>()?;
+    let b: Vec<usize> = seq_b.chars().map(aa_index).collect::<Option<_>>()?;
+    if a.is_empty() || b.is_empty() {
         return None;
     }
 
-    // Validate all residues
-    for &c in &a {
-        aa_index(c)?;
-    }
-    for &c in &b {
-        aa_index(c)?;
-    }
+    // Both matrices are symmetric, so the global score is invariant under
+    // swapping the sequences; keep the shorter one along the DP row.
+    let (rows, cols) = if a.len() >= b.len() { (a, b) } else { (b, a) };
+    let table = matrix_table(matrix);
 
-    // DP table: (m+1) × (n+1)
-    let mut dp = vec![vec![0i32; n + 1]; m + 1];
-
-    // Initialize gap penalties
-    for (i, row) in dp.iter_mut().enumerate().take(m + 1) {
-        row[0] = i as i32 * gap_penalty;
+    // Only the final score is returned, so two rolling rows suffice:
+    // O(min(m, n)) memory instead of a full (m+1)×(n+1) table. Saturating
+    // arithmetic keeps extreme gap penalties from overflowing.
+    let mut prev: Vec<i32> = Vec::with_capacity(cols.len() + 1);
+    let mut edge = 0i32;
+    prev.push(edge);
+    for _ in &cols {
+        edge = edge.saturating_add(gap_penalty);
+        prev.push(edge);
     }
-    for (j, val) in dp[0].iter_mut().enumerate().take(n + 1) {
-        *val = j as i32 * gap_penalty;
-    }
+    let mut curr = vec![0i32; cols.len() + 1];
 
-    // Fill
-    for i in 1..=m {
-        for j in 1..=n {
-            let sub = substitution_score(a[i - 1], b[j - 1], matrix)?;
-            let diag = dp[i - 1][j - 1] + i32::from(sub);
-            let up = dp[i - 1][j] + gap_penalty;
-            let left = dp[i][j - 1] + gap_penalty;
-            dp[i][j] = diag.max(up).max(left);
+    for &r in &rows {
+        let sub_row = &table[r];
+        curr[0] = prev[0].saturating_add(gap_penalty);
+        for (j, &c) in cols.iter().enumerate() {
+            let diag = prev[j].saturating_add(i32::from(sub_row[c]));
+            let up = prev[j + 1].saturating_add(gap_penalty);
+            let left = curr[j].saturating_add(gap_penalty);
+            curr[j + 1] = diag.max(up).max(left);
         }
+        core::mem::swap(&mut prev, &mut curr);
     }
 
-    Some(dp[m][n])
+    prev.last().copied()
 }
 
 #[cfg(test)]
@@ -333,5 +339,79 @@ mod tests {
     #[test]
     fn test_needleman_wunsch_unknown() {
         assert!(needleman_wunsch("AXC", "ACD", Matrix::Blosum62, -4).is_none());
+        assert!(needleman_wunsch("ACD", "AÇD", Matrix::Blosum62, -4).is_none());
+    }
+
+    /// Reference full-table implementation used to cross-check the
+    /// two-row DP.
+    fn nw_full_table(a: &str, b: &str, matrix: Matrix, gap: i32) -> i32 {
+        let a: Vec<char> = a.chars().collect();
+        let b: Vec<char> = b.chars().collect();
+        let mut dp = vec![vec![0i32; b.len() + 1]; a.len() + 1];
+        for (i, row) in dp.iter_mut().enumerate() {
+            row[0] = i as i32 * gap;
+        }
+        for (j, cell) in dp[0].iter_mut().enumerate() {
+            *cell = j as i32 * gap;
+        }
+        for i in 1..=a.len() {
+            for j in 1..=b.len() {
+                let sub = i32::from(substitution_score(a[i - 1], b[j - 1], matrix).unwrap());
+                dp[i][j] = (dp[i - 1][j - 1] + sub)
+                    .max(dp[i - 1][j] + gap)
+                    .max(dp[i][j - 1] + gap);
+            }
+        }
+        dp[a.len()][b.len()]
+    }
+
+    #[test]
+    fn test_needleman_wunsch_matches_full_table() {
+        // First pair is the HEAGAWGHEE/PAWHEAE example from Durbin et al. (1998).
+        let pairs = [
+            ("HEAGAWGHEE", "PAWHEAE"),
+            ("MKTAYIAKQR", "MKTAYIAKQR"),
+            ("A", "W"),
+            ("ACDEFGHIKLMNPQRSTVWY", "YWVTSRQPNMLKIHGFEDCA"),
+            ("GGGG", "G"),
+        ];
+        for (a, b) in pairs {
+            for matrix in [Matrix::Blosum62, Matrix::Pam250] {
+                for gap in [-1, -4, -8, -11] {
+                    let fast = needleman_wunsch(a, b, matrix, gap).unwrap();
+                    assert_eq!(
+                        fast,
+                        nw_full_table(a, b, matrix, gap),
+                        "{a} vs {b} gap {gap}"
+                    );
+                    // Symmetric matrices → symmetric global score.
+                    assert_eq!(fast, needleman_wunsch(b, a, matrix, gap).unwrap());
+                }
+            }
+        }
+        // Single substitution A↔W in BLOSUM62 is -3, cheaper than two gaps.
+        assert_eq!(needleman_wunsch("A", "W", Matrix::Blosum62, -4), Some(-3));
+        // GGGG vs G: one match (6) + three gaps.
+        assert_eq!(
+            needleman_wunsch("GGGG", "G", Matrix::Blosum62, -4),
+            Some(6 - 12)
+        );
+    }
+
+    #[test]
+    fn test_needleman_wunsch_extreme_gap_saturates() {
+        // i32::MIN gap must not overflow (previously `i * gap` panicked in debug).
+        let s = needleman_wunsch("ACDEFG", "A", Matrix::Blosum62, i32::MIN).unwrap();
+        assert_eq!(s, i32::MIN);
+        let s = needleman_wunsch("ACD", "ACD", Matrix::Blosum62, i32::MAX).unwrap();
+        assert!(s > 0);
+    }
+
+    #[test]
+    fn test_score_alignment_saturates() {
+        let long_w = "W".repeat(1000);
+        let r = score_alignment(&long_w, &long_w, Matrix::Blosum62).unwrap();
+        assert_eq!(r.score, 11_000);
+        assert_eq!(r.identity, 1.0);
     }
 }

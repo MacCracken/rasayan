@@ -47,6 +47,7 @@ use serde::{Deserialize, Serialize};
 use crate::constants::{MAX_ATP_ADP_RATIO, MAX_NAD_FACTOR, RESTING_NAD_RATIO};
 use crate::enzyme;
 use crate::error::RasayanError;
+use crate::guard::{self, shift, take};
 
 // ---------------------------------------------------------------------------
 // State
@@ -102,7 +103,7 @@ impl Default for GlycolysisState {
 }
 
 impl GlycolysisState {
-    /// Validate that all concentrations are non-negative.
+    /// Validate that all concentrations are finite and non-negative.
     #[must_use = "validation errors should be handled"]
     pub fn validate(&self) -> Result<(), RasayanError> {
         for (name, value) in [
@@ -118,12 +119,7 @@ impl GlycolysisState {
             ("pep", self.pep),
             ("pyruvate", self.pyruvate),
         ] {
-            if value < 0.0 {
-                return Err(RasayanError::NegativeConcentration {
-                    name: name.into(),
-                    value,
-                });
-            }
+            guard::non_negative(name, value)?;
         }
         Ok(())
     }
@@ -306,69 +302,59 @@ impl Default for GlycolysisConfig {
 
 impl GlycolysisConfig {
     /// Validate that all parameters are physically meaningful.
+    ///
+    /// Vmax values must be finite and `>= 0`. Every Km, Ki, half-inhibition
+    /// and half-activation constant is used as a divisor and must be `> 0`,
+    /// as must the Hill coefficients. `pk_f16bp_max_activation` is a fold
+    /// change and must be `>= 1`.
     #[must_use = "validation errors should be handled"]
     pub fn validate(&self) -> Result<(), RasayanError> {
         for (name, value) in [
             ("hk_vmax", self.hk_vmax),
+            ("pgi_vmax_f", self.pgi_vmax_f),
+            ("pgi_vmax_r", self.pgi_vmax_r),
+            ("pfk_vmax", self.pfk_vmax),
+            ("aldo_vmax_f", self.aldo_vmax_f),
+            ("aldo_vmax_r", self.aldo_vmax_r),
+            ("tpi_vmax_f", self.tpi_vmax_f),
+            ("tpi_vmax_r", self.tpi_vmax_r),
+            ("gapdh_vmax", self.gapdh_vmax),
+            ("pgk_vmax_f", self.pgk_vmax_f),
+            ("pgk_vmax_r", self.pgk_vmax_r),
+            ("pgm_vmax_f", self.pgm_vmax_f),
+            ("pgm_vmax_r", self.pgm_vmax_r),
+            ("eno_vmax_f", self.eno_vmax_f),
+            ("eno_vmax_r", self.eno_vmax_r),
+            ("pk_vmax", self.pk_vmax),
+        ] {
+            guard::non_negative(name, value)?;
+        }
+        for (name, value) in [
             ("hk_km_glucose", self.hk_km_glucose),
             ("hk_ki_g6p", self.hk_ki_g6p),
-            ("pgi_vmax_f", self.pgi_vmax_f),
             ("pgi_km_f", self.pgi_km_f),
-            ("pgi_vmax_r", self.pgi_vmax_r),
             ("pgi_km_r", self.pgi_km_r),
-            ("pfk_vmax", self.pfk_vmax),
             ("pfk_km_f6p", self.pfk_km_f6p),
+            ("pfk_hill_n", self.pfk_hill_n),
             ("pfk_atp_half_inhibition", self.pfk_atp_half_inhibition),
-            ("aldo_vmax_f", self.aldo_vmax_f),
             ("aldo_km_f", self.aldo_km_f),
-            ("aldo_vmax_r", self.aldo_vmax_r),
             ("aldo_km_r", self.aldo_km_r),
-            ("tpi_vmax_f", self.tpi_vmax_f),
             ("tpi_km_f", self.tpi_km_f),
-            ("tpi_vmax_r", self.tpi_vmax_r),
             ("tpi_km_r", self.tpi_km_r),
-            ("gapdh_vmax", self.gapdh_vmax),
             ("gapdh_km_g3p", self.gapdh_km_g3p),
-            ("pgk_vmax_f", self.pgk_vmax_f),
             ("pgk_km_f", self.pgk_km_f),
-            ("pgk_vmax_r", self.pgk_vmax_r),
             ("pgk_km_r", self.pgk_km_r),
-            ("pgm_vmax_f", self.pgm_vmax_f),
             ("pgm_km_f", self.pgm_km_f),
-            ("pgm_vmax_r", self.pgm_vmax_r),
             ("pgm_km_r", self.pgm_km_r),
-            ("eno_vmax_f", self.eno_vmax_f),
             ("eno_km_f", self.eno_km_f),
-            ("eno_vmax_r", self.eno_vmax_r),
             ("eno_km_r", self.eno_km_r),
-            ("pk_vmax", self.pk_vmax),
             ("pk_km_pep", self.pk_km_pep),
+            ("pk_hill_n", self.pk_hill_n),
             ("pk_f16bp_ka", self.pk_f16bp_ka),
-            ("pk_f16bp_max_activation", self.pk_f16bp_max_activation),
         ] {
-            if value < 0.0 {
-                return Err(RasayanError::InvalidParameter {
-                    name: name.into(),
-                    value,
-                    reason: "must be non-negative".into(),
-                });
-            }
+            guard::positive(name, value)?;
         }
-        if self.pfk_hill_n <= 0.0 {
-            return Err(RasayanError::InvalidParameter {
-                name: "pfk_hill_n".into(),
-                value: self.pfk_hill_n,
-                reason: "must be positive".into(),
-            });
-        }
-        if self.pk_hill_n <= 0.0 {
-            return Err(RasayanError::InvalidParameter {
-                name: "pk_hill_n".into(),
-                value: self.pk_hill_n,
-                reason: "must be positive".into(),
-            });
-        }
-        Ok(())
+        guard::at_least("pk_f16bp_max_activation", self.pk_f16bp_max_activation, 1.0)
     }
 }
 
@@ -380,7 +366,7 @@ impl GlycolysisConfig {
 ///
 /// Returned by [`GlycolysisState::tick`]. Contains ATP/NADH accounting
 /// that the caller should apply to their cofactor pools.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[must_use]
 pub struct GlycolysisFlux {
     /// ATP consumed in preparatory phase (steps 1 + 3, mM).
@@ -393,7 +379,10 @@ pub struct GlycolysisFlux {
     pub nadh_produced: f64,
     /// Pyruvate produced (mM).
     pub pyruvate_produced: f64,
-    /// Reaction rates for each step (mM/s). Index 0 = step 1, etc.
+    /// Effective reaction rates for each step (mM/s): the amount each step
+    /// actually moved this tick divided by `dt`, after capping at the pool it
+    /// drains. Index 0 = step 1, etc. Reversible steps are negative when they
+    /// run backwards.
     pub step_rates: [f64; 10],
 }
 
@@ -409,12 +398,22 @@ impl GlycolysisState {
     /// for regulatory feedback. They are **not** modified — the caller should
     /// apply the returned [`GlycolysisFlux`] to update cofactor pools.
     ///
+    /// Rates are evaluated from the concentrations at the start of the tick.
+    /// The steps are then applied in pathway order, and each step's transfer
+    /// is capped at the pool it drains (the substrate, or the product for a
+    /// reversible step running backwards), so a large `dt` can never drive a
+    /// pool negative or create carbon: [`total_carbon`](Self::total_carbon)
+    /// is conserved for any `dt`. The returned flux reports the capped
+    /// amounts. A non-finite or non-positive `dt` is treated as "no time
+    /// passed" (state untouched, zero flux); NaN, infinite or negative
+    /// `atp`/`adp`/`nad_ratio` are treated as 0.
+    ///
     /// # Arguments
     /// * `config` — enzyme parameters for all 10 steps
     /// * `atp` — current ATP concentration (mM), for regulatory feedback
     /// * `adp` — current ADP concentration (mM), substrate for ATP-producing steps
     /// * `nad_ratio` — NAD+/NADH ratio, scales GAPDH (step 6) activity
-    /// * `dt` — timestep in seconds (recommend <= 0.1s for stability)
+    /// * `dt` — timestep in seconds (recommend <= 0.1s for accuracy)
     #[must_use = "flux contains ATP/NADH accounting that should be applied to cofactor pools"]
     pub fn tick(
         &mut self,
@@ -424,6 +423,12 @@ impl GlycolysisState {
         nad_ratio: f64,
         dt: f64,
     ) -> GlycolysisFlux {
+        if !guard::valid_dt(dt) {
+            return GlycolysisFlux::default();
+        }
+        let atp = guard::conc(atp);
+        let adp = guard::conc(adp);
+        let nad_ratio = guard::conc(nad_ratio);
         tracing::trace!(dt, atp, adp, glucose = self.glucose, "glycolysis_tick");
 
         // --- Compute rates (mM/s) ---
@@ -533,53 +538,75 @@ impl GlycolysisState {
             config.pk_hill_n,
         );
 
-        // --- Integrate (Euler method) ---
-        // d[X]/dt = sum of producing rates - sum of consuming rates
+        // --- Integrate (Euler, applied step by step in pathway order) ---
+        // Each transfer is capped at the pool it drains, so no pool can go
+        // negative and no clamp is needed (a clamp would create mass).
 
-        self.glucose -= v1 * dt;
-        self.g6p += (v1 - v2) * dt;
-        self.f6p += (v2 - v3) * dt;
-        self.f16bp += (v3 - v4) * dt;
-        self.dhap += (v4 - v5) * dt; // aldolase produces, TPI consumes
-        self.g3p += (v4 + v5 - v6) * dt; // aldolase produces, TPI produces, GAPDH consumes
-        self.bpg13 += (v6 - v7) * dt;
-        self.pg3 += (v7 - v8) * dt;
-        self.pg2 += (v8 - v9) * dt;
-        self.pep += (v9 - v10) * dt;
-        self.pyruvate += v10 * dt;
+        // Step 1: glucose → G6P
+        let a1 = take(v1 * dt, self.glucose);
+        self.glucose -= a1;
+        self.g6p += a1;
+        // Step 2: G6P ⇌ F6P
+        let a2 = shift(v2 * dt, self.g6p, self.f6p);
+        self.g6p -= a2;
+        self.f6p += a2;
+        // Step 3: F6P → F1,6BP
+        let a3 = take(v3 * dt, self.f6p);
+        self.f6p -= a3;
+        self.f16bp += a3;
+        // Step 4: F1,6BP ⇌ DHAP + G3P (reverse consumes one of each triose)
+        let a4 = shift(v4 * dt, self.f16bp, self.dhap.min(self.g3p));
+        self.f16bp -= a4;
+        self.dhap += a4;
+        self.g3p += a4;
+        // Step 5: DHAP ⇌ G3P
+        let a5 = shift(v5 * dt, self.dhap, self.g3p);
+        self.dhap -= a5;
+        self.g3p += a5;
+        // Step 6: G3P → 1,3BPG
+        let a6 = take(v6 * dt, self.g3p);
+        self.g3p -= a6;
+        self.bpg13 += a6;
+        // Step 7: 1,3BPG ⇌ 3PG
+        let a7 = shift(v7 * dt, self.bpg13, self.pg3);
+        self.bpg13 -= a7;
+        self.pg3 += a7;
+        // Step 8: 3PG ⇌ 2PG
+        let a8 = shift(v8 * dt, self.pg3, self.pg2);
+        self.pg3 -= a8;
+        self.pg2 += a8;
+        // Step 9: 2PG ⇌ PEP
+        let a9 = shift(v9 * dt, self.pg2, self.pep);
+        self.pg2 -= a9;
+        self.pep += a9;
+        // Step 10: PEP → pyruvate
+        let a10 = take(v10 * dt, self.pep);
+        self.pep -= a10;
+        self.pyruvate += a10;
 
-        // Clamp to non-negative (numerical safety)
-        self.glucose = self.glucose.max(0.0);
-        self.g6p = self.g6p.max(0.0);
-        self.f6p = self.f6p.max(0.0);
-        self.f16bp = self.f16bp.max(0.0);
-        self.dhap = self.dhap.max(0.0);
-        self.g3p = self.g3p.max(0.0);
-        self.bpg13 = self.bpg13.max(0.0);
-        self.pg3 = self.pg3.max(0.0);
-        self.pg2 = self.pg2.max(0.0);
-        self.pep = self.pep.max(0.0);
-        // pyruvate can accumulate freely
-
-        // --- Compute flux ---
-        let atp_consumed = (v1 + v3) * dt;
-        let atp_produced = (v7 + v10) * dt;
-        let nadh_produced = v6 * dt;
-        let pyruvate_produced = v10 * dt;
+        // --- Compute flux (actual, capped amounts) ---
+        let atp_consumed = a1 + a3;
+        let atp_produced = a7 + a10;
+        let inv_dt = 1.0 / dt;
 
         GlycolysisFlux {
             atp_consumed,
             atp_produced,
             net_atp: atp_produced - atp_consumed,
-            nadh_produced,
-            pyruvate_produced,
-            step_rates: [v1, v2, v3, v4, v5, v6, v7, v8, v9, v10],
+            nadh_produced: a6,
+            pyruvate_produced: a10,
+            step_rates: [a1, a2, a3, a4, a5, a6, a7, a8, a9, a10].map(|a| a * inv_dt),
         }
     }
 
-    /// Total concentration of all glycolytic intermediates (mM).
-    /// Useful for mass balance checks.
+    /// Sum of the intermediate concentrations G6P through PEP (mM),
+    /// excluding glucose and pyruvate.
+    ///
+    /// This is **not** a conserved quantity: aldolase splits one hexose into
+    /// two trioses, so the sum changes even when no carbon is gained or lost.
+    /// Use [`total_carbon`](Self::total_carbon) for mass-balance checks.
     #[must_use]
+    #[inline]
     pub fn total_intermediates(&self) -> f64 {
         self.g6p
             + self.f6p
@@ -590,6 +617,27 @@ impl GlycolysisState {
             + self.pg3
             + self.pg2
             + self.pep
+    }
+
+    /// Total carbon held in glycolysis (mM of carbon atoms):
+    /// 6 × hexoses (glucose, G6P, F6P, F1,6BP) + 3 × trioses
+    /// (DHAP, G3P, 1,3BPG, 3PG, 2PG, PEP, pyruvate).
+    ///
+    /// Every glycolytic step conserves carbon, so this is invariant under
+    /// [`tick`](Self::tick) for any `dt`; it only changes when the caller
+    /// adds glucose or removes pyruvate.
+    #[must_use]
+    #[inline]
+    pub fn total_carbon(&self) -> f64 {
+        6.0 * (self.glucose + self.g6p + self.f6p + self.f16bp)
+            + 3.0
+                * (self.dhap
+                    + self.g3p
+                    + self.bpg13
+                    + self.pg3
+                    + self.pg2
+                    + self.pep
+                    + self.pyruvate)
     }
 }
 
@@ -795,5 +843,166 @@ mod tests {
         assert!(total > 0.0);
         let expected = 0.083 + 0.014 + 0.031 + 0.14 + 0.019 + 0.001 + 0.12 + 0.03 + 0.023;
         assert!((total - expected).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_invalid_dt_is_noop() {
+        let config = GlycolysisConfig::default();
+        for dt in [0.0, -0.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut state = GlycolysisState::default();
+            let flux = state.tick(&config, 6.0, 0.5, 700.0, dt);
+            assert_eq!(state, GlycolysisState::default(), "dt={dt} changed state");
+            assert_eq!(flux, GlycolysisFlux::default(), "dt={dt} produced flux");
+        }
+    }
+
+    #[test]
+    fn test_nan_inputs_sanitized() {
+        let config = GlycolysisConfig::default();
+        for (atp, adp, nad) in [
+            (f64::NAN, 0.5, 700.0),
+            (6.0, f64::NAN, 700.0),
+            (6.0, 0.5, f64::NAN),
+            (f64::INFINITY, -1.0, f64::NEG_INFINITY),
+        ] {
+            let mut state = GlycolysisState::default();
+            let flux = state.tick(&config, atp, adp, nad, 0.1);
+            assert!(state.validate().is_ok(), "{atp} {adp} {nad} -> {state:?}");
+            assert!(flux.net_atp.is_finite() && flux.nadh_produced.is_finite());
+            assert!(flux.step_rates.iter().all(|r| r.is_finite()));
+        }
+    }
+
+    #[test]
+    fn test_validate_state_rejects_nan() {
+        for bad in [f64::NAN, f64::INFINITY] {
+            let s = GlycolysisState {
+                pyruvate: bad,
+                ..GlycolysisState::default()
+            };
+            assert!(s.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn test_validate_config_rejects_bad_values() {
+        let ok = GlycolysisConfig::default();
+        let cases = [
+            GlycolysisConfig {
+                hk_vmax: f64::NAN,
+                ..ok.clone()
+            },
+            GlycolysisConfig {
+                pk_vmax: f64::INFINITY,
+                ..ok.clone()
+            },
+            GlycolysisConfig {
+                hk_km_glucose: 0.0,
+                ..ok.clone()
+            },
+            GlycolysisConfig {
+                hk_ki_g6p: 0.0,
+                ..ok.clone()
+            },
+            GlycolysisConfig {
+                pfk_atp_half_inhibition: 0.0,
+                ..ok.clone()
+            },
+            GlycolysisConfig {
+                tpi_km_r: 0.0,
+                ..ok.clone()
+            },
+            GlycolysisConfig {
+                pk_f16bp_ka: 0.0,
+                ..ok.clone()
+            },
+            GlycolysisConfig {
+                pfk_hill_n: f64::NAN,
+                ..ok.clone()
+            },
+            GlycolysisConfig {
+                pk_f16bp_max_activation: 0.5,
+                ..ok.clone()
+            },
+            GlycolysisConfig {
+                pk_f16bp_max_activation: f64::NAN,
+                ..ok.clone()
+            },
+        ];
+        for (i, c) in cases.iter().enumerate() {
+            assert!(c.validate().is_err(), "case {i} should fail");
+        }
+    }
+
+    #[test]
+    fn test_total_carbon_conserved() {
+        let config = GlycolysisConfig::default();
+        let mut state = GlycolysisState::default();
+        let initial = state.total_carbon();
+        let mut pyruvate_out = 0.0;
+        for _ in 0..1000 {
+            let flux = state.tick(&config, 6.0, 0.5, 700.0, 0.1);
+            pyruvate_out += flux.pyruvate_produced;
+        }
+        let drift = (state.total_carbon() - initial).abs();
+        assert!(drift < 1e-9 * initial, "carbon drifted by {drift}");
+        // Carbon did move all the way through to pyruvate.
+        assert!(pyruvate_out > 0.1);
+    }
+
+    #[test]
+    fn test_total_carbon_counts() {
+        let s = GlycolysisState {
+            glucose: 1.0,
+            g6p: 0.0,
+            f6p: 0.0,
+            f16bp: 0.0,
+            dhap: 0.0,
+            g3p: 0.0,
+            bpg13: 0.0,
+            pg3: 0.0,
+            pg2: 0.0,
+            pep: 0.0,
+            pyruvate: 2.0,
+        };
+        assert!((s.total_carbon() - 12.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_large_dt_no_negative_pools_no_carbon_created() {
+        let config = GlycolysisConfig::default();
+        for dt in [1.0, 5.0] {
+            let mut state = GlycolysisState::default();
+            let initial = state.total_carbon();
+            for _ in 0..200 {
+                let prev_pyruvate = state.pyruvate;
+                let flux = state.tick(&config, 6.0, 0.5, 700.0, dt);
+                assert!(state.validate().is_ok(), "dt={dt}: {state:?}");
+                // Reported amounts are the amounts actually moved.
+                assert!((state.pyruvate - prev_pyruvate - flux.pyruvate_produced).abs() < 1e-12);
+                for (i, r) in flux.step_rates.iter().enumerate() {
+                    assert!(r.is_finite(), "dt={dt} step {} rate {r}", i + 1);
+                }
+            }
+            let carbon = state.total_carbon();
+            assert!(
+                carbon <= initial * (1.0 + 1e-12),
+                "dt={dt}: carbon created {initial} -> {carbon}"
+            );
+            assert!((carbon - initial).abs() < 1e-9 * initial);
+        }
+    }
+
+    #[test]
+    fn test_step_cap_limits_consumption() {
+        // A huge dt on a tiny pool: hexokinase may consume at most the glucose there is.
+        let config = GlycolysisConfig::default();
+        let mut state = GlycolysisState {
+            glucose: 1e-6,
+            ..GlycolysisState::default()
+        };
+        let flux = state.tick(&config, 6.0, 0.5, 700.0, 100.0);
+        assert_eq!(state.glucose, 0.0);
+        assert!((flux.step_rates[0] * 100.0 - 1e-6).abs() < 1e-18);
     }
 }

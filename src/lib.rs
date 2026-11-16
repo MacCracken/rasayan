@@ -76,6 +76,8 @@
 //! sharira — physiology (muscle bioenergetics, fatigue)
 //! ```
 
+#![forbid(unsafe_code)]
+
 pub mod alignment;
 pub mod amino_catabolism;
 pub mod beta_oxidation;
@@ -87,7 +89,9 @@ pub mod enzyme;
 pub mod error;
 pub mod etc;
 pub mod glycolysis;
+mod guard;
 pub mod hormonal;
+mod integrate;
 pub mod jak_stat;
 pub mod mapk;
 pub mod membrane;
