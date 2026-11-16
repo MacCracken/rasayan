@@ -79,7 +79,7 @@ jobs:
           name: benchmarks
           path: |
             bench-history.csv
-            BENCHMARKS.md
+            benchmarks.md
 
   release:
     name: GitHub Release
@@ -97,4 +97,4 @@ jobs:
           generate_release_notes: true
           files: |
             bench-history.csv
-            BENCHMARKS.md
+            benchmarks.md

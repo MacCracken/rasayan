@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-16
+
 P(-1) scaffold hardening pass plus a toolchain and dependency update. The public
 API is unchanged apart from additions (verified by diffing every public item
 against 1.0.0); behaviour changes below are bug fixes.
@@ -27,6 +29,8 @@ against 1.0.0); behaviour changes below are bug fixes.
   criterion 0.5 → 0.8.2 (benches use `std::hint::black_box`). Dropped the redundant
   `homepage` key (cargo 1.100 manifest lint) and two unused cargo-deny license allowances.
 - **lib** — `#![forbid(unsafe_code)]`.
+- **ci** — the release workflow attached `BENCHMARKS.md`, but the bench script writes
+  `benchmarks.md`, so releases shipped without the benchmark table.
 - **error** — `RasayanError::NonFinite { name, value }`; `InvalidParameter` message no longer
   says "kinetic" for non-kinetic parameters.
 - **all `validate()`** — reject NaN/±inf (previously `x < 0.0` let them through) and reject zero

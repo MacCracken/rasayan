@@ -1,6 +1,6 @@
 # Development Roadmap
 
-> **Status**: 1.0.0 released (crates.io, 2026-04-01). 1.x is API-stable; breaking changes are collected under 2.0.0 below.
+> **Status**: 1.1.0 (2026-11-16) — P(-1) hardening, MSRV 1.100, deps refresh; 1.0.0 published on crates.io 2026-04-01. 1.x is API-stable; breaking changes are collected under 2.0.0 below.
 
 ## Backlog
 
@@ -63,40 +63,40 @@ Large items — one per work-loop cycle, each with its own tests and benchmarks.
 
 ## Post-1.0
 
-### 1.1.0 — Pharmacokinetics
+### 1.2.0 — Pharmacokinetics
 
 - [ ] ADME modeling (absorption, distribution, metabolism, excretion)
 - [ ] Compartmental PK (one-compartment, two-compartment models)
 - [ ] Drug-drug interaction prediction (CYP450 inhibition/induction)
 - [ ] Bioavailability and half-life calculations
 
-### 1.2.0 — Metabolic Engineering
+### 1.3.0 — Metabolic Engineering
 
 - [ ] Flux balance analysis (FBA) with linear programming
 - [ ] Metabolic control analysis (elasticity, control coefficients)
 - [ ] Knockout/overexpression simulation
 - [ ] Yield optimization for target metabolites
 
-### 1.3.0 — Protein Biophysics
+### 1.4.0 — Protein Biophysics
 
 - [ ] Protein folding energy landscape (coarse-grained contact model)
 - [ ] Ramachandran plot validation
 - [ ] Hydrophobicity profile and transmembrane helix prediction
 - [ ] Disulfide bond connectivity prediction
 
-### 1.4.0 — Lipid & Glyco
+### 1.5.0 — Lipid & Glyco
 
 - [ ] Lipid bilayer mechanics (lateral pressure profile, curvature)
 - [ ] Glycobiology (sugar chain analysis, glycosylation pathway modeling)
 - [ ] Membrane protein insertion energetics
 
-### 1.5.0 — Evolution & Dynamics
+### 1.6.0 — Evolution & Dynamics
 
 - [ ] Enzyme evolution simulation (directed evolution scoring, fitness landscape)
 - [ ] Molecular clock / sequence divergence estimation
 - [ ] Allosteric network analysis (coevolution-based)
 
-### 1.6.0 — OS Integration
+### 1.7.0 — OS Integration
 
 - [ ] Daimon agent registration (AGNOS service mesh)
 - [ ] Event-driven metabolic state streaming via majra
