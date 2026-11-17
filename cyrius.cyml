@@ -13,5 +13,22 @@ output = "build/rasayan"
 [deps]
 stdlib = ["string", "fmt", "alloc", "vec", "str", "syscalls", "io", "args", "math"]
 
+# The science bundle, dist/rasayan.cyr (`cyrius distlib`), in dependency order; no src/ file includes another (port
+# plan §4 step 3, P5). Since M0 part 2c-2 it holds the generated and vendored sources that exist so far: the
+# constants, the correctly rounded primitives (src/mathx_data.cyr before src/mathx.cyr, which reads its tables) and
+# the table data. Each module joins at its milestone (error, guard, integrate, json, logging … from M1), its data file
+# ahead of it. src/ai_data.cyr is not here: it belongs to [lib.ai] (with src/ai.cyr, M8), as src/mcp.cyr to [lib.mcp].
+[lib]
+modules = [
+    "src/constants.cyr",
+    "src/constants_private.cyr",
+    "src/mathx_data.cyr",
+    "src/mathx.cyr",
+    "src/protein_data.cyr",
+    "src/alignment_data.cyr",
+    "src/enzyme_data.cyr",
+    "src/membrane_data.cyr",
+]
+
 [test]
 stdlib = ["assert", "bench", "ganita", "overflow"]

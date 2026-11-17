@@ -5,9 +5,129 @@
 # For sub-1us ops use batch_size >= 1000 to amortize clock_gettime overhead
 # (~240 ns per start/stop pair on x86_64 Linux). See lib/bench.cyr header for
 # the full overhead-vs-batching guidance.
+#
+# M0 part 2c-2: the correctly rounded primitives (src/mathx.cyr, ADR 0003) beside the stdlib functions they replace
+# (the harness's shadow lines; docs/development/port-parity.md §2c, §2e). Each loop walks its argument over a range
+# rasayan calls the function on, so the fast path's table index varies; every result goes into a sum that is kept.
+# The Rust twins arrive with each milestone.
+
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+
+# Keeps the loops' results observable.
+var _bn_sink = 0;
 
 # Empty workload: measures the benchmark loop's own overhead.
 fn bench_noop(): i64 { return 0; }
+
+# Folds a loop's sum into the sink.
+fn _bn_keep(s: f64) {
+    var t: f64 = s;
+    _bn_sink = _bn_sink ^ load64(&t);
+    return 0;
+}
+
+# n calls of exp over [-20, 20): _ry_cr_exp (which = 0) or the f64_exp builtin (1).
+fn _bn_exp(which, n): i64 {
+    var x: f64 = -20.0;
+    var s: f64 = 0.0;
+    var i = 0;
+    while (i < n) {
+        if (which == 0) {
+            var r0: f64 = _ry_cr_exp(x);
+            s = s + r0;
+        } else {
+            var r1: f64 = f64_exp(x);
+            s = s + r1;
+        }
+        x = x + 0.0000390625;
+        if (x >= 20.0) { x = -20.0; }
+        i = i + 1;
+    }
+    _bn_keep(s);
+    return 0;
+}
+
+# n calls of ln over [0.001, 1000): _ry_cr_ln (which = 0) or the f64_ln builtin (1).
+fn _bn_ln(which, n): i64 {
+    var x: f64 = 0.001;
+    var s: f64 = 0.0;
+    var i = 0;
+    while (i < n) {
+        if (which == 0) {
+            var r0: f64 = _ry_cr_ln(x);
+            s = s + r0;
+        } else {
+            var r1: f64 = f64_ln(x);
+            s = s + r1;
+        }
+        x = x * 1.0000131;
+        if (x >= 1000.0) { x = 0.001; }
+        i = i + 1;
+    }
+    _bn_keep(s);
+    return 0;
+}
+
+# n calls of expm1 over [-40, 0), the integrators' `(-y).exp_m1()` branch: _ry_cr_expm1 (which = 0) or ganita's
+# private _gn_expm1 (1), the stdlib's only expm1.
+fn _bn_expm1(which, n): i64 {
+    var x: f64 = -40.0;
+    var s: f64 = 0.0;
+    var i = 0;
+    while (i < n) {
+        if (which == 0) {
+            var r0: f64 = _ry_cr_expm1(x);
+            s = s + r0;
+        } else {
+            var r1: f64 = _gn_expm1(x);
+            s = s + r1;
+        }
+        x = x + 0.0000390625;
+        if (x >= 0.0) { x = -40.0; }
+        i = i + 1;
+    }
+    _bn_keep(s);
+    return 0;
+}
+
+# n calls of pow, x over [0.5, 10) and y over [0.5, 5) (Hill and Q10 exponents): _ry_cr_pow (which = 0) or
+# ganita_f64_pow (1).
+fn _bn_pow(which, n): i64 {
+    var x: f64 = 0.5;
+    var y: f64 = 0.5;
+    var s: f64 = 0.0;
+    var i = 0;
+    while (i < n) {
+        if (which == 0) {
+            var r0: f64 = _ry_cr_pow(x, y);
+            s = s + r0;
+        } else {
+            var r1: f64 = ganita_f64_pow(x, y);
+            s = s + r1;
+        }
+        x = x + 0.0000095367431640625;
+        if (x >= 10.0) { x = 0.5; }
+        y = y + 0.000003814697265625;
+        if (y >= 5.0) { y = 0.5; }
+        i = i + 1;
+    }
+    _bn_keep(s);
+    return 0;
+}
+
+# One benchmark: `n` calls of primitive `kind` (0 exp, 1 ln, 2 expm1, 3 pow) on implementation `which`.
+fn _bn_math(name, kind, which, n): i64 {
+    var b = bench_new(name);
+    bench_batch_start(b);
+    if (kind == 0) { _bn_exp(which, n); }
+    elif (kind == 1) { _bn_ln(which, n); }
+    elif (kind == 2) { _bn_expm1(which, n); }
+    else { _bn_pow(which, n); }
+    bench_batch_stop(b, n);
+    bench_report(b);
+    return 0;
+}
 
 # Runs the benchmark suite (Rust twins arrive with each milestone).
 fn main(): i64 {
@@ -18,6 +138,15 @@ fn main(): i64 {
     while (i < 1000000) { bench_noop(); i = i + 1; }
     bench_batch_stop(b, 1000000);
     bench_report(b);
+    _bn_math("mathx/cr_exp", 0, 0, 1000000);
+    _bn_math("stdlib/f64_exp", 0, 1, 1000000);
+    _bn_math("mathx/cr_ln", 1, 0, 1000000);
+    _bn_math("stdlib/f64_ln", 1, 1, 1000000);
+    _bn_math("mathx/cr_expm1", 2, 0, 1000000);
+    _bn_math("stdlib/_gn_expm1", 2, 1, 1000000);
+    _bn_math("mathx/cr_pow", 3, 0, 1000000);
+    _bn_math("stdlib/ganita_f64_pow", 3, 1, 1000000);
+    if (_bn_sink == 1) { println(""); }
     return 0;
 }
 

@@ -6,10 +6,13 @@
 # the golden corpus: f64 cells bit for bit, the signed i8 matrix cells, the u32 / u16 / u8 / bool
 # columns, the NUL-terminated name blobs through their offsets, and the index constants.
 # scripts/oracle/validate.py checks every literal against its golden row, and
-# scripts/oracle/probe_tables.py compiles and checks every cell.
+# scripts/oracle/probe_tables.py compiles and checks every cell. src/mathx_data.cyr (from MPFR,
+# scripts/oracle/mathx_tables.py, whose --check pins every word) is sampled on the cells its
+# proofs rely on.
 
 include "src/constants.cyr"
 include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
 include "src/protein_data.cyr"
 include "src/alignment_data.cyr"
 include "src/enzyme_data.cyr"
@@ -143,6 +146,20 @@ fn check_private_constants() {
     return 0;
 }
 
+# mathx_data.cyr: the rows the proofs single out, and the thresholds mpfr_ref.py's self-checks bracket.
+fn check_mathx_data() {
+    test_group("mathx_data (correctly rounded primitives' tables)");
+    assert_eq(_RY_CR_EXP_T[0], 0x3ff0000000000000, "2^(0/512): A_0 = 1");
+    assert_eq(_RY_CR_EXP_T[1] | _RY_CR_EXP_T[2] | _RY_CR_EXP_T[3], 0, "B_0 = C_0 = D_0 = 0");
+    assert_eq(_RY_CR_LN_T[1024], 0x3ff0000000000000, "ln interval 256 (m = 1): c = 1");
+    assert_eq(_RY_CR_LN_T[1025] | _RY_CR_LN_T[1026] | _RY_CR_LN_T[1027], 0, "and -ln c = 0");
+    assert_eq(_RY_CR_LN_C4, 0xbfd0000000000000, "log1p's C4 = -1/4");
+    assert_eq(_RY_CR_EXP_OVF, 0x40862e42fefa39ef, "EXP_OVF 709.782712893384");
+    assert_eq(_RY_CR_EXP_UNF, 0xc0874910d52d3051, "EXP_UNF -745.1332191019411");
+    assert_eq(_RY_CR_EXPM1_M1, 0xc042b708872320e1, "EXPM1_M1 -37.42994775023704");
+    return 0;
+}
+
 # The tables suite.
 fn main() {
     alloc_init();
@@ -151,6 +168,7 @@ fn main() {
     check_alignment();
     check_enzymes_membrane_ai();
     check_private_constants();
+    check_mathx_data();
     return assert_summary();
 }
 

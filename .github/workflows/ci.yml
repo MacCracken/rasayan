@@ -60,6 +60,10 @@ jobs:
         # Not piped: the step must see audit's own exit status.
         run: cyrius audit
 
+      - name: Bundle current ([lib], from M0 part 2c-2)
+        # dist/ is generated and committed: it must be what `cyrius distlib --all` writes now.
+        run: cyrius distlib --check
+
   oracle:
     name: Rust oracle (rust-old/, frozen)
     runs-on: ubuntu-latest

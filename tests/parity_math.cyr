@@ -1,50 +1,11 @@
-# parity_math.cyr — Rust 1.100's f64 method semantics for the parity harness's math rows.
+# parity_math.cyr — the two Rust-semantics helpers ushma's mathx has no counterpart of, for the harness's math rows.
 #
-# Test-side for now (M0 part 2c-1): the helpers docs/development/port-parity.md §0.8 specifies, in the form probe 0
-# found (scripts/probes/p0_math.cyr). tests/parity.tcyr checks each against every class A and B row of
-# tests/golden/math.tsv. M1 moves them into src/ (mathx.cyr / guard.cyr), where the library calls them; until then
-# nothing in src/ uses them. The stdlib's f64_min / f64_max differ from Rust when the second operand is NaN, the
-# stdlib has no is_nan / is_finite / powi, and f64_to truncates to i64 where Rust's `as u32` saturates (§0.1, §0.3,
-# §0.4, §0.6). ceil, sqrt and abs are the builtins, which already match.
-
-# 1 if x is a NaN: the exponent all ones and a non-zero fraction, as a bit test (port-parity.md §0.3), so every NaN
-# pattern counts, a signalling or negative one included. Mirrors `f64::is_nan`.
-#must_use
-#pure
-fn _ry_is_nan(x: f64): i64 {
-    var b = load64(&x);
-    if ((b & 0x7FFFFFFFFFFFFFFF) > 0x7FF0000000000000) { return 1; }
-    return 0;
-}
-
-# 1 if x is finite: the exponent is not all ones (port-parity.md §0.3). Mirrors `f64::is_finite`.
-#must_use
-#pure
-fn _ry_is_finite(x: f64): i64 {
-    var b = load64(&x);
-    if ((b & 0x7FF0000000000000) != 0x7FF0000000000000) { return 1; }
-    return 0;
-}
-
-# The larger of a and b, as rustc 1.100.0 lowers `a.max(b)`: a NaN operand is ignored (NaN only when both are), and
-# equal operands, +0 and -0 included, give b (port-parity.md §0.1). A NaN b gives a; otherwise the stdlib's form,
-# which already returns b for a NaN a and for equal operands. Mirrors `f64::max`.
-#must_use
-#pure
-fn _ry_max(a: f64, b: f64): f64 {
-    if (b != b) { return a; }
-    if (a > b) { return a; }
-    return b;
-}
-
-# The smaller of a and b, with the same NaN and equal-operand rules as _ry_max. Mirrors `f64::min`.
-#must_use
-#pure
-fn _ry_min(a: f64, b: f64): f64 {
-    if (b != b) { return a; }
-    if (a < b) { return a; }
-    return b;
-}
+# Test-side until M1 (docs/development/port-parity.md §0.8, in the form probe 0 found: scripts/probes/p0_math.cyr).
+# The other §0.8 helpers — _ry_is_nan, _ry_is_finite, _ry_max, _ry_min, _ry_powi — are in src/mathx.cyr since M0
+# part 2c-2, beside the vendored correctly rounded primitives (ushma's mathx has equivalents of those five).
+# tests/parity.tcyr checks both of these against every class A row of tests/golden/math.tsv; M1 moves them into src/
+# (mathx.cyr / guard.cyr), where the library calls them. f64_clamp already has Rust's semantics for valid bounds (the
+# shadow line shows it), and f64_to truncates to i64 where Rust's `as u32` saturates (§0.1, §0.6).
 
 # Rust's `x.clamp(lo, hi)`: the same two comparisons in the same order, so a NaN x passes through and a zero keeps
 # its sign (port-parity.md §0.1). Rust panics when lo > hi or a bound is NaN; no rasayan call site can reach that, so
@@ -56,30 +17,6 @@ fn _ry_clamp(x: f64, lo: f64, hi: f64): f64 {
     if (r < lo) { r = lo; }
     if (r > hi) { r = hi; }
     return r;
-}
-
-# x^n as compiler-builtins' `__powidf2` computes it (the loop a run-time `f64::powi` exponent calls): square and
-# multiply over the bits of |n|, low bit first, then 1 / r for a negative n (port-parity.md §0.4). For n = 2, what
-# both of rasayan's `.powi(2)` sites are, it is `x * x`, one rounding, as rustc's inline expansion. n is Rust's i32,
-# so |n| fits and the shift loop ends. Mirrors `f64::powi`.
-#must_use
-#pure
-fn _ry_powi(x: f64, n): f64 {
-    var base: f64 = x;
-    var p = n;
-    if (n < 0) { p = 0 - n; }
-    var mul: f64 = 1.0;
-    while (1) {
-        if ((p & 1) != 0) { mul = mul * base; }
-        p = p >> 1;
-        if (p == 0) { break; }
-        base = base * base;
-    }
-    if (n < 0) {
-        var r: f64 = 1.0 / mul;
-        return r;
-    }
-    return mul;
 }
 
 # Rust's saturating `x as u32`: NaN is 0, a value at or past 2^32 is u32::MAX, a negative one (-inf included) is 0,

@@ -6,6 +6,9 @@ and writes everything the Cyrius port derives from it:
 - the generated Cyrius sources, `src/constants.cyr`, `src/constants_private.cyr` and
   `src/<module>_data.cyr`.
 
+`mathx_tables.py` writes one more generated source, `src/mathx_data.cyr` (the correctly rounded
+primitives' tables), from MPFR rather than from the oracle (below).
+
 Adapted from ushma's `scripts/oracle/` (format and rules unchanged; kimiya's and tanmatra's
 originally), so the sibling ports' parity harness reads these files as it reads theirs.
 
@@ -15,6 +18,7 @@ cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml -- --chec
 python3 -I -B scripts/oracle/validate.py .                                          # independent check
 python3 -I -B scripts/oracle/probe_tables.py . --all-targets                       # every generated value, compiled
 python3 -I -B scripts/oracle/mpfr_ref.py [--write . | --check .]                   # MPFR self-checks; tests/golden/math.cr.tsv
+python3 -I -B scripts/oracle/mathx_tables.py [--check | --check-ushma]             # src/mathx_data.cyr (MPFR)
 ```
 
 `--check` regenerates every output in memory and compares it byte for byte. It exits 1 on:
@@ -113,7 +117,8 @@ so nothing after it is library code. The excuses, each pinned to its initializer
 
 Deleting an emitter's entry (tried with `ptm::MYRISTOYL_LEN` and `protein::CHOU_FASMAN`) makes
 the generator exit 2, naming the item. `tests/tables.tcyr` compiles every generated file
-together and checks a sample of cells bit for bit (69 checks).
+together and checks a sample of cells bit for bit (69 checks; 77 with `src/mathx_data.cyr`'s 8 since
+part 2c-2).
 
 Pending, at their milestones (port plan §4 step 6, §6):
 - each module's rows (M1 on), including the single-step rows and the class T trajectory digests,
@@ -313,8 +318,33 @@ fn <TAB> inputs <TAB> corrected outputs <TAB> note
 `--check .` regenerates the file in memory and compares it byte for byte. At part 2c-1: 96 of the
 11,094 class-C rows, each 1 ulp — `exp_m1` 94 (85 on `integrate::step_factors`' branch above
 `SERIES_MAX`), `exp` 1, `powf` 1, `ln` 0. `tests/parity.tcyr` loads the file and compares each such
-row against the corrected outputs (ADR 0003 item 2): measured while class C runs on the stdlib,
-gated at 0 ulp from part 2c-2, when a port value equal to glibc's misrounded one is a failure.
+row against the corrected outputs (ADR 0003 item 2). Since part 2c-2 class C runs on
+`src/mathx.cyr`'s correctly rounded primitives and is gated at 0 ulp: each of the 96 rows passes as
+"accepted (ADR 3)", and a port value equal to glibc's misrounded one is a failure
+(`docs/development/port-parity.md` §2d).
+
+## mathx_tables.py
+
+Generates `src/mathx_data.cyr` (M0 part 2c-2), the 32 tables and constants of `src/mathx.cyr`'s
+correctly rounded `exp`, `expm1`, `ln` and `pow` (ADR 0003): `_RY_CR_EXP_T` (2^(j/512), four words
+per j), `_RY_CR_LN_T` (c_j and −ln c_j), the accurate paths' Taylor series as triple-doubles
+(`_RY_CR_EXP_ACC`, `_RY_CR_LN_ACC`), the reduction constants and polynomial coefficients, and the
+overflow / underflow thresholds (bisected over bit patterns with `mpfr_ref.py`'s correctly rounded
+`exp` and `expm1`). It is vendored from ushma's generator (kimiya's originally), with the same
+algorithms (MPFR at 400 bits through `mpfr_ref.py`'s binding, exact `Fraction`s) and the same
+assertions on what each error analysis relies on (A_j at 26 bits and 2^(j/512) to 2^-128; L1 at 33
+bits; r = m·c_j − 1 exact with |r| < 2^-9 on every ln interval; the Fast2Sum precondition; LN2H at
+42 bits), so a table that would break a proof is never written. It emits only the items rasayan's
+primitives read: none of ushma's π, atan or tanh items.
+
+- `--check` regenerates the file in memory and compares it byte for byte (STALE, exit 1, on any
+  difference), and requires the generated items to be exactly the `_RY_CR_*` names `src/mathx.cyr`
+  reads in code: none missing, none unread (MISMATCH, exit 1).
+- `--check-ushma` also compares every value with ushma's `src/mathx_data.cyr` when ushma's checkout
+  is beside this one (`../ushma`): at part 2c-2 all 32 are bit-identical.
+
+The file is never edited by hand; a changed entry fails `--check` and, for an entry the corpus
+reaches, the parity harness (checked by tampering: `port-parity.md` §2d).
 
 ## probe_tables.py
 

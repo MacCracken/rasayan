@@ -8,7 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 Cyrius port, M0 part 1 ([port plan](docs/development/rasayan-port-plan.md) §4 steps 0–2),
-part 2a (steps 4–5, first part), part 2b (step 6) and part 2c-1 (step 7 and the corrected oracle).
+part 2a (steps 4–5, first part), part 2b (step 6), part 2c-1 (step 7 and the corrected oracle) and
+part 2c-2 (the correctly rounded primitives).
 
 ### Added
 
@@ -55,7 +56,8 @@ part 2a (steps 4–5, first part), part 2b (step 6) and part 2c-1 (step 7 and th
   0 failures); `scripts/oracle/probe_tables.py` compiles all 2,470 generated values with the Cyrius
   compiler, with identical output on ELF, aarch64 and PE
 - **tests/tables.tcyr** — compiles every generated source together and checks 69 sampled cells
-  (f64 bits, signed `i8` cells, `u32` / `u8` / `bool` columns, names through the blob offsets)
+  (f64 bits, signed `i8` cells, `u32` / `u8` / `bool` columns, names through the blob offsets);
+  part 2c-2 adds `src/mathx_data.cyr` and 8 checks of its cells (77)
 - **tests/parity.tcyr** (M0 part 2c-1) — the parity harness: replays every golden row in
   `cyrius test` and reports each as ok / FAILED / measured / accepted / pending, per function with
   an ulp histogram; the exit code is the number of failing modules. `tests/parity_core.cyr` and
@@ -79,6 +81,28 @@ part 2a (steps 4–5, first part), part 2b (step 6) and part 2c-1 (step 7 and th
   binding of its own (default exponent range, a Ziv loop, its own rounding to binary64) and checks
   the file's format, every listed row, that no misrounded row is missing, and that each listed
   glibc value is this machine's libm result (22,634 checks, 0 failures)
+- **src/mathx.cyr, src/mathx_data.cyr** (M0 part 2c-2, [ADR 0003](docs/adr/0003-correct-rounding-is-the-accuracy-target.md),
+  port plan P4) — the correctly rounded, target-independent `_ry_cr_exp`, `_ry_cr_expm1`, `_ry_cr_ln`
+  and `_ry_cr_pow` (Rust's `exp`, `exp_m1`, `ln`, `powf`, the `10_f64.powf` sites included), vendored
+  from ushma's `src/mathx.cyr` (ushma commit `24893c9`, itself kimiya's subset, kimiya commit
+  `5b14c85`): the reachability closure of the four primitives and their fast / accurate entry points,
+  37 functions, byte-identical to ushma's but for the `_us_` → `_ry_` rename, every proof and error
+  bound kept; atan2, tanh and what only they call are not vendored. Beside them, rasayan's own
+  Rust-semantics helpers `_ry_is_nan`, `_ry_is_finite`, `_ry_max`, `_ry_min`, `_ry_powi`, moved from
+  `tests/parity_math.cyr` in port-parity §0.8's forms (ushma's mathx has equivalents; one definition
+  each). `scripts/oracle/mathx_tables.py` (ushma's generator, kimiya's originally, with every
+  assertion the error analyses rely on) writes `src/mathx_data.cyr` from MPFR: 32 tables and
+  constants, exactly the ones `src/mathx.cyr` reads (`--check`), bit-identical to ushma's
+  (`--check-ushma`). The parity harness gates every class-C row at 0 ulp against the corrected
+  oracle: 20,067 ok, 0 failed, 0 measured, 96 accepted (ADR 3: the port is correctly rounded on every
+  row glibc misrounds, exp_m1 94, exp 1, powf 1), the same on x86_64 ELF, `--bounds` and aarch64
+  (`docs/development/port-parity.md` §2d)
+- **dist/rasayan.cyr** — the `[lib]` bundle (`cyrius distlib --all`), from M0 part 2c-2: the
+  constants, the correctly rounded primitives and the table data; CI checks it is current
+  (`cyrius distlib --check`)
+- **tests/rasayan.bcyr** — benchmarks of the four primitives beside the stdlib functions they replace
+  (x86_64, per call: `_ry_cr_exp` 46 ns vs the x87 `f64_exp` 17, `_ry_cr_ln` 56 vs `f64_ln` 38,
+  `_ry_cr_expm1` 54 vs `_gn_expm1` 85, `_ry_cr_pow` 149 vs `ganita_f64_pow` 209; measured, not gated)
 
 ### Changed
 
@@ -96,6 +120,15 @@ part 2a (steps 4–5, first part), part 2b (step 6) and part 2c-1 (step 7 and th
   28 entries): the math probe calls `f64_min`/`f64_max`/`f64_clamp`. Part 2c-1 adds `ganita` and
   `overflow` to `[test] stdlib` only (`cyrius.lock` 30 entries): the harness's saturating ulp
   arithmetic, and ganita's `pow` and `expm1` as the measured stdlib counterparts.
+  Part 2c-2 adds `[lib]`: `src/constants.cyr`, `src/constants_private.cyr`, `src/mathx_data.cyr`,
+  `src/mathx.cyr` and the protein, alignment, enzyme and membrane data, in dependency order
+  (`src/ai_data.cyr` belongs to `[lib.ai]`, M8).
+- **tests/parity.tcyr** (M0 part 2c-2) — class C (`powf`, `exp`, `ln`, `exp_m1`) runs on
+  `src/mathx.cyr`'s correctly rounded primitives with a 0-ulp bound against the corrected oracle,
+  where it was measured on the stdlib; a port value equal to glibc's misrounded one fails. The
+  stdlib's functions (the `f64_exp` / `f64_ln` builtins and polyfills, `ganita_f64_pow`, `_gn_expm1`)
+  stay as ungated shadow lines. `tests/parity_math.cyr` keeps only `_ry_clamp` and `_ry_f64_to_u32`
+  (no counterpart in ushma's mathx) until M1.
 
 ## [1.2.0] - 2026-11-16
 

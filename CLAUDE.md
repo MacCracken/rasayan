@@ -32,13 +32,15 @@ cyrius deps                                   # resolve dependencies (vendors li
 cyrius build src/main.cyr build/rasayan       # compile
 cyrius test                                   # run tests/*.tcyr (tests/parity.tcyr replays the golden corpus, from M0 step 7)
 cyrius bench                                  # run benchmarks
-cyrius distlib --all                          # dist/rasayan.cyr, -mcp, -ai (from M1)
+cyrius distlib --all                          # dist/rasayan.cyr ([lib]); -mcp, -ai with their profiles (M8)
 cargo test --manifest-path rust-old/Cargo.toml --all-features   # the Rust oracle, read-only
 ```
 
 ```sh
 cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml -- --check   # golden corpus + generated .cyr up to date
 python3 -I -B scripts/oracle/validate.py .                                         # independent check of the corpus
+python3 -I -B scripts/oracle/mpfr_ref.py --check .                                 # the corrected oracle (math.cr.tsv) current
+python3 -I -B scripts/oracle/mathx_tables.py --check                               # src/mathx_data.cyr current
 ```
 
 ## Development Process
@@ -69,7 +71,7 @@ cyrius test                     # must be warning-free, not just passing
 cyrius test --bounds
 cyrius bench
 cyrius coverage --exec          # target ≥ 80 %
-cyrius distlib --all && cyrius distlib --check   # once [lib] exists (M1)
+cyrius distlib --all && cyrius distlib --check   # dist/ is committed: it must be current
 cyrius deps --locked
 cyrius audit                    # never pipe it through tail: you would read tail's exit status
 ```

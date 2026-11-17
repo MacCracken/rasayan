@@ -119,8 +119,10 @@ zero's sign is visible in class A rows and in serde_json's text (`-0.0`).
 | ceil | IEEE ceil, −0 kept | builtin `f64_ceil` |
 | negation | Rust's `-x` (sign flip, −0 for +0) | unary minus on a typed `f64`, or `f64_neg` (§0.7) |
 
-They are written test-side at M0 part 2c-1 (`tests/parity_math.cyr`, the forms above) and the parity
-harness checks them against every class A/B `math` row: 0 failures (§2a). M1 moves them into `src/`.
+They were written test-side at M0 part 2c-1 (`tests/parity_math.cyr`, the forms above), and the parity
+harness checks them against every class A/B `math` row: 0 failures (§2a). At part 2c-2 the five that
+ushma's mathx also has (`_ry_is_nan`, `_ry_is_finite`, `_ry_max`, `_ry_min`, `_ry_powi`) moved into
+`src/mathx.cyr`, in these forms (§2d); `_ry_clamp` and `_ry_f64_to_u32` stay test-side until M1.
 
 ### 0.9 The Rust side, re-derived
 
@@ -168,7 +170,7 @@ The same on x86_64 ELF, `--bounds` and aarch64 (qemu, `cyrius test --aarch64`); 
   931 rows each, every one a NaN second operand (§0.1); `f64_clamp` matches all 845; `f64_to`
   differs from `as u32` on 14 of 99 (negatives, ±∞, 2³² and past, §0.6).
 - **measured, 11,094: the class-C rows**, on the stdlib's current functions against the corrected
-  oracle (§2b, §2c), until M0 part 2c-2 gates them at 0 ulp on `src/mathx.cyr`.
+  oracle (§2b, §2c), until M0 part 2c-2 gates them at 0 ulp on `src/mathx.cyr` (§2d).
 - **pending, 0**: every row so far has Cyrius code to answer it (the module rows arrive from M1 on;
   a row with no dispatcher entry is reported pending).
 
@@ -224,7 +226,70 @@ Against glibc instead (the same run before `math.cr.tsv` existed): `ganita_f64_p
   gain over the best target-independent stdlib option is 206 exp, 58 ln, 471 + 1 pow and 95 expm1
   rows of these 11,094, and over glibc the 96 rows of §2b.
 
-### 2d. Three targets
+### 2d. The correctly rounded primitives on the corpus (M0 part 2c-2, 2026-11-16)
+
+**What is vendored.** `src/mathx.cyr` is ushma's `src/mathx.cyr` (ushma commit `24893c9`, the file's
+last change; itself kimiya's subset, kimiya commit `5b14c85`) cut to what rasayan calls: the closure
+of 12 roots, `_ry_cr_exp`, `_ry_cr_expm1`, `_ry_cr_ln`, `_ry_cr_pow` and their fast and accurate entry
+points (`_ry_cr_<f>_fast`, `_ry_cr_<f>_acc`, which part 2c-3's `cr_verify.py` forces). That is 37
+functions and `_RY_INF`, each item with its own comments and proofs, byte-identical to ushma's at
+`486ee51` (ushma's 2c-2b) except for the `_us_` → `_ry_` rename. The reachability check (a call graph
+over the identifiers in code, comments stripped) keeps 38 of ushma's 61 items and drops 23, none of
+which a kept item calls: atan2 and tanh and their helpers (`_us_atan_*`, `_us_atan2_*`, `_us_td_norm`,
+`_us_td_div`, `_us_frexp`, `_us_expm1_dd`, `_us_expm1_td`), and ushma's five Rust-semantics helpers,
+which rasayan has in the §0.8 forms (moved from `tests/parity_math.cyr` to the end of `src/mathx.cyr`).
+Every kept function compiles in the harness, so nothing they call is missing. The kept code reads 32
+data items (4 tables, 28 scalars) of ushma's 47: `src/mathx_data.cyr`, written by
+`scripts/oracle/mathx_tables.py` (ushma's generator with its assertions, minus the π, atan and tanh
+items, and the ln 10 and 1/ln 10 splits it computed for kimiya's exp10 and log10). `--check` also
+requires the generated items to be exactly the `_RY_CR_*` names `src/mathx.cyr` reads, and
+`--check-ushma` that all 32 are bit-identical to ushma's.
+
+**The harness.** The class-C rows now run on the `_ry_cr_*` primitives (`f64::powf` on `_ry_cr_pow`,
+the `10_f64.powf(x)` rows included), with a bound of 0 ulp against the corrected oracle:
+
+`=== parity summary: 8 modules, 0 failing | rows: 20067 ok, 0 failed, 0 measured, 0 pending, 96 accepted (ADR 3: 96), 0 glibc-matching (failed) ===`
+
+(part 2c-1: `9069 ok, 0 failed, 11094 measured, … 0 accepted`). Byte-identical on x86_64 ELF,
+`--bounds` and aarch64 (qemu, `cyrius test --aarch64`), apart from the ungated `f64_exp` / `f64_ln`
+builtin shadow lines, which are the polyfills on aarch64; PE at part 3. Every class-C row is at 0 ulp
+on both targets: the same bits on every target, which is the point of ADR 0003.
+
+| Function (rows) | Port, gated at 0 ulp | x86_64 ELF and aarch64 | The stdlib's counterpart (shadow line, ungated): rows at 0 / 1 ulp |
+|---|---|---|---|
+| powf (5,056) | `_ry_cr_pow` | 5,055 ok + 1 accepted (ADR 3) | `ganita_f64_pow` 4,584 / 471, + 1 non-finite (`pow(−1, DBL_MAX)`: +∞ for 1) |
+| exp (2,292) | `_ry_cr_exp` | 2,291 ok + 1 accepted | `f64_exp` builtin: x86_64 2,261 / 31, aarch64 2,086 / 206; `_f64_exp_polyfill` 2,086 / 206 |
+| ln (2,108) | `_ry_cr_ln` | 2,108 ok | `f64_ln` builtin: x86_64 2,108 / 0, aarch64 2,050 / 58; `_f64_ln_polyfill` 2,050 / 58 |
+| exp_m1 (1,638) | `_ry_cr_expm1` | 1,544 ok + 94 accepted | `_gn_expm1` 1,543 / 95 |
+
+The 96 accepted rows are the 96 of `math.cr.tsv`: on each the port gives the correctly rounded value
+(`port = corrected 96, = glibc's 0`), so none is glibc-matching. The class A/B rows of the five helpers
+are unchanged (all ok). The fast paths decide 11,091 of the 11,094 rows; 3 `exp_m1` rows fail the
+rounding test and take the accurate path. With the accurate path forced on every row (a scratch copy of
+the harness calling `_ry_cr_<f>_acc`), every class-C row is again at 0 ulp, on x86_64 and aarch64.
+The dense MPFR sweep (≥ 10⁶ arguments per primitive, hard cases, both paths, every target) is
+`cr_verify.py`, part 2c-3.
+
+**Checked by tampering, then restoring.** One word of `_RY_CR_EXP_T` (B₂₂₇, its sign flipped):
+`mathx_tables.py --check` reports the file STALE (exit 1), and the harness fails 18 rows (exp 8, powf 3,
+exp_m1 7; `1 failing`, exit 1). `_ry_cr_expm1` made to return glibc's misrounded `expm1(1)`
+(`0x3ffb7e151628aed2`, correctly rounded `…aed3`): the harness fails that row as "matches only the
+oracle's misrounded outputs, ADR 0003" (`1 failed, … 95 accepted (ADR 3: 95), 1 glibc-matching
+(failed)`, exit 1).
+
+**Speed** (`cyrius bench`, `tests/rasayan.bcyr`, x86_64, 10⁶ calls each over the ranges rasayan calls
+them on; measured, not gated): `_ry_cr_exp` 46 ns (the x87 `f64_exp` builtin 17 ns), `_ry_cr_ln` 56 ns
+(`f64_ln` 38 ns), `_ry_cr_expm1` 54 ns (`_gn_expm1` 85 ns), `_ry_cr_pow` 149 ns (`ganita_f64_pow`
+209 ns).
+
+**The bundle.** `cyrius.cyml` has a `[lib]` since this part: `src/constants.cyr`,
+`src/constants_private.cyr`, `src/mathx_data.cyr`, `src/mathx.cyr` and the four data files `[lib]`
+carries (not `src/ai_data.cyr`, which is `[lib.ai]`'s). `cyrius distlib --all` writes
+`dist/rasayan.cyr` (3,945 lines; no `.deps` sidecar, since the bundle needs no stdlib leaf) and
+`cyrius distlib --check` passes; a program that includes only the bundle builds and gets the correctly
+rounded `expm1(1)` on x86_64 and aarch64.
+
+### 2e. Three targets
 
 *PE (wine) and the full three-target run: pending (M0 part 3).*
 
