@@ -20,11 +20,11 @@ branch on −0.0 and nothing says so.
 
 ## Reproduction
 
-[`repros/cyrius-f64-truth-test-is-not-diagnosed.sh`](../repros/cyrius-f64-truth-test-is-not-diagnosed.sh) (filed as
-`repros/2026-11-16-f64-truth-test-is-not-diagnosed.sh`), from the repo root:
+Filed in cyrius as `docs/development/issues/repros/2026-11-16-f64-truth-test-is-not-diagnosed.sh`. From the cyrius
+root:
 
 ```sh
-bash docs/development/issues/repros/cyrius-f64-truth-test-is-not-diagnosed.sh; echo $?
+bash docs/development/issues/repros/2026-11-16-f64-truth-test-is-not-diagnosed.sh; echo $?
 # -0.0 == 0.0: 1, if (-0.0): 1, if (!-0.0): 0
 # diagnostics on the truth tests: 0
 # repro: DEFECT PRESENT (an f64 truth test compiles silently and tests the bits)

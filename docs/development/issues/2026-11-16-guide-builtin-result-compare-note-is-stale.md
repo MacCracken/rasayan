@@ -21,12 +21,12 @@ reader who trusts the note rewrites correct compares through `f64_eq` / `f64_lt`
 
 ## Reproduction
 
-[`repros/cyrius-guide-builtin-result-compare-note-is-stale.sh`](../repros/cyrius-guide-builtin-result-compare-note-is-stale.sh)
-(filed as `repros/2026-11-16-guide-builtin-result-compare-note-is-stale.sh`; it reads the guide from
-`docs/guides/cyrius-guide.md` there):
+Filed in cyrius as `docs/development/issues/repros/2026-11-16-guide-builtin-result-compare-note-is-stale.sh`; it reads the guide from
+`docs/guides/cyrius-guide.md` there. From the cyrius
+root:
 
 ```sh
-bash docs/development/issues/repros/cyrius-guide-builtin-result-compare-note-is-stale.sh; echo $?
+bash docs/development/issues/repros/2026-11-16-guide-builtin-result-compare-note-is-stale.sh; echo $?
 # f64_neg(+0.0) == +0.0: 1 (IEEE 1, the note says 0); f64_neg(1.0) < f64_neg(2.0): 0 (IEEE 0)
 # guide note present: 1 (…/cyrius-guide.md)
 # repro: DEFECT PRESENT (the compares are IEEE; the guide says they are integer compares)
