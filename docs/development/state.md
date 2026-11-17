@@ -20,7 +20,8 @@ milestone (M9) sets 2.0.0.
 | M0 part 2b — step 6 | ✅ table data: `src/{protein,alignment,enzyme,membrane,ai}_data.cyr` and `src/constants_private.cyr` (2,470 generated values), pinned by 1,270 golden rows (`protein`, `alignment`, `enzyme`, `membrane`, `ai`, `constants_private`); the completeness proof (`rustsrc.rs`, `t_private::complete`) covers all 123 `const`/`static` items of `rust-old/src` (120 generated, 3 excused); `validate.py` re-derives every row and cell (11,540 checks, 0 failures); `probe_tables.py --all-targets` compiles every value, identical on ELF, aarch64 and PE; `tests/tables.tcyr`; ADR 0002 row 10 (table layout) |
 | M0 part 2c-1 — step 7 + the corrected oracle | ✅ the parity harness `tests/parity.tcyr` (`tests/parity_core.cyr`, `tests/ulp.cyr` from ushma; `tests/parity_math.cyr`, the §0.8 helpers test-side until M1) runs in `cyrius test`: 9,069 ok, 0 failed, 11,094 class-C rows measured on the stdlib, 0 pending (`port-parity.md` §2a); the MPFR corrected oracle `scripts/oracle/mpfr_ref.py` writes `tests/golden/math.cr.tsv` (glibc misrounds 96 of 11,094 class-C rows: exp_m1 94, exp 1, powf 1), which `validate.py` re-derives with its own MPFR binding (§2b); the stdlib's class-C baseline against it (§2c) |
 | M0 part 2c-2 — the correctly rounded primitives | ✅ `src/mathx.cyr` vendored from ushma (commit `24893c9`; kimiya `5b14c85`): `_ry_cr_exp`, `_ry_cr_expm1`, `_ry_cr_ln`, `_ry_cr_pow` and their fast / accurate entry points (37 functions, the reachability closure of 12 roots; atan2, tanh and their helpers dropped), plus the §0.8 helpers `_ry_is_nan`, `_ry_is_finite`, `_ry_max`, `_ry_min`, `_ry_powi` moved from `tests/parity_math.cyr` (`_ry_clamp`, `_ry_f64_to_u32` stay test-side: ushma's mathx has no counterpart); `src/mathx_data.cyr` (32 items) from `scripts/oracle/mathx_tables.py`, bit-identical to ushma's; the harness gates class C at 0 ulp against the corrected oracle: every row exact, the 96 glibc misroundings accepted (ADR 3), identical on x86_64 ELF, `--bounds` and aarch64 (`port-parity.md` §2d); `[lib]` and `dist/rasayan.cyr` |
-| M0 steps 7–10 (rest) | ⏳ 2c-3 `cr_verify.py` (the dense MPFR sweep of the four primitives, both paths, every target); part 3 baselines on three targets, probes 1–8, upstream |
+| M0 part 2c-3 — the dense MPFR sweep | ✅ `scripts/oracle/cr_verify.py` (ushma's tool, kimiya's originally, cut to exp, expm1, ln, pow; ushma's argument families unchanged with their seeds, plus rasayan's call sites and every class-C corpus argument): 5,314,811 arguments per target against MPFR, the accurate path forced on 411,760, **0 mismatches**, fast path equal to the full result wherever its test passes, bits and flags identical on x86_64 ELF, aarch64 and PE; fast path falls back on exp 2.45·10⁻⁴, expm1 5.06·10⁻³ (the overflow end, by design), ln 5.49·10⁻⁵, pow 1.58·10⁻⁴ (`port-parity.md` §2e). `--quick` (542,062 arguments, ~11 s) for routine use; `--tamper` self-test. No ADR amendment |
+| M0 steps 7–10 (rest) | ⏳ part 3: baselines on three targets, probes 1–8, upstream |
 
 ## Golden corpus
 
@@ -79,6 +80,8 @@ milestone (M9) sets 2.0.0.
   golden bits), `tests/tables.tcyr` (77 checks: every generated file compiled together, `src/mathx_data.cyr`
   included, a sample of cells bit for bit), `tests/parity.tcyr` (the golden corpus, above), a fuzz stub;
   `cyrius test` warning-free, `--bounds` and `cyrius audit` pass
+- MPFR sweep: `scripts/oracle/cr_verify.py` checks the four primitives on 5,314,811 arguments per target
+  (`--quick`: 542,062), both paths, ELF, aarch64 and PE: 0 mismatches (`port-parity.md` §2e)
 - Oracle: 628 unit + 70 integration + 25 validation + 2 doc tests pass in `rust-old/` (`--all-features`)
 
 ## Benchmarks
@@ -100,6 +103,5 @@ Rust crate (crates.io): mastishk 1.1.0, sharira 1.1.0, kiran 1.0.0. No Cyrius co
 
 ## Next
 
-M0 part 2c-3: `scripts/oracle/cr_verify.py`, the dense MPFR verification of `_ry_cr_exp`,
-`_ry_cr_expm1`, `_ry_cr_ln` and `_ry_cr_pow` (≥ 10⁶ arguments each, hard cases, the fast and the
-accurate path, on every target). Then part 3: baselines on three targets, probes 1–8, upstream.
+M0 part 3: baselines on three targets (the harness and benches on PE; `cr_verify.py` already runs there),
+probes 1–8, upstream.

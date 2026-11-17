@@ -8,8 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 Cyrius port, M0 part 1 ([port plan](docs/development/rasayan-port-plan.md) §4 steps 0–2),
-part 2a (steps 4–5, first part), part 2b (step 6), part 2c-1 (step 7 and the corrected oracle) and
-part 2c-2 (the correctly rounded primitives).
+part 2a (steps 4–5, first part), part 2b (step 6), part 2c-1 (step 7 and the corrected oracle),
+part 2c-2 (the correctly rounded primitives) and part 2c-3 (their dense MPFR sweep).
 
 ### Added
 
@@ -97,6 +97,22 @@ part 2c-2 (the correctly rounded primitives).
   oracle: 20,067 ok, 0 failed, 0 measured, 96 accepted (ADR 3: the port is correctly rounded on every
   row glibc misrounds, exp_m1 94, exp 1, powf 1), the same on x86_64 ELF, `--bounds` and aarch64
   (`docs/development/port-parity.md` §2d)
+- **scripts/oracle/cr_verify.py** (M0 part 2c-3, [ADR 0003](docs/adr/0003-correct-rounding-is-the-accuracy-target.md)) —
+  the dense MPFR sweep of `_ry_cr_exp`, `_ry_cr_expm1`, `_ry_cr_ln` and `_ry_cr_pow`, from ushma's tool
+  (ushma commit `24893c9`, kimiya's originally) cut to the four: ushma's argument families unchanged with
+  their seeds (binade-uniform domains, thresholds ± thousands of ulps, reduction and table edges, pow's exact
+  and midpoint families, the Lefèvre–Muller and Hubrecht–Jeannerod–Zimmermann hard cases), plus rasayan's
+  call sites over their ranges (Arrhenius, the integrators' `expm1`, Nernst / Goldman, Hill, Q10,
+  Henderson–Hasselbalch `10^x`) and every class-C corpus argument. A Cyrius driver built into
+  `build/cr-verify/` runs each argument through the full function, the fast path (with its rounding test's
+  flag) and, on a 100,000-argument sample plus every special, hard and corpus argument, the forced accurate
+  path. 5,314,811 arguments per target, the accurate path forced on 411,760: 0 mismatches against MPFR,
+  the fast path equal to the full result wherever its test passes, bits and flags identical on x86_64 ELF,
+  aarch64 and PE (fallback rates: exp 2.45·10⁻⁴, expm1 5.06·10⁻³, ln 5.49·10⁻⁵, pow 1.58·10⁻⁴). `--quick`
+  (a fixed tenth, 542,062 arguments, ~11 s on ELF and aarch64) for routine use; `--tamper <fn>` flips one
+  result bit in the driver and must be reported (it is). On the special values glibc 2.44 misrounds
+  `exp(2⁻⁵³)`, `expm1(1)` and two published hard pow cases, which the port gets right
+  (`docs/development/port-parity.md` §2e)
 - **dist/rasayan.cyr** — the `[lib]` bundle (`cyrius distlib --all`), from M0 part 2c-2: the
   constants, the correctly rounded primitives and the table data; CI checks it is current
   (`cyrius distlib --check`)

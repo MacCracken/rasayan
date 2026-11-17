@@ -268,7 +268,7 @@ are unchanged (all ok). The fast paths decide 11,091 of the 11,094 rows; 3 `exp_
 rounding test and take the accurate path. With the accurate path forced on every row (a scratch copy of
 the harness calling `_ry_cr_<f>_acc`), every class-C row is again at 0 ulp, on x86_64 and aarch64.
 The dense MPFR sweep (≥ 10⁶ arguments per primitive, hard cases, both paths, every target) is
-`cr_verify.py`, part 2c-3.
+`cr_verify.py`, part 2c-3 (§2e).
 
 **Checked by tampering, then restoring.** One word of `_RY_CR_EXP_T` (B₂₂₇, its sign flipped):
 `mathx_tables.py --check` reports the file STALE (exit 1), and the harness fails 18 rows (exp 8, powf 3,
@@ -289,9 +289,66 @@ carries (not `src/ai_data.cyr`, which is `[lib.ai]`'s). `cyrius distlib --all` w
 `cyrius distlib --check` passes; a program that includes only the bundle builds and gets the correctly
 rounded `expm1(1)` on x86_64 and aarch64.
 
-### 2e. Three targets
+### 2e. The dense MPFR sweep: `cr_verify.py` (M0 part 2c-3, 2026-11-16)
 
-*PE (wine) and the full three-target run: pending (M0 part 3).*
+The corpus holds about 11,000 transcendental arguments. `scripts/oracle/cr_verify.py` checks the four
+primitives far beyond it: about 10⁶ seeded arguments per primitive per target, each result compared bit for
+bit with the correctly rounded MPFR value (`mpfr_ref.py`'s binding: 53 bits, binary64's exponent range,
+subnormalized). It is ushma's tool (ushma commit `24893c9`; kimiya's originally, kimiya commit `5b14c85`) cut
+to exp, expm1, ln and pow. ushma's argument families for those four are unchanged, seeds included, so they
+generate the same 4,502,806 arguments as ushma's run: binade-uniform over each domain, the overflow,
+underflow, subnormal and −1 thresholds ± thousands of ulps, the reduction and table boundaries, the tiny ends,
+the specials, pow's exact and midpoint families (integer and half-integer exponents, squares and cubes, powers
+of two, the ties `pow(3·2⁻²¹⁵, 5)` and `pow(9·2⁻⁴³⁰, 2.5)`) and the published hard cases (Lefèvre–Muller for
+exp and ln; Hubrecht, Jeannerod and Zimmermann for pow). rasayan adds its call sites over their ranges (from
+the golden grids, with seeds of their own), 800,911 arguments: Arrhenius exponents for exp, the integrators'
+`(−y).exp_m1()` for y ∈ [0.0625, 800], Nernst / Goldman ratios over 10⁻⁶ … 10⁶ for ln, and Hill `(k/s)^n`,
+Q10 and the Henderson–Hasselbalch `10^x` (with every integer and half-integer x in [−15, 15] and 100 ulps
+around each) for pow. And it adds every class-C argument of the golden corpus (11,094, the 96 glibc
+misroundings among them).
+
+For each argument the driver records `_ry_cr_<f>`'s result, `_ry_cr_<f>_fast`'s result and whether the
+fast path's rounding test passed. A second run forces the accurate path (`_ry_cr_<f>_acc`) on 100,000 sampled
+arguments plus every special, hard and corpus argument. Every target must give the same bits and the same
+fast-path flags.
+
+`python3 -I -B scripts/oracle/cr_verify.py` (MPFR 4.2.2; x86_64 ELF, aarch64 under qemu, x86_64 PE under
+wine; the three runs identical):
+
+| Primitive | Arguments | Mismatches | Accurate path forced: arguments, mismatches | Fast path falls back on |
+|---|---|---|---|---|
+| exp | 1,288,746 | 0 | 102,337, 0 | 316 (2.45·10⁻⁴), 304 of them in the tiny section (2⁻⁶⁰ ≤ \|x\| ≤ 2⁻²⁵) |
+| expm1 | 1,254,691 | 0 | 101,683, 0 | 6,354 (5.06·10⁻³), 6,128 of them at the overflow end (x > 708, which the fast path leaves to the accurate one); 3 of the corpus's 1,638 (as in §2d) |
+| ln | 1,129,315 | 0 | 102,147, 0 | 62 (5.49·10⁻⁵), 54 of them near 1 |
+| pow | 1,642,059 | 0 | 105,593, 0 | 260 (1.58·10⁻⁴), 208 of them in the exact, midpoint, square and cube families |
+
+- **5,314,811 arguments per target, 0 mismatches; the accurate path forced on 411,760, 0 mismatches.**
+  Wherever the fast path's test passes, its result equals the full one. Bits and flags are identical on the
+  three targets.
+- **rasayan's call sites** fall back rarely: exp 2 of 190,000, expm1 3 of 154,001, ln 0 of 126,006, pow
+  10 of 330,904 (Hill 0, Q10 7, `10^x` 3).
+- **Special values and hard cases** (exp 45, expm1 45, ln 39, pow 537, each C99 Annex F pair for pow): all
+  equal to MPFR's. glibc 2.44 differs from MPFR on four of them, where it misrounds and the port does not:
+  `exp(2⁻⁵³)` (glibc gives 1, the even neighbour of the midpoint 1 + 2⁻⁵³, but e^(2⁻⁵³) lies above that
+  midpoint: correctly rounded `0x3ff0000000000001`), `expm1(1)` (a corpus row, §2b), and two of the published
+  hard pow cases, `pow(0.5951224589825083, 0.8256884680195185)` and `pow(2.6430276526426257, 0.46875)` (as
+  in ushma's run).
+- **The tool catches a wrong bit.** `--tamper ln` makes the driver flip the last bit of `_ry_cr_ln`'s result
+  at one argument per run: it reports 1 mismatch in the sweep, 1 among the forced-accurate results, 1 fast/full
+  disagreement and 1 special value, on each target, and exits 1 (`--tamper pow` likewise).
+- **Cost.** The full run takes 100–160 s (MPFR and argument generation 40 s; the driver 1–2 s per primitive
+  on ELF, 2–8 s on aarch64, 9–70 s under wine, whose two starts per primitive vary with the machine's load),
+  with a peak of 362 MB in the script; no run needed its retry. `--quick` checks a fixed tenth of every sampled section (every special, hard and corpus argument,
+  542,062 arguments in all, the accurate path forced on 51,760) on ELF and aarch64 in about 11 s (46 s with
+  `--targets elf,aarch64,pe`), also with 0 mismatches.
+
+So the four correctly rounded primitives rasayan calls are correctly rounded and target-independent on every
+argument tried, through both of their paths, which is what ADR 0003's 0-ulp class-C bound rests on. No finding
+amends ADR 0003.
+
+### 2f. Three targets
+
+*The full three-target baselines: pending (M0 part 3). `cr_verify.py` already runs on PE (§2e).*
 
 ## 3. Probes 1–8 (M0 step 9)
 

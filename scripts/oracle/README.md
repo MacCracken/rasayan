@@ -19,6 +19,8 @@ python3 -I -B scripts/oracle/validate.py .                                      
 python3 -I -B scripts/oracle/probe_tables.py . --all-targets                       # every generated value, compiled
 python3 -I -B scripts/oracle/mpfr_ref.py [--write . | --check .]                   # MPFR self-checks; tests/golden/math.cr.tsv
 python3 -I -B scripts/oracle/mathx_tables.py [--check | --check-ushma]             # src/mathx_data.cyr (MPFR)
+python3 -I -B scripts/oracle/cr_verify.py --quick                                  # the primitives vs MPFR, ~11 s
+python3 -I -B scripts/oracle/cr_verify.py                                          # the full sweep, ELF/aarch64/PE
 ```
 
 `--check` regenerates every output in memory and compares it byte for byte. It exits 1 on:
@@ -345,6 +347,37 @@ primitives read: none of ushma's π, atan or tanh items.
 
 The file is never edited by hand; a changed entry fails `--check` and, for an entry the corpus
 reaches, the parity harness (checked by tampering: `port-parity.md` §2d).
+
+## cr_verify.py
+
+Checks `src/mathx.cyr`'s correctly rounded `_ry_cr_exp`, `_ry_cr_expm1`, `_ry_cr_ln` and `_ry_cr_pow`
+against MPFR (`mpfr_ref.py`'s binding), bit for bit, far beyond the golden corpus (M0 part 2c-3). It is
+ushma's tool (ushma commit `24893c9`; kimiya's originally), cut to these four. For each primitive it
+generates seeded, deterministic arguments, builds a small Cyrius driver (the source is in the script; it is
+written to `build/cr-verify/probe.cyr` and built there with the project's `cyrius.cyml`, any compiler warning
+failing the build), runs it on each target one at a time, and compares every result with MPFR's:
+- about 10⁶ arguments per primitive: ushma's families, unchanged with their seeds (binade-uniform over the
+  domain; the overflow, underflow, subnormal and −1 thresholds ± thousands of ulps; reduction and table
+  boundaries; tiny ends; specials; pow's exact and midpoint families; the published hard-to-round cases), then
+  rasayan's call sites over their ranges (Arrhenius, the integrators' `(−y).exp_m1()`, Nernst / Goldman
+  ratios, Hill, Q10, Henderson–Hasselbalch `10^x`) and every class-C argument of `tests/golden/math.tsv`;
+- the accurate path forced (`_ry_cr_<f>_acc`) on 100,000 sampled arguments plus every special, hard and
+  corpus argument;
+- the fast path (`_ry_cr_<f>_fast`) against the full result wherever its rounding test passes;
+- the same bits and fast-path flags on every target;
+- the special values and hard cases against glibc as well (reported; only MPFR is gated).
+
+| Mode | Command | Arguments per target | Accurate path forced | Targets | Time |
+|---|---|---|---|---|---|
+| quick (routine) | `cr_verify.py --quick` | 542,062: a fixed tenth of every sampled section, all specials, hard cases and corpus arguments | 51,760 | ELF, aarch64 | ~11 s |
+| full (for the record) | `cr_verify.py` | 5,314,811 | 411,760 | ELF, aarch64, PE | 100–160 s, 362 MB peak |
+
+Options: `--only exp,pow`, `--targets elf,aarch64,pe` (any of them), `--work DIR` (default
+`build/cr-verify`, gitignored; job and result files are written there and deleted after each run). Exit
+status 1 on any mismatch, fast/full disagreement or cross-target difference, 2 on a build or run failure (a
+result file of the wrong size counts as one, after one reported retry). `--tamper <fn>` is the self-test: the
+driver flips the last bit of that function's result at one argument per run, and the tool must report it and
+exit 1. At part 2c-3 both modes find 0 mismatches on every target (`docs/development/port-parity.md` §2e).
 
 ## probe_tables.py
 
