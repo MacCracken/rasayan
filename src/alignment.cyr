@@ -1,0 +1,276 @@
+# alignment.cyr — sequence alignment scoring: the BLOSUM62 and PAM250 substitution matrices, ungapped pairwise
+# scoring, and the Needleman-Wunsch global alignment score (Rust 1.2.0's `alignment.rs`, transcribed).
+#
+# A sequence is `(seq, n)`: n bytes of UTF-8 (Rust's `&str`), read as bytes. For valid UTF-8 that gives Rust's
+# `chars()` answers (port plan §2 item 6): every function rejects a non-residue, and no byte of a non-ASCII character
+# is an ASCII letter. Every result is integer arithmetic, exact (class A in tests/golden/alignment.tsv), with Rust's
+# saturating `i32` sums.
+#
+# The Cyrius forms (ADR 0002 rows 2, 10):
+# - Matrix is `enum RyMatrix`, its values Rust's declaration order (append-only); the matrices are the generated i8
+#   tables (src/alignment_data.cyr);
+# - `substitution_score`'s `Option<i8>` and `needleman_wunsch`'s `Option<i32>` are 1 with *out filled, or 0;
+#   `score_alignment`'s `Option<AlignmentScore>` fills a RyAlignmentScore;
+# - Needleman-Wunsch keeps two rows of the shorter sequence's length, as Rust does; they and the column indices are
+#   scratch whose size the input sets, so ry_needleman_wunsch_a takes an allocator;
+# - the gap penalty and the scores are Rust's `i32`: a gap outside its range is clamped to it, every sum saturates at
+#   its bounds;
+# - Matrix and AlignmentScore write `ry_<type>_to_json` (and `_a`, on an allocator).
+
+# The substitution matrices (Rust's `Matrix`): BLOSUM62, the database-search default, and PAM250, for distant
+# relatives. The values are append-only.
+enum RyMatrix {
+    RY_MATRIX_BLOSUM62 = 0;
+    RY_MATRIX_PAM250 = 1;
+}
+
+# The number of matrices.
+const RY_MATRIX_COUNT = 2;
+
+# Rust's i32 bounds, which the alignment scores saturate at.
+const _RY_ALIGNMENT_I32_MIN = -2147483648;
+const _RY_ALIGNMENT_I32_MAX = 2147483647;
+
+# The variant name of a matrix (`"Blosum62"`, `"Pam250"`, as serde writes it), or 0 for a value that is none.
+#must_use
+#pure
+fn ry_matrix_name(matrix): cstring {
+    match matrix {
+        RY_MATRIX_BLOSUM62 => { return "Blosum62"; }
+        RY_MATRIX_PAM250 => { return "Pam250"; }
+        _ => { return 0; }
+    }
+    return 0;
+}
+
+# The matrix index (A C D E F G H I K L M N P Q R S T V W Y) of the character `c`, upper or lowercase, or -1 for
+# anything that is not one of the 20 standard codes. Mirrors alignment.rs's private `aa_index`.
+#must_use
+#pure
+fn _ry_alignment_index(c): i64 {
+    var u = c;
+    if (u >= 97 && u <= 122) { u = u - 32; }
+    if (u < 65 || u > 90) { return 0 - 1; }
+    var i = _RY_ALIGNMENT_AA_INDEX[u - 65];
+    if (i >= _RY_ALIGNMENT_RESIDUE_COUNT) { return 0 - 1; }
+    return i;
+}
+
+# The 400 signed bytes of a matrix, row-major (a value that is no matrix: BLOSUM62). Mirrors `matrix_table`.
+#must_use
+#pure
+fn _ry_alignment_table(matrix): i64 {
+    if (matrix == RY_MATRIX_PAM250) { return &_RY_ALIGNMENT_PAM250; }
+    return &_RY_ALIGNMENT_BLOSUM62;
+}
+
+# The signed score at row i, column j of the 400-byte table at `tab` (the byte sign-extended without a branch).
+#must_use
+#pure
+fn _ry_alignment_cell(tab, i, j): i64 {
+    return (load8(tab + i * _RY_ALIGNMENT_RESIDUE_COUNT + j) ^ 128) - 128;
+}
+
+# Rust's `i32::saturating_add`: a + b clamped to the i32 range (a and b in it, so the i64 sum is exact).
+#must_use
+#pure
+fn _ry_alignment_sat(x): i64 {
+    if (x < _RY_ALIGNMENT_I32_MIN) { return _RY_ALIGNMENT_I32_MIN; }
+    if (x > _RY_ALIGNMENT_I32_MAX) { return _RY_ALIGNMENT_I32_MAX; }
+    return x;
+}
+
+# The substitution score of characters a and b (Unicode scalar values, upper or lowercase) in `matrix`: 1 with *out
+# set, or 0 if either is not a standard amino acid. Mirrors `alignment::substitution_score`.
+#must_use
+fn ry_substitution_score(a, b, matrix, out): i64 {
+    var i = _ry_alignment_index(a);
+    if (i < 0) { return 0; }
+    var j = _ry_alignment_index(b);
+    if (j < 0) { return 0; }
+    # _ry_alignment_table and _ry_alignment_cell written in place: two calls fewer (23 → 18 ns, the bench).
+    var tab = &_RY_ALIGNMENT_BLOSUM62;
+    if (matrix == RY_MATRIX_PAM250) { tab = &_RY_ALIGNMENT_PAM250; }
+    store64(out, (load8(tab + i * _RY_ALIGNMENT_RESIDUE_COUNT + j) ^ 128) - 128);
+    return 1;
+}
+
+# The result of an ungapped pairwise scoring (Rust's `AlignmentScore`): the total score, the identical positions, the
+# positions compared, and the identity fraction.
+struct RyAlignmentScore {
+    score;
+    identities;
+    length;
+    identity: f64;
+}
+
+# Scores two equal-length sequences position by position (no gaps) with `matrix`: 1 with *out filled, or 0 for
+# different byte lengths, an empty input, or an unknown residue. Identical positions compare ASCII case-insensitively.
+# Mirrors `alignment::score_alignment`.
+#must_use
+fn ry_score_alignment(seq_a, na, seq_b, nb, matrix, out: *RyAlignmentScore): i64 {
+    if (na == 0 || na != nb) { return 0; }
+    var tab = _ry_alignment_table(matrix);
+    var score = 0;
+    var identities = 0;
+    var k = 0;
+    while (k < na) {
+        var x = load8(seq_a + k);
+        var y = load8(seq_b + k);
+        var i = _ry_alignment_index(x);
+        var j = _ry_alignment_index(y);
+        if (i < 0 || j < 0) { return 0; }
+        score = score + _ry_alignment_cell(tab, i, j);
+        if (score < _RY_ALIGNMENT_I32_MIN) { score = _RY_ALIGNMENT_I32_MIN; }
+        if (score > _RY_ALIGNMENT_I32_MAX) { score = _RY_ALIGNMENT_I32_MAX; }
+        if (x >= 97) { x = x - 32; }
+        if (y >= 97) { y = y - 32; }
+        if (x == y) { identities = identities + 1; }
+        k = k + 1;
+    }
+    out.score = score;
+    out.identities = identities;
+    out.length = na;
+    var idf: f64 = f64_from(identities);
+    var lf: f64 = f64_from(na);
+    var r: f64 = idf / lf;
+    out.identity = r;
+    return 1;
+}
+
+# The Needleman-Wunsch global alignment score of two sequences with `matrix` and the linear `gap_penalty` (negative,
+# e.g. -4 for BLOSUM62; Rust's i32, a value outside it clamped): Ok(1) with *out the score, Ok(0) for Rust's None
+# (either sequence empty or holding an unknown residue), or Err(RY_ERR_OUT_OF_MEMORY) when allocator `a` refuses the
+# scratch (two rows of the shorter sequence's length plus its indices; the caller resets `a`). O(m·n) time and
+# O(min(m, n)) memory; every sum saturates at the i32 bounds. The sequences are swapped so the shorter runs along the
+# row, as Rust's (the matrices are symmetric, and the swap is kept exactly, as saturation is not). A cell clamps once:
+# Rust's max of three saturated sums is the clamp of the max of the exact i64 sums (a clamp is monotone), and the two
+# gap sums share their gap, so each cell is Rust's value exactly. Mirrors `alignment::needleman_wunsch`.
+#must_use
+fn ry_needleman_wunsch_a(a, seq_a, na, seq_b, nb, matrix, gap_penalty, out): Result {
+    var k = 0;
+    while (k < na) {
+        if (_ry_alignment_index(load8(seq_a + k)) < 0) { return Ok(0); }
+        k = k + 1;
+    }
+    k = 0;
+    while (k < nb) {
+        if (_ry_alignment_index(load8(seq_b + k)) < 0) { return Ok(0); }
+        k = k + 1;
+    }
+    if (na == 0 || nb == 0) { return Ok(0); }
+    var gap = _ry_alignment_sat(gap_penalty);
+    var rows = seq_a;
+    var nr = na;
+    var cols = seq_b;
+    var nc = nb;
+    if (na < nb) {
+        rows = seq_b;
+        nr = nb;
+        cols = seq_a;
+        nc = na;
+    }
+    var col_idx = alloc_via(a, nc + 16 * (nc + 1) + 8);
+    if (col_idx == 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    var prev = col_idx + nc;
+    while ((prev & 7) != 0) { prev = prev + 1; }
+    var curr = prev + 8 * (nc + 1);
+    var j = 0;
+    while (j < nc) {
+        store8(col_idx + j, _ry_alignment_index(load8(cols + j)));
+        j = j + 1;
+    }
+    var edge = 0;
+    store64(prev, edge);
+    j = 0;
+    while (j < nc) {
+        edge = _ry_alignment_sat(edge + gap);
+        store64(prev + 8 * (j + 1), edge);
+        j = j + 1;
+    }
+    var tab = _ry_alignment_table(matrix);
+    var lo = _RY_ALIGNMENT_I32_MIN;
+    var hi = _RY_ALIGNMENT_I32_MAX;
+    var r = 0;
+    var col_end = col_idx + nc;
+    while (r < nr) {
+        var sub_row = tab + _ry_alignment_index(load8(rows + r)) * _RY_ALIGNMENT_RESIDUE_COUNT;
+        var pj = load64(prev);
+        var cj = pj + gap;
+        if (cj < lo) { cj = lo; } elif (cj > hi) { cj = hi; }
+        store64(curr, cj);
+        var pp = prev;
+        var cp = curr;
+        var ci = col_idx;
+        while (ci < col_end) {
+            pp = pp + 8;
+            var pj1 = load64(pp);
+            var best = pj1;
+            if (cj > best) { best = cj; }
+            best = best + gap;
+            var diag = pj + ((load8(sub_row + load8(ci)) ^ 128) - 128);
+            if (diag > best) { best = diag; }
+            if (best < lo) { best = lo; } elif (best > hi) { best = hi; }
+            cp = cp + 8;
+            store64(cp, best);
+            cj = best;
+            pj = pj1;
+            ci = ci + 1;
+        }
+        var t = prev;
+        prev = curr;
+        curr = t;
+        r = r + 1;
+    }
+    store64(out, load64(prev + 8 * nc));
+    return Ok(1);
+}
+
+# ry_needleman_wunsch_a on the default allocator (its scratch is never freed: for a one-off call).
+#must_use
+fn ry_needleman_wunsch(seq_a, na, seq_b, nb, matrix, gap_penalty, out): Result {
+    return ry_needleman_wunsch_a(default_alloc(), seq_a, na, seq_b, nb, matrix, gap_penalty, out);
+}
+
+# ── JSON (P7: serde_json's documents) ──
+
+# Appends Matrix `matrix` as serde_json writes a unit variant (`"Blosum62"`): Ok(0), Err(RY_ERR_INVALID_PARAMETER)
+# for a value that is no matrix, or Err(RY_ERR_OUT_OF_MEMORY). Serialize only in Rust.
+#must_use
+fn ry_matrix_to_json_a(a, sb, matrix): Result {
+    var name = ry_matrix_name(matrix);
+    if (name == 0) { return Err(RY_ERR_INVALID_PARAMETER); }
+    if (_ry_jw_unit(a, sb, name) != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return Ok(0);
+}
+
+# ry_matrix_to_json_a on the default allocator (a builder from str_builder_new).
+#must_use
+fn ry_matrix_to_json(sb, matrix): Result {
+    return ry_matrix_to_json_a(default_alloc(), sb, matrix);
+}
+
+# Appends AlignmentScore `s` as serde_json writes it, `{"score":…,"identities":…,"length":…,"identity":…}`: Ok(0),
+# or Err(RY_ERR_OUT_OF_MEMORY). Serialize only in Rust.
+#must_use
+fn ry_alignment_score_to_json_a(a, sb, s: *RyAlignmentScore): Result {
+    var identity: f64 = s.identity;
+    var r = _ry_jw_byte(a, sb, 123);
+    r = r | _ry_jw_key(a, sb, "score", 1);
+    r = r | _ry_jw_i64(a, sb, s.score);
+    r = r | _ry_jw_key(a, sb, "identities", 0);
+    r = r | _ry_jw_u64(a, sb, s.identities);
+    r = r | _ry_jw_key(a, sb, "length", 0);
+    r = r | _ry_jw_u64(a, sb, s.length);
+    r = r | _ry_jw_key(a, sb, "identity", 0);
+    r = r | _ry_jw_f64(a, sb, identity);
+    r = r | _ry_jw_byte(a, sb, 125);
+    if (r != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return Ok(0);
+}
+
+# ry_alignment_score_to_json_a on the default allocator.
+#must_use
+fn ry_alignment_score_to_json(sb, s: *RyAlignmentScore): Result {
+    return ry_alignment_score_to_json_a(default_alloc(), sb, s);
+}

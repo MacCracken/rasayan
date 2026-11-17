@@ -288,5 +288,6 @@ pub fn golden(src: &Source, protein: &[char]) -> Result<Module, String> {
             row(&mut m, 'A', c, mx);
         }
     }
+    crate::m_alignment::rows(&mut m);
     Ok(m)
 }

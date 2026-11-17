@@ -40,6 +40,8 @@ include "src/energy_data.cyr"
 include "src/energy.cyr"
 include "src/protein_data.cyr"
 include "src/protein.cyr"
+include "src/alignment_data.cyr"
+include "src/alignment.cyr"
 
 # Keeps the loops' results observable.
 var _bn_sink = 0;
@@ -608,6 +610,58 @@ fn _bn_prot(name, kind, n): i64 {
     return 0;
 }
 
+# ── M3 part 2: alignment, the Rust benches' twins (the same inputs) ──
+
+# n calls of alignment benchmark `kind`, its result kept: 0 substitution_score('W', 'Y', BLOSUM62),
+# 1 needleman_wunsch_10, 2 needleman_wunsch_300 (Rust's 300 × 280 cycled peptides), 3 score_alignment.
+fn _bn_alignment(kind, n): i64 {
+    var a10 = "ACDEFGHIKL";
+    var b10 = "ACDEFHIKML";
+    var a300 = alloc(301);
+    var b300 = alloc(281);
+    var pa = "MKTAYIAKQRQISFVKSHFSRQ";
+    var pb = "MKVLAAGIVGLLLAQPSHAEKR";
+    var k = 0;
+    while (k < 300) {
+        store8(a300 + k, load8(pa + k % 22));
+        if (k < 280) { store8(b300 + k, load8(pb + k % 22)); }
+        k = k + 1;
+    }
+    var arena = arena_allocator_growable(65536);
+    var out[8];
+    var r: RyAlignmentScore;
+    var hits = 0;
+    var i = 0;
+    while (i < n) {
+        if (kind == 0) {
+            hits = hits + ry_substitution_score(87, 89, RY_MATRIX_BLOSUM62, &out);
+        } elif (kind == 1) {
+            reset_via(arena);
+            var t1, v1 = ry_needleman_wunsch_a(arena, a10, 10, b10, 10, RY_MATRIX_BLOSUM62, 0 - 4, &out);
+            hits = hits + load64(&out);
+        } elif (kind == 2) {
+            reset_via(arena);
+            var t2, v2 = ry_needleman_wunsch_a(arena, a300, 300, b300, 280, RY_MATRIX_BLOSUM62, 0 - 4, &out);
+            hits = hits + load64(&out);
+        } else {
+            hits = hits + ry_score_alignment(a10, 10, b10, 10, RY_MATRIX_BLOSUM62, &r);
+        }
+        i = i + 1;
+    }
+    _bn_sink = _bn_sink ^ hits;
+    return 0;
+}
+
+# One alignment benchmark of `n` calls.
+fn _bn_align(name, kind, n): i64 {
+    var b = bench_new(name);
+    bench_batch_start(b);
+    _bn_alignment(kind, n);
+    bench_batch_stop(b, n);
+    bench_report(b);
+    return 0;
+}
+
 # One benchmark of the JSON writers: `kind` 0 the serde_json f64 form, 1 the Display form, 2 a ten-field document.
 fn _bn_json(name, kind, n): i64 {
     var b = bench_new(name);
@@ -693,6 +747,10 @@ fn main(): i64 {
     _bn_prot("chou_fasman", 5, 200000);
     _bn_prot("net_charge", 6, 200000);
     _bn_prot("composition", 7, 1000000);
+    _bn_align("substitution_score", 0, 1000000);
+    _bn_align("needleman_wunsch_10", 1, 200000);
+    _bn_align("needleman_wunsch_300", 2, 1000);
+    _bn_align("score_alignment", 3, 1000000);
     var br = bench_new("json/read MembranePermeability (3 f64)");
     bench_batch_start(br);
     _bn_read("{\"p_na\":0.04,\"p_k\":1.0,\"p_cl\":0.45}", 3, "p_na\0p_k\0p_cl\0", 100000);

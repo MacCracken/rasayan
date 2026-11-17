@@ -1186,3 +1186,38 @@ Rust's declaration order, which the generator already proves is the order of the
 charge (1.6 µs against 143 ns) are the correctly rounded `pow`, about 126 and 9 calls at ~140 ns. The review gave the
 Chou-Fasman window sums one column choice per sum instead of one per residue: 2,437 → 1,839 ns.
 
+
+### 6b. Part 2: alignment (2026-11-17)
+
+**What is compared.** `tests/golden/alignment.tsv` gains 5,768 rows through the oracle's public API, after M0's 1,008
+`substitution_score` rows: `score_alignment` over 116 pairs in both matrices (100 seeded equal-length pairs, 30 % of
+them lowercased on one side; the Rust tests' pairs; a length mismatch; empty; an unknown residue; whitespace and a
+newline; non-ASCII pairs of equal byte length, which pass Rust's byte-length test and then fail on the residues; 1,000
+Trp against themselves); `needleman_wunsch` over 138 pairs (120 seeded, 1–60 residues; Durbin's HEAGAWGHEE example;
+the Rust tests' pairs; empty, unknown and non-ASCII sides; ubiquitin against calmodulin) in both matrices at ten gap
+penalties (−1, −4, −8, −11, 0, +3, −10⁹, `i32::MIN`, `i32::MAX`, −2), each pair also swapped, plus the benches'
+300 × 280 pair and a 100,000 × 20 pair both ways at −4, `i32::MIN` and `i32::MAX` (Rust's row/column swap keeps the
+rows at the shorter length); the serde documents of `Matrix` and `AlignmentScore` (at `i32::MIN` and `i32::MAX` among
+them). Every row is integer arithmetic, so all are class A; `AlignmentScore::identity` is one division.
+
+| Check | Result |
+|---|---|
+| every row | identical on the first run; M0's `substitution_score` rows now through `ry_substitution_score` |
+| corrected oracle | no transcendental: no `alignment.cr.tsv` |
+| `validate.py` | every row re-derived from its own transcription of `alignment.rs` (pinned lines; the matrices parsed from its source), with Rust's `saturating_add` modelled at the i32 bounds; 98,837 checks in all |
+| Rust tests | 21 ported (`tests/alignment.tcyr`, 28 checks: the 19 unit tests, Rust's full-table reference against the two-row DP, the integration and the validation test); the ledger at 307 of 723, 0 due and unported |
+| fuzz | every input's two halves: both scores within the matrix bounds, Needleman-Wunsch symmetric, a sequence against itself never below its ungapped score |
+| three targets (`scripts/gates.sh`, 262 s) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 96,170 ok, 234 accepted, 0 failed; coverage 128 of 128 public fns executed |
+
+**The Cyrius forms** (ADR 0002 rows 1–3, 10): `Matrix` is `RyMatrix`, append-only values 0 and 1 (Rust's
+declaration order) selecting a generated `i8[400]` table. `substitution_score` takes two code points, so a non-ASCII
+`char` has no index and scores None, as in Rust; `score_alignment` and `needleman_wunsch` take `(ptr, n)` UTF-8 and
+read bytes: Rust compares byte lengths first, and every byte of a non-ASCII character is >= 0x80, never a residue.
+Needleman-Wunsch keeps Rust's two rows of the shorter sequence as allocator scratch (`ry_needleman_wunsch_a`, one
+block: the column indices, then the two rows 8-byte aligned) and sums in i64. Both operands of every sum are already in
+the i32 range, so clamping the exact sum is `saturating_add`, and one clamp of the cell's max is Rust's max of three.
+
+**Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): the four Rust twins. Needleman-Wunsch costs
+6.8 ns a cell against Rust's 2.1 (571.5 µs for 300 × 280, 173.9 in Rust). The review took the cell from three
+clamps to one, exactly, because a clamp is monotone; together with locals, pointer steps and a branchless sign
+extension that is 917.2 → 571.5 µs. Putting the table pick inline took substitution_score from 23 to 18 ns.

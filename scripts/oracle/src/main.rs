@@ -28,6 +28,7 @@
 mod cyr;
 mod glibc;
 mod grids;
+mod m_alignment;
 mod m_constants;
 mod m_energy;
 mod m_enzyme;

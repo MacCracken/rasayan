@@ -25,7 +25,7 @@ check = "--check" in sys.argv[2:]
 out_path = root / "docs/development/rust-test-ledger.md"
 
 PORTED = ["constants", "error", "guard", "integrate", "logging", "enzyme", "membrane", "signal", "metabolism",
-          "energy", "protein"]
+          "energy", "protein", "alignment"]
 MILESTONE = {
     "constants": "M1", "error": "M1", "guard": "M1", "integrate": "M1", "logging": "M1",
     "enzyme": "M2", "membrane": "M2", "signal": "M2", "metabolism": "M2", "energy": "M2",

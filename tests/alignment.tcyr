@@ -1,0 +1,229 @@
+# rasayan — src/alignment.cyr: Rust 1.2.0's alignment tests, ported
+# Stdlib auto-included via cyrius.cyml
+#
+# The 19 unit tests of `alignment.rs`, the integration test (tests/integration.rs) and the validation test
+# (tests/validation.rs) that call alignment, as they are written; tests/golden/alignment.tsv checks every function
+# besides.
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
+include "src/alignment_data.cyr"
+include "src/alignment.cyr"
+
+var _T_ALPHABET = "ACDEFGHIKLMNPQRSTVWY";
+
+# The substitution score of a and b in matrix m (the test fails if there is none).
+fn sub(a, b, m) {
+    var s[8];
+    if (ry_substitution_score(a, b, m, &s) != 1) { assert(0 == 1, "both residues are standard"); }
+    return load64(&s);
+}
+
+# The Needleman-Wunsch score of C strings a and b, or -999999 for None (no real score reaches it here).
+fn nw(a, b, m, gap) {
+    var s[8];
+    var t, v = ry_needleman_wunsch(a, strlen(a), b, strlen(b), m, gap, &s);
+    if (is_err_result(t) == 1 || v == 0) { return 0 - 999999; }
+    return load64(&s);
+}
+
+# Rust's `nw_full_table`: the full (m+1)×(n+1) table, the reference the two-row DP is checked against (no
+# saturation: these inputs are far from the i32 bounds).
+fn nw_full_table(a, b, m, gap) {
+    var na = strlen(a);
+    var nb = strlen(b);
+    var w = nb + 1;
+    var dp = alloc(8 * (na + 1) * w);
+    var i = 0;
+    while (i <= na) {
+        store64(dp + 8 * (i * w), i * gap);
+        i = i + 1;
+    }
+    var j = 0;
+    while (j <= nb) {
+        store64(dp + 8 * j, j * gap);
+        j = j + 1;
+    }
+    i = 1;
+    while (i <= na) {
+        j = 1;
+        while (j <= nb) {
+            var s = sub(load8(a + i - 1), load8(b + j - 1), m);
+            var diag = load64(dp + 8 * ((i - 1) * w + j - 1)) + s;
+            var up = load64(dp + 8 * ((i - 1) * w + j)) + gap;
+            var left = load64(dp + 8 * (i * w + j - 1)) + gap;
+            var best = diag;
+            if (up > best) { best = up; }
+            if (left > best) { best = left; }
+            store64(dp + 8 * (i * w + j), best);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return load64(dp + 8 * (na * w + nb));
+}
+
+# 1 when |a − b| < tol.
+fn near(a: f64, b: f64, tol: f64) {
+    var d: f64 = f64_abs(a - b);
+    return d < tol;
+}
+
+# rust src/alignment.rs: test_blosum62_diagonal_positive, test_blosum62_symmetric, test_blosum62_known_values
+# rust src/alignment.rs: test_pam250_symmetric, test_pam250_known_values, test_unknown_residue, test_lowercase
+# rust tests/validation.rs: validate_blosum62_known_entries
+fn matrices() {
+    test_group("alignment: the substitution matrices");
+    var B = RY_MATRIX_BLOSUM62;
+    var P = RY_MATRIX_PAM250;
+    var pos = 1;
+    var sym = 1;
+    var i = 0;
+    while (i < 20) {
+        var a = load8(_T_ALPHABET + i);
+        if (sub(a, a, B) <= 0) { pos = 0; }
+        var j = 0;
+        while (j < 20) {
+            var b = load8(_T_ALPHABET + j);
+            if (sub(a, b, B) != sub(b, a, B) || sub(a, b, P) != sub(b, a, P)) { sym = 0; }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    assert(pos == 1, "every BLOSUM62 self-score is positive");
+    assert(sym == 1, "both matrices are symmetric");
+    assert(sub(87, 87, B) == 11 && sub(65, 65, B) == 4 && sub(68, 69, B) > 0, "BLOSUM62 W-W 11, A-A 4, D-E > 0");
+    assert(sub(87, 87, P) == 17 && sub(67, 67, P) == 12, "PAM250 W-W 17, C-C 12");
+    assert(sub(67, 67, B) == 9 && sub(68, 69, B) == 2 && sub(87, 71, B) < 0, "C-C 9, D-E 2, W-G < 0 (Henikoff)");
+    var s[8];
+    assert(ry_substitution_score(88, 65, B, &s) == 0 && ry_substitution_score(65, 88, B, &s) == 0, "X: none");
+    assert_eq(sub(97, 100, B), sub(65, 68, B), "lowercase scores the same");
+    return 0;
+}
+
+# rust src/alignment.rs: test_score_alignment_identical, test_score_alignment_different
+# rust src/alignment.rs: test_score_alignment_length_mismatch, test_score_alignment_empty, test_score_alignment_unknown
+# rust src/alignment.rs: test_score_alignment_saturates
+fn scoring() {
+    test_group("alignment: ungapped scoring");
+    var r: RyAlignmentScore;
+    var eps: f64 = 0.0000000000000002220446049250313;
+    assert(ry_score_alignment("ACDEF", 5, "ACDEF", 5, RY_MATRIX_BLOSUM62, &r) == 1, "ACDEF scores");
+    var id: f64 = r.identity;
+    assert(r.identities == 5 && near(id, 1.0, eps) && r.score > 0, "identical: 5 identities, identity 1");
+    assert(ry_score_alignment("AAAAA", 5, "WWWWW", 5, RY_MATRIX_BLOSUM62, &r) == 1, "AAAAA / WWWWW scores");
+    id = r.identity;
+    assert(r.identities == 0 && near(id, 0.0, eps), "different: none identical");
+    assert(ry_score_alignment("ACE", 3, "ACDE", 4, RY_MATRIX_BLOSUM62, &r) == 0, "a length mismatch: none");
+    assert(ry_score_alignment("", 0, "", 0, RY_MATRIX_BLOSUM62, &r) == 0, "empty: none");
+    assert(ry_score_alignment("AXC", 3, "AXC", 3, RY_MATRIX_BLOSUM62, &r) == 0, "an unknown residue: none");
+    var w = alloc(1001);
+    memset(w, 87, 1000);
+    store8(w + 1000, 0);
+    assert(ry_score_alignment(w, 1000, w, 1000, RY_MATRIX_BLOSUM62, &r) == 1, "1,000 Trp score");
+    id = r.identity;
+    assert(r.score == 11000 && id == 1.0, "11,000, identity 1");
+    return 0;
+}
+
+# rust src/alignment.rs: test_needleman_wunsch_identical, test_needleman_wunsch_with_gap
+# rust src/alignment.rs: test_needleman_wunsch_empty, test_needleman_wunsch_unknown
+# rust src/alignment.rs: test_needleman_wunsch_matches_full_table, test_needleman_wunsch_extreme_gap_saturates
+fn needleman_wunsch() {
+    test_group("alignment: Needleman-Wunsch");
+    var B = RY_MATRIX_BLOSUM62;
+    var diag = 0;
+    var i = 0;
+    while (i < 5) {
+        var c = load8("ACDEF" + i);
+        diag = diag + sub(c, c, B);
+        i = i + 1;
+    }
+    assert_eq(nw("ACDEF", "ACDEF", B, 0 - 4), diag, "identical: the diagonal's sum");
+    assert(nw("ACDF", "ADF", B, 0 - 4) < nw("ADF", "ADF", B, 0 - 4), "a gap lowers the score");
+    assert(nw("", "ACD", B, 0 - 4) == 0 - 999999 && nw("ACD", "", B, 0 - 4) == 0 - 999999, "empty: none");
+    assert(nw("AXC", "ACD", B, 0 - 4) == 0 - 999999 && nw("ACD", "AÇD", B, 0 - 4) == 0 - 999999, "unknown: none");
+    var pairs[80];
+    store64(&pairs, "HEAGAWGHEE");
+    store64(&pairs + 8, "PAWHEAE");
+    store64(&pairs + 16, "MKTAYIAKQR");
+    store64(&pairs + 24, "MKTAYIAKQR");
+    store64(&pairs + 32, "A");
+    store64(&pairs + 40, "W");
+    store64(&pairs + 48, "ACDEFGHIKLMNPQRSTVWY");
+    store64(&pairs + 56, "YWVTSRQPNMLKIHGFEDCA");
+    store64(&pairs + 64, "GGGG");
+    store64(&pairs + 72, "G");
+    var gaps[32];
+    store64(&gaps, 0 - 1);
+    store64(&gaps + 8, 0 - 4);
+    store64(&gaps + 16, 0 - 8);
+    store64(&gaps + 24, 0 - 11);
+    var ok = 1;
+    var k = 0;
+    while (k < 5) {
+        var a = load64(&pairs + 16 * k);
+        var b = load64(&pairs + 16 * k + 8);
+        var m = 0;
+        while (m < RY_MATRIX_COUNT) {
+            var g = 0;
+            while (g < 4) {
+                var gap = load64(&gaps + 8 * g);
+                var fast = nw(a, b, m, gap);
+                if (fast != nw_full_table(a, b, m, gap)) { ok = 0; }
+                if (fast != nw(b, a, m, gap)) { ok = 0; }
+                g = g + 1;
+            }
+            m = m + 1;
+        }
+        k = k + 1;
+    }
+    assert(ok == 1, "the two-row DP equals the full table, and the score is symmetric");
+    assert_eq(nw("A", "W", B, 0 - 4), 0 - 3, "A↔W -3, cheaper than two gaps");
+    assert_eq(nw("GGGG", "G", B, 0 - 4), 6 - 12, "GGGG vs G: a match and three gaps");
+    var imin = -2147483648;
+    var imax = 2147483647;
+    assert_eq(nw("ACDEFG", "A", B, imin), imin, "an i32::MIN gap saturates");
+    assert(nw("ACD", "ACD", B, imax) > 0, "an i32::MAX gap stays positive");
+    return 0;
+}
+
+# rust tests/integration.rs: test_alignment_score_serialize
+fn serde() {
+    test_group("alignment: serde");
+    var r: RyAlignmentScore;
+    var f = ry_score_alignment("ACDEF", 5, "ACDEF", 5, RY_MATRIX_BLOSUM62, &r);
+    var sb = str_builder_new();
+    var t, v = ry_alignment_score_to_json(sb, &r);
+    var want = "{\"score\":30,\"identities\":5,\"length\":5,\"identity\":1.0}";
+    var n = strlen(want);
+    assert(load64(sb + 8) == n && memeq(load64(sb), want, n) == 1, "its document, identity in it");
+    store64(sb + 8, 0);
+    var t2, v2 = ry_matrix_to_json(sb, RY_MATRIX_PAM250);
+    assert(load64(sb + 8) == 8 && memeq(load64(sb), "\"Pam250\"", 8) == 1, "a matrix by name");
+    var t3, v3 = ry_matrix_to_json(sb, 7);
+    assert(is_err_result(t3) == 1, "a value that is no matrix is refused");
+    return 0;
+}
+
+# Runs the alignment suite.
+fn main() {
+    alloc_init();
+    matrices();
+    scoring();
+    needleman_wunsch();
+    serde();
+    return assert_summary();
+}
+
+var exit_code = main();
+# assert_summary() returns the failure count; a wait status is 8 bits, so any failure exits 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

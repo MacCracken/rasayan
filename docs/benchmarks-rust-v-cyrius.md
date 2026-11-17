@@ -120,3 +120,18 @@ before). The rest of the tick's gap is the same helper calls as metabolism's (`_
 
 Measured with the machine quiet (load below 1; the reference rows as before).
 
+
+## M3 part 2: alignment
+
+| Benchmark | Rust 1.2.0 (ns) | Cyrius (ns) | Before review (ns) | Notes |
+|---|---|---|---|---|
+| substitution_score | 2.29 | 18 | 23 | W/Y in BLOSUM62: two index calls; the table pick and the cell read now in place |
+| needleman_wunsch_10 | 441.27 | 1,056 | 1,532 | 10 × 10 on BLOSUM62, gap −4; the scratch from an arena reset per call |
+| needleman_wunsch_300 | 173,870 | 571,517 | 917,157 | 300 × 280: 6.8 ns a cell (Rust 2.1); 10.9 before review |
+| score_alignment | 62.12 | 194 | 213 | 10 residues, ungapped; the saturation now inline |
+
+Measured at load 1.4–2.6 (another project's jobs), with the reference rows (michaelis_menten 12 ns, nernst 80–81 ns)
+the same as on a quiet machine. The review cut the Needleman-Wunsch cell from three clamps to one. Rust's
+`diag.max(up).max(left)` over saturated sums equals the clamp of the max of the exact i64 sums, because a clamp is
+monotone, so every cell keeps its value and the 5,530 rows are unchanged. The loop also carries `prev[j]` and
+`curr[j]` in locals, steps pointers instead of multiplying indices, and sign-extends the matrix byte without a branch.

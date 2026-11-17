@@ -6,7 +6,7 @@
 # document parsed on an arena reset per input, then read as an all-f64 struct, a [f64; 5], a string and an integer).
 # The sequence readers and each type's codec join with their milestones: M2 part 2, IonicState's and
 # MembranePermeability's; part 3, SecondMessenger's; part 4, MetabolicState's; part 5, BioenergyState's. M3 part 1:
-# every protein function on the input as a sequence.
+# every protein function on the input as a sequence; part 2, alignment on its two halves.
 
 include "src/constants.cyr"
 include "src/constants_private.cyr"
@@ -30,6 +30,8 @@ include "src/energy_data.cyr"
 include "src/energy.cyr"
 include "src/protein_data.cyr"
 include "src/protein.cyr"
+include "src/alignment_data.cyr"
+include "src/alignment.cyr"
 
 var _fz_state = 0x2545F4914F6CDD1D;
 var _fz_bad = 0;
@@ -40,6 +42,7 @@ var _fz_json_read = 0;
 var _fz_codec_read = 0;
 var _fz_sb = 0;
 var _fz_protein = 0;
+var _fz_aligned = 0;
 
 # xorshift64*: the next pseudo-random word.
 fn fz_next(): i64 {
@@ -261,6 +264,32 @@ fn fuzz_protein(data, len) {
     return 0;
 }
 
+# Alignment on the input's two halves: a score has at most `length` identities and an identity in [0, 1];
+# Needleman-Wunsch (gap -4, far from saturating at this size) is symmetric, and a sequence aligned with itself never
+# scores below its ungapped self-score.
+fn fuzz_alignment(data, len) {
+    var h = len / 2;
+    var r: RyAlignmentScore;
+    if (ry_score_alignment(data, h, data + h, h, RY_MATRIX_BLOSUM62, &r) == 1) {
+        var id: f64 = r.identity;
+        if (r.identities > r.length || id < 0.0 || id > 1.0) { _fz_bad = _fz_bad + 1; }
+    }
+    reset_via(_fz_arena);
+    var ab[8];
+    var ba[8];
+    var t1, v1 = ry_needleman_wunsch_a(_fz_arena, data, h, data + h, len - h, RY_MATRIX_PAM250, 0 - 4, &ab);
+    var t2, v2 = ry_needleman_wunsch_a(_fz_arena, data + h, len - h, data, h, RY_MATRIX_PAM250, 0 - 4, &ba);
+    if (is_ok(t1) == 0 || is_ok(t2) == 0 || v1 != v2) { _fz_bad = _fz_bad + 1; }
+    if (v1 == 1 && load64(&ab) != load64(&ba)) { _fz_bad = _fz_bad + 1; }
+    if (v1 == 1) { _fz_aligned = _fz_aligned + 1; }
+    var self[8];
+    var t3, v3 = ry_needleman_wunsch_a(_fz_arena, data, h, data, h, RY_MATRIX_BLOSUM62, 0 - 4, &self);
+    if (v3 == 1 && ry_score_alignment(data, h, data, h, RY_MATRIX_BLOSUM62, &r) == 1 && load64(&self) < r.score) {
+        _fz_bad = _fz_bad + 1;
+    }
+    return 0;
+}
+
 # Copies seed `s` into buf and applies up to three random edits. Returns the new length.
 fn fz_mutate(buf, cap, s): i64 {
     var n = strlen(s);
@@ -302,7 +331,7 @@ fn main() {
     var buf = alloc(cap + 1);
     _fz_arena = arena_allocator_growable(65536);
     _fz_sb = str_builder_new();
-    var seeds = alloc(8 * 33);
+    var seeds = alloc(8 * 35);
     store64(seeds, "trace");
     store64(seeds + 8, "DEBUG");
     store64(seeds + 16, "info,warn");
@@ -336,6 +365,8 @@ fn main() {
     store64(seeds + 240, "ACDEFGHIKLMNPQRSTVWY");
     store64(seeds + 248, "AAAAAELLLLVVVIIYNGPS");
     store64(seeds + 256, "acdkAAAAAAPAAANPDGvvvvv");
+    store64(seeds + 264, "HEAGAWGHEEPAWHEAE");
+    store64(seeds + 272, "MKTAYIAKQRQISFVKSHFSRQMKVLAAGIVGLLLAQPSHAEKR");
     var i = 0;
     while (i < 50000) {
         var n = 0;
@@ -344,12 +375,13 @@ fn main() {
             var k = 0;
             while (k < n) { store8(buf + k, fz_below(256)); k = k + 1; }
         } else {
-            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(33)));
+            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(35)));
         }
         fuzz_main(buf, n);
         fuzz_json(buf, n);
         fuzz_membrane(buf, n);
         fuzz_protein(buf, n);
+        fuzz_alignment(buf, n);
         i = i + 1;
     }
     if (_fz_bad != 0) {
@@ -365,6 +397,8 @@ fn main() {
     fmt_int(_fz_codec_read);
     print(", isoelectric points defined: ", 30);
     fmt_int(_fz_protein);
+    print(", halves aligned: ", 18);
+    fmt_int(_fz_aligned);
     println(")");
     return 0;
 }

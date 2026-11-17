@@ -69,6 +69,7 @@ include "src/signal.cyr"
 include "src/metabolism.cyr"
 include "src/energy.cyr"
 include "src/protein.cyr"
+include "src/alignment.cyr"
 
 alloc_init();
 
@@ -758,46 +759,104 @@ fn _par_protein_json(fp, fl): i64 {
 }
 
 # ── alignment ───────────────────────────────────────────────────────────────────────
-# src/alignment_data.cyr. Needleman-Wunsch and the alignment scores arrive at M3.
+# src/alignment_data.cyr and src/alignment.cyr (M3 part 2).
 
-# Rust's `aa_index(code)`: ASCII uppercase, then the generated 26-entry index; -1 for None.
-#must_use
-fn _par_aa_index(c): i64 {
-    var u = c;
-    if (u >= 97 && u <= 122) { u = u - 32; }
-    if (u < 65 || u > 90) { return 0 - 1; }
-    var i = _RY_ALIGNMENT_AA_INDEX[u - 65];
-    if (i >= _RY_ALIGNMENT_RESIDUE_COUNT) { return 0 - 1; }   # NO_RESIDUE
-    return i;
+# Input token k as a Matrix (`e:Matrix.<Variant>`): its RyMatrix value, by the port's own names; -1 otherwise.
+fn _par_matrix(k): i64 {
+    if (k >= _par_in_n || load64(_par_in_k + 8 * k) != 101) { return 0 - 1; }
+    var p = load64(_par_in_v + 8 * k);
+    var l = load64(_par_in_l + 8 * k);
+    if (l < 8 || memeq(p, "Matrix.", 7) != 1) { return 0 - 1; }
+    var m = 0;
+    while (m < RY_MATRIX_COUNT) {
+        if (_par_eq(p + 7, l - 7, ry_matrix_name(m)) == 1) { return m; }
+        m = m + 1;
+    }
+    return 0 - 1;
 }
 
-# `alignment::substitution_score(a, b, matrix)`: both residues through aa_index (None if either is None), then the
-# matrix's row-major cell (a signed i8).
+# The Needleman-Wunsch rows' scratch arena, reset per call.
+var _par_nw_a = 0;
+fn _par_nw_arena(): i64 {
+    if (_par_nw_a == 0) { _par_nw_a = arena_allocator_growable(65536); }
+    reset_via(_par_nw_a);
+    return _par_nw_a;
+}
+
+# The alignment rows (src/alignment.cyr, M3 part 2): substitution_score through ry_substitution_score (the characters
+# as code points), score_alignment, Needleman-Wunsch, and the serde rows.
 fn _par_alignment(fp, fl): i64 {
-    if (_par_eq(fp, fl, "alignment::substitution_score") != 1) { return 0; }
-    if (_par_in_n != 3 || load64(_par_in_k + 16) != 101) { return 0 - 1; }
-    var a = _par_in_char(0);
-    var b = _par_in_char(1);
-    if (a < 0 || b < 0) { return 0 - 1; }
-    var mp = load64(_par_in_v + 16);
-    var ml = load64(_par_in_l + 16);
-    var blosum = 0;
-    if (_par_eq(mp, ml, "Matrix.Blosum62") == 1) { blosum = 1; }
-    elif (_par_eq(mp, ml, "Matrix.Pam250") != 1) { return 0 - 1; }
-    var i = _par_aa_index(a);
-    if (i < 0) {
-        _par_got_none();
+    if (_par_eq(fp, fl, "alignment::substitution_score") == 1) {
+        if (_par_in_n != 3) { return 0 - 1; }
+        var a = _par_in_codepoint(0);
+        var b = _par_in_codepoint(1);
+        var m = _par_matrix(2);
+        if (a < 0 || b < 0 || m < 0) { return 0 - 1; }
+        var s[8];
+        if (ry_substitution_score(a, b, m, &s) == 1) {
+            _par_got_i(load64(&s));
+        } else {
+            _par_got_none();
+        }
         return 1;
     }
-    var j = _par_aa_index(b);
-    if (j < 0) {
-        _par_got_none();
+    if (_par_eq(fp, fl, "alignment::score_alignment") == 1 || _par_eq(fp, fl, "alignment::needleman_wunsch") == 1) {
+        var la[8];
+        var lb[8];
+        var sa = _par_in_bytes(0, &la);
+        var sb2 = _par_in_bytes(1, &lb);
+        var mx = _par_matrix(2);
+        if (sa == 0 || sb2 == 0 || mx < 0) { return 0 - 1; }
+        if (_par_eq(fp, fl, "alignment::score_alignment") == 1) {
+            if (_par_in_n != 3) { return 0 - 1; }
+            var r: RyAlignmentScore;
+            if (ry_score_alignment(sa, load64(&la), sb2, load64(&lb), mx, &r) == 0) {
+                _par_got_none();
+                return 1;
+            }
+            _par_got_i(r.score);
+            _par_got_i(r.identities);
+            _par_got_i(r.length);
+            var idf: f64 = r.identity;
+            _par_got_f(idf);
+            return 1;
+        }
+        if (_par_in_n != 4 || load64(_par_in_k + 24) != 105) { return 0 - 1; }
+        var score[8];
+        var t, v = ry_needleman_wunsch_a(_par_nw_arena(), sa, load64(&la), sb2, load64(&lb), mx, _par_in(3), &score);
+        if (is_err_result(t) == 1) { return 0 - 1; }
+        if (v == 0) {
+            _par_got_none();
+        } else {
+            _par_got_i(load64(&score));
+        }
         return 1;
     }
-    var cell = i * _RY_ALIGNMENT_RESIDUE_COUNT + j;
-    if (blosum == 1) { _par_got_i(_RY_ALIGNMENT_BLOSUM62[cell]); }
-    else { _par_got_i(_RY_ALIGNMENT_PAM250[cell]); }
-    return 1;
+    if (_par_jsb == 0) { _par_jsb = str_builder_new(); }
+    var jb = _par_jsb;
+    store64(jb + 8, 0);
+    if (_par_eq(fp, fl, "serde_json::to_string<Matrix>") == 1) {
+        var m2 = _par_matrix(0);
+        if (m2 < 0) { return 0 - 1; }
+        var t1, v1 = ry_matrix_to_json(jb, m2);
+        if (is_err_result(t1) == 1) { return 0 - 1; }
+        _par_got_text(load64(jb), load64(jb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::to_string<AlignmentScore>") == 1) {
+        if (_par_in_n != 4 || _par_is_f(3) == 0) { return 0 - 1; }
+        var r2: RyAlignmentScore;
+        r2.score = _par_in(0);
+        r2.identities = _par_in(1);
+        r2.length = _par_in(2);
+        var idv: f64 = _par_f(3);
+        r2.identity = idv;
+        var t2, v2 = ry_alignment_score_to_json(jb, &r2);
+        if (is_err_result(t2) == 1) { return 0 - 1; }
+        _par_got_text(load64(jb), load64(jb + 8));
+        return 1;
+    }
+    return 0;
 }
 
 # ── enzyme ──────────────────────────────────────────────────────────────────────────

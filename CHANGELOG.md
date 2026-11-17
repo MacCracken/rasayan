@@ -14,10 +14,28 @@ three-target baselines and `scripts/gates.sh`, step 9's probes 1–4, 8 and 12) 
 the profiles, and step 10's upstream drafts). M0 is complete. M1 part 1 (the foundation's error codes, guard layer
 and integrators), part 2 (logging, the failure events, the surface-parity and Rust-test gates) and part 3 (the
 JSON writers and readers) follow: M1 is complete. M2 part 1 (enzyme), part 2 (membrane), part 3 (signal), part 4
-(metabolism) and part 5 (energy) follow: M2 is complete. M3 part 1 (protein) follows.
+(metabolism) and part 5 (energy) follow: M2 is complete. M3 part 1 (protein) and part 2 (alignment)
+follow.
 
 ### Added
 
+- **src/alignment.cyr** (M3 part 2) — `alignment.rs` transcribed: `RyMatrix` over the generated BLOSUM62 and PAM250
+  tables, `ry_substitution_score`, `ry_score_alignment` (`RyAlignmentScore`; Rust's byte-length check, then the
+  residues), and Needleman-Wunsch (`ry_needleman_wunsch_a`: two rolling rows of the shorter sequence, Rust's swap kept,
+  its saturating i32 sums reproduced with one clamp per cell, which is exact because a clamp is monotone), with the
+  serde writers of Matrix and AlignmentScore
+- **tests/golden/alignment.tsv** (M3 part 2, +5,768 rows) — `score_alignment` over 116 pairs × both matrices (seeded
+  equal-length pairs in mixed case, the Rust tests' pairs, length mismatches, non-ASCII pairs of equal byte length,
+  1,000 Trp against themselves); Needleman-Wunsch over 138 pairs at ten gap penalties (`i32::MIN`, `i32::MAX` and
+  −10⁹ among them), each pair also swapped, the benches' 300 × 280 pair, and a 100,000 × 20 pair both ways; the
+  serde documents. All class A, all matching on the first run; `validate.py` models every row with Rust's saturating
+  arithmetic (98,837 independent checks)
+- **tests/alignment.tcyr** (M3 part 2, 28 checks) — the 19 `alignment.rs` unit tests, the integration and the
+  validation test as they are written (Rust's full-table reference against the two-row DP, Durbin's HEAGAWGHEE
+  example, the saturating gaps): the Rust-test ledger at 307 of 723, 0 due and unported. The fuzz harness aligns the
+  two halves of every input: Needleman-Wunsch symmetric, a sequence against itself never below its ungapped score
+- **benchmarks** (M3 part 2) — the four twins, Rust → Cyrius: substitution_score 2.3 → 18 ns, needleman_wunsch_10
+  441 → 1,056 ns, needleman_wunsch_300 173.9 → 571.5 µs, score_alignment 62 → 194 ns
 - **src/protein.cyr** (M3 part 1) — `protein.rs` transcribed: `RyAminoAcid` and `ry_amino_acid` over the generated
   table, `ry_lookup` / `ry_try_lookup`, `ry_molecular_weight`, `ry_composition` (a caller buffer of pairs),
   `RyPkaSet` with `ry_net_charge(_with)` and `ry_isoelectric_point(_with)` (Henderson-Hasselbalch on the correctly
@@ -433,6 +451,11 @@ JSON writers and readers) follow: M1 is complete. M2 part 1 (enzyme), part 2 (me
 
 ### Changed
 
+- **tests/parity.tcyr** (M3 part 2) — `alignment::substitution_score`'s 1,008 table rows run through the ported
+  `ry_substitution_score` (M0 answered them from the generated tables)
+- **scripts/surface_parity.py**, **scripts/rust_test_ledger.py** (M3 part 2) — alignment is ported: its 9 public
+  items have their names
+- **cyrius.cyml** (M3 part 2) — `src/alignment.cyr` in the three bundles after `src/protein.cyr`
 - **tests/parity.tcyr** (M3 part 1) — `protein::lookup` and the `AMINO_ACIDS` rows run through the ported
   `ry_lookup` / `ry_amino_acid` (M0 answered them from the generated columns), the character decoded from its UTF-8
 - **Performance** (M3 part 1) — chou_fasman 2,437 → 1,839 ns: the window sums pick their table column once, not per
@@ -537,6 +560,13 @@ JSON writers and readers) follow: M1 is complete. M2 part 1 (enzyme), part 2 (me
   the module that ended the list (`src/membrane_data.cyr`), so `src/membrane.cyr` after it left the edit undone, its
   assertion failed unnoticed and both stand-in consumers failed to build. Each stand-in now goes last in its list,
   whichever module ends it, and a failed edit fails the probe
+
+### Performance
+
+- **src/alignment.cyr** (M3 part 2, review) — one clamp per Needleman-Wunsch cell instead of three (the clamp of
+  the max of the exact sums is Rust's max of saturated sums), the row values in locals, pointer steps, and a branchless
+  sign extension: needleman_wunsch_300 917.2 → 571.5 µs, needleman_wunsch_10 1,532 → 1,056 ns (Rust 173.9 µs, 441 ns);
+  substitution_score 23 → 18 ns (Rust 2.3) with the table pick in place; score_alignment 213 → 194 ns (Rust 62)
 
 ## [1.2.0] - 2026-11-16
 

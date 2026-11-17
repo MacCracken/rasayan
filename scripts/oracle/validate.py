@@ -1197,7 +1197,8 @@ EXCUSED = {
 }
 DATA_MODULES = ("protein", "alignment", "enzyme", "membrane", "ai")
 # Table files whose function rows (from their milestone on) a module check covers, not check_tables.
-FUNCTION_ROWS = {"enzyme.tsv", "membrane.tsv", "signal.tsv", "metabolism.tsv", "energy.tsv", "protein.tsv"}
+FUNCTION_ROWS = {"enzyme.tsv", "membrane.tsv", "signal.tsv", "metabolism.tsv", "energy.tsv", "protein.tsv",
+                 "alignment.tsv"}
 
 
 def check_tables(root, tables, rep):
@@ -3655,6 +3656,119 @@ def check_protein(root, rows, extra, rep):
     return per
 
 
+# ── alignment (M3 part 2): score_alignment, Needleman-Wunsch, the serde documents ──
+#
+# Each function is transcribed from alignment.rs (the lines it stands for are pinned below) on the matrices
+# check_tables reads from the same source, with Rust's saturating i32 arithmetic written out. score_alignment compares
+# byte lengths, then zips chars, as Rust does.
+
+ALIGNMENT_TEXT = (
+    "    if seq_a.is_empty() || seq_a.len() != seq_b.len() {\n        return None;\n    }",
+    "    for (a, b) in seq_a.chars().zip(seq_b.chars()) {\n        let s = substitution_score(a, b, matrix)?;\n"
+    "        score = score.saturating_add(i32::from(s));\n        if a.eq_ignore_ascii_case(&b) {\n"
+    "            identities += 1;",
+    "        identity: identities as f64 / len as f64,",
+    "    let (rows, cols) = if a.len() >= b.len() { (a, b) } else { (b, a) };",
+    "    let mut edge = 0i32;\n    prev.push(edge);\n    for _ in &cols {\n"
+    "        edge = edge.saturating_add(gap_penalty);\n        prev.push(edge);",
+    "        curr[0] = prev[0].saturating_add(gap_penalty);",
+    "            let diag = prev[j].saturating_add(i32::from(sub_row[c]));\n"
+    "            let up = prev[j + 1].saturating_add(gap_penalty);\n"
+    "            let left = curr[j].saturating_add(gap_penalty);\n            curr[j + 1] = diag.max(up).max(left);",
+    "    prev.last().copied()",
+)
+I32_MIN, I32_MAX = -(1 << 31), (1 << 31) - 1
+
+
+def sat32(x):
+    return I32_MIN if x < I32_MIN else I32_MAX if x > I32_MAX else x
+
+
+def check_alignment(root, rows, extra, rep):
+    """Every score_alignment / needleman_wunsch / serde row of alignment.tsv against the model; rows per class."""
+    text = (root / "rust-old/src/alignment.rs").read_text()
+    for line in ALIGNMENT_TEXT:
+        if line not in text:
+            rep.fail("rust-old/src/alignment.rs", f"no longer holds the modelled text {line[:60]!r}")
+            return {}
+    order = extra["order"]
+    mats = {v: extra["tables"][c] for v, c in extra["matrix"].items()}
+    index = {c: k for k, c in enumerate(order)}
+
+    def idx(c):
+        return index.get(pr_up(c))
+
+    per = {}
+    for n, fn, cls, ins, outs in rows:
+        where = f"alignment.tsv:{n}"
+        try:
+            if fn == "alignment::score_alignment":
+                a, b = tok_bytes(ins[0]).decode("utf-8"), tok_bytes(ins[1]).decode("utf-8")
+                m = mats[ins[2].split(".", 1)[1]]
+                want = None
+                if a and len(a.encode()) == len(b.encode()):
+                    score, ident = 0, 0
+                    for x, y in zip(a, b):
+                        i, j = idx(x), idx(y)
+                        if i is None or j is None:
+                            break
+                        score = sat32(score + m[i][j])
+                        if pr_up(x) == pr_up(y):
+                            ident += 1
+                    else:
+                        ln = len(a.encode())
+                        want = [f"i:{score}", f"i:{ident}", f"i:{ln}", fbits(ident / ln)]
+                want = want or ["n:"]
+            elif fn == "alignment::needleman_wunsch":
+                a, b = tok_bytes(ins[0]).decode("utf-8"), tok_bytes(ins[1]).decode("utf-8")
+                m = mats[ins[2].split(".", 1)[1]]
+                gap = int(ins[3][2:])
+                ia, ib = [idx(c) for c in a], [idx(c) for c in b]
+                if None in ia or None in ib or not ia or not ib:
+                    want = ["n:"]
+                else:
+                    rws, cols = (ia, ib) if len(ia) >= len(ib) else (ib, ia)
+                    prev = [0]
+                    edge = 0
+                    for _c in cols:
+                        edge = sat32(edge + gap)
+                        prev.append(edge)
+                    for r in rws:
+                        row = m[r]
+                        curr = [sat32(prev[0] + gap)]
+                        for j, c in enumerate(cols):
+                            diag = sat32(prev[j] + row[c])
+                            up = sat32(prev[j + 1] + gap)
+                            left = sat32(curr[j] + gap)
+                            curr.append(max(diag, up, left))
+                        prev = curr
+                    want = [f"i:{prev[-1]}"]
+            elif fn == "serde_json::to_string<Matrix>":
+                v = ins[0].split(".", 1)[1]
+                if v not in mats:
+                    raise ValueError(f"no Matrix::{v}")
+                want = [s_tok(json.dumps(v))]
+            elif fn == "serde_json::to_string<AlignmentScore>":
+                score, ident, ln = (int(x[2:]) for x in ins[:3])
+                want = [s_tok(f'{{"score":{score},"identities":{ident},"length":{ln},'
+                              f'"identity":{json_f64(tok_f(ins[3]))}}}')]
+            else:
+                rep.fail(where, f"{fn}: no model")
+                continue
+        except (ValueError, IndexError, KeyError, UnicodeDecodeError) as e:
+            rep.fail(where, f"{fn}{tuple(x[:40] for x in ins)}: {e}")
+            continue
+        if cls != "A":
+            rep.fail(where, f"{fn}: class {cls}, every alignment row is class A")
+            continue
+        per[cls] = per.get(cls, 0) + 1
+        if same_toks(outs, want):
+            rep.ok()
+        else:
+            rep.fail(where, f"{fn}{tuple(x[:40] for x in ins)}: golden {outs}, model {want}")
+    return per
+
+
 def main():
     root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
     rep = Report()
@@ -3696,6 +3810,8 @@ def main():
                  "protein::CHOU_FASMAN", "protein::lookup"}
     pr_rows = [r for r in tables.get("protein.tsv", []) if r[1] not in pr_tables]
     pr_per = check_protein(root, pr_rows, extras.get("protein", {}), rep)
+    al_rows = [r for r in tables.get("alignment.tsv", []) if r[1] != "alignment::substitution_score"]
+    al_per = check_alignment(root, al_rows, extras.get("alignment", {}), rep)
     total = sum(len(v) for v in tables.values())
     n_items, n_excused = extras.get("_counts", (0, 0))
     print(f"files: {len(files)}; rows: {total}; math classes: {dict(sorted(counts.items()))}")
@@ -3723,10 +3839,11 @@ def main():
     print(f"energy: {sum(en_per.values())} function, method, sharira, trajectory and serde rows "
           f"{dict(sorted(en_per.items()))}")
     print(f"protein: {sum(pr_per.values())} function and serde rows {dict(sorted(pr_per.items()))}")
+    print(f"alignment: {sum(al_per.values())} score, Needleman-Wunsch and serde rows {dict(sorted(al_per.items()))}")
     print(
         f"independently checked: {rep.checked} (constants, src/constants.cyr, math classes A and B, the table rows, "
         f"every cell of the generated data files, every class-C math row against MPFR, guard, integrate and its "
-        f"corrections, logging, json, enzyme, membrane, signal, metabolism, energy, protein)"
+        f"corrections, logging, json, enzyme, membrane, signal, metabolism, energy, protein, alignment)"
     )
     print(f"FAILURES: {rep.failures}")
     return 1 if rep.failures else 0

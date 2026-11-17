@@ -6,12 +6,12 @@
 > milestone hasn't come. The golden corpus (`tests/golden/`) checks every ported function on its grid besides.
 > The 2 doc tests and the example are M9's.
 
-**723 Rust tests:** 286 ported; 61 at M3, 53 at M4a, 80 at M4b, 38 at M5, 108 at M6, 62 at M7, 35 at M8.
+**723 Rust tests:** 307 ported; 40 at M3, 53 at M4a, 80 at M4b, 38 at M5, 108 at M6, 62 at M7, 35 at M8.
 
 | Rust file | Tests | Ported | Due, unported | Later (milestone) |
 |---|---:|---:|---:|---|
 | `src/ai.rs` | 4 | 0 | 0 | 4 (M8) |
-| `src/alignment.rs` | 19 | 0 | 0 | 19 (M3) |
+| `src/alignment.rs` | 19 | 19 | 0 | — |
 | `src/amino_catabolism.rs` | 23 | 0 | 0 | 23 (M4b) |
 | `src/beta_oxidation.rs` | 23 | 0 | 0 | 23 (M4b) |
 | `src/calcium.rs` | 17 | 0 | 0 | 17 (M6) |
@@ -38,14 +38,33 @@
 | `src/signal.rs` | 21 | 21 | 0 | — |
 | `src/signaling.rs` | 13 | 0 | 0 | 13 (M6) |
 | `src/tca.rs` | 26 | 0 | 0 | 26 (M4a) |
-| `tests/integration.rs` | 70 | 32 | 0 | 1 (M3), 2 (M4a), 10 (M4b), 4 (M5), 15 (M6), 6 (M7) |
-| `tests/validation.rs` | 25 | 24 | 0 | 1 (M3) |
-| **Total** | **723** | **286** | **0** | |
+| `tests/integration.rs` | 70 | 33 | 0 | 2 (M4a), 10 (M4b), 4 (M5), 15 (M6), 6 (M7) |
+| `tests/validation.rs` | 25 | 25 | 0 | — |
+| **Total** | **723** | **307** | **0** | |
 
 ## Where each is ported
 
 | Rust test | Cyrius test |
 |---|---|
+| `src/alignment.rs` `test_blosum62_diagonal_positive` | `tests/alignment.tcyr` `matrices` |
+| `src/alignment.rs` `test_blosum62_known_values` | `tests/alignment.tcyr` `matrices` |
+| `src/alignment.rs` `test_blosum62_symmetric` | `tests/alignment.tcyr` `matrices` |
+| `src/alignment.rs` `test_lowercase` | `tests/alignment.tcyr` `matrices` |
+| `src/alignment.rs` `test_needleman_wunsch_empty` | `tests/alignment.tcyr` `needleman_wunsch` |
+| `src/alignment.rs` `test_needleman_wunsch_extreme_gap_saturates` | `tests/alignment.tcyr` `needleman_wunsch` |
+| `src/alignment.rs` `test_needleman_wunsch_identical` | `tests/alignment.tcyr` `needleman_wunsch` |
+| `src/alignment.rs` `test_needleman_wunsch_matches_full_table` | `tests/alignment.tcyr` `needleman_wunsch` |
+| `src/alignment.rs` `test_needleman_wunsch_unknown` | `tests/alignment.tcyr` `needleman_wunsch` |
+| `src/alignment.rs` `test_needleman_wunsch_with_gap` | `tests/alignment.tcyr` `needleman_wunsch` |
+| `src/alignment.rs` `test_pam250_known_values` | `tests/alignment.tcyr` `matrices` |
+| `src/alignment.rs` `test_pam250_symmetric` | `tests/alignment.tcyr` `matrices` |
+| `src/alignment.rs` `test_score_alignment_different` | `tests/alignment.tcyr` `scoring` |
+| `src/alignment.rs` `test_score_alignment_empty` | `tests/alignment.tcyr` `scoring` |
+| `src/alignment.rs` `test_score_alignment_identical` | `tests/alignment.tcyr` `scoring` |
+| `src/alignment.rs` `test_score_alignment_length_mismatch` | `tests/alignment.tcyr` `scoring` |
+| `src/alignment.rs` `test_score_alignment_saturates` | `tests/alignment.tcyr` `scoring` |
+| `src/alignment.rs` `test_score_alignment_unknown` | `tests/alignment.tcyr` `scoring` |
+| `src/alignment.rs` `test_unknown_residue` | `tests/alignment.tcyr` `matrices` |
 | `src/energy.rs` `test_atp_demand_from_power` | `tests/energy.tcyr` `bridges` |
 | `src/energy.rs` `test_atp_demand_units_and_sanitizing` | `tests/energy.tcyr` `bridges` |
 | `src/energy.rs` `test_atp_demand_zero_power` | `tests/energy.tcyr` `bridges` |
@@ -276,6 +295,7 @@
 | `src/signal.rs` `test_validate_out_of_range` | `tests/signal.tcyr` `validation` |
 | `src/signal.rs` `test_validate_rejects_non_finite` | `tests/signal.tcyr` `validation` |
 | `src/signal.rs` `test_validate_valid` | `tests/signal.tcyr` `validation` |
+| `tests/integration.rs` `test_alignment_score_serialize` | `tests/alignment.tcyr` `serde` |
 | `tests/integration.rs` `test_all_defaults_validate` | `tests/energy.tcyr` `hardening` |
 | `tests/integration.rs` `test_amino_acid_serialize` | `tests/protein.tcyr` `serde` |
 | `tests/integration.rs` `test_arrhenius_temperature_sensitivity` | `tests/enzyme.tcyr` `temperature` |
@@ -309,6 +329,7 @@
 | `tests/integration.rs` `test_reversible_haldane_consistency` | `tests/enzyme.tcyr` `reversible` |
 | `tests/integration.rs` `test_second_messenger_serde_roundtrip` | `tests/signal.tcyr` `serde` |
 | `tests/validation.rs` `validate_arrhenius_temperature_sensitivity` | `tests/enzyme.tcyr` `temperature` |
+| `tests/validation.rs` `validate_blosum62_known_entries` | `tests/alignment.tcyr` `matrices` |
 | `tests/validation.rs` `validate_competitive_inhibition_malonate` | `tests/enzyme.tcyr` `reference_values` |
 | `tests/validation.rs` `validate_competitive_inhibition_zero_inhibitor_equals_mm` | `tests/enzyme.tcyr` `reference_values` |
 | `tests/validation.rs` `validate_enzyme_db_carbonic_anhydrase` | `tests/enzyme.tcyr` `database` |
