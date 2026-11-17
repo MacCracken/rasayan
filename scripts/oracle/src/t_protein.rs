@@ -942,5 +942,6 @@ pub fn golden(src: &Source) -> Result<Module, String> {
             _ => {}
         }
     }
+    crate::m_protein::rows(&mut m);
     Ok(m)
 }

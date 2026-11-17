@@ -5,7 +5,8 @@
 # truncations, case flips). M1: RASAYAN_LOG, which comes from the environment, and the JSON readers (part 3b: a
 # document parsed on an arena reset per input, then read as an all-f64 struct, a [f64; 5], a string and an integer).
 # The sequence readers and each type's codec join with their milestones: M2 part 2, IonicState's and
-# MembranePermeability's; part 3, SecondMessenger's; part 4, MetabolicState's; part 5, BioenergyState's.
+# MembranePermeability's; part 3, SecondMessenger's; part 4, MetabolicState's; part 5, BioenergyState's. M3 part 1:
+# every protein function on the input as a sequence.
 
 include "src/constants.cyr"
 include "src/constants_private.cyr"
@@ -27,6 +28,8 @@ include "src/metabolism_data.cyr"
 include "src/metabolism.cyr"
 include "src/energy_data.cyr"
 include "src/energy.cyr"
+include "src/protein_data.cyr"
+include "src/protein.cyr"
 
 var _fz_state = 0x2545F4914F6CDD1D;
 var _fz_bad = 0;
@@ -36,6 +39,7 @@ var _fz_arena = 0;
 var _fz_json_read = 0;
 var _fz_codec_read = 0;
 var _fz_sb = 0;
+var _fz_protein = 0;
 
 # xorshift64*: the next pseudo-random word.
 fn fz_next(): i64 {
@@ -212,6 +216,51 @@ fn fuzz_membrane(data, len) {
     return 0;
 }
 
+# The protein functions on one input as a sequence: any outcome is fine, but a weight is finite and positive, the
+# composition has at most 26 letters and no more counts than bytes, the net charge at pH 7 is finite, a pI is in
+# [0, 14] for every set, an extinction coefficient is oxidized >= reduced >= 0, and a Chou-Fasman prediction has one
+# value in 0 .. 3 per byte or none.
+fn fuzz_protein(data, len) {
+    var w: f64 = 0.0;
+    if (ry_molecular_weight(data, len, &w) == 1 && (_ry_is_finite(w) == 0 || w <= 0.0)) { _fz_bad = _fz_bad + 1; }
+    var pairs[416];
+    var tc, nc = ry_composition(data, len, &pairs, 26);
+    var total = 0;
+    var k = 0;
+    while (k < nc) {
+        total = total + load64(&pairs + 16 * k + 8);
+        k = k + 1;
+    }
+    if (is_ok(tc) == 0 || nc > 26 || total > len) { _fz_bad = _fz_bad + 1; }
+    var z: f64 = ry_net_charge(data, len, 7.0);
+    if (_ry_is_finite(z) == 0) { _fz_bad = _fz_bad + 1; }
+    var set = 0;
+    while (set < RY_PKA_SET_COUNT) {
+        var pi: f64 = 0.0;
+        if (ry_isoelectric_point_with(data, len, set, &pi) == 1) {
+            _fz_protein = _fz_protein + 1;
+            if (pi < 0.0 || pi > 14.0) { _fz_bad = _fz_bad + 1; }
+        }
+        set = set + 1;
+    }
+    var ec: RyExtinctionCoefficient;
+    if (ry_extinction_coefficient(data, len, &ec) == 1) {
+        var ox: f64 = ec.oxidized;
+        var red: f64 = ec.reduced;
+        if (ox < red || red < 0.0) { _fz_bad = _fz_bad + 1; }
+    }
+    reset_via(_fz_arena);
+    var ss = alloc(len + 1);
+    var tf, nf = ry_chou_fasman_a(_fz_arena, data, len, ss, len);
+    if (is_ok(tf) == 0 || (nf != 0 && nf != len)) { _fz_bad = _fz_bad + 1; }
+    k = 0;
+    while (k < nf) {
+        if (load8(ss + k) > RY_SECONDARY_STRUCTURE_COIL) { _fz_bad = _fz_bad + 1; }
+        k = k + 1;
+    }
+    return 0;
+}
+
 # Copies seed `s` into buf and applies up to three random edits. Returns the new length.
 fn fz_mutate(buf, cap, s): i64 {
     var n = strlen(s);
@@ -253,7 +302,7 @@ fn main() {
     var buf = alloc(cap + 1);
     _fz_arena = arena_allocator_growable(65536);
     _fz_sb = str_builder_new();
-    var seeds = alloc(8 * 29);
+    var seeds = alloc(8 * 33);
     store64(seeds, "trace");
     store64(seeds + 8, "DEBUG");
     store64(seeds + 16, "info,warn");
@@ -283,6 +332,10 @@ fn main() {
     store64(seeds + 208, "{\"camp\":0.1,\"calcium\":0.05,\"ip3\":0.05}");
     store64(seeds + 216, "{\"atp\":6,\"adp\":0.5,\"nad_ratio\":700,\"glucose\":5,\"oxygen\":1,\"lactate\":1}");
     store64(seeds + 224, "{\"phosphocreatine\":0.9,\"glycogen\":0.8,\"met\":1,\"anaerobic_threshold\":6}");
+    store64(seeds + 232, "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG");
+    store64(seeds + 240, "ACDEFGHIKLMNPQRSTVWY");
+    store64(seeds + 248, "AAAAAELLLLVVVIIYNGPS");
+    store64(seeds + 256, "acdkAAAAAAPAAANPDGvvvvv");
     var i = 0;
     while (i < 50000) {
         var n = 0;
@@ -291,11 +344,12 @@ fn main() {
             var k = 0;
             while (k < n) { store8(buf + k, fz_below(256)); k = k + 1; }
         } else {
-            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(29)));
+            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(33)));
         }
         fuzz_main(buf, n);
         fuzz_json(buf, n);
         fuzz_membrane(buf, n);
+        fuzz_protein(buf, n);
         i = i + 1;
     }
     if (_fz_bad != 0) {
@@ -309,6 +363,8 @@ fn main() {
     fmt_int(_fz_json_read);
     print(", as one of the five struct codecs, written and read back: ", 59);
     fmt_int(_fz_codec_read);
+    print(", isoelectric points defined: ", 30);
+    fmt_int(_fz_protein);
     println(")");
     return 0;
 }

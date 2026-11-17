@@ -38,6 +38,8 @@ include "src/metabolism_data.cyr"
 include "src/metabolism.cyr"
 include "src/energy_data.cyr"
 include "src/energy.cyr"
+include "src/protein_data.cyr"
+include "src/protein.cyr"
 
 # Keeps the loops' results observable.
 var _bn_sink = 0;
@@ -548,6 +550,64 @@ fn _bn_en(name, kind, n): i64 {
     return 0;
 }
 
+# ── M3 part 1: protein, the Rust benches' twins (the same inputs) ──
+
+# n calls of protein benchmark `kind` on the 20-residue alphabet (Chou-Fasman on Rust's own 20-residue peptide), its
+# result kept: 0 lookup('W'), 1 molecular_weight, 2 isoelectric_point, 3 isoelectric_point_with Bjellqvist,
+# 4 extinction_coefficient, 5 chou_fasman, 6 net_charge at 7, 7 composition.
+fn _bn_protein(kind, n): i64 {
+    var seq = "ACDEFGHIKLMNPQRSTVWY";
+    var cf = "AAAAAELLLLVVVIIYNGPS";
+    var arena = arena_allocator_growable(4096);
+    var ss[32];
+    var pairs[416];
+    var ec: RyExtinctionCoefficient;
+    var x: f64 = 0.0;
+    var s: f64 = 0.0;
+    var hits = 0;
+    var i = 0;
+    while (i < n) {
+        if (kind == 0) {
+            hits = hits + ry_lookup(87);
+        } elif (kind == 1) {
+            hits = hits + ry_molecular_weight(seq, 20, &x);
+            s = s + x;
+        } elif (kind == 2) {
+            hits = hits + ry_isoelectric_point(seq, 20, &x);
+            s = s + x;
+        } elif (kind == 3) {
+            hits = hits + ry_isoelectric_point_with(seq, 20, RY_PKA_SET_BJELLQVIST, &x);
+            s = s + x;
+        } elif (kind == 4) {
+            hits = hits + ry_extinction_coefficient(seq, 20, &ec);
+        } elif (kind == 5) {
+            reset_via(arena);
+            var t5, v5 = ry_chou_fasman_a(arena, cf, 20, &ss, 32);
+            hits = hits + v5;
+        } elif (kind == 6) {
+            var z: f64 = ry_net_charge(seq, 20, 7.0);
+            s = s + z;
+        } else {
+            var t7, v7 = ry_composition(seq, 20, &pairs, 26);
+            hits = hits + v7;
+        }
+        i = i + 1;
+    }
+    _bn_keep(s);
+    _bn_sink = _bn_sink ^ hits;
+    return 0;
+}
+
+# One protein benchmark of `n` calls.
+fn _bn_prot(name, kind, n): i64 {
+    var b = bench_new(name);
+    bench_batch_start(b);
+    _bn_protein(kind, n);
+    bench_batch_stop(b, n);
+    bench_report(b);
+    return 0;
+}
+
 # One benchmark of the JSON writers: `kind` 0 the serde_json f64 form, 1 the Display form, 2 a ten-field document.
 fn _bn_json(name, kind, n): i64 {
     var b = bench_new(name);
@@ -625,6 +685,14 @@ fn main(): i64 {
     _bn_en("bioenergy_tick", 0, 1000000);
     _bn_en("energy/met_from_power", 1, 1000000);
     _bn_en("energy/tick 12 MET dt 0.5", 2, 1000000);
+    _bn_prot("protein_lookup", 0, 1000000);
+    _bn_prot("molecular_weight", 1, 1000000);
+    _bn_prot("isoelectric_point", 2, 20000);
+    _bn_prot("isoelectric_point_bjellqvist", 3, 20000);
+    _bn_prot("extinction_coefficient", 4, 1000000);
+    _bn_prot("chou_fasman", 5, 200000);
+    _bn_prot("net_charge", 6, 200000);
+    _bn_prot("composition", 7, 1000000);
     var br = bench_new("json/read MembranePermeability (3 f64)");
     bench_batch_start(br);
     _bn_read("{\"p_na\":0.04,\"p_k\":1.0,\"p_cl\":0.45}", 3, "p_na\0p_k\0p_cl\0", 100000);

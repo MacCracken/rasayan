@@ -38,6 +38,7 @@ mod m_logging;
 mod m_math;
 mod m_membrane;
 mod m_metabolism;
+mod m_protein;
 mod m_signal;
 mod rustsrc;
 mod t_ai;

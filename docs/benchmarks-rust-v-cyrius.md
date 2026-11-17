@@ -104,3 +104,19 @@ Cyrius only:
 Measured with the machine quiet (load below 1.5; the reference rows, michaelis_menten 12 ns and nernst 79 ns, as
 before). The rest of the tick's gap is the same helper calls as metabolism's (`_ry_guard_conc`, `_ry_guard_unit`,
 `_ry_max`, the guards; M2 part 4).
+
+## M3 part 1: protein
+
+| Benchmark | Rust 1.2.0 (ns) | Cyrius (ns) | Before review (ns) | Notes |
+|---|---|---|---|---|
+| protein_lookup | 3.38 | 6 | 6 | `'W'` through the 26-entry index |
+| molecular_weight | 23.10 | 153 | 153 | 20 residues: a lookup call per byte |
+| isoelectric_point | 1,807.8 | 18,279 | 18,279 | 14 halvings × up to 9 correctly rounded `pow` (~140 ns each, ADR 0003) |
+| isoelectric_point_bjellqvist | 1,812.1 | 18,335 | 18,335 | the same, plus the terminal scan |
+| extinction_coefficient | 30.51 | 167 | 167 | a lookup call per byte |
+| chou_fasman | 298.31 | 1,839 | 2,437 | Rust's 20-residue peptide; the window sums now pick their column once |
+| net_charge | 143.37 | 1,636 | 1,636 | nine `pow` |
+| composition | 292.31 | 499 | 499 | |
+
+Measured with the machine quiet (load below 1; the reference rows as before).
+

@@ -21,14 +21,17 @@ enum RyError {
     # Cyrius only, from here (M1 part 3).
     RY_ERR_DESERIALIZE = 6;
     RY_ERR_OUT_OF_MEMORY = 7;
+    # M3 part 1: a caller buffer too small for a `Vec` result (ADR 0002 row 3).
+    RY_ERR_BUFFER_TOO_SMALL = 8;
 }
 
 # The number of codes, RY_ERR_NONE included: every code is in 0 .. RY_ERR_COUNT - 1.
-const RY_ERR_COUNT = 8;
+const RY_ERR_COUNT = 9;
 
 # The name of an error code: Rust 1.2.0's variant name (`"NonFinite"`) for the codes that mirror one, `"Deserialize"`
 # for the JSON readers' code (Rust's serde_json::Error), `"OutOfMemory"` for a refused allocation (where Rust aborts
-# the process), `"None"` for RY_ERR_NONE, and `"Unknown"` for a value that is no code.
+# the process), `"BufferTooSmall"` for a caller buffer too small for a result Rust returns as a `Vec`, `"None"` for
+# RY_ERR_NONE, and `"Unknown"` for a value that is no code.
 #must_use
 #pure
 fn ry_error_name(code): cstring {
@@ -41,6 +44,7 @@ fn ry_error_name(code): cstring {
         RY_ERR_NON_FINITE => { return "NonFinite"; }
         RY_ERR_DESERIALIZE => { return "Deserialize"; }
         RY_ERR_OUT_OF_MEMORY => { return "OutOfMemory"; }
+        RY_ERR_BUFFER_TOO_SMALL => { return "BufferTooSmall"; }
         _ => { return "Unknown"; }
     }
     return "Unknown";
@@ -61,6 +65,7 @@ fn ry_error_message(code): cstring {
         RY_ERR_NON_FINITE => { return "non-finite value"; }
         RY_ERR_DESERIALIZE => { return "malformed JSON document"; }
         RY_ERR_OUT_OF_MEMORY => { return "an allocation was refused"; }
+        RY_ERR_BUFFER_TOO_SMALL => { return "the result buffer is too small"; }
         _ => { return "unknown error"; }
     }
     return "unknown error";

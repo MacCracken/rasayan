@@ -31,10 +31,10 @@ root = Path(sys.argv[1]).resolve()
 
 # The modules whose milestone has come.
 PORTED = ["constants", "error", "guard", "integrate", "logging", "enzyme", "membrane", "signal", "metabolism",
-          "energy"]
+          "energy", "protein"]
 # The rest, with their milestone (port plan §3.1).
 SCHEDULED = {
-    "protein": "M3", "alignment": "M3", "ptm": "M3", "domain": "M3",
+    "alignment": "M3", "ptm": "M3", "domain": "M3",
     "glycolysis": "M4a", "tca": "M4a", "etc": "M4b", "beta_oxidation": "M4b", "amino_catabolism": "M4b",
     "pathway": "M5",
     "mapk": "M6", "pi3k": "M6", "jak_stat": "M6", "calcium": "M6", "receptor": "M6", "nuclear_receptor": "M6",
@@ -58,12 +58,18 @@ TYPES = {
     "SecondMessenger": ("RySecondMessenger", "second_messenger"),
     "MetabolicState": ("RyMetabolicState", "metabolic_state"),
     "BioenergyState": ("RyBioenergyState", "bioenergy_state"),
+    "AminoAcid": ("RyAminoAcid", "amino_acid"),
+    "PkaSet": ("RyPkaSet", "pka_set"),
+    "ExtinctionCoefficient": ("RyExtinctionCoefficient", "extinction_coefficient"),
+    "SecondaryStructure": ("RySecondaryStructure", "secondary_structure"),
 }
 # Rust item -> the Cyrius names that carry it ("fn x", "const X", "enum X", "struct X"), where the rules give none.
 MAPPED = {
     "error::RasayanError: Display": ["fn ry_error_message", "fn ry_error_name"],
     # A table const: its generated count and the accessor that fills one entry (ADR 0002 row 10).
     "enzyme::const KNOWN_ENZYMES": ["const RY_KNOWN_ENZYME_COUNT", "fn ry_known_enzyme"],
+    # The amino-acid table: its generated count and the accessor that fills one entry (ADR 0002 row 10).
+    "protein::const AMINO_ACIDS": ["const RY_AMINO_ACID_COUNT", "fn ry_amino_acid"],
     # A struct const: one generated f64 const per field, and the Default that fills a struct from them.
     "membrane::const DEFAULT_PERMEABILITY": [
         "const RY_MEMBRANE_DEFAULT_PERMEABILITY_P_NA", "const RY_MEMBRANE_DEFAULT_PERMEABILITY_P_K",

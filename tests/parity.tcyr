@@ -68,6 +68,7 @@ include "src/membrane.cyr"
 include "src/signal.cyr"
 include "src/metabolism.cyr"
 include "src/energy.cyr"
+include "src/protein.cyr"
 
 alloc_init();
 
@@ -388,19 +389,21 @@ fn _par_tables_init(): i64 {
 # src/protein_data.cyr. The module's functions (pI, charge, Chou-Fasman, ...) arrive at M3; their rows are pending.
 
 # AMINO_ACIDS[r]'s fields in AminoAcid's declaration order: code, abbreviation, name, mw, hydrophobicity and the
-# Option<f64> side-chain pKa. -1 when r's abbreviation is not the one its index constant is named after.
+# Entry r of the amino-acid table through the ported accessor (ry_amino_acid), its key checked against the table the
+# harness indexed: code, abbr, name, mw, hydrophobicity, then the side chain's pKa or None.
 fn _par_fill_amino(r): i64 {
-    var abbr = _par_blob(&_RY_AMINO_ACID_ABBR_BYTES, _RY_AMINO_ACID_ABBR_OFF[r]);
-    if (_par_tab_agrees(_par_tab_amino, r, abbr) != 1) { return 0 - 1; }
-    _par_got_char(RY_AMINO_ACID_CODE[r]);
-    _par_got_cstr(abbr);
-    _par_got_cstr(_par_blob(&_RY_AMINO_ACID_NAME_BYTES, _RY_AMINO_ACID_NAME_OFF[r]));
-    var x: f64 = RY_AMINO_ACID_MW[r];
+    var aa: RyAminoAcid;
+    if (ry_amino_acid(r, &aa) != 1) { return 0 - 1; }
+    if (_par_tab_agrees(_par_tab_amino, r, aa.abbr) != 1) { return 0 - 1; }
+    _par_got_char(aa.code);
+    _par_got_cstr(aa.abbr);
+    _par_got_cstr(aa.name);
+    var x: f64 = aa.mw;
     _par_got_f(x);
-    x = RY_AMINO_ACID_HYDROPHOBICITY[r];
+    x = aa.hydrophobicity;
     _par_got_f(x);
-    if (RY_AMINO_ACID_HAS_SIDE_CHAIN_PKA[r] != 0) {
-        x = RY_AMINO_ACID_SIDE_CHAIN_PKA[r];
+    if (aa.has_side_chain_pka != 0) {
+        x = aa.side_chain_pka;
         _par_got_f(x);
     } else {
         _par_got_none();
@@ -408,19 +411,37 @@ fn _par_fill_amino(r): i64 {
     return 1;
 }
 
-# `protein::lookup(code)`: Rust's rule on the generated index — ASCII uppercase, then `'A'..='Z'` through
-# LOOKUP_INDEX into AMINO_ACIDS, None off the alphabet or at NO_RESIDUE.
+# Input token k as one Rust `char`: its Unicode scalar value, decoded from the token's UTF-8; -1 for no `s:` token or
+# not exactly one character.
+fn _par_in_codepoint(k): i64 {
+    var lw[8];
+    var p = _par_in_bytes(k, &lw);
+    if (p == 0) { return 0 - 1; }
+    var n = load64(&lw);
+    if (n == 0) { return 0 - 1; }
+    var b0 = load8(p);
+    var want = 1;
+    var cp = b0;
+    if (b0 >= 240) { want = 4; cp = b0 & 7; }
+    elif (b0 >= 224) { want = 3; cp = b0 & 15; }
+    elif (b0 >= 192) { want = 2; cp = b0 & 31; }
+    elif (b0 >= 128) { return 0 - 1; }
+    if (n != want) { return 0 - 1; }
+    var j = 1;
+    while (j < n) {
+        cp = (cp << 6) | (load8(p + j) & 63);
+        j = j + 1;
+    }
+    return cp;
+}
+
+# `protein::lookup(code)` through ry_lookup: the entry, or None.
 fn _par_protein_lookup(): i64 {
     if (_par_in_n != 1) { return 0 - 1; }
-    var c = _par_in_char(0);
+    var c = _par_in_codepoint(0);
     if (c < 0) { return 0 - 1; }
-    if (c >= 97 && c <= 122) { c = c - 32; }
-    if (c < 65 || c > 90) {
-        _par_got_none();
-        return 1;
-    }
-    var slot = _RY_PROTEIN_LOOKUP_INDEX[c - 65];
-    if (slot >= RY_AMINO_ACID_COUNT) {
+    var slot = ry_lookup(c);
+    if (slot < 0) {
         _par_got_none();
         return 1;
     }
@@ -534,6 +555,204 @@ fn _par_protein(fp, fl): i64 {
         var r = _par_in_index(0, _RY_PROTEIN_CHOU_FASMAN_COUNT);
         if (r < 0) { return 0 - 1; }
         return _par_fill_chou_fasman(r);
+    }
+    return _par_protein_fn(fp, fl);
+}
+
+# Input token k as a PkaSet (`e:PkaSet.<Variant>`): its RyPkaSet value, by the port's own names; -1 otherwise.
+fn _par_pka_set(k): i64 {
+    if (k >= _par_in_n || load64(_par_in_k + 8 * k) != 101) { return 0 - 1; }
+    var p = load64(_par_in_v + 8 * k);
+    var l = load64(_par_in_l + 8 * k);
+    if (l < 8 || memeq(p, "PkaSet.", 7) != 1) { return 0 - 1; }
+    var s = 0;
+    while (s < RY_PKA_SET_COUNT) {
+        if (_par_eq(p + 7, l - 7, ry_pka_set_name(s)) == 1) { return s; }
+        s = s + 1;
+    }
+    return 0 - 1;
+}
+
+# Appends an Option<f64> result: the value when found is 1, else None.
+fn _par_got_opt_f(found, x: f64) {
+    if (found == 1) {
+        _par_got_f(x);
+    } else {
+        _par_got_none();
+    }
+    return 0;
+}
+
+# The protein function rows (M3 part 1): src/protein.cyr. A sequence is input 0's bytes.
+fn _par_protein_fn(fp, fl): i64 {
+    if (_par_eq(fp, fl, "protein::PkaSet::default") == 1) {
+        _par_got_e("PkaSet.Lehninger");
+        if (ry_pka_set_default() != RY_PKA_SET_LEHNINGER) { return 0 - 1; }
+        return 1;
+    }
+    if (_par_eq(fp, fl, "protein::try_lookup") == 1) {
+        if (_par_in_n != 1) { return 0 - 1; }
+        var c = _par_in_codepoint(0);
+        if (c < 0) { return 0 - 1; }
+        var t, v = ry_try_lookup(c);
+        if (is_err_result(t) == 1) {
+            _par_got_err(v);
+            return 1;
+        }
+        return _par_fill_amino(v);
+    }
+    var lw[8];
+    var seq = _par_in_bytes(0, &lw);
+    var n = load64(&lw);
+    var out: f64 = 0.0;
+    if (_par_eq(fp, fl, "protein::molecular_weight") == 1 && _par_in_n == 1) {
+        if (seq == 0) { return 0 - 1; }
+        var f1 = ry_molecular_weight(seq, n, &out);
+        _par_got_opt_f(f1, out);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "protein::isoelectric_point") == 1 && _par_in_n == 1) {
+        if (seq == 0) { return 0 - 1; }
+        var f2 = ry_isoelectric_point(seq, n, &out);
+        _par_got_opt_f(f2, out);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "protein::isoelectric_point_with") == 1 && _par_in_n == 2) {
+        var set = _par_pka_set(1);
+        if (seq == 0 || set < 0) { return 0 - 1; }
+        var f3 = ry_isoelectric_point_with(seq, n, set, &out);
+        _par_got_opt_f(f3, out);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "protein::net_charge") == 1 && _par_in_n == 2 && _par_is_f(1) == 1) {
+        if (seq == 0) { return 0 - 1; }
+        var z: f64 = ry_net_charge(seq, n, _par_f(1));
+        _par_got_f(z);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "protein::net_charge_with") == 1 && _par_in_n == 3 && _par_is_f(1) == 1) {
+        var s2 = _par_pka_set(2);
+        if (seq == 0 || s2 < 0) { return 0 - 1; }
+        var z2: f64 = ry_net_charge_with(seq, n, _par_f(1), s2);
+        _par_got_f(z2);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "protein::extinction_coefficient") == 1 && _par_in_n == 1) {
+        if (seq == 0) { return 0 - 1; }
+        var ec: RyExtinctionCoefficient;
+        if (ry_extinction_coefficient(seq, n, &ec) == 1) {
+            _par_got_fields(&ec, 2);
+        } else {
+            _par_got_none();
+        }
+        return 1;
+    }
+    if (_par_eq(fp, fl, "protein::composition") == 1 && _par_in_n == 1) {
+        if (seq == 0) { return 0 - 1; }
+        var pairs[416];
+        var tc, count = ry_composition(seq, n, &pairs, 26);
+        if (is_err_result(tc) == 1) { return 0 - 1; }
+        # A buffer one pair short of the answer is refused, and nothing is written into it.
+        if (count > 0) {
+            var small[416];
+            store64(&small, 0x5A5A5A5A);
+            var ts, vs = ry_composition(seq, n, &small, count - 1);
+            if (is_err_result(ts) == 0 || vs != RY_ERR_BUFFER_TOO_SMALL) { return 0 - 1; }
+            if (load64(&small) != 0x5A5A5A5A) { return 0 - 1; }
+        }
+        _par_got_seq(count);
+        var k = 0;
+        while (k < count) {
+            _par_got_char(load64(&pairs + 16 * k));
+            _par_got_i(load64(&pairs + 16 * k + 8));
+            k = k + 1;
+        }
+        return 1;
+    }
+    if (_par_eq(fp, fl, "protein::chou_fasman") == 1 && _par_in_n == 1) {
+        if (seq == 0) { return 0 - 1; }
+        var ss = alloc(n + 1);
+        var tf, count2 = ry_chou_fasman_a(_par_cf_arena(), seq, n, ss, n);
+        if (is_err_result(tf) == 1) { return 0 - 1; }
+        if (count2 == 0) {
+            _par_got_none();
+            return 1;
+        }
+        # A buffer one byte short is refused.
+        var tq, vq = ry_chou_fasman_a(_par_cf_arena(), seq, n, ss, n - 1);
+        if (is_err_result(tq) == 0 || vq != RY_ERR_BUFFER_TOO_SMALL) { return 0 - 1; }
+        var k2 = 0;
+        while (k2 < count2) {
+            var x = load8(ss + k2);
+            var letter = 67;
+            if (x == RY_SECONDARY_STRUCTURE_HELIX) { letter = 72; }
+            elif (x == RY_SECONDARY_STRUCTURE_SHEET) { letter = 69; }
+            elif (x == RY_SECONDARY_STRUCTURE_TURN) { letter = 84; }
+            elif (x != RY_SECONDARY_STRUCTURE_COIL) { return 0 - 1; }
+            store8(ss + k2, letter);
+            k2 = k2 + 1;
+        }
+        _par_got_text(ss, count2);
+        return 1;
+    }
+    return _par_protein_json(fp, fl);
+}
+
+# The Chou-Fasman rows' scratch arena, reset per call.
+var _par_cf_a = 0;
+fn _par_cf_arena(): i64 {
+    if (_par_cf_a == 0) { _par_cf_a = arena_allocator_growable(65536); }
+    reset_via(_par_cf_a);
+    return _par_cf_a;
+}
+
+# The serde rows of PkaSet, AminoAcid and ExtinctionCoefficient.
+fn _par_protein_json(fp, fl): i64 {
+    if (_par_jsb == 0) { _par_jsb = str_builder_new(); }
+    var sb = _par_jsb;
+    store64(sb + 8, 0);
+    if (_par_eq(fp, fl, "serde_json::to_string<PkaSet>") == 1) {
+        var set = _par_pka_set(0);
+        if (set < 0) { return 0 - 1; }
+        var t1, v1 = ry_pka_set_to_json(sb, set);
+        if (is_err_result(t1) == 1) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::to_string<AminoAcid>") == 1) {
+        var aa: RyAminoAcid;
+        if (ry_amino_acid(_par_in_index(0, RY_AMINO_ACID_COUNT), &aa) != 1) { return 0 - 1; }
+        var t2, v2 = ry_amino_acid_to_json(sb, &aa);
+        if (is_err_result(t2) == 1) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::to_string<SecondaryStructure>") == 1) {
+        if (_par_in_n != 1 || load64(_par_in_k) != 101) { return 0 - 1; }
+        var ep = load64(_par_in_v);
+        var el = load64(_par_in_l);
+        var x = 0;
+        var which = 0 - 1;
+        while (x < 4) {
+            var nm = ry_secondary_structure_name(x);
+            var nl = strlen(nm);
+            var named = el == 19 + nl && memeq(ep, "SecondaryStructure.", 19) == 1;
+            if (named && memeq(ep + 19, nm, nl) == 1) { which = x; }
+            x = x + 1;
+        }
+        if (which < 0) { return 0 - 1; }
+        var t4, v4 = ry_secondary_structure_to_json(sb, which);
+        if (is_err_result(t4) == 1) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::to_string<ExtinctionCoefficient>") == 1 && _par_all_f(2) == 1) {
+        var ec: RyExtinctionCoefficient;
+        _par_fields_in(0, &ec, 2);
+        var t3, v3 = ry_extinction_coefficient_to_json(sb, &ec);
+        if (is_err_result(t3) == 1) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
     }
     return 0;
 }
@@ -1952,6 +2171,10 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "metabolism::MetabolicState::regenerate_atp") == 1) { return 0; }
     if (_par_eq(fp, fl, "energy::BioenergyState::tick") == 1) { return 0; }
     if (_par_eq(fp, fl, "sharira::MetabolicCoupling::tick") == 1) { return 0; }
+    if (_par_eq(fp, fl, "protein::net_charge") == 1) { return 0; }
+    if (_par_eq(fp, fl, "protein::net_charge_with") == 1) { return 0; }
+    if (_par_eq(fp, fl, "protein::isoelectric_point") == 1) { return 0; }
+    if (_par_eq(fp, fl, "protein::isoelectric_point_with") == 1) { return 0; }
     return 0 - 1;
 }
 

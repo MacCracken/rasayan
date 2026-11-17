@@ -3274,14 +3274,17 @@ enum RyError {
     # Cyrius only, from here (M1 part 3).
     RY_ERR_DESERIALIZE = 6;
     RY_ERR_OUT_OF_MEMORY = 7;
+    # M3 part 1: a caller buffer too small for a `Vec` result (ADR 0002 row 3).
+    RY_ERR_BUFFER_TOO_SMALL = 8;
 }
 
 # The number of codes, RY_ERR_NONE included: every code is in 0 .. RY_ERR_COUNT - 1.
-const RY_ERR_COUNT = 8;
+const RY_ERR_COUNT = 9;
 
 # The name of an error code: Rust 1.2.0's variant name (`"NonFinite"`) for the codes that mirror one, `"Deserialize"`
 # for the JSON readers' code (Rust's serde_json::Error), `"OutOfMemory"` for a refused allocation (where Rust aborts
-# the process), `"None"` for RY_ERR_NONE, and `"Unknown"` for a value that is no code.
+# the process), `"BufferTooSmall"` for a caller buffer too small for a result Rust returns as a `Vec`, `"None"` for
+# RY_ERR_NONE, and `"Unknown"` for a value that is no code.
 #must_use
 #pure
 fn ry_error_name(code): cstring {
@@ -3294,6 +3297,7 @@ fn ry_error_name(code): cstring {
         RY_ERR_NON_FINITE => { return "NonFinite"; }
         RY_ERR_DESERIALIZE => { return "Deserialize"; }
         RY_ERR_OUT_OF_MEMORY => { return "OutOfMemory"; }
+        RY_ERR_BUFFER_TOO_SMALL => { return "BufferTooSmall"; }
         _ => { return "Unknown"; }
     }
     return "Unknown";
@@ -3314,6 +3318,7 @@ fn ry_error_message(code): cstring {
         RY_ERR_NON_FINITE => { return "non-finite value"; }
         RY_ERR_DESERIALIZE => { return "malformed JSON document"; }
         RY_ERR_OUT_OF_MEMORY => { return "an allocation was refused"; }
+        RY_ERR_BUFFER_TOO_SMALL => { return "the result buffer is too small"; }
         _ => { return "unknown error"; }
     }
     return "unknown error";
@@ -7287,4 +7292,875 @@ fn ry_bioenergy_state_from_json_a(a, buf, n, out: *RyBioenergyState): Result {
 #must_use
 fn ry_bioenergy_state_from_json(buf, n, out: *RyBioenergyState): Result {
     return ry_bioenergy_state_from_json_a(default_alloc(), buf, n, out);
+}
+
+# --- protein.cyr ---
+
+# protein.cyr — protein structure primitives: amino-acid properties, molecular weight, composition, net charge and the
+# isoelectric point with selectable pKa sets, the extinction coefficient, Chou-Fasman secondary structure (Rust
+# 1.2.0's `protein.rs`, transcribed).
+#
+# A sequence is `(seq, n)`: n bytes of UTF-8 at seq (Rust's `&str`). Rust iterates `chars()`; here every function
+# reads bytes. For valid UTF-8 the answers are the same (port plan §2 item 6): every byte of a non-ASCII character is
+# >= 0x80, never an ASCII letter, so a function that rejects an unknown residue rejects it at its first byte, and one
+# that skips non-residues (composition, the net charge, the Bjellqvist termini) skips all its bytes. Invalid UTF-8,
+# which a Rust `&str` cannot hold, reads as unknown residues too.
+#
+# Every operation is in Rust's order: tests/golden/protein.tsv compares each function with the oracle's bit for bit
+# where only + − × ÷ run (classes A and B) and at 0 ulp against the corrected oracle where the Henderson-Hasselbalch
+# charge calls `powf` (class C, ADR 0003: `_ry_cr_pow`).
+#
+# The Cyrius forms (ADR 0002 rows 1–3, 10):
+# - AminoAcid is a struct (RyAminoAcid), filled from the generated table (src/protein_data.cyr) by
+#   ry_amino_acid(i, &aa); its `side_chain_pka: Option<f64>` is has_side_chain_pka (1 / 0) and the value (0.0 for
+#   None). `lookup`'s Option<AminoAcid> is the table index or -1, `try_lookup`'s Result Ok(index) or
+#   Err(RY_ERR_UNKNOWN_AMINO_ACID);
+# - an `Option<f64>` or `Option<ExtinctionCoefficient>` result is 1 with *out filled, or 0 for None (out untouched);
+# - `composition`'s `Vec<(char, usize)>` fills a caller buffer of (letter, count) pairs, two words each, and returns
+#   Ok(count), or Err(RY_ERR_BUFFER_TOO_SMALL) when the buffer holds fewer pairs (26 always suffice);
+# - PkaSet is `enum RyPkaSet`, its values Rust's declaration order (append-only), each also the row of its pKa values
+#   in the generated columns;
+# - the serde types write `ry_<type>_to_json` (and `_a`, on an allocator): AminoAcid, ExtinctionCoefficient, PkaSet.
+
+# Which published pKa values ry_isoelectric_point_with and ry_net_charge_with use (Rust's `PkaSet`): the free amino
+# acids (Lehninger, the default), Bjellqvist's 2-D gel set as ExPASy uses it (position-dependent termini), EMBOSS's
+# `Epk.dat`, and Kozlowski's IPC_protein. The values are append-only.
+enum RyPkaSet {
+    RY_PKA_SET_LEHNINGER = 0;
+    RY_PKA_SET_BJELLQVIST = 1;
+    RY_PKA_SET_EMBOSS = 2;
+    RY_PKA_SET_IPC = 3;
+}
+
+# The number of pKa sets.
+const RY_PKA_SET_COUNT = 4;
+
+# The default pKa set, RY_PKA_SET_LEHNINGER. Mirrors `PkaSet::default()`.
+#must_use
+#pure
+fn ry_pka_set_default(): i64 {
+    return RY_PKA_SET_LEHNINGER;
+}
+
+# The variant name of a pKa set (`"Lehninger"`, …, as serde writes it), or 0 for a value that is no set.
+#must_use
+#pure
+fn ry_pka_set_name(set): cstring {
+    match set {
+        RY_PKA_SET_LEHNINGER => { return "Lehninger"; }
+        RY_PKA_SET_BJELLQVIST => { return "Bjellqvist"; }
+        RY_PKA_SET_EMBOSS => { return "Emboss"; }
+        RY_PKA_SET_IPC => { return "Ipc"; }
+        _ => { return 0; }
+    }
+    return 0;
+}
+
+# ── amino acids ──
+
+# A standard amino acid: its single-letter code (an ASCII byte), its three-letter abbreviation and full name (C strings
+# into the generated table), the free amino acid's average molecular weight (Da), its Kyte-Doolittle hydrophobicity,
+# and its side chain's pKa (has_side_chain_pka 0 when uncharged). Rust's `AminoAcid`.
+struct RyAminoAcid {
+    code;
+    abbr;
+    name;
+    mw: f64;
+    hydrophobicity: f64;
+    has_side_chain_pka;
+    side_chain_pka: f64;
+}
+
+# A string blob's entry at `off`.
+#must_use
+#pure
+fn _ry_protein_blob(bytes, off): i64 {
+    return bytes + off;
+}
+
+# Fills *out with entry i of the 20 standard amino acids (RY_AMINO_ACID_*, Rust's AMINO_ACIDS order): 1, or 0 for an
+# i outside 0 .. RY_AMINO_ACID_COUNT − 1 (out untouched).
+fn ry_amino_acid(i, out: *RyAminoAcid): i64 {
+    if (i < 0 || i >= RY_AMINO_ACID_COUNT) { return 0; }
+    out.code = RY_AMINO_ACID_CODE[i];
+    out.abbr = _ry_protein_blob(&_RY_AMINO_ACID_ABBR_BYTES, _RY_AMINO_ACID_ABBR_OFF[i]);
+    out.name = _ry_protein_blob(&_RY_AMINO_ACID_NAME_BYTES, _RY_AMINO_ACID_NAME_OFF[i]);
+    var mw: f64 = RY_AMINO_ACID_MW[i];
+    var h: f64 = RY_AMINO_ACID_HYDROPHOBICITY[i];
+    var pka: f64 = RY_AMINO_ACID_SIDE_CHAIN_PKA[i];
+    out.mw = mw;
+    out.hydrophobicity = h;
+    out.has_side_chain_pka = RY_AMINO_ACID_HAS_SIDE_CHAIN_PKA[i];
+    out.side_chain_pka = pka;
+    return 1;
+}
+
+# The amino acid of the character `code` (a Unicode scalar value, upper or lowercase): its index into the table
+# (RY_AMINO_ACID_*), or -1 for anything that is not one of the 20 standard one-letter codes (whitespace, digits,
+# non-ASCII). O(1) through the generated 26-entry index. Mirrors `protein::lookup`.
+#must_use
+#pure
+fn ry_lookup(code): i64 {
+    var c = code;
+    if (c >= 97 && c <= 122) { c = c - 32; }
+    if (c < 65 || c > 90) { return 0 - 1; }
+    var slot = _RY_PROTEIN_LOOKUP_INDEX[c - 65];
+    if (slot >= RY_AMINO_ACID_COUNT) { return 0 - 1; }
+    return slot;
+}
+
+# The UTF-8 bytes of the scalar value `cp` into buf (4 bytes): their count. A value that is no scalar value (a
+# surrogate, past U+10FFFF, negative) writes U+FFFD.
+fn _ry_protein_utf8(cp, buf): i64 {
+    var c = cp;
+    if (c < 0 || c > 1114111 || (c >= 55296 && c <= 57343)) { c = 65533; }
+    if (c < 128) {
+        store8(buf, c);
+        return 1;
+    }
+    if (c < 2048) {
+        store8(buf, 192 | (c >> 6));
+        store8(buf + 1, 128 | (c & 63));
+        return 2;
+    }
+    if (c < 65536) {
+        store8(buf, 224 | (c >> 12));
+        store8(buf + 1, 128 | ((c >> 6) & 63));
+        store8(buf + 2, 128 | (c & 63));
+        return 3;
+    }
+    store8(buf, 240 | (c >> 18));
+    store8(buf + 1, 128 | ((c >> 12) & 63));
+    store8(buf + 2, 128 | ((c >> 6) & 63));
+    store8(buf + 3, 128 | (c & 63));
+    return 4;
+}
+
+# ry_lookup as a Result: Ok(index), or Err(RY_ERR_UNKNOWN_AMINO_ACID), whose DEBUG event is Rust's Display text,
+# `unknown amino acid: <the character>`. Mirrors `protein::try_lookup`.
+#must_use
+fn ry_try_lookup(code): Result {
+    var i = ry_lookup(code);
+    if (i >= 0) { return Ok(i); }
+    var buf[8];
+    var n = _ry_protein_utf8(code, &buf);
+    return Err(_ry_fail_text(RY_ERR_UNKNOWN_AMINO_ACID, &buf, n));
+}
+
+# ── molecular weight and composition ──
+
+# The average molecular weight of the peptide (Da): the free amino acids' masses minus one water per peptide bond (n − 1
+# waters for n residues, the termini keep one). 1 with *out filled, or 0 for an empty sequence or one with any
+# character that is not a standard code (whitespace included). Mirrors `protein::molecular_weight`.
+#must_use
+fn ry_molecular_weight(seq, n, out): i64 {
+    if (n == 0) { return 0; }
+    var water: f64 = _RY_PROTEIN_WATER_AVG_MASS;
+    var total: f64 = water;
+    var i = 0;
+    while (i < n) {
+        var slot = ry_lookup(load8(seq + i));
+        if (slot < 0) { return 0; }
+        var mw: f64 = RY_AMINO_ACID_MW[slot];
+        var residue: f64 = mw - water;
+        total = total + residue;
+        i = i + 1;
+    }
+    store64(out, load64(&total));
+    return 1;
+}
+
+# The count of each letter in the sequence (upper and lowercase together; every ASCII letter, not only the 20 codes):
+# the (letter, count) pairs of the letters that occur, in alphabetical order, into the `cap` pairs at out (the letter
+# an uppercase ASCII byte, then the count; two words each). Ok(count), or Err(RY_ERR_BUFFER_TOO_SMALL) when more than
+# `cap` letters occur (nothing is written). Mirrors `protein::composition`.
+#must_use
+fn ry_composition(seq, n, out, cap): Result {
+    var counts[208];
+    memset(&counts, 0, 208);
+    var i = 0;
+    while (i < n) {
+        var c = load8(seq + i);
+        if (c >= 97 && c <= 122) { c = c - 32; }
+        if (c >= 65 && c <= 90) {
+            var at = &counts + 8 * (c - 65);
+            store64(at, load64(at) + 1);
+        }
+        i = i + 1;
+    }
+    var found = 0;
+    var k = 0;
+    while (k < 26) {
+        if (load64(&counts + 8 * k) > 0) { found = found + 1; }
+        k = k + 1;
+    }
+    if (found > cap) { return Err(_ry_fail_text(RY_ERR_BUFFER_TOO_SMALL, "composition", 11)); }
+    var w = 0;
+    k = 0;
+    while (k < 26) {
+        var count = load64(&counts + 8 * k);
+        if (count > 0) {
+            store64(out + 16 * w, 65 + k);
+            store64(out + 16 * w + 8, count);
+            w = w + 1;
+        }
+        k = k + 1;
+    }
+    return Ok(found);
+}
+
+# ── net charge and the isoelectric point ──
+
+# The ionizable side chains of the sequence, counted into the 7 words at counts in SIDE_CHAINS order (D, E, C, Y, H, K,
+# R), each saturating at u32::MAX as Rust's. strict 1: 1, or 0 when any character is not a standard code (Rust's
+# `IonizableCounts::strict`); strict 0: other characters are ignored, and the result is 1 (`lenient`).
+fn _ry_protein_counts(seq, n, strict, counts): i64 {
+    memset(counts, 0, 56);
+    var i = 0;
+    while (i < n) {
+        var c = load8(seq + i);
+        if (strict == 1 && ry_lookup(c) < 0) { return 0; }
+        if (c >= 97 && c <= 122) { c = c - 32; }
+        var slot = 0 - 1;
+        var j = 0;
+        while (j < _RY_PROTEIN_SIDE_CHAIN_COUNT) {
+            if (_RY_PROTEIN_SIDE_CHAIN_CODE[j] == c) { slot = j; }
+            j = j + 1;
+        }
+        if (slot >= 0) {
+            var at = counts + 8 * slot;
+            var v = load64(at);
+            if (v < 4294967295) { store64(at, v + 1); }
+        }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# The uppercase code of the first (from_end 0) or last (from_end 1) standard residue of the sequence, or -1 if it has
+# none (Rust's `sequence.chars().find_map(lookup)`, forwards or reversed).
+#must_use
+fn _ry_protein_terminal(seq, n, from_end): i64 {
+    var k = 0;
+    while (k < n) {
+        var i = k;
+        if (from_end == 1) { i = n - 1 - k; }
+        var slot = ry_lookup(load8(seq + i));
+        if (slot >= 0) { return RY_AMINO_ACID_CODE[slot]; }
+        k = k + 1;
+    }
+    return 0 - 1;
+}
+
+# The pKa values `set` assigns to this chain into the 9 f64 at pka: the α-amino and α-carboxyl pKa, then the side
+# chains in SIDE_CHAINS order. Bjellqvist's termini follow the first and last standard residues
+# (_RY_PROTEIN_BJELLQVIST_*); a value that is no set is RY_PKA_SET_LEHNINGER. Mirrors `PkaSet::for_chain`.
+fn _ry_protein_for_chain(set, seq, n, pka) {
+    var row = _RY_PROTEIN_PKA_SET_LEHNINGER;
+    match set {
+        RY_PKA_SET_BJELLQVIST => { row = _RY_PROTEIN_PKA_SET_BJELLQVIST; }
+        RY_PKA_SET_EMBOSS => { row = _RY_PROTEIN_PKA_SET_EMBOSS; }
+        RY_PKA_SET_IPC => { row = _RY_PROTEIN_PKA_SET_IPC_PROTEIN; }
+        _ => { row = _RY_PROTEIN_PKA_SET_LEHNINGER; }
+    }
+    var nt: f64 = _RY_PROTEIN_PKA_SET_N_TERM[row];
+    var ct: f64 = _RY_PROTEIN_PKA_SET_C_TERM[row];
+    if (set == RY_PKA_SET_BJELLQVIST) {
+        var first = _ry_protein_terminal(seq, n, 0);
+        var last = _ry_protein_terminal(seq, n, 1);
+        var j = 0;
+        while (j < _RY_PROTEIN_BJELLQVIST_N_TERM_COUNT) {
+            if (_RY_PROTEIN_BJELLQVIST_N_TERM_CODE[j] == first) {
+                nt = _RY_PROTEIN_BJELLQVIST_N_TERM_PKA[j];
+                break;
+            }
+            j = j + 1;
+        }
+        j = 0;
+        while (j < _RY_PROTEIN_BJELLQVIST_C_TERM_COUNT) {
+            if (_RY_PROTEIN_BJELLQVIST_C_TERM_CODE[j] == last) {
+                ct = _RY_PROTEIN_BJELLQVIST_C_TERM_PKA[j];
+                break;
+            }
+            j = j + 1;
+        }
+    }
+    store64(pka, load64(&nt));
+    store64(pka + 8, load64(&ct));
+    var k = 0;
+    while (k < _RY_PROTEIN_SIDE_CHAIN_COUNT) {
+        var x: f64 = _RY_PROTEIN_PKA_SET_SIDE[row * _RY_PROTEIN_SIDE_CHAIN_COUNT + k];
+        store64(pka + 16 + 8 * k, load64(&x));
+        k = k + 1;
+    }
+    return 0;
+}
+
+# The net charge at `ph` of the counted groups with the chain's pKa values (Henderson-Hasselbalch: the N-terminus
+# basic, the C-terminus acidic, each side chain by its sign). Mirrors `IonizableCounts::charge_at`.
+#must_use
+fn _ry_protein_charge_at(counts, ph: f64, pka): f64 {
+    var nt: f64 = load64(pka);
+    var ct: f64 = load64(pka + 8);
+    var x: f64 = ph - nt;
+    var p: f64 = _ry_cr_pow(10.0, x);
+    var charge: f64 = 1.0 / (1.0 + p);
+    x = ct - ph;
+    p = _ry_cr_pow(10.0, x);
+    var acid: f64 = 1.0 / (1.0 + p);
+    charge = charge - acid;
+    var k = 0;
+    while (k < _RY_PROTEIN_SIDE_CHAIN_COUNT) {
+        var count = load64(counts + 8 * k);
+        if (count != 0) {
+            var nf: f64 = f64_from(count);
+            var sign: f64 = _RY_PROTEIN_SIDE_CHAIN_SIGN[k];
+            var gp: f64 = load64(pka + 16 + 8 * k);
+            if (sign > 0.0) {
+                x = ph - gp;
+                p = _ry_cr_pow(10.0, x);
+                var base: f64 = nf / (1.0 + p);
+                charge = charge + base;
+            } else {
+                x = gp - ph;
+                p = _ry_cr_pow(10.0, x);
+                var acidic: f64 = nf / (1.0 + p);
+                charge = charge - acidic;
+            }
+        }
+        k = k + 1;
+    }
+    return charge;
+}
+
+# The net charge of the peptide at `ph` with pKa set `set` (Henderson-Hasselbalch over the termini and every ionizable
+# side chain). Characters that are not standard codes are ignored; Bjellqvist's termini are the first and last
+# standard residues. A NaN ph gives NaN. Mirrors `protein::net_charge_with`.
+#must_use
+fn ry_net_charge_with(seq, n, ph: f64, set): f64 {
+    var counts[56];
+    var pka[72];
+    _ry_protein_counts(seq, n, 0, &counts);
+    _ry_protein_for_chain(set, seq, n, &pka);
+    var r: f64 = _ry_protein_charge_at(&counts, ph, &pka);
+    return r;
+}
+
+# ry_net_charge_with with the free-amino-acid pKa values (RY_PKA_SET_LEHNINGER). Mirrors `protein::net_charge`.
+#must_use
+fn ry_net_charge(seq, n, ph: f64): f64 {
+    var r: f64 = ry_net_charge_with(seq, n, ph, RY_PKA_SET_LEHNINGER);
+    return r;
+}
+
+# The isoelectric point with pKa set `set`: the pH in [0, 14] where the net charge is zero, by bisection until the
+# bracket is at most 0.001 wide (14 halvings), the bracket's midpoint. 1 with *out filled, or 0 for an empty sequence
+# or one with any character that is not a standard code. The groups are counted once, so each step is O(1) in length.
+# Mirrors `protein::isoelectric_point_with`.
+#must_use
+fn ry_isoelectric_point_with(seq, n, set, out): i64 {
+    if (n == 0) { return 0; }
+    var counts[56];
+    if (_ry_protein_counts(seq, n, 1, &counts) == 0) { return 0; }
+    var pka[72];
+    _ry_protein_for_chain(set, seq, n, &pka);
+    var lo: f64 = 0.0;
+    var hi: f64 = 14.0;
+    var precision: f64 = 0.001;
+    var width: f64 = hi - lo;
+    while (width > precision) {
+        var mid: f64 = (lo + hi) / 2.0;
+        var z: f64 = _ry_protein_charge_at(&counts, mid, &pka);
+        if (z > 0.0) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+        width = hi - lo;
+    }
+    var pi: f64 = (lo + hi) / 2.0;
+    store64(out, load64(&pi));
+    return 1;
+}
+
+# ry_isoelectric_point_with with the free-amino-acid pKa values (RY_PKA_SET_LEHNINGER). Mirrors
+# `protein::isoelectric_point`.
+#must_use
+fn ry_isoelectric_point(seq, n, out): i64 {
+    return ry_isoelectric_point_with(seq, n, RY_PKA_SET_LEHNINGER, out);
+}
+
+# ── extinction coefficient ──
+
+# A molar extinction coefficient at 280 nm (M⁻¹ cm⁻¹): with every Cys in a disulfide bond (oxidized) and with none
+# (reduced). Rust's `ExtinctionCoefficient`.
+struct RyExtinctionCoefficient {
+    oxidized: f64;
+    reduced: f64;
+}
+
+# The molar extinction coefficient at 280 nm by Pace's method: 5500 per Trp, 1490 per Tyr, and 125 per cystine (half
+# the Cys, rounded down) when oxidized. 1 with *out filled, or 0 for an empty sequence or an unknown residue. Mirrors
+# `protein::extinction_coefficient`.
+#must_use
+fn ry_extinction_coefficient(seq, n, out: *RyExtinctionCoefficient): i64 {
+    if (n == 0) { return 0; }
+    var n_trp = 0;
+    var n_tyr = 0;
+    var n_cys = 0;
+    var i = 0;
+    while (i < n) {
+        var c = load8(seq + i);
+        if (c >= 97 && c <= 122) { c = c - 32; }
+        if (ry_lookup(c) < 0) { return 0; }
+        if (c == 87) { n_trp = n_trp + 1; }
+        if (c == 89) { n_tyr = n_tyr + 1; }
+        if (c == 67) { n_cys = n_cys + 1; }
+        i = i + 1;
+    }
+    var trp: f64 = f64_from(n_trp);
+    var tyr: f64 = f64_from(n_tyr);
+    var base: f64 = trp * _RY_PROTEIN_EXT_TRP + tyr * _RY_PROTEIN_EXT_TYR;
+    var cystines: f64 = f64_from(n_cys / 2);
+    var ox: f64 = base + cystines * _RY_PROTEIN_EXT_CYSTINE;
+    out.oxidized = ox;
+    out.reduced = base;
+    return 1;
+}
+
+# ── JSON (P7: serde_json's documents) ──
+
+# Appends AminoAcid `aa` as serde_json writes it,
+# `{"code":"A","abbr":"Ala","name":"Alanine","mw":…,"hydrophobicity":…,"side_chain_pka":…}` (null for None), on
+# allocator `a`: Ok(0), or Err(RY_ERR_OUT_OF_MEMORY). Serialize only in Rust (`&'static str` fields).
+#must_use
+fn ry_amino_acid_to_json_a(a, sb, aa: *RyAminoAcid): Result {
+    var code[8];
+    store8(&code, aa.code);
+    var mw: f64 = aa.mw;
+    var h: f64 = aa.hydrophobicity;
+    var pka: f64 = aa.side_chain_pka;
+    var r = _ry_jw_byte(a, sb, 123);
+    r = r | _ry_jw_key(a, sb, "code", 1);
+    r = r | _ry_jw_char(a, sb, &code, 1);
+    r = r | _ry_jw_key(a, sb, "abbr", 0);
+    r = r | _ry_jw_str(a, sb, aa.abbr, strlen(aa.abbr));
+    r = r | _ry_jw_key(a, sb, "name", 0);
+    r = r | _ry_jw_str(a, sb, aa.name, strlen(aa.name));
+    r = r | _ry_jw_key(a, sb, "mw", 0);
+    r = r | _ry_jw_f64(a, sb, mw);
+    r = r | _ry_jw_key(a, sb, "hydrophobicity", 0);
+    r = r | _ry_jw_f64(a, sb, h);
+    r = r | _ry_jw_key(a, sb, "side_chain_pka", 0);
+    r = r | _ry_jw_opt_f64(a, sb, aa.has_side_chain_pka, pka);
+    r = r | _ry_jw_byte(a, sb, 125);
+    if (r != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return Ok(0);
+}
+
+# ry_amino_acid_to_json_a on the default allocator (a builder from str_builder_new).
+#must_use
+fn ry_amino_acid_to_json(sb, aa: *RyAminoAcid): Result {
+    return ry_amino_acid_to_json_a(default_alloc(), sb, aa);
+}
+
+# The field names of ExtinctionCoefficient, in Rust's declaration order.
+var _RY_EXTINCTION_COEFFICIENT_FIELDS = "oxidized\0reduced\0";
+
+# Appends ExtinctionCoefficient `ec` as serde_json writes it, `{"oxidized":…,"reduced":…}`: Ok(0), or
+# Err(RY_ERR_OUT_OF_MEMORY). Serialize only in Rust.
+#must_use
+fn ry_extinction_coefficient_to_json_a(a, sb, ec: *RyExtinctionCoefficient): Result {
+    if (_ry_jw_f64_fields(a, sb, ec, 2, _RY_EXTINCTION_COEFFICIENT_FIELDS) != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return Ok(0);
+}
+
+# ry_extinction_coefficient_to_json_a on the default allocator.
+#must_use
+fn ry_extinction_coefficient_to_json(sb, ec: *RyExtinctionCoefficient): Result {
+    return ry_extinction_coefficient_to_json_a(default_alloc(), sb, ec);
+}
+
+# Appends PkaSet `set` as serde_json writes a unit variant, its name in quotes (`"Lehninger"`): Ok(0),
+# Err(RY_ERR_INVALID_PARAMETER) for a value that is no set, or Err(RY_ERR_OUT_OF_MEMORY). Serialize only in Rust.
+#must_use
+fn ry_pka_set_to_json_a(a, sb, set): Result {
+    var name = ry_pka_set_name(set);
+    if (name == 0) { return Err(RY_ERR_INVALID_PARAMETER); }
+    if (_ry_jw_unit(a, sb, name) != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return Ok(0);
+}
+
+# ry_pka_set_to_json_a on the default allocator.
+#must_use
+fn ry_pka_set_to_json(sb, set): Result {
+    return ry_pka_set_to_json_a(default_alloc(), sb, set);
+}
+
+# ── Chou-Fasman secondary structure ──
+
+# The secondary structure of one residue (Rust's `SecondaryStructure`): α-helix, β-sheet (strand), β-turn, coil. The
+# values are append-only.
+enum RySecondaryStructure {
+    RY_SECONDARY_STRUCTURE_HELIX = 0;
+    RY_SECONDARY_STRUCTURE_SHEET = 1;
+    RY_SECONDARY_STRUCTURE_TURN = 2;
+    RY_SECONDARY_STRUCTURE_COIL = 3;
+}
+
+# The variant name of a secondary structure (`"Helix"`, …, as serde writes it), or 0 for a value that is none.
+#must_use
+#pure
+fn ry_secondary_structure_name(x): cstring {
+    match x {
+        RY_SECONDARY_STRUCTURE_HELIX => { return "Helix"; }
+        RY_SECONDARY_STRUCTURE_SHEET => { return "Sheet"; }
+        RY_SECONDARY_STRUCTURE_TURN => { return "Turn"; }
+        RY_SECONDARY_STRUCTURE_COIL => { return "Coil"; }
+        _ => { return 0; }
+    }
+    return 0;
+}
+
+# Pα (which 0), Pβ (1) or Pt (2), ×100, of the residue in table slot `slot`. CHOU_FASMAN's rows are in AMINO_ACIDS
+# order (the generator checks it), so a residue's ry_lookup slot indexes both tables.
+#must_use
+#pure
+fn _ry_cf_p(slot, which): i64 {
+    if (which == 0) { return _RY_PROTEIN_CHOU_FASMAN_P_ALPHA[slot]; }
+    if (which == 1) { return _RY_PROTEIN_CHOU_FASMAN_P_BETA[slot]; }
+    return _RY_PROTEIN_CHOU_FASMAN_P_TURN[slot];
+}
+
+# Σ P over the residues from .. to − 1 (their slots are bytes at `slots`). Mirrors `cf_sums`, one field at a time; the
+# column is chosen once, not per residue (the sums are the prediction's inner loop).
+#must_use
+#pure
+fn _ry_cf_sum(slots, from, to, which): i64 {
+    var s = 0;
+    var k = from;
+    if (which == 0) {
+        while (k < to) {
+            s = s + _RY_PROTEIN_CHOU_FASMAN_P_ALPHA[load8(slots + k)];
+            k = k + 1;
+        }
+    } elif (which == 1) {
+        while (k < to) {
+            s = s + _RY_PROTEIN_CHOU_FASMAN_P_BETA[load8(slots + k)];
+            k = k + 1;
+        }
+    } else {
+        while (k < to) {
+            s = s + _RY_PROTEIN_CHOU_FASMAN_P_TURN[load8(slots + k)];
+            k = k + 1;
+        }
+    }
+    return s;
+}
+
+# 1 when residue k is Pro.
+#must_use
+#pure
+fn _ry_cf_pro(slots, k): i64 {
+    return _RY_PROTEIN_CHOU_FASMAN_CODE[load8(slots + k)] == 80;
+}
+
+# Rule 1 nucleus at i: >= 4 helix formers among the six residues, and no Pro past the first turn. Mirrors
+# `is_helix_nucleus`.
+#must_use
+fn _ry_cf_helix_nucleus(slots, i): i64 {
+    var formers = 0;
+    var off = 0;
+    while (off < _RY_PROTEIN_CF_HELIX_NUCLEUS) {
+        if (_ry_cf_pro(slots, i + off) == 1 && off >= _RY_PROTEIN_CF_PRO_HELIX_FIRST_TURN) { return 0; }
+        if (_ry_cf_p(load8(slots + i + off), 0) >= _RY_PROTEIN_CF_HELIX_FORMER) { formers = formers + 1; }
+        off = off + 1;
+    }
+    if (formers >= _RY_PROTEIN_CF_HELIX_NUCLEUS_FORMERS) { return 1; }
+    return 0;
+}
+
+# Rule 2 nucleus at i: >= 3 β formers among the five residues, and no Pro. Mirrors `is_sheet_nucleus`.
+#must_use
+fn _ry_cf_sheet_nucleus(slots, i): i64 {
+    var formers = 0;
+    var off = 0;
+    while (off < _RY_PROTEIN_CF_SHEET_NUCLEUS) {
+        if (_ry_cf_pro(slots, i + off) == 1) { return 0; }
+        if (_ry_cf_p(load8(slots + i + off), 1) >= _RY_PROTEIN_CF_SHEET_FORMER) { formers = formers + 1; }
+        off = off + 1;
+    }
+    if (formers >= _RY_PROTEIN_CF_SHEET_NUCLEUS_FORMERS) { return 1; }
+    return 0;
+}
+
+# The helix nucleus at `nucleus` grown both ways (rule 1), the half-open segment (start, end): C-terminally unless the
+# residue is Pro or the tetrapeptide ending at it is a breaker; N-terminally unless the tetrapeptide starting at it is
+# a breaker or the residue would push a Pro out of the first turn. Mirrors `extend_helix`.
+#must_use
+fn _ry_cf_extend_helix(slots, n, nucleus): (i64, i64) {
+    var start = nucleus;
+    var end = nucleus + _RY_PROTEIN_CF_HELIX_NUCLEUS;
+    var breaker = 4 * _RY_PROTEIN_CF_BREAKER;
+    while (end < n && _ry_cf_pro(slots, end) == 0 && _ry_cf_sum(slots, end - 3, end + 1, 0) >= breaker) {
+        end = end + 1;
+    }
+    # The highest-index Pro in the segment, or -1.
+    var last_pro = 0 - 1;
+    var k = end - 1;
+    while (k >= start) {
+        if (_ry_cf_pro(slots, k) == 1) {
+            last_pro = k;
+            break;
+        }
+        k = k - 1;
+    }
+    while (start > 0) {
+        var cand = start - 1;
+        if (_ry_cf_sum(slots, cand, cand + 4, 0) < breaker) { break; }
+        var pro = last_pro;
+        if (_ry_cf_pro(slots, cand) == 1 && last_pro < 0) { pro = cand; }
+        if (pro >= 0 && pro - cand >= _RY_PROTEIN_CF_PRO_HELIX_FIRST_TURN) { break; }
+        last_pro = pro;
+        start = cand;
+    }
+    return (start, end);
+}
+
+# The sheet nucleus at `nucleus` grown both ways (rule 2) until a tetrapeptide breaker or a Pro: (start, end).
+# Mirrors `extend_sheet`.
+#must_use
+fn _ry_cf_extend_sheet(slots, n, nucleus): (i64, i64) {
+    var start = nucleus;
+    var end = nucleus + _RY_PROTEIN_CF_SHEET_NUCLEUS;
+    var breaker = 4 * _RY_PROTEIN_CF_BREAKER;
+    while (end < n && _ry_cf_pro(slots, end) == 0 && _ry_cf_sum(slots, end - 3, end + 1, 1) >= breaker) {
+        end = end + 1;
+    }
+    while (start > 0 && _ry_cf_pro(slots, start - 1) == 0 && _ry_cf_sum(slots, start - 1, start + 3, 1) >= breaker) {
+        start = start - 1;
+    }
+    return (start, end);
+}
+
+# Sets `flag` on residues from .. to − 1 of the byte flags. Mirrors `cf_mark`.
+fn _ry_cf_mark(flags, from, to, flag) {
+    var k = from;
+    while (k < to) {
+        store8(flags + k, load8(flags + k) | flag);
+        k = k + 1;
+    }
+    return 0;
+}
+
+# Rule 4: each maximal run claimed by both a helix and a sheet goes to the higher Σ over the run (a tie to the helix).
+# Mirrors `cf_resolve_overlaps`.
+fn _ry_cf_resolve_overlaps(slots, flags, n) {
+    var both = _RY_PROTEIN_CF_HELIX | _RY_PROTEIN_CF_SHEET;
+    var k = 0;
+    while (k < n) {
+        if ((load8(flags + k) & both) != both) {
+            k = k + 1;
+            continue;
+        }
+        var run = k;
+        while (k < n && (load8(flags + k) & both) == both) { k = k + 1; }
+        var keep = _RY_PROTEIN_CF_HELIX;
+        if (_ry_cf_sum(slots, run, k, 1) > _ry_cf_sum(slots, run, k, 0)) { keep = _RY_PROTEIN_CF_SHEET; }
+        var j = run;
+        while (j < k) {
+            store8(flags + j, keep);
+            j = j + 1;
+        }
+    }
+    return 0;
+}
+
+# 1 when candidate x (two words: p(t), position) goes before candidate y: the higher p(t), then the lower position
+# (Rust's `y.0.cmp(&x.0).then(x.1.cmp(&y.1))`).
+#must_use
+#pure
+fn _ry_cf_before(x, y): i64 {
+    var px = load64(x);
+    var py = load64(y);
+    if (px != py) { return px > py; }
+    return load64(x + 8) < load64(y + 8);
+}
+
+# Swaps candidates i and j of the array at c.
+fn _ry_cf_swap(c, i, j) {
+    var a = c + 16 * i;
+    var b = c + 16 * j;
+    var p = load64(a);
+    var q = load64(a + 8);
+    store64(a, load64(b));
+    store64(a + 8, load64(b + 8));
+    store64(b, p);
+    store64(b + 8, q);
+    return 0;
+}
+
+# Sift candidate `root` down the heap of the first `len` candidates (the root of the heap goes last).
+fn _ry_cf_sift(c, root, len) {
+    var r = root;
+    while (2 * r + 1 < len) {
+        var child = 2 * r + 1;
+        if (child + 1 < len && _ry_cf_before(c + 16 * child, c + 16 * (child + 1)) == 1) { child = child + 1; }
+        if (_ry_cf_before(c + 16 * r, c + 16 * child) == 0) { return 0; }
+        _ry_cf_swap(c, r, child);
+        r = child;
+    }
+    return 0;
+}
+
+# Sorts the `len` candidates at c into Rust's order (an in-place heapsort; the keys are distinct, so any correct sort
+# gives Rust's order).
+fn _ry_cf_sort(c, len) {
+    var start = len / 2 - 1;
+    while (start >= 0) {
+        _ry_cf_sift(c, start, len);
+        start = start - 1;
+    }
+    var end = len - 1;
+    while (end > 0) {
+        _ry_cf_swap(c, 0, end);
+        _ry_cf_sift(c, 0, end);
+        end = end - 1;
+    }
+    return 0;
+}
+
+# Rule 3 turns: a tetrapeptide with p(t) = f(i)·f(i+1)·f(i+2)·f(i+3) > 0.75×10⁻⁴, ⟨Pt⟩ > 1.00 and ⟨Pα⟩ < ⟨Pt⟩ > ⟨Pβ⟩
+# is a candidate; candidates are taken by higher p(t) (then lower position), each marked unless it overlaps a turn
+# already marked. `cand` holds n − 3 candidates (two words each). Mirrors `cf_assign_turns`.
+fn _ry_cf_assign_turns(slots, flags, n, cand) {
+    var count = 0;
+    var i = 0;
+    while (i + 3 < n) {
+        var p_t = 1;
+        var j = 0;
+        while (j < 4) {
+            p_t = p_t * _RY_PROTEIN_CHOU_FASMAN_BEND[load8(slots + i + j) * 4 + j];
+            j = j + 1;
+        }
+        var turn = _ry_cf_sum(slots, i, i + 4, 2);
+        if (p_t > _RY_PROTEIN_CF_BEND_PRODUCT_MIN && turn > _RY_PROTEIN_CF_TURN_ACCEPT * 4
+          && turn > _ry_cf_sum(slots, i, i + 4, 0) && turn > _ry_cf_sum(slots, i, i + 4, 1)) {
+            store64(cand + 16 * count, p_t);
+            store64(cand + 16 * count + 8, i);
+            count = count + 1;
+        }
+        i = i + 1;
+    }
+    _ry_cf_sort(cand, count);
+    var k = 0;
+    while (k < count) {
+        var at = load64(cand + 16 * k + 8);
+        var free = 1;
+        var m = 0;
+        while (m < 4) {
+            if ((load8(flags + at + m) & _RY_PROTEIN_CF_TURN) != 0) { free = 0; }
+            m = m + 1;
+        }
+        if (free == 1) { _ry_cf_mark(flags, at, at + 4, _RY_PROTEIN_CF_TURN); }
+        k = k + 1;
+    }
+    return 0;
+}
+
+# The Chou-Fasman secondary structure of the sequence, one RySecondaryStructure value per residue as a byte into the
+# `cap` bytes at out: Ok(n), Ok(0) for Rust's None (an empty sequence or an unknown residue; a Some is never empty),
+# Err(RY_ERR_BUFFER_TOO_SMALL) when cap < n (nothing is written), or Err(RY_ERR_OUT_OF_MEMORY) when allocator `a`
+# refuses the per-call scratch (n bytes of table slots and 16 bytes per turn candidate; the caller resets `a`). The
+# rules, as protein.rs reads Chou & Fasman 1978 and Prevelige & Fasman 1989: helices (rule 1), then sheets (rule 2),
+# each nucleus grown into a region accepted or rejected as a whole and the search resumed after it; overlaps resolved
+# (rule 4); then turns, which override (rule 3). All on the integer table values, so the result is exact. Mirrors
+# `protein::chou_fasman`.
+#must_use
+fn ry_chou_fasman_a(a, seq, n, out, cap): Result {
+    if (n == 0) { return Ok(0); }
+    var i = 0;
+    while (i < n) {
+        if (ry_lookup(load8(seq + i)) < 0) { return Ok(0); }
+        i = i + 1;
+    }
+    if (cap < n) { return Err(_ry_fail_text(RY_ERR_BUFFER_TOO_SMALL, "chou_fasman", 11)); }
+    var slots = alloc_via(a, n + 16 * n);
+    if (slots == 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    var cand = slots + n;
+    i = 0;
+    while (i < n) {
+        store8(slots + i, ry_lookup(load8(seq + i)));
+        store8(out + i, 0);
+        i = i + 1;
+    }
+    # Rule 1: helices.
+    i = 0;
+    while (i + _RY_PROTEIN_CF_HELIX_NUCLEUS <= n) {
+        if (_ry_cf_helix_nucleus(slots, i) == 0) {
+            i = i + 1;
+            continue;
+        }
+        var hs, he = _ry_cf_extend_helix(slots, n, i);
+        var alpha = _ry_cf_sum(slots, hs, he, 0);
+        var beta = _ry_cf_sum(slots, hs, he, 1);
+        var long_enough = he - hs >= _RY_PROTEIN_CF_HELIX_MIN_LEN;
+        if (long_enough && alpha > _RY_PROTEIN_CF_HELIX_ACCEPT * (he - hs) && alpha > beta) {
+            _ry_cf_mark(out, hs, he, _RY_PROTEIN_CF_HELIX);
+        }
+        i = he;
+    }
+    # Rule 2: sheets.
+    i = 0;
+    while (i + _RY_PROTEIN_CF_SHEET_NUCLEUS <= n) {
+        if (_ry_cf_sheet_nucleus(slots, i) == 0) {
+            i = i + 1;
+            continue;
+        }
+        var ss, se = _ry_cf_extend_sheet(slots, n, i);
+        var sa = _ry_cf_sum(slots, ss, se, 0);
+        var sb = _ry_cf_sum(slots, ss, se, 1);
+        if (sb > _RY_PROTEIN_CF_SHEET_ACCEPT * (se - ss) && sb > sa) { _ry_cf_mark(out, ss, se, _RY_PROTEIN_CF_SHEET); }
+        i = se;
+    }
+    # Rule 4, then rule 3 (turns override).
+    _ry_cf_resolve_overlaps(slots, out, n);
+    _ry_cf_assign_turns(slots, out, n, cand);
+    i = 0;
+    while (i < n) {
+        var fl = load8(out + i);
+        var x = RY_SECONDARY_STRUCTURE_COIL;
+        if ((fl & _RY_PROTEIN_CF_TURN) != 0) {
+            x = RY_SECONDARY_STRUCTURE_TURN;
+        } elif ((fl & _RY_PROTEIN_CF_HELIX) != 0) {
+            x = RY_SECONDARY_STRUCTURE_HELIX;
+        } elif ((fl & _RY_PROTEIN_CF_SHEET) != 0) {
+            x = RY_SECONDARY_STRUCTURE_SHEET;
+        }
+        store8(out + i, x);
+        i = i + 1;
+    }
+    return Ok(n);
+}
+
+# ry_chou_fasman_a on the default allocator (its scratch is never freed: for a one-off call).
+#must_use
+fn ry_chou_fasman(seq, n, out, cap): Result {
+    return ry_chou_fasman_a(default_alloc(), seq, n, out, cap);
+}
+
+# Appends SecondaryStructure `x` as serde_json writes a unit variant (`"Helix"`): Ok(0),
+# Err(RY_ERR_INVALID_PARAMETER) for a value that is none, or Err(RY_ERR_OUT_OF_MEMORY). Serialize only in Rust.
+#must_use
+fn ry_secondary_structure_to_json_a(a, sb, x): Result {
+    var name = ry_secondary_structure_name(x);
+    if (name == 0) { return Err(RY_ERR_INVALID_PARAMETER); }
+    if (_ry_jw_unit(a, sb, name) != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return Ok(0);
+}
+
+# ry_secondary_structure_to_json_a on the default allocator.
+#must_use
+fn ry_secondary_structure_to_json(sb, x): Result {
+    return ry_secondary_structure_to_json_a(default_alloc(), sb, x);
 }

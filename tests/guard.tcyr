@@ -187,7 +187,7 @@ fn dt_and_sanitizers() {
 # src/error.cyr: every code's name and message, and the answers for a value that is no code.
 fn error_codes() {
     test_group("error: names and messages");
-    assert_eq(RY_ERR_COUNT, 8, "eight codes, RY_ERR_NONE included");
+    assert_eq(RY_ERR_COUNT, 9, "nine codes, RY_ERR_NONE included");
     assert_streq(ry_error_name(RY_ERR_NONE), "None", "NONE");
     assert_streq(ry_error_name(RY_ERR_NEGATIVE_CONCENTRATION), "NegativeConcentration", "NEGATIVE_CONCENTRATION");
     assert_streq(ry_error_name(RY_ERR_INVALID_PARAMETER), "InvalidParameter", "INVALID_PARAMETER");
@@ -196,6 +196,7 @@ fn error_codes() {
     assert_streq(ry_error_name(RY_ERR_NON_FINITE), "NonFinite", "NON_FINITE");
     assert_streq(ry_error_name(RY_ERR_DESERIALIZE), "Deserialize", "DESERIALIZE (Cyrius only)");
     assert_streq(ry_error_name(RY_ERR_OUT_OF_MEMORY), "OutOfMemory", "OUT_OF_MEMORY (Cyrius only)");
+    assert_streq(ry_error_name(RY_ERR_BUFFER_TOO_SMALL), "BufferTooSmall", "BUFFER_TOO_SMALL (Cyrius only)");
     assert_streq(ry_error_name(RY_ERR_COUNT), "Unknown", "past the last code");
     assert_streq(ry_error_name(0 - 1), "Unknown", "a negative value");
     assert_streq(ry_error_message(RY_ERR_NONE), "no error", "NONE's message");

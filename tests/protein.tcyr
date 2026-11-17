@@ -1,0 +1,832 @@
+# rasayan — src/protein.cyr: Rust 1.2.0's protein tests, ported
+# Stdlib auto-included via cyrius.cyml
+#
+# The 68 unit tests of `protein.rs`, the 2 integration tests (tests/integration.rs) and the 8 validation tests
+# (tests/validation.rs) that call protein, as they are written; tests/golden/protein.tsv checks every function on its
+# corpus besides. A sequence is a C string (its bytes are the UTF-8 Rust's &str holds); the bit patterns of Rust's
+# bit-exact test are hex.
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
+include "src/protein_data.cyr"
+include "src/protein.cyr"
+
+# Human ubiquitin (UniProt P0CG48, mature chain).
+var UBIQUITIN = "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG";
+# Human calmodulin, P0DP23 including the initiator Met (149 aa).
+var CALMODULIN = 0;
+# Hen egg-white lysozyme, P00698 residues 19-147 (mature, 129 aa).
+var HEN_LYSOZYME = 0;
+# Horse heart myoglobin, P68082 without the initiator Met (153 aa).
+var HORSE_MYOGLOBIN = 0;
+# Horse heart cytochrome c, P00004 without the initiator Met (104 aa).
+var HORSE_CYTOCHROME_C = 0;
+# Bovine pancreatic ribonuclease A, P61823 mature chain (124 aa).
+var BOVINE_RNASE_A = 0;
+
+# ExPASy / IUPAC average masses of the free amino acids, in the order of _T_MASS_CODES (Rust's test table).
+var _T_MASS_CODES = "ARNDCQEGHILKMFPSTWYV";
+var _T_MASSES: f64[20] = {
+    89.0935, 174.2017, 132.1184, 133.1032, 121.1590, 146.1451, 147.1299, 75.0669, 155.1552, 131.1736,
+    131.1736, 146.1882, 149.2124, 165.1900, 115.1310, 105.0930, 119.1197, 204.2262, 181.1894, 117.1469,
+};
+
+# The pH values of Rust's test_with_lehninger_is_the_default.
+var _T_PHS_DEFAULT: f64[5] = { 0.0, 4.5, 7.0, 9.3, 14.0 };
+
+# (N-term, C-term, D, E, C, Y, H, K, R) per set, Kozlowski 2016 Table 4 and the ExPASy Bjellqvist table.
+var _T_SETS: f64[36] = {
+    9.69, 2.34, 3.65, 4.25, 8.18, 10.07, 6.00, 10.53, 12.48,
+    7.5, 3.55, 4.05, 4.45, 9.0, 10.0, 5.98, 10.0, 12.0,
+    8.6, 3.6, 3.9, 4.1, 8.5, 10.1, 6.5, 10.8, 12.5,
+    9.094, 2.869, 3.872, 4.412, 7.555, 10.85, 5.637, 9.052, 11.84,
+};
+
+# The pH values of Rust's test_pka_sets_wire_published_values.
+var _T_PHS_SETS: f64[5] = { 2.0, 5.0, 7.0, 9.5, 12.0 };
+
+# Bjellqvist's α-amino pKa for the N-terminal residues of _T_FIRSTS.
+var _T_FIRSTS = "AMSPTVGL";
+var _T_BJ_NT: f64[8] = { 7.59, 7.00, 6.93, 8.36, 6.82, 7.44, 7.50, 7.50 };
+
+# A fresh C string joining up to three pieces (0 ends the list): the long proteins below, which no one line holds.
+fn join(a, b, c) {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, a);
+    if (b != 0) { str_builder_add_cstr(sb, b); }
+    if (c != 0) { str_builder_add_cstr(sb, c); }
+    str_builder_putc(sb, 0);
+    return load64(sb);
+}
+
+# Builds the long proteins.
+fn proteins() {
+    CALMODULIN = join("MADQLTEEQIAEFKEAFSLFDKDGDGTITTKELGTVMRSLGQNPTEAELQDMINEVDADGNGTIDFPEFLTMMARKMKDT",
+      "DSEEEIREAFRVFDKDGNGYISAAELRHVMTNLGEKLTDEEVDEMIREADIDGDGQVNYEEFVQMMTAK",
+      0);
+    HEN_LYSOZYME = join("KVFGRCELAAAMKRHGLDNYRGYSLGNWVCAAKFESNFNTQATNRNTDGSTDYGILQINSRWWCNDGRTPGSRNLCNIPC",
+      "SALLSSDITASVNCAKKIVSDGNGMNAWVAWRNRCKGTDVQAWIRGCRL",
+      0);
+    HORSE_MYOGLOBIN = join("GLSDGEWQQVLNVWGKVEADIAGHGQEVLIRLFTGHPETLEKFDKFKHLKTEAEMKASEDLKKHGTVVLTALGGILKKKG",
+      "HHEAELKPLAQSHATKHKIPIKYLEFISDAIIHVLHSKHPGDFGADAQGAMTKALELFRNDIAAKYKELGFQG",
+      0);
+    BOVINE_RNASE_A = join("KETAAAKFERQHMDSSTSAASSSNYCNQMMKSRNLTKDRCKPVNTFVHESLADVQAVCSQKNVACKNGQTNCYQSYSTMS",
+      "ITDCRETGSSKYPNCAYKTTQANKHIIVACEGNPYVPVHFDASV",
+      0);
+    HORSE_CYTOCHROME_C = join("GDVEKGKKIFVQKCAQCHTVEKGGKHKTGPNLHGLFGRKTGQAPGFTYTDANKNKGITWKEETLMEYLENPKKYIPGTKM",
+      "IFAGIKKKTEREDLIAYLKKATNE",
+      0);
+    return 0;
+}
+
+# 1 when |a − b| < tol.
+fn near(a: f64, b: f64, tol: f64) {
+    var d: f64 = f64_abs(a - b);
+    return d < tol;
+}
+
+# The f64 with bit pattern `b`.
+fn fb(b): f64 {
+    var x: f64 = b;
+    return x;
+}
+
+# The amino acid of `code` into *aa (the test fails if there is none).
+fn amino(code, aa: *RyAminoAcid) {
+    var i = ry_lookup(code);
+    assert(i >= 0, "a standard code resolves");
+    ry_amino_acid(i, aa);
+    return i;
+}
+
+# 1 when the molecular weight of C string s is defined, its value into *out.
+fn mw_of(s, out) {
+    return ry_molecular_weight(s, strlen(s), out);
+}
+
+# The pI of C string s with pKa set `set` (NaN for None).
+fn pi_of(s, set): f64 {
+    var x: f64 = _ry_nan();
+    if (ry_isoelectric_point_with(s, strlen(s), set, &x) == 0) {
+        var nan: f64 = _ry_nan();
+        return nan;
+    }
+    return x;
+}
+
+# 1 when the pI of C string s with `set` is None.
+fn no_pi(s, set) {
+    var x: f64 = 0.0;
+    return ry_isoelectric_point_with(s, strlen(s), set, &x) == 0;
+}
+
+# The net charge of C string s at ph with `set`.
+fn charge(s, ph: f64, set): f64 {
+    var z: f64 = ry_net_charge_with(s, strlen(s), ph, set);
+    return z;
+}
+
+# Rust's `cf`: the Chou-Fasman assignment of C string s as H/E/T/C letters into buf (NUL-terminated); its length,
+# or -1 for None.
+fn cf(s, buf): i64 {
+    var n = strlen(s);
+    var t, count = ry_chou_fasman(s, n, buf, n);
+    if (is_err_result(t) == 1 || count == 0) { return 0 - 1; }
+    var k = 0;
+    while (k < count) {
+        var x = load8(buf + k);
+        var c = 67;
+        if (x == RY_SECONDARY_STRUCTURE_HELIX) { c = 72; }
+        if (x == RY_SECONDARY_STRUCTURE_SHEET) { c = 69; }
+        if (x == RY_SECONDARY_STRUCTURE_TURN) { c = 84; }
+        store8(buf + k, c);
+        k = k + 1;
+    }
+    store8(buf + count, 0);
+    return count;
+}
+
+# 1 when the Chou-Fasman letters of C string s are `want`.
+fn cf_is(s, want) {
+    var buf = alloc(strlen(s) + 1);
+    if (cf(s, buf) < 0) { return 0; }
+    return streq(buf, want);
+}
+
+# How many residues of C string s the Chou-Fasman prediction assigns letter `c` (H, E, T or C).
+fn cf_count(s, c) {
+    var buf = alloc(strlen(s) + 1);
+    var n = cf(s, buf);
+    var k = 0;
+    var m = 0;
+    while (k < n) {
+        if (load8(buf + k) == c) { m = m + 1; }
+        k = k + 1;
+    }
+    return m;
+}
+
+# Rust's `hh`: Henderson-Hasselbalch written out from literal pKa values, independent of the module's tables. The
+# `ng` groups at g are (pKa, count, sign) triples of f64.
+fn hh(ph: f64, n_term: f64, c_term: f64, g, ng): f64 {
+    var x: f64 = ph - n_term;
+    var p: f64 = _ry_cr_pow(10.0, x);
+    var z: f64 = 1.0 / (1.0 + p);
+    x = c_term - ph;
+    p = _ry_cr_pow(10.0, x);
+    var acid: f64 = 1.0 / (1.0 + p);
+    z = z - acid;
+    var k = 0;
+    while (k < ng) {
+        var pka: f64 = load64(g + 24 * k);
+        var count: f64 = load64(g + 24 * k + 8);
+        var sign: f64 = load64(g + 24 * k + 16);
+        if (sign > 0.0) {
+            x = ph - pka;
+            p = _ry_cr_pow(10.0, x);
+            var b: f64 = count / (1.0 + p);
+            z = z + b;
+        } else {
+            x = pka - ph;
+            p = _ry_cr_pow(10.0, x);
+            var a: f64 = count / (1.0 + p);
+            z = z - a;
+        }
+        k = k + 1;
+    }
+    return z;
+}
+
+# Stores group k (pKa, count, sign) into the triples at g.
+fn group(g, k, pka: f64, count: f64, sign: f64) {
+    store64(g + 24 * k, load64(&pka));
+    store64(g + 24 * k + 8, load64(&count));
+    store64(g + 24 * k + 16, load64(&sign));
+    return 0;
+}
+
+# Rust's `reference_pi`: the pre-1.0.1 per-residue pI on the free-amino-acid values (no counting).
+fn reference_pi(s): f64 {
+    var n = strlen(s);
+    var lo: f64 = 0.0;
+    var hi: f64 = 14.0;
+    var w: f64 = hi - lo;
+    while (w > 0.001) {
+        var mid: f64 = (lo + hi) / 2.0;
+        var x: f64 = mid - _RY_PROTEIN_PKA_N_TERM;
+        var p: f64 = _ry_cr_pow(10.0, x);
+        var z: f64 = 1.0 / (1.0 + p);
+        x = _RY_PROTEIN_PKA_C_TERM - mid;
+        p = _ry_cr_pow(10.0, x);
+        var acid: f64 = 1.0 / (1.0 + p);
+        z = z - acid;
+        var i = 0;
+        while (i < n) {
+            var c = load8(s + i);
+            if (c >= 97 && c <= 122) { c = c - 32; }
+            var j = 0;
+            while (j < _RY_PROTEIN_SIDE_CHAIN_COUNT) {
+                if (_RY_PROTEIN_SIDE_CHAIN_CODE[j] == c) {
+                    var pka: f64 = _RY_PROTEIN_SIDE_CHAIN_PKA[j];
+                    var sign: f64 = _RY_PROTEIN_SIDE_CHAIN_SIGN[j];
+                    if (sign > 0.0) {
+                        x = mid - pka;
+                        p = _ry_cr_pow(10.0, x);
+                        var b: f64 = 1.0 / (1.0 + p);
+                        z = z + b;
+                    } else {
+                        x = pka - mid;
+                        p = _ry_cr_pow(10.0, x);
+                        var a: f64 = 1.0 / (1.0 + p);
+                        z = z - a;
+                    }
+                }
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        if (z > 0.0) { lo = mid; } else { hi = mid; }
+        w = hi - lo;
+    }
+    var r: f64 = (lo + hi) / 2.0;
+    return r;
+}
+
+# The count composition gives letter c in C string s (0 if it is not listed).
+fn comp_count(s, c) {
+    var pairs[416];
+    var t, n = ry_composition(s, strlen(s), &pairs, 26);
+    var k = 0;
+    while (k < n) {
+        if (load64(&pairs + 16 * k) == c) { return load64(&pairs + 16 * k + 8); }
+        k = k + 1;
+    }
+    return 0;
+}
+
+# rust src/protein.rs: test_lookup, test_lookup_lowercase, test_lookup_unknown, test_try_lookup_ok, test_try_lookup_err
+# rust src/protein.rs: test_amino_acid_count, test_lookup_table_matches_amino_acids, test_glycine_average_mass
+# rust src/protein.rs: test_amino_acid_average_masses
+fn lookups() {
+    test_group("protein: lookup");
+    var aa: RyAminoAcid;
+    amino(65, &aa);
+    assert(streq(aa.name, "Alanine"), "A is Alanine");
+    amino(97, &aa);
+    assert(streq(aa.name, "Alanine"), "a is Alanine");
+    assert_eq(ry_lookup(88), 0 - 1, "X is no amino acid");
+    var t1, v1 = ry_try_lookup(65);
+    ry_amino_acid(v1, &aa);
+    assert(is_ok(t1) == 1 && streq(aa.name, "Alanine"), "try_lookup('A')");
+    var t2, v2 = ry_try_lookup(88);
+    assert(is_err_result(t2) == 1 && v2 == RY_ERR_UNKNOWN_AMINO_ACID, "try_lookup('X'): UnknownAminoAcid");
+    assert_eq(RY_AMINO_ACID_COUNT, 20, "20 standard amino acids");
+    var i = 0;
+    while (i < RY_AMINO_ACID_COUNT) {
+        ry_amino_acid(i, &aa);
+        assert_eq(ry_lookup(aa.code), i, "each code finds its own entry");
+        assert_eq(ry_lookup(aa.code + 32), i, "and its lowercase too");
+        i = i + 1;
+    }
+    var odd = "BJOUXZbx@[`{";
+    var k = 0;
+    while (k < strlen(odd)) {
+        assert_eq(ry_lookup(load8(odd + k)), 0 - 1, "a non-code letter or an alphabet neighbour resolves to nothing");
+        k = k + 1;
+    }
+    amino(71, &aa);
+    var gly: f64 = aa.mw;
+    assert(near(gly, 75.067, 0.001), "Gly average mass 75.067");
+    var single: f64 = 0.0;
+    mw_of("G", &single);
+    assert(near(single, gly, 0.000000001), "a lone Gly weighs its free mass");
+    k = 0;
+    while (k < 20) {
+        amino(load8(_T_MASS_CODES + k), &aa);
+        var m: f64 = aa.mw;
+        var e: f64 = _T_MASSES[k];
+        assert(near(m, e, 0.000000001), "ExPASy / IUPAC average mass of the free amino acid");
+        k = k + 1;
+    }
+    return 0;
+}
+
+# rust src/protein.rs: test_molecular_weight, test_molecular_weight_ubiquitin, test_molecular_weight_one_water_per_bond
+# rust src/protein.rs: test_molecular_weight_lowercase, test_molecular_weight_empty
+# rust src/protein.rs: test_molecular_weight_unknown_residue
+# rust src/protein.rs: test_composition, test_composition_lowercase, test_composition_empty
+fn weights() {
+    test_group("protein: molecular weight and composition");
+    var w: f64 = 0.0;
+    assert(mw_of("AG", &w) == 1 && near(w, 146.1445, 0.005), "Ala-Gly 146.1445 Da");
+    assert(mw_of(UBIQUITIN, &w) == 1 && near(w, 8564.84, 0.5), "ubiquitin 8564.84 Da (ExPASy)");
+    var aa: RyAminoAcid;
+    amino(65, &aa);
+    var a: f64 = aa.mw;
+    mw_of("AAA", &w);
+    var three: f64 = 3.0 * a - 2.0 * _RY_PROTEIN_WATER_AVG_MASS;
+    assert(near(w, three, 0.000000001), "n residues lose n - 1 waters");
+    var up: f64 = 0.0;
+    var lo: f64 = 0.0;
+    mw_of("AG", &up);
+    mw_of("ag", &lo);
+    var eps: f64 = fb(0x3CB0000000000000);
+    assert(near(up, lo, eps), "lowercase weighs the same");
+    assert(mw_of("", &w) == 0, "an empty sequence has no weight");
+    assert(mw_of("AXG", &w) == 0, "an unknown residue: none");
+    assert(comp_count("AACG", 65) == 2 && comp_count("AACG", 67) == 1 && comp_count("AACG", 71) == 1, "AACG");
+    var p1[416];
+    var p2[416];
+    var t1, n1 = ry_composition("AACG", 4, &p1, 26);
+    var t2, n2 = ry_composition("aacg", 4, &p2, 26);
+    assert(n1 == n2 && memeq(&p1, &p2, 16 * n1) == 1, "lowercase composes the same");
+    var t3, n3 = ry_composition("", 0, &p1, 26);
+    assert(is_ok(t3) == 1 && n3 == 0, "an empty sequence composes nothing");
+    var t4, v4 = ry_composition("AACG", 4, &p1, 2);
+    assert(is_err_result(t4) == 1 && v4 == RY_ERR_BUFFER_TOO_SMALL, "three letters do not fit two pairs");
+    return 0;
+}
+
+# rust src/protein.rs: test_net_charge_low_ph_positive, test_net_charge_high_ph_negative, test_pi_lysine
+# rust src/protein.rs: test_pi_aspartate, test_pi_histidine, test_pi_glycine, test_pi_empty, test_pi_unknown_residue
+# rust src/protein.rs: test_pi_lowercase, test_pi_matches_per_residue_reference, test_net_charge_matches_counted_groups
+# rust tests/validation.rs: validate_pi_glycine_free_amino_acid, validate_pi_basic_amino_acid_arginine
+# rust tests/validation.rs: validate_pi_acidic_amino_acid_glutamate
+fn charges() {
+    test_group("protein: net charge and pI (Lehninger)");
+    var lo: f64 = ry_net_charge("ACDK", 4, 1.0);
+    var hi: f64 = ry_net_charge("ACDK", 4, 13.0);
+    assert(lo > 0.0 && hi < 0.0, "positive at pH 1, negative at pH 13");
+    var L = RY_PKA_SET_LEHNINGER;
+    var k: f64 = pi_of("K", L);
+    var d: f64 = pi_of("D", L);
+    var h: f64 = pi_of("H", L);
+    var g: f64 = pi_of("G", L);
+    var r: f64 = pi_of("R", L);
+    var e: f64 = pi_of("E", L);
+    assert(near(k, 10.11, 0.05) && near(d, 3.0, 0.05) && near(h, 7.85, 0.05), "Lys 10.11, Asp 3.00, His 7.85");
+    assert(near(g, 5.97, 0.2), "Gly 5.97");
+    assert(near(r, 11.09, 0.15) && near(e, 3.30, 0.15), "Arg 11.09, Glu 3.30 (Lehninger Table 3-1)");
+    var x: f64 = 0.0;
+    assert(ry_isoelectric_point("", 0, &x) == 0, "an empty sequence has no pI");
+    assert(ry_isoelectric_point("AXG", 3, &x) == 0, "nor one with an unknown residue");
+    var up: f64 = pi_of("ACDK", L);
+    var low: f64 = pi_of("acdk", L);
+    assert(near(up, low, 0.01), "lowercase gives the same pI");
+    var seqs[112];
+    store64(&seqs, "G");
+    store64(&seqs + 8, "K");
+    store64(&seqs + 16, "ACDEFGHIKLMNPQRSTVWY");
+    store64(&seqs + 24, "DDDDDDKKKKKK");
+    store64(&seqs + 32, "RRRRHHHYYCCEED");
+    store64(&seqs + 40, UBIQUITIN);
+    store64(&seqs + 48, CALMODULIN);
+    var i = 0;
+    while (i < 7) {
+        var s = load64(&seqs + 8 * i);
+        var fast: f64 = pi_of(s, L);
+        var slow: f64 = reference_pi(s);
+        assert(near(fast, slow, 0.000000000001), "the counted pI equals the per-residue reference");
+        i = i + 1;
+    }
+    var with_x: f64 = ry_net_charge("ACDKX", 5, 7.0);
+    var without: f64 = ry_net_charge("ACDK", 4, 7.0);
+    assert(near(with_x, without, 0.000000000001) && no_pi("ACDKX", L) == 1, "the charge skips X, the pI refuses it");
+    return 0;
+}
+
+# rust src/protein.rs: test_extinction_single_trp, test_extinction_single_tyr, test_extinction_cystines
+# rust src/protein.rs: test_extinction_mixed, test_extinction_no_chromophores, test_extinction_empty
+# rust src/protein.rs: test_extinction_unknown, test_extinction_lowercase
+# rust tests/validation.rs: validate_extinction_coefficient_pace_values
+fn extinction() {
+    test_group("protein: extinction coefficient (Pace)");
+    var ec: RyExtinctionCoefficient;
+    var eps: f64 = fb(0x3CB0000000000000);
+    var _d1 = ry_extinction_coefficient("W", 1, &ec);
+    var o: f64 = ec.oxidized;
+    var r: f64 = ec.reduced;
+    assert(near(o, 5500.0, eps) && near(r, 5500.0, eps), "Trp 5500");
+    var _d2 = ry_extinction_coefficient("Y", 1, &ec);
+    o = ec.oxidized;
+    r = ec.reduced;
+    assert(near(o, 1490.0, eps) && near(r, 1490.0, eps), "Tyr 1490");
+    var _d3 = ry_extinction_coefficient("CCCC", 4, &ec);
+    o = ec.oxidized;
+    r = ec.reduced;
+    assert(near(o, 250.0, eps) && near(r, 0.0, eps), "4 Cys: 2 cystines");
+    var _d4 = ry_extinction_coefficient("WYCC", 4, &ec);
+    o = ec.oxidized;
+    r = ec.reduced;
+    assert(near(o, 7115.0, eps) && near(r, 6990.0, eps), "W + Y + CC");
+    var _d5 = ry_extinction_coefficient("AAGG", 4, &ec);
+    o = ec.oxidized;
+    r = ec.reduced;
+    assert(near(o, 0.0, eps) && near(r, 0.0, eps), "no chromophores");
+    assert(ry_extinction_coefficient("", 0, &ec) == 0, "an empty sequence: none");
+    assert(ry_extinction_coefficient("AXG", 3, &ec) == 0, "an unknown residue: none");
+    var lo: RyExtinctionCoefficient;
+    var _d6 = ry_extinction_coefficient("WYCC", 4, &ec);
+    var _d7 = ry_extinction_coefficient("wycc", 4, &lo);
+    assert(memeq(&ec, &lo, 16) == 1, "lowercase gives the same");
+    var _d8 = ry_extinction_coefficient("YY", 2, &ec);
+    r = ec.reduced;
+    assert(near(r, 2980.0, eps), "two Tyr 2980");
+    return 0;
+}
+
+# rust src/protein.rs: test_whitespace_and_non_ascii_do_not_panic
+fn robustness() {
+    test_group("protein: whitespace and non-ASCII");
+    var seqs[40];
+    store64(&seqs, "ACD\nEFG");
+    store64(&seqs + 8, "ACDÉFG");
+    store64(&seqs + 16, "AC🧬DK");
+    store64(&seqs + 24, " ");
+    var nul[8];
+    store8(&nul, 0);
+    var i = 0;
+    while (i < 5) {
+        var s = &nul;
+        var n = 1;
+        if (i < 4) {
+            s = load64(&seqs + 8 * i);
+            n = strlen(s);
+        }
+        var w: f64 = 0.0;
+        var ec: RyExtinctionCoefficient;
+        var buf[64];
+        assert(ry_molecular_weight(s, n, &w) == 0, "no weight");
+        assert(ry_isoelectric_point(s, n, &w) == 0, "no pI");
+        assert(ry_extinction_coefficient(s, n, &ec) == 0, "no extinction coefficient");
+        var tc, cc = ry_chou_fasman(s, n, &buf, 64);
+        assert(is_ok(tc) == 1 && cc == 0, "no Chou-Fasman prediction");
+        var z: f64 = ry_net_charge(s, n, 7.0);
+        assert(_ry_is_finite(z) == 1, "a finite net charge");
+        var pairs[416];
+        var tp, np = ry_composition(s, n, &pairs, 26);
+        assert(is_ok(tp) == 1, "a composition");
+        i = i + 1;
+    }
+    var e_acute = "é";
+    var c = (load8(e_acute) & 31) * 64 + (load8(e_acute + 1) & 63);
+    assert_eq(ry_lookup(c), 0 - 1, "é is no amino acid");
+    assert_eq(ry_lookup(10), 0 - 1, "nor is a newline");
+    var pairs2[416];
+    var t2, n2 = ry_composition("A\nÉA", strlen("A\nÉA"), &pairs2, 26);
+    assert(n2 == 1 && load64(&pairs2) == 65 && load64(&pairs2 + 8) == 2, "non-letters are skipped: [('A', 2)]");
+    return 0;
+}
+
+# rust src/protein.rs: test_pka_set_default_is_lehninger, test_default_pi_and_charge_unchanged_bit_exact
+# rust src/protein.rs: test_with_lehninger_is_the_default
+fn pka_sets() {
+    test_group("protein: the default pKa set");
+    assert_eq(ry_pka_set_default(), RY_PKA_SET_LEHNINGER, "the default is Lehninger");
+    var x: f64 = 0.0;
+    var _d9 = ry_isoelectric_point("G", 1, &x);
+    assert_eq(load64(&x), 0x40180f9000000000, "G pI, bit for bit as 1.1.0");
+    var _d10 = ry_isoelectric_point("K", 1, &x);
+    assert_eq(load64(&x), 0x4024384800000000, "K");
+    var _d11 = ry_isoelectric_point("D", 1, &x);
+    assert_eq(load64(&x), 0x4007f6a000000000, "D");
+    var _d12 = ry_isoelectric_point("ACDEFGHIKLMNPQRSTVWY", 20, &x);
+    assert_eq(load64(&x), 0x401c555000000000, "the 20 residues");
+    var _d13 = ry_isoelectric_point("RRRRHHHYYCCEED", 14, &x);
+    assert_eq(load64(&x), 0x40204e6800000000, "RRRRHHHYYCCEED");
+    var _d14 = ry_isoelectric_point(UBIQUITIN, strlen(UBIQUITIN), &x);
+    assert_eq(load64(&x), 0x401eb3b000000000, "ubiquitin");
+    var z: f64 = ry_net_charge("ACDEFGHIKLMNPQRSTVWY", 20, 7.0);
+    assert_eq(load64(&z), 0x3f9ca9cf3c9e6020, "the 20 residues at pH 7");
+    z = ry_net_charge("ACDEFGHIKLMNPQRSTVWY", 20, 13.0);
+    assert_eq(load64(&z), 0xc0130d4f025ea345, "at pH 13");
+    z = ry_net_charge(UBIQUITIN, strlen(UBIQUITIN), 7.4);
+    assert_eq(load64(&z), 0x3f9fb7c22ad51b80, "ubiquitin at 7.4");
+    z = ry_net_charge(UBIQUITIN, strlen(UBIQUITIN), 3.3);
+    assert_eq(load64(&z), 0x4023e539b48f6d1e, "at 3.3");
+    z = ry_net_charge("ACDKX", 5, 13.0);
+    assert_eq(load64(&z), 0xc007f80ce2931bac, "ACDKX at 13");
+    z = ry_net_charge("", 0, 7.0);
+    assert_eq(load64(&z), 0xbf60833b05f94400, "the bare termini at 7");
+    var seqs[64];
+    store64(&seqs, "G");
+    store64(&seqs + 8, "K");
+    store64(&seqs + 16, "ACDK");
+    store64(&seqs + 24, "acdk");
+    store64(&seqs + 32, "DDDDDDKKKKKK");
+    store64(&seqs + 40, UBIQUITIN);
+    store64(&seqs + 48, "");
+    store64(&seqs + 56, "AXG");
+    var i = 0;
+    while (i < 8) {
+        var s = load64(&seqs + 8 * i);
+        var n = strlen(s);
+        var a: f64 = 0.0;
+        var b: f64 = 0.0;
+        var fa = ry_isoelectric_point_with(s, n, RY_PKA_SET_LEHNINGER, &a);
+        var fb2 = ry_isoelectric_point(s, n, &b);
+        assert(fa == fb2 && load64(&a) == load64(&b), "pI with Lehninger is the default's, bit for bit");
+        var j = 0;
+        while (j < 5) {
+            var ph: f64 = _T_PHS_DEFAULT[j];
+            var c1: f64 = ry_net_charge_with(s, n, ph, RY_PKA_SET_LEHNINGER);
+            var c2: f64 = ry_net_charge(s, n, ph);
+            assert_eq(load64(&c1), load64(&c2), "the charge with Lehninger is the default's");
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# rust src/protein.rs: test_pka_sets_wire_published_values, test_bjellqvist_terminal_residue_pka
+# rust src/protein.rs: test_bjellqvist_termini_skip_unknown_and_lowercase
+fn published_sets() {
+    test_group("protein: the published pKa sets");
+    var tol: f64 = 0.000000000001;
+    var g[168];
+    var set = 0;
+    while (set < 4) {
+        var j = 0;
+        while (j < 7) {
+            var sign: f64 = -1.0;
+            if (j >= 4) { sign = 1.0; }
+            var pk: f64 = _T_SETS[set * 9 + 2 + j];
+            group(&g, j, pk, 1.0, sign);
+            j = j + 1;
+        }
+        var k = 0;
+        while (k < 5) {
+            var ph: f64 = _T_PHS_SETS[k];
+            var got: f64 = charge("GDECYHKRG", ph, set);
+            var nt: f64 = _T_SETS[set * 9];
+            var ct: f64 = _T_SETS[set * 9 + 1];
+            var want: f64 = hh(ph, nt, ct, &g, 7);
+            assert(near(got, want, tol), "each set wires its published values");
+            k = k + 1;
+        }
+        set = set + 1;
+    }
+    var B = RY_PKA_SET_BJELLQVIST;
+    var i = 0;
+    while (i < 8) {
+        var seq[8];
+        store8(&seq, load8(_T_FIRSTS + i));
+        store8(&seq + 1, 71);
+        store8(&seq + 2, 0);
+        var nt2: f64 = _T_BJ_NT[i];
+        var want2: f64 = hh(7.0, nt2, 3.55, &g, 0);
+        var got2: f64 = charge(&seq, 7.0, B);
+        assert(near(got2, want2, tol), "the N-terminal residue sets the α-amino pKa");
+        i = i + 1;
+    }
+    group(&g, 0, 4.05, 1.0, -1.0);
+    var gd: f64 = hh(4.0, 7.5, 4.55, &g, 1);
+    var cgd: f64 = charge("GD", 4.0, B);
+    assert(near(cgd, gd, tol), "a C-terminal Asp: 4.55, its side chain 4.05");
+    group(&g, 0, 4.45, 1.0, -1.0);
+    var ge: f64 = hh(4.0, 7.5, 4.75, &g, 1);
+    var cge: f64 = charge("GE", 4.0, B);
+    assert(near(cge, ge, tol), "a C-terminal Glu: 4.75, its side chain 4.45");
+    group(&g, 0, 4.45, 2.0, -1.0);
+    var ee: f64 = hh(4.0, 7.70, 4.75, &g, 1);
+    var cee: f64 = charge("EGE", 4.0, B);
+    assert(near(cee, ee, tol), "Glu at both ends");
+    group(&g, 0, 4.05, 1.0, -1.0);
+    var gdg: f64 = hh(4.0, 7.5, 3.55, &g, 1);
+    var cgdg: f64 = charge("GDG", 4.0, B);
+    assert(near(cgdg, gdg, tol), "an interior Asp changes no terminus");
+    var clean: f64 = charge("AGD", 6.0, B);
+    var noisy: f64 = charge("x1 aGd\n", 6.0, B);
+    assert(near(noisy, clean, 0.000000000000001), "the termini are the first and last standard residues");
+    var bare: f64 = hh(6.0, 7.5, 3.55, &g, 0);
+    var e0: f64 = charge("", 6.0, B);
+    var xx: f64 = charge("xx", 6.0, B);
+    assert(near(e0, bare, 0.000000000000001) && near(xx, bare, 0.000000000000001), "no residue: the default termini");
+    var up: f64 = pi_of("AGD", B);
+    var lo: f64 = pi_of("agd", B);
+    assert_eq(load64(&up), load64(&lo), "lowercase gives the same pI");
+    return 0;
+}
+
+# rust src/protein.rs: test_pi_with_rejects_like_default, test_pi_with_single_residue_midpoints
+# rust src/protein.rs: test_bjellqvist_ubiquitin_matches_expasy
+# rust tests/validation.rs: validate_pi_expasy_ubiquitin, validate_pi_expasy_hen_lysozyme
+# rust tests/validation.rs: validate_pi_expasy_more_proteins, validate_pi_sets_differ_for_proteins
+fn protein_pi() {
+    test_group("protein: pI of proteins (ExPASy)");
+    var set = 0;
+    while (set < 4) {
+        assert(no_pi("", set) == 1 && no_pi("AXG", set) == 1 && no_pi("AC D", set) == 1, "every set rejects alike");
+        var pi: f64 = pi_of(UBIQUITIN, set);
+        assert(pi >= 0.0 && pi <= 14.0, "the pI is in [0, 14]");
+        var z: f64 = charge(UBIQUITIN, pi, set);
+        var az: f64 = f64_abs(z);
+        assert(az < 0.01, "and a root of the same set's charge");
+        var nan: f64 = _ry_nan();
+        var zn: f64 = charge(UBIQUITIN, nan, set);
+        assert(zn != zn, "a NaN pH gives NaN");
+        set = set + 1;
+    }
+    var ek: f64 = pi_of("K", RY_PKA_SET_EMBOSS);
+    var ik: f64 = pi_of("K", RY_PKA_SET_IPC);
+    var ed: f64 = pi_of("D", RY_PKA_SET_EMBOSS);
+    var id: f64 = pi_of("D", RY_PKA_SET_IPC);
+    var wek: f64 = (8.6 + 10.8) / 2.0;
+    var wik: f64 = (9.094 + 9.052) / 2.0;
+    var wed: f64 = (3.6 + 3.9) / 2.0;
+    var wid: f64 = (2.869 + 3.872) / 2.0;
+    assert(near(ek, wek, 0.1) && near(ik, wik, 0.1) && near(ed, wed, 0.1) && near(id, wid, 0.1),
+      "a lone residue's pI: the mean of its two pKa");
+    var B = RY_PKA_SET_BJELLQVIST;
+    var ub: f64 = pi_of(UBIQUITIN, B);
+    var lz: f64 = pi_of(HEN_LYSOZYME, B);
+    var mb: f64 = pi_of(HORSE_MYOGLOBIN, B);
+    var cy: f64 = pi_of(HORSE_CYTOCHROME_C, B);
+    var cm: f64 = pi_of(CALMODULIN, B);
+    var rn: f64 = pi_of(BOVINE_RNASE_A, B);
+    assert(near(ub, 6.56, 0.006) && near(lz, 9.32, 0.006), "ubiquitin 6.56, lysozyme 9.32 (ExPASy)");
+    assert(near(mb, 7.36, 0.006) && near(cy, 9.59, 0.006), "myoglobin 7.36, cytochrome c 9.59");
+    assert(near(cm, 4.09, 0.006) && near(rn, 8.64, 0.006), "calmodulin 4.09, ribonuclease A 8.64");
+    var w: f64 = 0.0;
+    assert(mw_of(UBIQUITIN, &w) == 1 && near(w, 8564.84, 0.5), "ubiquitin Mw 8564.84");
+    assert(mw_of(HEN_LYSOZYME, &w) == 1 && near(w, 14313.14, 0.5), "lysozyme Mw 14313.14");
+    assert(mw_of(HORSE_MYOGLOBIN, &w) == 1 && near(w, 16951.49, 0.5), "myoglobin Mw 16951.49");
+    var leh: f64 = pi_of(UBIQUITIN, RY_PKA_SET_LEHNINGER);
+    var gap: f64 = leh - ub;
+    assert(gap > 1.0, "the free-amino-acid set sits over a pH unit above ExPASy for ubiquitin");
+    return 0;
+}
+
+# rust src/protein.rs: test_cf_empty, test_cf_unknown_residue, test_cf_short_sequence_all_coil, test_cf_helix_rich
+# rust src/protein.rs: test_cf_sheet_rich, test_cf_turn_rich, test_cf_lowercase, test_cf_output_length
+# rust src/protein.rs: test_cf_proline_breaks_helix
+fn chou_fasman_basics() {
+    test_group("protein: Chou-Fasman");
+    var buf[64];
+    var t1, c1 = ry_chou_fasman("", 0, &buf, 64);
+    var t2, c2 = ry_chou_fasman("AXG", 3, &buf, 64);
+    assert(is_ok(t1) == 1 && c1 == 0 && is_ok(t2) == 1 && c2 == 0, "empty or unknown: None");
+    assert(cf_is("AGP", "CCC") == 1, "too short to nucleate: all coil");
+    assert(cf_count("AAAAAELLLL", 72) >= 6, "helix formers nucleate a helix");
+    assert(cf_count("VVVIIYYY", 69) >= 3, "sheet formers a strand");
+    assert(cf_count("NGPSNGPS", 84) >= 4, "turn formers turns");
+    var up[16];
+    var lo[16];
+    var tu, cu = ry_chou_fasman("AAAAAELLLL", 10, &up, 16);
+    var tl, cl = ry_chou_fasman("aaaaaellll", 10, &lo, 16);
+    assert(cu == cl && memeq(&up, &lo, cu) == 1, "lowercase predicts the same");
+    var t3, c3 = ry_chou_fasman("ACDEFGHIKLMNPQRSTVWY", 20, &buf, 64);
+    assert_eq(c3, 20, "one assignment per residue");
+    assert(cf_count("AAAAEPALLLL", 72) <= cf_count("AAAAAEALLLL", 72), "Pro reduces the helix");
+    return 0;
+}
+
+# rust src/protein.rs: test_cf_table_rows_follow_amino_acids, test_cf_former_classes
+fn chou_fasman_table() {
+    test_group("protein: the Chou-Fasman table");
+    assert_eq(_RY_PROTEIN_CHOU_FASMAN_COUNT, RY_AMINO_ACID_COUNT, "a row per amino acid");
+    var i = 0;
+    while (i < RY_AMINO_ACID_COUNT) {
+        assert_eq(_RY_PROTEIN_CHOU_FASMAN_CODE[i], RY_AMINO_ACID_CODE[i], "in AMINO_ACIDS order");
+        assert_eq(ry_lookup(_RY_PROTEIN_CHOU_FASMAN_CODE[i]), i, "the lookup slot indexes it");
+        i = i + 1;
+    }
+    var p = ry_lookup(80);
+    assert(_RY_PROTEIN_CHOU_FASMAN_P_ALPHA[p] == 57 && _RY_PROTEIN_CHOU_FASMAN_P_BETA[p] == 55, "Pro Pa 0.57, Pb 0.55");
+    assert(_RY_PROTEIN_CHOU_FASMAN_P_TURN[p] == 152, "Pro Pt 1.52");
+    assert_eq(_RY_PROTEIN_CHOU_FASMAN_BEND[p * 4], 102, "Pro f(i) 0.102");
+    assert_eq(_RY_PROTEIN_CHOU_FASMAN_BEND[p * 4 + 1], 301, "Pro f(i+1) 0.301");
+    assert_eq(_RY_PROTEIN_CHOU_FASMAN_BEND[p * 4 + 2], 34, "Pro f(i+2) 0.034");
+    assert_eq(_RY_PROTEIN_CHOU_FASMAN_BEND[p * 4 + 3], 68, "Pro f(i+3) 0.068");
+    assert_eq(_RY_PROTEIN_CHOU_FASMAN_BEND[ry_lookup(67) * 4 + 1], 53, "Cys f(i+1) 0.053 (Table II)");
+    assert_eq(_RY_PROTEIN_CHOU_FASMAN_P_ALPHA[ry_lookup(75)], 116, "Lys Pa 1.16");
+    assert_eq(_RY_PROTEIN_CHOU_FASMAN_BEND[ry_lookup(87) * 4 + 3], 167, "Trp f(i+3) 0.167");
+    var helix[24];
+    var sheet[24];
+    var nh = 0;
+    var ns = 0;
+    i = 0;
+    while (i < 20) {
+        if (_RY_PROTEIN_CHOU_FASMAN_P_ALPHA[i] >= _RY_PROTEIN_CF_HELIX_FORMER) {
+            store8(&helix + nh, _RY_PROTEIN_CHOU_FASMAN_CODE[i]);
+            nh = nh + 1;
+        }
+        if (_RY_PROTEIN_CHOU_FASMAN_P_BETA[i] >= _RY_PROTEIN_CF_SHEET_FORMER) {
+            store8(&sheet + ns, _RY_PROTEIN_CHOU_FASMAN_CODE[i]);
+            ns = ns + 1;
+        }
+        i = i + 1;
+    }
+    store8(&helix + nh, 0);
+    store8(&sheet + ns, 0);
+    assert(streq(&helix, "AEFIKLMQVW"), "the helix formers, Ha and ha");
+    assert(streq(&sheet, "CFILMQTVWY"), "the sheet formers, Hb and hb");
+    return 0;
+}
+
+# rust src/protein.rs: test_cf_helix_nucleation_threshold, test_cf_sheet_nucleation_threshold
+# rust src/protein.rs: test_cf_extension_stops_at_tetrapeptide_breaker, test_cf_proline_rules
+# rust src/protein.rs: test_cf_region_acceptance, test_cf_overlap_resolved_on_overlapping_residues, test_cf_turn_rules
+fn chou_fasman_rules() {
+    test_group("protein: the Chou-Fasman rules");
+    assert(cf_is("AAARAR", "HHHHHH") == 1 && cf_is("AARRAR", "CCCCCC") == 1, "four helix formers of six nucleate");
+    assert(cf_is("AADDAD", "CCCCCC") == 1, "weak formers (Asp, His) do not count");
+    assert(cf_is("VVVAA", "EEEEE") == 1 && cf_is("VVAAA", "CCCCC") == 1, "three sheet formers of five nucleate");
+    assert(cf_is("AAAAAARRRR", "HHHHHHHHHC") == 1, "C-terminal extension stops at RRRR");
+    assert(cf_is("RRRRAAAAAA", "CHHHHHHHHH") == 1, "and the N-terminal mirror image");
+    assert(cf_is("AAAAAAPAAA", "HHHHHHCCCC") == 1, "Pro ends a helix C-terminally");
+    assert(cf_is("PAAAAAA", "HHHHHHH") == 1, "but may sit in the first turn");
+    assert(cf_is("AAAPAAAA", "CHHHHHHH") == 1, "never past it");
+    assert(cf_is("VVVVVVV", "EEEEEEE") == 1 && cf_is("VVVPVVV", "CCCCCCC") == 1, "Pro is never in a strand");
+    assert(cf_is("AAAAEPALLLL", "CCCHHHHHHHH") == 1, "1.1.0 ran a helix through this Pro");
+    assert(cf_is("AAAAAAVVVVVV", "CCCEEEEEEEEE") == 1, "a region below its sheet average is rejected whole");
+    assert(cf_is("VVVIIY", "EEEEEE") == 1, "a helix region under 1.03 is rejected");
+    assert(cf_is("AAAAAAMMMMYYYY", "HHHHHHHHHHHHEE") == 1, "an overlap stays helical where Pa wins");
+    assert(cf_is("AAAAAALLLLVVVV", "HHHHEEEEEEEEEE") == 1, "and goes to the sheet where Pb wins");
+    assert(cf_is("NPDG", "TTTT") == 1, "p(t) 1.3e-3 and Pt 1.53: a turn");
+    assert(cf_is("NGPS", "CCCC") == 1, "p(t) 4.9e-5: none");
+    assert(cf_is("NGPSNGPS", "CCTTTTCC") == 1, "overlapping candidates: the highest p(t)");
+    assert(cf_is("AAAAAANPDGAAAAAA", "HHHHHHTTTTHHHHHH") == 1, "turns override a helix");
+    return 0;
+}
+
+# rust src/protein.rs: test_cf_helical_peptide, test_cf_beta_hairpin, test_cf_ubiquitin_regression
+fn chou_fasman_proteins() {
+    test_group("protein: Chou-Fasman on peptides");
+    var gcn4 = "RMKQIEDKLEEILSKLYHIENELARIKKLLGER";
+    assert(cf_count(gcn4, 72) >= 30 && cf_count(gcn4, 69) == 0, "GCN4-p1: helical, no strand");
+    var buf[32];
+    cf("GEWTYDDATKTFTVTE", &buf);
+    assert(memchr(&buf, 72, 16) < 0, "the protein G hairpin: no helix");
+    var turn = 0;
+    var k = 4;
+    while (k <= 10) {
+        if (load8(&buf + k) == 84) { turn = 1; }
+        k = k + 1;
+    }
+    assert(turn == 1, "a turn in the loop");
+    assert(memeq(&buf + 10, "EEEE", 4) == 1, "the second strand");
+    assert(cf_is(UBIQUITIN, "EEEEEEETTTTEEEEEEHTTTTEEEEHHHHHTTTTHTTTTHHHHHHHHHTTTTHCTTTTCCCCCEEEEEEEETTTT") == 1,
+      "ubiquitin, pinned");
+    return 0;
+}
+
+# rust tests/integration.rs: test_amino_acid_serialize, test_extinction_coefficient_serialize
+fn serde() {
+    test_group("protein: serde");
+    var sb = str_builder_new();
+    var aa: RyAminoAcid;
+    amino(65, &aa);
+    var t1, v1 = ry_amino_acid_to_json(sb, &aa);
+    var want = join("{\"code\":\"A\",\"abbr\":\"Ala\",\"name\":\"Alanine\",",
+      "\"mw\":89.0935,\"hydrophobicity\":1.8,\"side_chain_pka\":null}", 0);
+    assert(load64(sb + 8) == strlen(want) && memeq(load64(sb), want, strlen(want)) == 1, "Alanine's document");
+    var ec: RyExtinctionCoefficient;
+    var _d15 = ry_extinction_coefficient("WYCC", 4, &ec);
+    store64(sb + 8, 0);
+    var t2, v2 = ry_extinction_coefficient_to_json(sb, &ec);
+    var we = "{\"oxidized\":7115.0,\"reduced\":6990.0}";
+    assert(load64(sb + 8) == strlen(we) && memeq(load64(sb), we, strlen(we)) == 1, "WYCC's coefficients");
+    store64(sb + 8, 0);
+    var t3, v3 = ry_pka_set_to_json(sb, RY_PKA_SET_BJELLQVIST);
+    assert(load64(sb + 8) == 12 && memeq(load64(sb), "\"Bjellqvist\"", 12) == 1, "a pKa set by name");
+    store64(sb + 8, 0);
+    var t4, v4 = ry_secondary_structure_to_json(sb, RY_SECONDARY_STRUCTURE_TURN);
+    assert(load64(sb + 8) == 6 && memeq(load64(sb), "\"Turn\"", 6) == 1, "a secondary structure by name");
+    var t5, v5 = ry_pka_set_to_json(sb, 9);
+    assert(is_err_result(t5) == 1, "a value that is no set is refused");
+    return 0;
+}
+
+# Runs the protein suite.
+fn main() {
+    alloc_init();
+    proteins();
+    lookups();
+    weights();
+    charges();
+    extinction();
+    robustness();
+    pka_sets();
+    published_sets();
+    protein_pi();
+    chou_fasman_basics();
+    chou_fasman_table();
+    chou_fasman_rules();
+    chou_fasman_proteins();
+    serde();
+    return assert_summary();
+}
+
+var exit_code = main();
+# assert_summary() returns the failure count; a wait status is 8 bits, so any failure exits 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

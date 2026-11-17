@@ -1149,3 +1149,40 @@ gap (ADR 4). `pow`, `exp` and `log` were correctly rounded by glibc on every cal
 scripts) arrived at part 3 and covers every M2 stateful type; the shared pieces each module now reuses are
 `rustsrc::default_literal` (generated `Default`s) and `_ry_jw_f64_fields` / `_ry_jr_f64_fields` (the all-f64 serde
 codecs). 195 Rust tests are ported with them.
+
+## 6. M3 (Sequence analysis)
+
+### 6a. Part 1: protein (2026-11-17)
+
+**What is compared.** `tests/golden/protein.tsv` gains 14,065 rows through the oracle's public API, after M0's table
+rows: `try_lookup` over 68 characters (both cases of the alphabet, its neighbours, digits, whitespace, NUL, DEL, five
+non-ASCII characters); `molecular_weight`, `composition`, `extinction_coefficient`, `isoelectric_point` and
+`isoelectric_point_with` for each of the four pKa sets over 281 sequences (the edges, the Rust tests' peptides, six
+proteins with published values in both cases, 150 seeded peptides, one 100,000-residue protein); `net_charge` and
+`net_charge_with` at 14 pH values (0 … 20, ±0, NaN, ∞, 1e300) over 167 of them; `chou_fasman` over 515 sequences, 200
+of them drawn from alphabets weighted toward each rule; `PkaSet::default` and the serde documents. A Chou-Fasman
+result is one `s:` token of `H`/`E`/`T`/`C` letters, Rust's tests' encoding. The class follows the branch: C where
+the charge calls `powf` (12,341), B for the sums (827, a pI that is None among them), A for the lookups, the
+composition, Chou-Fasman and the documents (897).
+
+| Check | Result |
+|---|---|
+| every row | identical on the first run (class C at 0 ulp, class B at 0 ulp); `lookup` and the table entries now through `ry_lookup` / `ry_amino_acid` |
+| corrected oracle | the models reproduce all 12,341 class-C rows with glibc's pow; with MPFR none changes (`protein.cr.tsv`, 0 rows), so Rust's bit-exact 1.1.0 pI and charge test holds unchanged under the correctly rounded `pow` |
+| `validate.py` | every row re-derived from its own transcription of `protein.rs` (pinned lines; the tables and the Chou-Fasman rule constants read from its source), Python's `str` as Rust's `chars()`, class C with an independent MPFR; 93,069 checks in all |
+| Rust tests | 78 ported (`tests/protein.tcyr`, 380 checks); the ledger at 286 of 723, 0 due and unported |
+| fuzz | every protein function on every input as a sequence: a weight finite and positive, at most 26 letters, a finite charge, every pI in [0, 14], oxidized >= reduced >= 0, one Chou-Fasman value per byte or none |
+| three targets (`scripts/gates.sh`, 229 s) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 90,402 ok, 234 accepted, 0 failed; coverage 119 of 119 public fns executed |
+
+**The Cyrius forms** (ADR 0002 rows 1–3, 10): a sequence is `(ptr, n)` UTF-8 read byte by byte. For valid UTF-8 that
+is Rust's `chars()` here: every function rejects or skips a non-residue, and each byte of a non-ASCII character is
+>= 0x80, never an ASCII letter. `lookup` returns the table index or -1; an `Option<f64>` is 1 with `*out` or 0;
+`composition` fills a caller buffer of pairs; `chou_fasman` fills one byte per residue, `Ok(0)` for None, and takes an
+allocator for its scratch (table slots and the turn candidates, which a heapsort puts in Rust's order: the keys are
+distinct, so any correct sort does); a too-small buffer is the new `RY_ERR_BUFFER_TOO_SMALL`. `RyPkaSet`'s values are
+Rust's declaration order, which the generator already proves is the order of the pKa-set columns.
+
+**Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): the nine Rust twins. The pI (18.3 µs against 1.8) and the net
+charge (1.6 µs against 143 ns) are the correctly rounded `pow`, about 126 and 9 calls at ~140 ns. The review gave the
+Chou-Fasman window sums one column choice per sum instead of one per residue: 2,437 → 1,839 ns.
+

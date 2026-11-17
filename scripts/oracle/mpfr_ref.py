@@ -40,6 +40,7 @@ import ctypes
 import ctypes.util
 import math
 import pathlib
+import re
 import struct
 import sys
 
@@ -574,15 +575,104 @@ ENERGY = {
     "sharira::MetabolicCoupling::tick": _sharira_row,
 }
 
+# ── protein (M3 part 1) ──
+
+P_CODES = "ACDEFGHIKLMNPQRSTVWY"  # the 20 standard one-letter codes
+P_SLOTS = "DECYHKR"  # SIDE_CHAINS order
+P_SIGNS = (-1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0)
+P_SETS = {  # (n_term, c_term, side chains in P_SLOTS order), from protein.rs's ChainPka consts
+    "Lehninger": (9.69, 2.34, (3.65, 4.25, 8.18, 10.07, 6.00, 10.53, 12.48)),
+    "Bjellqvist": (7.5, 3.55, (4.05, 4.45, 9.0, 10.0, 5.98, 10.0, 12.0)),
+    "Emboss": (8.6, 3.6, (3.9, 4.1, 8.5, 10.1, 6.5, 10.8, 12.5)),
+    "Ipc": (9.094, 2.869, (3.872, 4.412, 7.555, 10.85, 5.637, 9.052, 11.84)),
+}
+P_BJ_N = {"A": 7.59, "M": 7.00, "S": 6.93, "P": 8.36, "T": 6.82, "V": 7.44, "E": 7.70}
+P_BJ_C = {"D": 4.55, "E": 4.75}
+
+
+def _up(c):
+    """char::to_ascii_uppercase."""
+    return chr(ord(c) - 32) if "a" <= c <= "z" else c
+
+
+def _std(c):
+    """`lookup(c).map(|aa| aa.code)`: the uppercase code, or None."""
+    u = _up(c)
+    return u if u in P_CODES else None
+
+
+def _for_chain(seq, name):
+    n_term, c_term, side = P_SETS[name]
+    if name == "Bjellqvist":
+        first = next((x for x in map(_std, seq) if x), None)
+        last = next((x for x in map(_std, reversed(seq)) if x), None)
+        n_term, c_term = P_BJ_N.get(first, n_term), P_BJ_C.get(last, c_term)
+    return n_term, c_term, side
+
+
+def _counts_lenient(seq):
+    return [sum(1 for c in seq if _up(c) == s) for s in P_SLOTS]
+
+
+def _counts_strict(seq):
+    if any(_std(c) is None for c in seq):
+        return None
+    return _counts_lenient(seq)
+
+
+def _charge_at(counts, ph, pka, P):
+    n_term, c_term, side = pka
+    charge = 1.0 / (1.0 + P.pow(10.0, ph - n_term))
+    charge -= 1.0 / (1.0 + P.pow(10.0, c_term - ph))
+    for count, sign, gp in zip(counts, P_SIGNS, side):
+        if count == 0:
+            continue
+        n = float(count)
+        if sign > 0.0:
+            charge += n / (1.0 + P.pow(10.0, ph - gp))
+        else:
+            charge -= n / (1.0 + P.pow(10.0, gp - ph))
+    return charge
+
+
+def _pi(seq, name, P):
+    if not seq:
+        raise ValueError("an empty sequence has no pI: no class-C row")
+    counts = _counts_strict(seq)
+    if counts is None:
+        raise ValueError("an unknown residue: no class-C row")
+    pka = _for_chain(seq, name)
+    lo, hi = 0.0, 14.0
+    while (hi - lo) > 0.001:
+        mid = (lo + hi) / 2.0
+        if _charge_at(counts, mid, pka, P) > 0.0:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2.0
+
+
+PROTEIN = {
+    "protein::net_charge": lambda a, P: [_charge_at(_counts_lenient(a[0]), a[1], _for_chain(a[0], "Lehninger"), P)],
+    "protein::net_charge_with": lambda a, P: [_charge_at(_counts_lenient(a[0]), a[1], _for_chain(a[0], a[2]), P)],
+    "protein::isoelectric_point": lambda a, P: [_pi(a[0], "Lehninger", P)],
+    "protein::isoelectric_point_with": lambda a, P: [_pi(a[0], a[1], P)],
+}
+
 # The modules with class-C (and class-T) rows beyond math, and their models.
 MODELS = {"integrate": INTEGRATE, "enzyme": ENZYME, "membrane": MEMBRANE, "signal": SIGNAL, "metabolism": METABOLISM,
-          "energy": ENERGY}
+          "energy": ENERGY, "protein": PROTEIN}
 
 
 def _arg(tok):
-    """An input token as a model argument: an `f:` token's float, an `i:` token's integer."""
+    """An input token as a model argument: an `f:` token's float, an `i:` token's integer, an `s:` token's string
+    (percent-decoded UTF-8), an `e:` token's variant name."""
     if tok.startswith("i:"):
         return int(tok[2:])
+    if tok.startswith("s:"):
+        return re.sub(rb"%([0-9A-F]{2})", lambda m: bytes([int(m.group(1), 16)]), tok[2:].encode()).decode("utf-8")
+    if tok.startswith("e:"):
+        return tok.split(".", 1)[1]
     return _f(tok)
 
 

@@ -6,7 +6,7 @@
 > milestone hasn't come. The golden corpus (`tests/golden/`) checks every ported function on its grid besides.
 > The 2 doc tests and the example are M9's.
 
-**723 Rust tests:** 208 ported; 139 at M3, 53 at M4a, 80 at M4b, 38 at M5, 108 at M6, 62 at M7, 35 at M8.
+**723 Rust tests:** 286 ported; 61 at M3, 53 at M4a, 80 at M4b, 38 at M5, 108 at M6, 62 at M7, 35 at M8.
 
 | Rust file | Tests | Ported | Due, unported | Later (milestone) |
 |---|---:|---:|---:|---|
@@ -32,15 +32,15 @@
 | `src/nuclear_receptor.rs` | 11 | 0 | 0 | 11 (M6) |
 | `src/pathway.rs` | 34 | 0 | 0 | 34 (M5) |
 | `src/pi3k.rs` | 11 | 0 | 0 | 11 (M6) |
-| `src/protein.rs` | 68 | 0 | 0 | 68 (M3) |
+| `src/protein.rs` | 68 | 68 | 0 | — |
 | `src/ptm.rs` | 16 | 0 | 0 | 16 (M3) |
 | `src/receptor.rs` | 12 | 0 | 0 | 12 (M6) |
 | `src/signal.rs` | 21 | 21 | 0 | — |
 | `src/signaling.rs` | 13 | 0 | 0 | 13 (M6) |
 | `src/tca.rs` | 26 | 0 | 0 | 26 (M4a) |
-| `tests/integration.rs` | 70 | 30 | 0 | 3 (M3), 2 (M4a), 10 (M4b), 4 (M5), 15 (M6), 6 (M7) |
-| `tests/validation.rs` | 25 | 16 | 0 | 9 (M3) |
-| **Total** | **723** | **208** | **0** | |
+| `tests/integration.rs` | 70 | 32 | 0 | 1 (M3), 2 (M4a), 10 (M4b), 4 (M5), 15 (M6), 6 (M7) |
+| `tests/validation.rs` | 25 | 24 | 0 | 1 (M3) |
+| **Total** | **723** | **286** | **0** | |
 
 ## Where each is ported
 
@@ -187,6 +187,74 @@
 | `src/metabolism.rs` `test_validate_negative_atp` | `tests/metabolism.tcyr` `validation` |
 | `src/metabolism.rs` `test_validate_rejects_non_finite` | `tests/metabolism.tcyr` `validation` |
 | `src/metabolism.rs` `test_validate_valid` | `tests/metabolism.tcyr` `validation` |
+| `src/protein.rs` `test_amino_acid_average_masses` | `tests/protein.tcyr` `lookups` |
+| `src/protein.rs` `test_amino_acid_count` | `tests/protein.tcyr` `lookups` |
+| `src/protein.rs` `test_bjellqvist_terminal_residue_pka` | `tests/protein.tcyr` `published_sets` |
+| `src/protein.rs` `test_bjellqvist_termini_skip_unknown_and_lowercase` | `tests/protein.tcyr` `published_sets` |
+| `src/protein.rs` `test_bjellqvist_ubiquitin_matches_expasy` | `tests/protein.tcyr` `protein_pi` |
+| `src/protein.rs` `test_cf_beta_hairpin` | `tests/protein.tcyr` `chou_fasman_proteins` |
+| `src/protein.rs` `test_cf_empty` | `tests/protein.tcyr` `chou_fasman_basics` |
+| `src/protein.rs` `test_cf_extension_stops_at_tetrapeptide_breaker` | `tests/protein.tcyr` `chou_fasman_rules` |
+| `src/protein.rs` `test_cf_former_classes` | `tests/protein.tcyr` `chou_fasman_table` |
+| `src/protein.rs` `test_cf_helical_peptide` | `tests/protein.tcyr` `chou_fasman_proteins` |
+| `src/protein.rs` `test_cf_helix_nucleation_threshold` | `tests/protein.tcyr` `chou_fasman_rules` |
+| `src/protein.rs` `test_cf_helix_rich` | `tests/protein.tcyr` `chou_fasman_basics` |
+| `src/protein.rs` `test_cf_lowercase` | `tests/protein.tcyr` `chou_fasman_basics` |
+| `src/protein.rs` `test_cf_output_length` | `tests/protein.tcyr` `chou_fasman_basics` |
+| `src/protein.rs` `test_cf_overlap_resolved_on_overlapping_residues` | `tests/protein.tcyr` `chou_fasman_rules` |
+| `src/protein.rs` `test_cf_proline_breaks_helix` | `tests/protein.tcyr` `chou_fasman_basics` |
+| `src/protein.rs` `test_cf_proline_rules` | `tests/protein.tcyr` `chou_fasman_rules` |
+| `src/protein.rs` `test_cf_region_acceptance` | `tests/protein.tcyr` `chou_fasman_rules` |
+| `src/protein.rs` `test_cf_sheet_nucleation_threshold` | `tests/protein.tcyr` `chou_fasman_rules` |
+| `src/protein.rs` `test_cf_sheet_rich` | `tests/protein.tcyr` `chou_fasman_basics` |
+| `src/protein.rs` `test_cf_short_sequence_all_coil` | `tests/protein.tcyr` `chou_fasman_basics` |
+| `src/protein.rs` `test_cf_table_rows_follow_amino_acids` | `tests/protein.tcyr` `chou_fasman_table` |
+| `src/protein.rs` `test_cf_turn_rich` | `tests/protein.tcyr` `chou_fasman_basics` |
+| `src/protein.rs` `test_cf_turn_rules` | `tests/protein.tcyr` `chou_fasman_rules` |
+| `src/protein.rs` `test_cf_ubiquitin_regression` | `tests/protein.tcyr` `chou_fasman_proteins` |
+| `src/protein.rs` `test_cf_unknown_residue` | `tests/protein.tcyr` `chou_fasman_basics` |
+| `src/protein.rs` `test_composition` | `tests/protein.tcyr` `weights` |
+| `src/protein.rs` `test_composition_empty` | `tests/protein.tcyr` `weights` |
+| `src/protein.rs` `test_composition_lowercase` | `tests/protein.tcyr` `weights` |
+| `src/protein.rs` `test_default_pi_and_charge_unchanged_bit_exact` | `tests/protein.tcyr` `pka_sets` |
+| `src/protein.rs` `test_extinction_cystines` | `tests/protein.tcyr` `extinction` |
+| `src/protein.rs` `test_extinction_empty` | `tests/protein.tcyr` `extinction` |
+| `src/protein.rs` `test_extinction_lowercase` | `tests/protein.tcyr` `extinction` |
+| `src/protein.rs` `test_extinction_mixed` | `tests/protein.tcyr` `extinction` |
+| `src/protein.rs` `test_extinction_no_chromophores` | `tests/protein.tcyr` `extinction` |
+| `src/protein.rs` `test_extinction_single_trp` | `tests/protein.tcyr` `extinction` |
+| `src/protein.rs` `test_extinction_single_tyr` | `tests/protein.tcyr` `extinction` |
+| `src/protein.rs` `test_extinction_unknown` | `tests/protein.tcyr` `extinction` |
+| `src/protein.rs` `test_glycine_average_mass` | `tests/protein.tcyr` `lookups` |
+| `src/protein.rs` `test_lookup` | `tests/protein.tcyr` `lookups` |
+| `src/protein.rs` `test_lookup_lowercase` | `tests/protein.tcyr` `lookups` |
+| `src/protein.rs` `test_lookup_table_matches_amino_acids` | `tests/protein.tcyr` `lookups` |
+| `src/protein.rs` `test_lookup_unknown` | `tests/protein.tcyr` `lookups` |
+| `src/protein.rs` `test_molecular_weight` | `tests/protein.tcyr` `weights` |
+| `src/protein.rs` `test_molecular_weight_empty` | `tests/protein.tcyr` `weights` |
+| `src/protein.rs` `test_molecular_weight_lowercase` | `tests/protein.tcyr` `weights` |
+| `src/protein.rs` `test_molecular_weight_one_water_per_bond` | `tests/protein.tcyr` `weights` |
+| `src/protein.rs` `test_molecular_weight_ubiquitin` | `tests/protein.tcyr` `weights` |
+| `src/protein.rs` `test_molecular_weight_unknown_residue` | `tests/protein.tcyr` `weights` |
+| `src/protein.rs` `test_net_charge_high_ph_negative` | `tests/protein.tcyr` `charges` |
+| `src/protein.rs` `test_net_charge_low_ph_positive` | `tests/protein.tcyr` `charges` |
+| `src/protein.rs` `test_net_charge_matches_counted_groups` | `tests/protein.tcyr` `charges` |
+| `src/protein.rs` `test_pi_aspartate` | `tests/protein.tcyr` `charges` |
+| `src/protein.rs` `test_pi_empty` | `tests/protein.tcyr` `charges` |
+| `src/protein.rs` `test_pi_glycine` | `tests/protein.tcyr` `charges` |
+| `src/protein.rs` `test_pi_histidine` | `tests/protein.tcyr` `charges` |
+| `src/protein.rs` `test_pi_lowercase` | `tests/protein.tcyr` `charges` |
+| `src/protein.rs` `test_pi_lysine` | `tests/protein.tcyr` `charges` |
+| `src/protein.rs` `test_pi_matches_per_residue_reference` | `tests/protein.tcyr` `charges` |
+| `src/protein.rs` `test_pi_unknown_residue` | `tests/protein.tcyr` `charges` |
+| `src/protein.rs` `test_pi_with_rejects_like_default` | `tests/protein.tcyr` `protein_pi` |
+| `src/protein.rs` `test_pi_with_single_residue_midpoints` | `tests/protein.tcyr` `protein_pi` |
+| `src/protein.rs` `test_pka_set_default_is_lehninger` | `tests/protein.tcyr` `pka_sets` |
+| `src/protein.rs` `test_pka_sets_wire_published_values` | `tests/protein.tcyr` `published_sets` |
+| `src/protein.rs` `test_try_lookup_err` | `tests/protein.tcyr` `lookups` |
+| `src/protein.rs` `test_try_lookup_ok` | `tests/protein.tcyr` `lookups` |
+| `src/protein.rs` `test_whitespace_and_non_ascii_do_not_panic` | `tests/protein.tcyr` `robustness` |
+| `src/protein.rs` `test_with_lehninger_is_the_default` | `tests/protein.tcyr` `pka_sets` |
 | `src/signal.rs` `test_activations_clamp_out_of_range_state` | `tests/signal.tcyr` `activation_hardening` |
 | `src/signal.rs` `test_activations_sanitize_intensity` | `tests/signal.tcyr` `activation_hardening` |
 | `src/signal.rs` `test_dose_response_at_ec50` | `tests/signal.tcyr` `binding` |
@@ -209,6 +277,7 @@
 | `src/signal.rs` `test_validate_rejects_non_finite` | `tests/signal.tcyr` `validation` |
 | `src/signal.rs` `test_validate_valid` | `tests/signal.tcyr` `validation` |
 | `tests/integration.rs` `test_all_defaults_validate` | `tests/energy.tcyr` `hardening` |
+| `tests/integration.rs` `test_amino_acid_serialize` | `tests/protein.tcyr` `serde` |
 | `tests/integration.rs` `test_arrhenius_temperature_sensitivity` | `tests/enzyme.tcyr` `temperature` |
 | `tests/integration.rs` `test_bioenergy_and_metabolism_alignment` | `tests/energy.tcyr` `basics` |
 | `tests/integration.rs` `test_bioenergy_state_serde_roundtrip` | `tests/energy.tcyr` `serde` |
@@ -220,6 +289,7 @@
 | `tests/integration.rs` `test_error_display_negative_concentration` | `tests/guard.tcyr` `error_display` |
 | `tests/integration.rs` `test_error_display_unknown_amino_acid` | `tests/guard.tcyr` `error_display` |
 | `tests/integration.rs` `test_error_display_unknown_pathway` | `tests/guard.tcyr` `error_display` |
+| `tests/integration.rs` `test_extinction_coefficient_serialize` | `tests/protein.tcyr` `serde` |
 | `tests/integration.rs` `test_goldman_with_custom_permeability` | `tests/membrane.tcyr` `goldman` |
 | `tests/integration.rs` `test_inhibition_hierarchy` | `tests/enzyme.tcyr` `reference_values` |
 | `tests/integration.rs` `test_ionic_state_serde_roundtrip` | `tests/membrane.tcyr` `serde` |
@@ -246,6 +316,7 @@
 | `tests/validation.rs` `validate_enzyme_db_diffusion_limit` | `tests/enzyme.tcyr` `database` |
 | `tests/validation.rs` `validate_enzyme_db_hexokinase` | `tests/enzyme.tcyr` `database` |
 | `tests/validation.rs` `validate_enzyme_db_pyruvate_kinase_muscle` | `tests/enzyme.tcyr` `database` |
+| `tests/validation.rs` `validate_extinction_coefficient_pace_values` | `tests/protein.tcyr` `extinction` |
 | `tests/validation.rs` `validate_goldman_resting_potential` | `tests/membrane.tcyr` `goldman` |
 | `tests/validation.rs` `validate_hill_hemoglobin_at_p50` | `tests/enzyme.tcyr` `reference_values` |
 | `tests/validation.rs` `validate_hill_hemoglobin_o2_binding` | `tests/enzyme.tcyr` `reference_values` |
@@ -254,3 +325,10 @@
 | `tests/validation.rs` `validate_mm_saturation` | `tests/enzyme.tcyr` `reference_values` |
 | `tests/validation.rs` `validate_nernst_potassium_mammalian` | `tests/membrane.tcyr` `nernst_reference` |
 | `tests/validation.rs` `validate_nernst_sodium_mammalian` | `tests/membrane.tcyr` `nernst_reference` |
+| `tests/validation.rs` `validate_pi_acidic_amino_acid_glutamate` | `tests/protein.tcyr` `charges` |
+| `tests/validation.rs` `validate_pi_basic_amino_acid_arginine` | `tests/protein.tcyr` `charges` |
+| `tests/validation.rs` `validate_pi_expasy_hen_lysozyme` | `tests/protein.tcyr` `protein_pi` |
+| `tests/validation.rs` `validate_pi_expasy_more_proteins` | `tests/protein.tcyr` `protein_pi` |
+| `tests/validation.rs` `validate_pi_expasy_ubiquitin` | `tests/protein.tcyr` `protein_pi` |
+| `tests/validation.rs` `validate_pi_glycine_free_amino_acid` | `tests/protein.tcyr` `charges` |
+| `tests/validation.rs` `validate_pi_sets_differ_for_proteins` | `tests/protein.tcyr` `protein_pi` |

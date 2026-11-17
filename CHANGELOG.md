@@ -14,10 +14,37 @@ three-target baselines and `scripts/gates.sh`, step 9's probes 1–4, 8 and 12) 
 the profiles, and step 10's upstream drafts). M0 is complete. M1 part 1 (the foundation's error codes, guard layer
 and integrators), part 2 (logging, the failure events, the surface-parity and Rust-test gates) and part 3 (the
 JSON writers and readers) follow: M1 is complete. M2 part 1 (enzyme), part 2 (membrane), part 3 (signal), part 4
-(metabolism) and part 5 (energy) follow: M2 is complete.
+(metabolism) and part 5 (energy) follow: M2 is complete. M3 part 1 (protein) follows.
 
 ### Added
 
+- **src/protein.cyr** (M3 part 1) — `protein.rs` transcribed: `RyAminoAcid` and `ry_amino_acid` over the generated
+  table, `ry_lookup` / `ry_try_lookup`, `ry_molecular_weight`, `ry_composition` (a caller buffer of pairs),
+  `RyPkaSet` with `ry_net_charge(_with)` and `ry_isoelectric_point(_with)` (Henderson-Hasselbalch on the correctly
+  rounded `pow`, Bjellqvist's position-dependent termini, the 14-halving bisection), `ry_extinction_coefficient`, and
+  Chou-Fasman (`ry_chou_fasman_a`, `RySecondaryStructure`: the four rules on integer sums, its turn candidates
+  heapsorted into Rust's order); the serde writers of AminoAcid, ExtinctionCoefficient, PkaSet and
+  SecondaryStructure. A sequence is `(ptr, n)` UTF-8 read as bytes, which gives Rust's `chars()` answers for valid
+  UTF-8 (port plan §2 item 6)
+- **RY_ERR_BUFFER_TOO_SMALL** (M3 part 1) — error code 8, Cyrius only: a caller buffer too small for a result Rust
+  returns as a `Vec` ([ADR 0002](docs/adr/0002-port-api-divergences.md) rows 1, 3)
+- **tests/golden/protein.tsv** (M3 part 1, +14,065 rows) — every function over 281 sequences (the edges: the 20 codes
+  in both cases, the six non-code letters, whitespace, NUL, non-ASCII, an emoji, a combining mark; the Rust tests'
+  peptides; ubiquitin, hen lysozyme, horse myoglobin and cytochrome c, human calmodulin, bovine RNase A; 150 seeded
+  peptides; one 100,000-residue protein), the net charge at 14 pH values for each of the four sets, `try_lookup` over
+  68 characters, Chou-Fasman over 515 sequences (200 drawn to exercise every rule), the serde documents. Class C
+  12,341 (`powf`), A 897, B 827: all match on the first run; `protein.cr.tsv` has 0 rows (glibc's pow is correctly
+  rounded on every call here), so Rust's 1.1.0 bit-exact pI test holds as written. `validate.py` models every row,
+  Chou-Fasman's rules included (93,069 independent checks)
+- **tests/protein.tcyr** (M3 part 1, 380 checks) — the 68 `protein.rs` unit tests, 2 integration and 8 validation
+  tests as they are written (ExPASy's pI for six proteins with Bjellqvist, the bit-exact 1.1.0 values, the Chou-Fasman
+  rule tests and ubiquitin's pinned prediction): the Rust-test ledger at 286 of 723, 0 due and unported. The fuzz
+  harness runs every protein function on every input: a weight finite and positive, at most 26 letters, a finite
+  charge, every pI in [0, 14], oxidized >= reduced >= 0, one Chou-Fasman value per byte or none
+- **benchmarks** (M3 part 1) — the nine twins: protein_lookup 3.4 → 6 ns, molecular_weight 23 → 153,
+  isoelectric_point 1,808 → 18,279 and Bjellqvist 1,812 → 18,335 (≈126 correctly rounded `pow` calls, ~140 ns each),
+  extinction_coefficient 31 → 167, chou_fasman 298 → 1,839, net_charge 143 → 1,636 (nine `pow`), composition
+  292 → 499
 - **src/energy.cyr** (M2 part 5) — `energy.rs` transcribed: `RyBioenergyState` with `validate`, `is_anaerobic`,
   `o2_consumption`, `energy_available`, and the two mutators `set_exertion` and `tick` (phosphocreatine on
   `_ry_integrate_activate`, glycogen on `_ry_guard_shift`), the `Default` and the serde codec; the four bridge
@@ -406,6 +433,13 @@ JSON writers and readers) follow: M1 is complete. M2 part 1 (enzyme), part 2 (me
 
 ### Changed
 
+- **tests/parity.tcyr** (M3 part 1) — `protein::lookup` and the `AMINO_ACIDS` rows run through the ported
+  `ry_lookup` / `ry_amino_acid` (M0 answered them from the generated columns), the character decoded from its UTF-8
+- **Performance** (M3 part 1) — chou_fasman 2,437 → 1,839 ns: the window sums pick their table column once, not per
+  residue
+- **scripts/surface_parity.py**, **scripts/rust_test_ledger.py** (M3 part 1) — protein is ported: its 27 public items
+  have their names (`AMINO_ACIDS` mapped to `RY_AMINO_ACID_COUNT` and `ry_amino_acid`)
+- **cyrius.cyml** (M3 part 1) — `src/protein.cyr` in the three bundles after `src/energy.cyr`
 - **scripts/surface_parity.py**, **scripts/rust_test_ledger.py** (M2 part 5) — energy is ported: its 24 public items
   have their names; no M2 module is left in SCHEDULED
 - **cyrius.cyml** (M2 part 5) — `src/energy_data.cyr` and `src/energy.cyr` in the three bundles after

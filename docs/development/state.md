@@ -39,6 +39,7 @@ milestone (M9) sets 2.0.0.
 | M2 part 4 — metabolism | ✅ `src/metabolism.cyr`: MetabolicState with the adenylate-kinase split, AMP, free ADP, the energy charge, the yield and rate, `consume_atp` and `regenerate_atp` in place (Rust's two trace events), `validate`, `Default`, the codec; `src/metabolism_data.cyr` generated. Golden `metabolism.tsv` 5,088 rows (B 3,868, A 670, C 517, T 33: scripts that can set a public field), all matching; `metabolism.cr.tsv` 10 rows (glibc's expm1 in the lactate clearance; the port correctly rounded, ADR 3); `validate.py` models every row and its class (74,491). `tests/metabolism.tcyr` 98 checks: Rust's 28 metabolism tests (26 unit, 2 integration); ledger 176 of 723, 0 due; surface parity 0 missing; the fuzz harness reads and steps a MetabolicState. The Rust twin benched; `scripts/gates.sh` green (214 s; the same summary on ELF, `--bounds`, PE and aarch64); coverage 81 of 81 |
 | M2 part 5 — energy | ✅ `src/energy.cyr`: BioenergyState (`validate`, `is_anaerobic`, `o2_consumption`, `energy_available`, `set_exertion` and `tick` in place with Rust's two trace events, `Default`, the codec) and the four sharira bridges; `src/energy_data.cyr` generated. Golden `energy.tsv` 4,509 rows (B 3,096, C 877, A 501, T 35), sharira 1.1.0's `MetabolicCoupling::tick` call shape among them (148 single steps, sessions of ~11,000 frames as trajectories), all matching; `energy.cr.tsv` 4 rows (glibc's expm1; the port correctly rounded, ADR 3); `validate.py` models every row and its class (79,004). `tests/energy.tcyr` 93 checks: Rust's 32 energy tests (29 unit, 3 integration); ledger 208 of 723, no M2 test left; surface parity 0 missing; the fuzz harness reads and ticks a BioenergyState. The Rust twin benched; `scripts/gates.sh` green (250 s, under another job's load; the same summary on ELF, `--bounds`, PE and aarch64); coverage 96 of 96 |
 | **M2 — kinetics and cell physiology** | ✅ complete: enzyme, membrane, signal, metabolism, energy (`src/*.cyr` for all five, their generated data files). 24,519 golden rows of their own, all matching or accepted (ADR 3: 18 glibc `expm1` misroundings, the port correctly rounded; ADR 4: one bayan gap); class T introduced at part 3; 195 of the Rust tests ported with them. Next: M3, sequence analysis (protein, alignment, ptm, domain) |
+| M3 part 1 — protein | ✅ `src/protein.cyr`: lookup, molecular weight, composition, net charge and pI with the four pKa sets, extinction coefficient, Chou-Fasman, the four serde writers; `RY_ERR_BUFFER_TOO_SMALL` added. Golden `protein.tsv` +14,065 rows (C 12,341, A 897, B 827), all matching; `protein.cr.tsv` 0 rows; `validate.py` models every row, Chou-Fasman included (93,069). `tests/protein.tcyr` 380 checks: Rust's 78 protein tests (68 unit, 2 integration, 8 validation); ledger 286 of 723, 0 due; surface parity 0 missing; the fuzz harness runs every protein function. The nine Rust twins benched; Chou-Fasman's sums sped up 25 %; `scripts/gates.sh` green (229 s; the same summary on ELF, `--bounds`, PE and aarch64); coverage 119 of 119. Next: part 2, alignment |
 
 ## Golden corpus
 
@@ -48,7 +49,8 @@ milestone (M9) sets 2.0.0.
 | `tests/golden/math.tsv` | 18,826 | A 5,380 · B 2,352 · C 11,094 |
 | `tests/golden/math.cr.tsv` | 96 corrections (ADR 0003, MPFR 4.2.2; written by `mpfr_ref.py`) | — |
 | `tests/golden/constants_private.tsv` | 16 | A |
-| `tests/golden/protein.tsv` | 184 (table cells; module rows from M3) | A |
+| `tests/golden/protein.tsv` | 14,249 (184 table cells; 14,065 function rows from M3 part 1) | A 1,081 · B 827 · C 12,341 |
+| `tests/golden/protein.cr.tsv` | 0 corrections (glibc's pow correctly rounded on every call) | — |
 | `tests/golden/alignment.tsv` | 1,008 (`substitution_score`; module rows from M3) | A |
 | `tests/golden/enzyme.tsv` | 7,219 (60 table cells and `lookup_enzyme`; 7,159 function rows from M2 part 1) | A 309 · B 4,870 · C 2,040 |
 | `tests/golden/enzyme.cr.tsv` | 0 corrections (glibc's pow and exp correctly rounded on every call) | — |
@@ -67,8 +69,8 @@ milestone (M9) sets 2.0.0.
 | `tests/golden/logging.tsv` | 196 (M1 part 2: each `RASAYAN_LOG` form × 20 event targets) | A |
 | `tests/golden/json.tsv` | 20,120 (M1 part 3: serde_json's text per scalar kind, Rust's Display of an f64; serde_json's decision on each document per reader) | A |
 
-76,571 rows (20,163 at M0, 11,573 from M1 part 1, 196 from part 2, 20,120 from part 3; 7,159 from M2 part 1, 1,738
-from part 2, 6,025 from part 3, 5,088 from part 4, 4,509 from part 5). Recorded with rustc 1.100.0 on glibc 2.44 x86_64 fma (rasayan 1.2.0). `--check`,
+90,636 rows (20,163 at M0, 11,573 from M1 part 1, 196 from part 2, 20,120 from part 3; 7,159 from M2 part 1, 1,738
+from part 2, 6,025 from part 3, 5,088 from part 4, 4,509 from part 5; 14,065 from M3 part 1). Recorded with rustc 1.100.0 on glibc 2.44 x86_64 fma (rasayan 1.2.0). `--check`,
 `validate.py` (22,634 checks: part 2b's 11,540 and the 11,094 class-C rows against MPFR),
 `mpfr_ref.py --check` and `probe_tables.py --all-targets` (2,470 compiled values) are clean. Generated: `src/constants.cyr` (67 constants, 333 lines), `src/constants_private.cyr` (16,
 74 lines), `src/protein_data.cyr` (721 lines), `src/alignment_data.cyr` (129),
@@ -116,7 +118,8 @@ Raised by the M0 probes; each is decided when its milestone starts.
   and Arrhenius at 0 ulp on `_ry_cr_pow` / `_ry_cr_exp`) and membrane's 1,738 (Nernst, Goldman and the resting
   potential at 0 ulp on `_ry_cr_ln`) and signal's 6,017 (dose-response at 0 ulp on `_ry_cr_pow`, ticks on
   `_ry_cr_expm1`, the 57 trajectories bit for bit), metabolism's 5,078 (the 33 trajectories bit for bit) and energy's
-  4,505 (sharira's call shape and the 35 trajectories bit for bit). 76,337 in all.
+  4,505 (sharira's call shape and the 35 trajectories bit for bit); protein's 14,065 (the charge and pI at 0 ulp on
+  `_ry_cr_pow`, Chou-Fasman exactly). 90,402 in all.
 - **accepted (ADR 4):** 20 reader rows where bayan refuses or misreads for a filed reason (ADR 0004): 19 json rows
   and one membrane row (an integer `-0` in an IonicState document).
 - **accepted (ADR 2):** 61 logging rows: `RASAYAN_LOG` forms the port refuses (the default applies, with a warning)
@@ -139,10 +142,11 @@ Raised by the M0 probes; each is decided when its milestone starts.
   `tests/integrate.tcyr` (16: Rust's integrate tests), `tests/logging.tcyr` (87), `tests/json.tcyr` (57),
   `tests/enzyme.tcyr` (140: Rust's 82 enzyme tests), `tests/membrane.tcyr` (85: Rust's 29 membrane tests),
   `tests/signal.tcyr` (79: Rust's 24 signal tests, the four events' text), `tests/metabolism.tcyr` (98: Rust's 28
-  metabolism tests, both events' text), `tests/energy.tcyr` (93: Rust's 32 energy tests, both events' text), the fuzz
-  harness (50,000 inputs through `RASAYAN_LOG`, the JSON readers and the five M2 struct codecs, each accepted
+  metabolism tests, both events' text), `tests/energy.tcyr` (93: Rust's 32 energy tests, both events' text),
+  `tests/protein.tcyr` (380: Rust's 78 protein tests), the fuzz harness (50,000 inputs through `RASAYAN_LOG`, the JSON readers and the five M2 struct codecs, each accepted
   document written and read back, a SecondMessenger stepped and kept in [0, 1], a MetabolicState's charge in [0, 1]
-  and a step conserving ATP + ADP, a BioenergyState ticked with its reserves in [0, 1]);
+  and a step conserving ATP + ADP, a BioenergyState ticked with its reserves in [0, 1], every protein function on the
+  input as a sequence);
   `cyrius test` warning-free, `--bounds` and `cyrius audit` pass
 - MPFR sweep: `scripts/oracle/cr_verify.py` checks the four primitives on 5,314,811 arguments per target
   (`--quick`: 542,062), both paths, ELF, aarch64 and PE: 0 mismatches (`port-parity.md` §2e)
@@ -168,7 +172,9 @@ hill_equation 17.8 → 166, mixed_inhibition 4.3 → 36, ping_pong 2.8 → 23, a
 99 → 368, enzyme_lookup 4.4 → 82; M2 part 2, nernst 9.6 → 80, goldman 11.0 → 95, fick_flux 2.5 → 22; M2 part 3,
 dose_response 20.3 → 169, receptor_occupancy 1.6 → 14 (a SecondMessenger tick, Cyrius only: 105 ns on the series
 branch, 256 ns with three `expm1`); M2 part 4, metabolic_tick 17.6 → 117; M2 part 5, bioenergy_tick 27.2 →
-152. The rest arrive with their milestones.
+152; M3 part 1, protein_lookup 3.4 → 6, molecular_weight 23 → 153, isoelectric_point 1,808 → 18,279 (correctly rounded
+pow), extinction_coefficient 31 → 167, chou_fasman 298 → 1,839, net_charge 143 → 1,636, composition 292 → 499. The rest
+arrive with their milestones.
 Probe measurements (`port-parity.md` §3, measured not gated): the implicit NADH solves 582 / 259 ns
 (`balanced_nad_ratio` / `end_of_step_nadh`; Rust 155 / 98 ns); the network's 264-byte probe copy 11 ns; a
 level-gated trace event around MM +11 ns filtered out (a raw sakshi span +204 ns); a bote `tools/call` round trip
@@ -193,11 +199,10 @@ Rust crate (crates.io): mastishk 1.1.0, sharira 1.1.0, kiran 1.0.0. No Cyrius co
 
 ## Next
 
-M3: sequence analysis, in parts (port plan §6): protein (amino-acid properties, pI with every `PkaSet`, Chou-Fasman),
-alignment (Needleman-Wunsch on BLOSUM62 and PAM250), then ptm and domain (the PROSITE scanners, caller-buffer
-results).
+M3 part 2: alignment (Needleman-Wunsch on BLOSUM62 and PAM250); then ptm and domain (the PROSITE scanners, char
+positions, caller-buffer results), one part each (port plan §6).
 
 Parity bookkeeping: `scripts/surface_parity.py` (every Rust public item of a ported module has its Cyrius name) and
-`scripts/rust_test_ledger.py` (`docs/development/rust-test-ledger.md`: 723 Rust tests, 208 ported, 0 due and
+`scripts/rust_test_ledger.py` (`docs/development/rust-test-ledger.md`: 723 Rust tests, 286 ported, 0 due and
 unported)
 run in `scripts/gates.sh` since M1 part 2.
