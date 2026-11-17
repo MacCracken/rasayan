@@ -1,0 +1,591 @@
+# rasayan — src/metabolism.cyr: Rust 1.2.0's metabolism tests, ported
+# Stdlib auto-included via cyrius.cyml
+#
+# The 26 unit tests of `metabolism.rs` and the 2 integration tests (tests/integration.rs) that call only metabolism,
+# as they are written; tests/golden/metabolism.tsv checks every method, single step and trajectory besides. Literals
+# Cyrius can't write positionally (6e200, 1e300, f64::MAX, the subnormals) are bit patterns.
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+include "src/integrate.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
+include "src/metabolism_data.cyr"
+include "src/metabolism.cyr"
+
+# 1 when |a − b| < tol.
+fn near(a: f64, b: f64, tol: f64) {
+    var d: f64 = f64_abs(a - b);
+    return d < tol;
+}
+
+# The f64 with bit pattern `b`.
+fn fb(b): f64 {
+    var x: f64 = b;
+    return x;
+}
+
+# NaN (k 0), +inf (1), -inf (2): the non-finite values of Rust's hardening tests.
+fn nonfinite(k): f64 {
+    if (k == 0) { return _ry_nan(); }
+    var inf: f64 = _RY_INF;
+    if (k == 1) { return inf; }
+    return -inf;
+}
+
+# The default state with field k (declaration order) set to x.
+fn with_field(p: *RyMetabolicState, k, x: f64) {
+    ry_metabolic_state_default(p);
+    var w = p;
+    store64(w + 8 * k, load64(&x));
+    return 0;
+}
+
+# The default state with the given ATP and ADP pools (Rust's `pools`).
+fn pools(p: *RyMetabolicState, atp: f64, adp: f64) {
+    ry_metabolic_state_default(p);
+    p.atp = atp;
+    p.adp = adp;
+    return 0;
+}
+
+# 1 when the state validates.
+fn mt_ok(p: *RyMetabolicState) {
+    var t, v = ry_metabolic_state_validate(p);
+    return is_ok(t);
+}
+
+# 1 when the two states are equal field by field (Rust's derived PartialEq).
+fn mt_eq(a: *RyMetabolicState, b: *RyMetabolicState) {
+    var wa = a;
+    var wb = b;
+    var k = 0;
+    while (k < 6) {
+        var x: f64 = load64(wa + 8 * k);
+        var y: f64 = load64(wb + 8 * k);
+        if (x != y) { return 0; }
+        k = k + 1;
+    }
+    return 1;
+}
+
+# ── the captured events ──
+var _ev_buf[1024];
+var _ev_len = 0;
+
+# sakshi's subscriber: keeps the last event's message.
+fn _ev_hook(ts, level, category, msg, msg_len, extra) {
+    var n = msg_len;
+    if (n > 1024) { n = 1024; }
+    memcpy(&_ev_buf, msg, n);
+    _ev_len = msg_len;
+    return 0;
+}
+
+# 1 if the last captured event is the C string `want`.
+fn _ev_is(want) {
+    var n = strlen(want);
+    if (_ev_len != n) { return 0; }
+    return memeq(&_ev_buf, want, n);
+}
+
+# rust src/metabolism.rs: test_energy_charge_resting, test_aerobic_yield, test_anaerobic_under_hypoxia
+# rust src/metabolism.rs: test_aerobic_yield_continuous
+# rust tests/integration.rs: test_metabolic_energy_charge_consistency
+fn yields() {
+    test_group("metabolism: energy charge and yield");
+    var m: RyMetabolicState;
+    ry_metabolic_state_default(&m);
+    var ec: f64 = ry_metabolic_state_energy_charge(&m);
+    assert(ec > 0.9 && ec <= 1.0, "resting energy charge above 0.9, in [0, 1]");
+    var y: f64 = ry_metabolic_state_aerobic_atp_yield(&m);
+    assert(near(y, 30.0, 0.1), "30 ATP per glucose aerobically");
+    with_field(&m, 4, 0.1);
+    assert(ry_metabolic_state_is_anaerobic(&m) == 1, "hypoxia is anaerobic");
+    y = ry_metabolic_state_aerobic_atp_yield(&m);
+    var tol: f64 = 0.000000000001;
+    assert(near(y, 4.8, tol), "2 + 28 · 0.1 = 4.8");
+    with_field(&m, 4, 0.0);
+    y = ry_metabolic_state_aerobic_atp_yield(&m);
+    var eps: f64 = fb(0x3CB0000000000000);
+    assert(near(y, 2.0, eps), "anoxia: glycolysis alone");
+    with_field(&m, 4, 0.5);
+    y = ry_metabolic_state_aerobic_atp_yield(&m);
+    assert(near(y, 16.0, tol), "half oxygen: 16");
+    with_field(&m, 4, 1.0);
+    y = ry_metabolic_state_aerobic_atp_yield(&m);
+    assert(near(y, 30.0, tol), "full oxygen: 30");
+    var lo: f64 = 0.5 - 0.000000001;
+    var hi: f64 = 0.5 + 0.000000001;
+    with_field(&m, 4, lo);
+    var below: f64 = ry_metabolic_state_aerobic_atp_yield(&m);
+    with_field(&m, 4, hi);
+    var above: f64 = ry_metabolic_state_aerobic_atp_yield(&m);
+    assert(near(above, below, 0.000001), "no jump at 0.5");
+    with_field(&m, 4, 2.0);
+    y = ry_metabolic_state_aerobic_atp_yield(&m);
+    assert(near(y, 30.0, tol), "oxygen above 1 is clamped");
+    with_field(&m, 4, _ry_nan());
+    y = ry_metabolic_state_aerobic_atp_yield(&m);
+    assert(near(y, 2.0, tol), "NaN oxygen counts as anoxia");
+    return 0;
+}
+
+# rust src/metabolism.rs: test_consume_atp, test_consume_more_than_available, test_consume_atp_rejects_bad_amounts
+# rust src/metabolism.rs: test_consume_atp_with_negative_atp_creates_nothing
+fn consumption() {
+    test_group("metabolism: consume_atp");
+    var m: RyMetabolicState;
+    ry_metabolic_state_default(&m);
+    var eps: f64 = fb(0x3CB0000000000000);
+    var c: f64 = ry_metabolic_state_consume_atp(&m, 2.0);
+    var atp: f64 = m.atp;
+    assert(near(c, 2.0, eps) && near(atp, 4.0, eps), "2 of 6 consumed");
+    ry_metabolic_state_default(&m);
+    c = ry_metabolic_state_consume_atp(&m, 100.0);
+    atp = m.atp;
+    var az: f64 = f64_abs(atp);
+    assert(near(c, 6.0, eps) && az < eps, "no more than there is");
+    var before: RyMetabolicState;
+    var k = 0;
+    while (k < 4) {
+        var amount: f64 = -1.0;
+        if (k > 0) { amount = nonfinite(k - 1); }
+        ry_metabolic_state_default(&m);
+        memcpy(&before, &m, 48);
+        c = ry_metabolic_state_consume_atp(&m, amount);
+        assert(c == 0.0 && mt_eq(&m, &before) == 1, "a bad amount consumes nothing");
+        k = k + 1;
+    }
+    var m1: f64 = -1.0;
+    with_field(&m, 0, m1);
+    c = ry_metabolic_state_consume_atp(&m, 2.0);
+    var adp: f64 = m.adp;
+    assert(c == 0.0 && adp == 0.5, "negative ATP creates nothing");
+    return 0;
+}
+
+# rust src/metabolism.rs: test_regenerate_zero_glucose, test_regenerate_impaired_by_hypoxia
+# rust src/metabolism.rs: test_anaerobic_produces_lactate, test_regenerate_bad_dt_is_noop
+# rust src/metabolism.rs: test_regenerate_nan_oxygen_is_anoxic
+fn regeneration() {
+    test_group("metabolism: regenerate_atp");
+    var m: RyMetabolicState;
+    var eps: f64 = fb(0x3CB0000000000000);
+    with_field(&m, 3, 0.0);
+    var c: f64 = ry_metabolic_state_consume_atp(&m, 3.0);
+    var atp0: f64 = m.atp;
+    ry_metabolic_state_regenerate_atp(&m, 1.0);
+    var atp: f64 = m.atp;
+    assert(near(atp, atp0, eps), "no glucose: no regeneration");
+    var nx: RyMetabolicState;
+    var hx: RyMetabolicState;
+    ry_metabolic_state_default(&nx);
+    with_field(&hx, 4, 0.0);
+    c = ry_metabolic_state_consume_atp(&nx, 3.0);
+    c = ry_metabolic_state_consume_atp(&hx, 3.0);
+    ry_metabolic_state_regenerate_atp(&nx, 1.0);
+    ry_metabolic_state_regenerate_atp(&hx, 1.0);
+    var an: f64 = nx.atp;
+    var ah: f64 = hx.atp;
+    assert(an > ah, "normoxia regenerates more than hypoxia");
+    with_field(&m, 4, 0.1);
+    var lac0: f64 = m.lactate;
+    c = ry_metabolic_state_consume_atp(&m, 2.0);
+    ry_metabolic_state_regenerate_atp(&m, 1.0);
+    var lac: f64 = m.lactate;
+    assert(lac > lac0, "anaerobic work makes lactate");
+    var before: RyMetabolicState;
+    var k = 0;
+    while (k < 5) {
+        var dt: f64 = 0.0;
+        if (k == 1) { dt = -1.0; }
+        if (k > 1) { dt = nonfinite(k - 2); }
+        ry_metabolic_state_default(&m);
+        c = ry_metabolic_state_consume_atp(&m, 3.0);
+        memcpy(&before, &m, 48);
+        ry_metabolic_state_regenerate_atp(&m, dt);
+        assert(mt_eq(&m, &before) == 1, "an invalid dt does nothing");
+        k = k + 1;
+    }
+    var nan_m: RyMetabolicState;
+    var zero_m: RyMetabolicState;
+    with_field(&nan_m, 4, _ry_nan());
+    with_field(&zero_m, 4, 0.0);
+    c = ry_metabolic_state_consume_atp(&nan_m, 3.0);
+    c = ry_metabolic_state_consume_atp(&zero_m, 3.0);
+    ry_metabolic_state_regenerate_atp(&nan_m, 1.0);
+    ry_metabolic_state_regenerate_atp(&zero_m, 1.0);
+    var na: f64 = nan_m.atp;
+    var ng: f64 = nan_m.glucose;
+    var nl: f64 = nan_m.lactate;
+    var za: f64 = zero_m.atp;
+    var zl: f64 = zero_m.lactate;
+    var fin = _ry_is_finite(na) + _ry_is_finite(ng) + _ry_is_finite(nl);
+    assert(fin == 3, "NaN oxygen keeps the state finite");
+    var tol: f64 = 0.000000000001;
+    assert(near(na, za, tol) && near(nl, zl, tol), "NaN oxygen behaves as anoxia");
+    return 0;
+}
+
+# rust src/metabolism.rs: test_atp_adp_conserved, test_glucose_and_lactate_stoichiometry, test_regen_capped_by_glucose
+fn conservation() {
+    test_group("metabolism: conservation and stoichiometry");
+    var m: RyMetabolicState;
+    var o = 0;
+    while (o < 4) {
+        var o2: f64 = 0.0;
+        if (o == 1) { o2 = 0.3; }
+        if (o == 2) { o2 = 0.5; }
+        if (o == 3) { o2 = 1.0; }
+        with_field(&m, 4, o2);
+        var a0: f64 = m.atp;
+        var d0: f64 = m.adp;
+        var total: f64 = a0 + d0;
+        var ok = 1;
+        var step = 0;
+        while (step < 200) {
+            var amount: f64 = 0.05 * f64_from(step % 7);
+            var c: f64 = ry_metabolic_state_consume_atp(&m, amount);
+            ry_metabolic_state_regenerate_atp(&m, 0.5);
+            var a: f64 = m.atp;
+            var d: f64 = m.adp;
+            var g: f64 = m.glucose;
+            var sum: f64 = a + d;
+            if (near(sum, total, 0.000000001) == 0) { ok = 0; }
+            if (a < 0.0 || d < 0.0 || g < 0.0) { ok = 0; }
+            step = step + 1;
+        }
+        assert(ok == 1, "ATP + ADP conserved over 200 steps, every pool non-negative");
+        o = o + 1;
+    }
+    var tol: f64 = 0.000000000001;
+    # Anoxic: 2 ATP and 2 lactate per glucose.
+    with_field(&m, 4, 0.0);
+    m.lactate = 0.0;
+    var c1: f64 = ry_metabolic_state_consume_atp(&m, 3.0);
+    var atp0: f64 = m.atp;
+    var glc0: f64 = m.glucose;
+    ry_metabolic_state_regenerate_atp(&m, 1.0);
+    var atp: f64 = m.atp;
+    var glc: f64 = m.glucose;
+    var lac: f64 = m.lactate;
+    var regen: f64 = atp - atp0;
+    var used: f64 = glc0 - glc;
+    var half: f64 = regen / 2.0;
+    var twice: f64 = 2.0 * used;
+    assert(regen > 0.0 && near(used, half, tol), "anoxic: 2 ATP per glucose");
+    assert(near(lac, twice, tol), "anoxic: 2 lactate per glucose");
+    # Normoxic: 30 ATP per glucose, no lactate.
+    with_field(&m, 4, 1.0);
+    m.lactate = 0.0;
+    c1 = ry_metabolic_state_consume_atp(&m, 3.0);
+    atp0 = m.atp;
+    glc0 = m.glucose;
+    ry_metabolic_state_regenerate_atp(&m, 1.0);
+    atp = m.atp;
+    glc = m.glucose;
+    lac = m.lactate;
+    regen = atp - atp0;
+    var per30: f64 = regen / 30.0;
+    var d30: f64 = glc0 - glc;
+    assert(near(d30, per30, tol) && lac == 0.0, "normoxic: 30 ATP per glucose, no lactate");
+    # Half oxygen: 16 ATP per glucose, half anaerobic: 1 lactate per glucose.
+    with_field(&m, 4, 0.5);
+    m.lactate = 0.0;
+    c1 = ry_metabolic_state_consume_atp(&m, 3.0);
+    atp0 = m.atp;
+    glc0 = m.glucose;
+    ry_metabolic_state_regenerate_atp(&m, 1.0);
+    atp = m.atp;
+    glc = m.glucose;
+    lac = m.lactate;
+    used = glc0 - glc;
+    var per16: f64 = (atp - atp0) / 16.0;
+    assert(near(used, per16, tol) && near(lac, used, tol), "half oxygen: 16 ATP, 1 lactate per glucose");
+    # Almost no glucose under anoxia: at most 2 ATP per glucose.
+    with_field(&m, 4, 0.0);
+    m.glucose = 0.01;
+    m.lactate = 0.0;
+    c1 = ry_metabolic_state_consume_atp(&m, 6.0);
+    atp0 = m.atp;
+    ry_metabolic_state_regenerate_atp(&m, 1000000.0);
+    atp = m.atp;
+    glc = m.glucose;
+    lac = m.lactate;
+    var gain: f64 = atp - atp0;
+    var ag: f64 = f64_abs(glc);
+    assert(near(gain, 0.02, tol), "capped by the glucose: 0.02 ATP");
+    assert(ag < 0.000000000000001 && near(lac, 0.02, tol), "the glucose used up, 0.02 lactate");
+    return 0;
+}
+
+# rust src/metabolism.rs: test_lactate_clears_with_oxygen
+fn lactate() {
+    test_group("metabolism: lactate clearance");
+    var m: RyMetabolicState;
+    ry_metabolic_state_default(&m);
+    m.adp = 0.0;
+    m.lactate = 8.0;
+    m.oxygen = 1.0;
+    assert(ry_metabolic_state_is_anaerobic(&m) == 1, "lactate 8 is anaerobic");
+    var ln2: f64 = 0.6931471805599453;
+    var half_life: f64 = ln2 / RY_METABOLISM_LACTATE_CLEARANCE_RATE;
+    ry_metabolic_state_regenerate_atp(&m, half_life);
+    var lac: f64 = m.lactate;
+    assert(near(lac, 4.0, 0.000000001), "one half-life halves it");
+    ry_metabolic_state_regenerate_atp(&m, 3600.0);
+    assert(ry_metabolic_state_is_anaerobic(&m) == 0, "an hour later, aerobic");
+    ry_metabolic_state_default(&m);
+    m.adp = 0.0;
+    m.lactate = 8.0;
+    m.oxygen = 0.0;
+    ry_metabolic_state_regenerate_atp(&m, 3600.0);
+    lac = m.lactate;
+    assert(lac == 8.0, "anoxia: no clearance");
+    return 0;
+}
+
+# rust src/metabolism.rs: test_energy_charge_depleted, test_energy_charge_with_amp_hand_computed
+# rust src/metabolism.rs: test_energy_charge_limits, test_energy_charge_finite_in_unit_interval
+# rust src/metabolism.rs: test_energy_charge_monotone_in_atp_share
+fn adenylates() {
+    test_group("metabolism: adenylate kinase and the energy charge");
+    var m: RyMetabolicState;
+    var eps: f64 = fb(0x3CB0000000000000);
+    pools(&m, 0.0, 0.0);
+    var ec: f64 = ry_metabolic_state_energy_charge(&m);
+    var aec: f64 = f64_abs(ec);
+    assert(aec < eps, "no adenylate: 0");
+    # (ATP, pool) → (AMP, free ADP, EC), hand computed with K = 0.44.
+    var tol: f64 = 0.000000001;
+    var k = 0;
+    while (k < 3) {
+        var atp: f64 = 6.0;
+        var pool: f64 = 0.5;
+        var amp_w: f64 = 0.0171007254;
+        var free_w: f64 = 0.4828992746;
+        var ec_w: f64 = 0.9602230211;
+        if (k == 1) {
+            atp = 4.0;
+            pool = 2.5;
+            amp_w = 0.4584651154;
+            free_w = 2.0415348846;
+            ec_w = 0.7724257604;
+        }
+        if (k == 2) {
+            atp = 1.0;
+            pool = 5.5;
+            amp_w = 2.9226966731;
+            free_w = 2.5773033269;
+            ec_w = 0.3521002559;
+        }
+        pools(&m, atp, pool);
+        var amp: f64 = ry_metabolic_state_amp(&m);
+        var free: f64 = ry_metabolic_state_free_adp(&m);
+        ec = ry_metabolic_state_energy_charge(&m);
+        assert(near(amp, amp_w, tol) && near(free, free_w, tol) && near(ec, ec_w, tol), "AMP, free ADP and EC");
+        var keq: f64 = atp * amp / (free * free);
+        assert(near(keq, RY_METABOLISM_ADENYLATE_KINASE_KEQ, tol), "the equilibrium holds");
+        var sum: f64 = amp + free;
+        assert(near(sum, pool, 0.000000000001), "the pool is conserved");
+        var old: f64 = (atp + 0.5 * pool) / (atp + pool);
+        assert(ec < old, "AMP lowers the charge below the ADP-only formula");
+        k = k + 1;
+    }
+    pools(&m, 0.0, 0.5);
+    var a0: f64 = ry_metabolic_state_amp(&m);
+    var f0: f64 = ry_metabolic_state_free_adp(&m);
+    ec = ry_metabolic_state_energy_charge(&m);
+    assert(a0 == 0.5 && f0 == 0.0 && ec == 0.0, "no ATP: all AMP, EC 0");
+    pools(&m, 6.0, 0.0);
+    a0 = ry_metabolic_state_amp(&m);
+    ec = ry_metabolic_state_energy_charge(&m);
+    assert(a0 == 0.0 && ec == 1.0, "no ADP pool: EC 1");
+    pools(&m, 0.0, 0.0);
+    a0 = ry_metabolic_state_amp(&m);
+    f0 = ry_metabolic_state_free_adp(&m);
+    ec = ry_metabolic_state_energy_charge(&m);
+    assert(a0 == 0.0 && f0 == 0.0 && ec == 0.0, "nothing at all: 0, 0, 0");
+    var pico: f64 = 0.000000000001;
+    pools(&m, pico, 0.5);
+    ec = ry_metabolic_state_energy_charge(&m);
+    assert(ec < 0.00001, "continuous as ATP goes to 0");
+    ry_metabolic_state_default(&m);
+    var c: f64 = ry_metabolic_state_consume_atp(&m, 100.0);
+    ec = ry_metabolic_state_energy_charge(&m);
+    assert(ec == 0.0, "all ATP consumed: 0, not the old floor of 0.5");
+    # Every pair of the 13 values: finite, in range.
+    var grid[104];
+    var g = &grid;
+    store64(g, 0x0000000000000000);
+    store64(g + 8, 0x0010000000000000);
+    store64(g + 16, 0x0000000000000001);
+    store64(g + 24, 0x3e112e0be826d695);
+    store64(g + 32, 0x3fe0000000000000);
+    store64(g + 40, 0x4018000000000000);
+    store64(g + 48, 0x41cdcd6500000000);
+    store64(g + 56, 0x7e37e43c8800759c);
+    store64(g + 64, 0x7fefffffffffffff);
+    store64(g + 72, 0x7ff8000000000000);
+    store64(g + 80, 0x7ff0000000000000);
+    store64(g + 88, 0xfff0000000000000);
+    store64(g + 96, 0xbff0000000000000);
+    var bad = 0;
+    var i = 0;
+    while (i < 13) {
+        var j = 0;
+        while (j < 13) {
+            var x: f64 = load64(g + 8 * i);
+            var y: f64 = load64(g + 8 * j);
+            pools(&m, x, y);
+            var e: f64 = ry_metabolic_state_energy_charge(&m);
+            var am: f64 = ry_metabolic_state_amp(&m);
+            var fr: f64 = ry_metabolic_state_free_adp(&m);
+            var cy: f64 = _ry_guard_conc(y);
+            if (_ry_is_finite(e) == 0 || e < 0.0 || e > 1.0) { bad = bad + 1; }
+            if (_ry_is_finite(am) == 0 || am < 0.0 || am > cy) { bad = bad + 1; }
+            if (_ry_is_finite(fr) == 0 || fr < 0.0) { bad = bad + 1; }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    assert_eq(bad, 0, "every pool pair: EC in [0, 1], AMP in [0, adp], free ADP >= 0, all finite");
+    pools(&m, 6.0, 0.5);
+    var ea: f64 = ry_metabolic_state_energy_charge(&m);
+    pools(&m, fb(0x699f5aa543c31387), fb(0x6964e718d7d7625a));
+    var eb: f64 = ry_metabolic_state_energy_charge(&m);
+    assert(near(ea, eb, 0.000000000001), "scale invariant");
+    var max: f64 = fb(0x7fefffffffffffff);
+    pools(&m, max, max);
+    var emax: f64 = ry_metabolic_state_energy_charge(&m);
+    pools(&m, 1.0, 1.0);
+    var eone: f64 = ry_metabolic_state_energy_charge(&m);
+    assert(near(emax, eone, 0.000000000001), "f64::MAX pools as 1, 1");
+    ry_metabolic_state_default(&m);
+    var prev: f64 = ry_metabolic_state_energy_charge(&m);
+    var mono = 1;
+    var s = 0;
+    while (s < 65) {
+        c = ry_metabolic_state_consume_atp(&m, 0.1);
+        var now: f64 = ry_metabolic_state_energy_charge(&m);
+        if (now > prev) { mono = 0; }
+        prev = now;
+        s = s + 1;
+    }
+    assert(mono == 1, "converting ATP to ADP never raises the charge");
+    return 0;
+}
+
+# rust src/metabolism.rs: test_validate_valid, test_validate_negative_atp, test_validate_rejects_non_finite
+fn validation() {
+    test_group("metabolism: validate");
+    var m: RyMetabolicState;
+    ry_metabolic_state_default(&m);
+    assert(mt_ok(&m) == 1, "the default validates");
+    var m1: f64 = -1.0;
+    with_field(&m, 0, m1);
+    assert(mt_ok(&m) == 0, "negative ATP is refused");
+    var k = 0;
+    while (k < 3) {
+        var f = 0;
+        while (f < 6) {
+            with_field(&m, f, nonfinite(k));
+            assert(mt_ok(&m) == 0, "a non-finite field is refused");
+            f = f + 1;
+        }
+        k = k + 1;
+    }
+    with_field(&m, 2, m1);
+    assert(mt_ok(&m) == 0, "a negative NAD+/NADH ratio is refused");
+    sakshi_set_emit_hook(&_ev_hook);
+    sakshi_set_level(SK_DEBUG);
+    var t1, c1 = ry_metabolic_state_validate(&m);
+    assert_eq(c1, RY_ERR_INVALID_PARAMETER, "nad_ratio < 0: InvalidParameter");
+    assert_eq(_ev_is("invalid parameter: nad_ratio = -1 (must be non-negative)"), 1, "its Display text");
+    with_field(&m, 3, m1);
+    var t2, c2 = ry_metabolic_state_validate(&m);
+    assert_eq(c2, RY_ERR_NEGATIVE_CONCENTRATION, "glucose < 0: NegativeConcentration");
+    assert_eq(_ev_is("concentration out of range: glucose = -1 (must be >= 0)"), 1, "its Display text");
+    ry_metabolic_state_default(&m);
+    m.nad_ratio = _ry_nan();
+    m.lactate = m1;
+    var t3, c3 = ry_metabolic_state_validate(&m);
+    assert_eq(c3, RY_ERR_NEGATIVE_CONCENTRATION, "the pools are checked before nad_ratio");
+    sakshi_set_level(SK_INFO);
+    sakshi_clear_emit_hook();
+    return 0;
+}
+
+# Rust's two trace events, under the target `rasayan::metabolism`, their fields in Rust's order.
+fn events() {
+    test_group("metabolism: trace events");
+    sakshi_set_emit_hook(&_ev_hook);
+    sakshi_set_level(SK_TRACE);
+    var m: RyMetabolicState;
+    ry_metabolic_state_default(&m);
+    var c: f64 = ry_metabolic_state_consume_atp(&m, 2.0);
+    assert_eq(_ev_is("rasayan::metabolism: consume_atp amount=2 atp_before=6"), 1, "consume_atp");
+    ry_metabolic_state_regenerate_atp(&m, 0.1);
+    assert_eq(_ev_is("rasayan::metabolism: regenerate_atp dt=0.1 atp_before=4 adp_before=2.5 oxygen=1"), 1,
+      "regenerate_atp");
+    _ev_len = 0;
+    ry_metabolic_state_regenerate_atp(&m, 0.0);
+    assert_eq(_ev_len, 0, "no event for an invalid dt");
+    sakshi_set_level(SK_INFO);
+    c = ry_metabolic_state_consume_atp(&m, 1.0);
+    assert_eq(_ev_len, 0, "below TRACE, nothing");
+    sakshi_clear_emit_hook();
+    return 0;
+}
+
+# rust src/metabolism.rs: test_serde_roundtrip
+# rust tests/integration.rs: test_metabolic_state_serde_roundtrip
+fn serde() {
+    test_group("metabolism: serde round trips");
+    var sb = str_builder_new();
+    var m: RyMetabolicState;
+    ry_metabolic_state_default(&m);
+    var t1, v1 = ry_metabolic_state_to_json(sb, &m);
+    var want = "{\"atp\":6.0,\"adp\":0.5,\"nad_ratio\":700.0,\"glucose\":5.0,\"oxygen\":1.0,\"lactate\":1.0}";
+    assert_eq(load64(sb + 8), strlen(want), "serde_json's document: its length");
+    assert_eq(memeq(load64(sb), want, strlen(want)), 1, "serde_json's document");
+    var back: RyMetabolicState;
+    var t2, v2 = ry_metabolic_state_from_json(load64(sb), load64(sb + 8), &back);
+    assert(is_ok(t2) == 1 && mt_eq(&back, &m) == 1, "the default reads back");
+    var c: f64 = ry_metabolic_state_consume_atp(&m, 2.3);
+    ry_metabolic_state_regenerate_atp(&m, 0.7);
+    store64(sb + 8, 0);
+    var t3, v3 = ry_metabolic_state_to_json(sb, &m);
+    var t4, v4 = ry_metabolic_state_from_json(load64(sb), load64(sb + 8), &back);
+    assert(is_ok(t4) == 1 && memeq(&back, &m, 48) == 1, "a worked state, bit for bit");
+    var miss = "{\"atp\":6.0,\"adp\":0.5,\"nad_ratio\":700.0,\"glucose\":5.0,\"oxygen\":1.0}";
+    var t5, v5 = ry_metabolic_state_from_json(miss, strlen(miss), &back);
+    assert_eq(v5, RY_ERR_DESERIALIZE, "a missing field is refused");
+    return 0;
+}
+
+# Runs the metabolism suite.
+fn main() {
+    alloc_init();
+    yields();
+    consumption();
+    regeneration();
+    conservation();
+    lactate();
+    adenylates();
+    validation();
+    events();
+    serde();
+    return assert_summary();
+}
+
+var exit_code = main();
+# assert_summary() returns the failure count; a wait status is 8 bits, so any failure exits 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

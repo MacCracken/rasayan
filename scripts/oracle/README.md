@@ -54,19 +54,21 @@ in `scripts/oracle/target/` (gitignored).
 | `tests/golden/alignment.tsv` | 1,008 | `substitution_score` for all 400 ordered pairs of both matrices (800), and for the 52 other characters `lookup` is called with, on either side of `A`, in both matrices (208); class A |
 | `tests/golden/enzyme.tsv` | 7,219 | the table rows (M0: 60) and, from M2 part 1, every public function and method of `enzyme.rs` through the oracle's API (`m_enzyme.rs`): each rate law's base point varied over 14 edges and 300 seeded calls, the fits over 163 data sets, the methods, the serde documents; class B, C (`powf`, `exp`; `enzyme.cr.tsv`) or A |
 | `tests/golden/membrane.tsv` | 1,739 | `DEFAULT_PERMEABILITY`'s three fields (M0) and, from M2 part 2, `IonicState::default()`'s six and every public function and method of `membrane.rs` through the oracle's API (`m_membrane.rs`): Nernst, Goldman and Fick over 14 edges per argument and seeded physiological (and, for Goldman, wild) calls, nine charges, the validators, `resting_potential`, the serde documents; class C (`ln`; `membrane.cr.tsv`), B or A |
+| `tests/golden/metabolism.tsv` | 5,088 | M2 part 4: `MetabolicState::default()`'s six fields, and every public method of `metabolism.rs` through the oracle's API (`t_metabolism.rs`, `m_metabolism.rs`): the read-only methods over 329 states (the default varied over 14 edges per field, the Rust tests' states, the 13 × 13 ATP-and-pool grid, 60 seeded); single-step rows of `consume_atp` and `regenerate_atp` at 14 amounts and 20 time steps, the clearance's cutoff ±1 ulp among them; 33 trajectory scripts (field sets included); the serde documents; class C (`exp_m1`; `metabolism.cr.tsv`), B, T or A |
 | `tests/golden/signal.tsv` | 6,025 | M2 part 3: `SecondMessenger::default()`'s three fields, and every public function and method of `signal.rs` through the oracle's API (`t_signal.rs`, `m_signal.rs`): `dose_response` and `receptor_occupancy` over 14 edges per argument and 300 seeded calls; single-step rows of `activate_gs` / `_gi` / `_gq` and `tick` (each state the default varied over the edges, or 60 seeded, at 14 intensities or 25 time steps, each decay rate's series cutoff ±1 ulp among them); 57 trajectory scripts of up to 10⁴ steps at dt 0.001 … 5 s; `validate`, `intensity`, the serde documents; class C (`powf`, `exp_m1`; `signal.cr.tsv`), B, T or A |
 | `tests/golden/ai.tsv` | 1 | `SYSTEM_PROMPT`'s text, class A |
 | `tests/golden/guard.tsv` | 5,575 | M1 part 1: crate-private `guard.rs` through its verbatim copy (below): the validators (no output for `Ok(())`, `E:<Variant>` for an error), `valid_dt`, `conc`, `unit`, `take`, `shift`; class A |
 | `tests/golden/integrate.tsv` | 5,998 | M1 part 1: crate-private `integrate.rs` through its verbatim copy: `step_factors` (two outputs) and the three integrators across `SERIES_MAX` to `k·dt` = 1e6; B 2,963 (series branch, early returns) · C 3,035 (`exp_m1` branch) |
 | `tests/golden/logging.tsv` | 196 | M1 part 2: `logging::init` and `init_with_level` over every `RASAYAN_LOG` form and default: for each of the 20 targets rasayan's events carry, the most verbose level Rust's own filter passes (`logging.rs`'s `EnvFilter` statement through its verbatim copy, the real environment variable set per row); class A |
 | `tests/golden/json.tsv` | 20,120 | M1 part 3b: 1,265 reader rows, `serde_json::from_slice<T>` on each document's exact bytes for the same scalar kinds and an all-f64 struct (`MembranePermeability`), the value correctly rounded (core's parse of the token) where serde_json misreads, with the note saying so. M1 part 3a: serde_json 1.0.154's text for each scalar kind rasayan's serde types hold (f64, String, char, u32, usize, i32, `Option<f64>`, `[f64; 5]`) and Rust's Display of an f64, over 9,262 doubles (30 exact ties among them, found by an exact-fraction search and listed as bit patterns); class A |
-| `tests/golden/modules.txt` | 13 | the module list the harness reads |
+| `tests/golden/modules.txt` | 14 | the module list the harness reads |
 | `src/constants.cyr` | 333 lines | the 67 public constants as `RY_` consts, under the first paragraph of their Rust doc comments |
 | `src/constants_private.cyr` | 74 lines | the 16 private constants as `_RY_<MODULE>_<NAME>` (`t_private.rs`) |
 | `src/protein_data.cyr` | 721 lines | `RY_AMINO_ACID_*` columns and index constants; `_RY_PROTEIN_*`: the lookup index, the side chains, the pKa-set table, the Bjellqvist termini, the Chou-Fasman columns, 23 scalars (`t_protein.rs`) |
 | `src/alignment_data.cyr` | 129 lines | `_RY_ALIGNMENT_*`: the residue order, the 26-entry index, BLOSUM62 and PAM250 as `i8[400]` (`t_alignment.rs`) |
 | `src/enzyme_data.cyr` | 251 lines | `RY_KNOWN_ENZYME_*` columns and index constants; `_RY_ENZYME_REGRESSION_REL_TOL` (`t_enzyme.rs`) |
 | `src/membrane_data.cyr` | 56 lines | `RY_MEMBRANE_DEFAULT_PERMEABILITY_{P_NA,P_K,P_CL}` and `RY_MEMBRANE_IONIC_STATE_DEFAULT_*`, the `Self { … }` literal of `impl Default for IonicState`, checked against the API (`t_membrane.rs`) |
+| `src/metabolism_data.cyr` | 41 lines | `RY_METABOLISM_METABOLIC_STATE_DEFAULT_*`, the `Self { … }` literal of `impl Default for MetabolicState`, checked against the API (`t_metabolism.rs`) |
 | `src/signal_data.cyr` | 26 lines | `RY_SIGNAL_SECOND_MESSENGER_DEFAULT_*`, the `Self { … }` literal of `impl Default for SecondMessenger` (`rustsrc::default_literal`), checked against the API (`t_signal.rs`) |
 | `src/ai_data.cyr` | 36 lines | `_RY_AI_SYSTEM_PROMPT` (308 bytes and a NUL) and its length; for `[lib.ai]` only (`t_ai.rs`) |
 
@@ -137,7 +139,8 @@ Pending, at their milestones (port plan §4 step 6, §6):
 - the JSON rows (each module's milestone) and the MCP / request rows (M8);
 - a corrected-oracle file `<module>.cr.tsv` for each module with class-C rows, with that module's
   operation model in `mpfr_ref.py` and `validate.py` (`math.cr.tsv` since part 2c-1, `integrate.cr.tsv` since M1
-  part 1, below; `enzyme.cr.tsv`, `membrane.cr.tsv` and `signal.cr.tsv` since M2 parts 1–3; the rest at their milestones).
+  part 1, below; `enzyme.cr.tsv`, `membrane.cr.tsv`, `signal.cr.tsv` and `metabolism.cr.tsv` since M2 parts 1–4; the rest at their
+  milestones).
 
 **Crate-private functions** (M1 on). The generator's crate can call only rasayan's public API, so a private layer it
 must pin is compiled from a verbatim copy: `src/v_guard.rs` and `src/v_integrate.rs` each hold one block between
@@ -169,8 +172,9 @@ fn <TAB> class <TAB> inputs <TAB> outputs <TAB> note
     after it, bit-identical to the corrected oracle (`<module>.cr.tsv` when a primitive glibc misrounded is on the
     path). A scenario's frames are scripts that each extend the previous one. `signal::SecondMessenger::trajectory`:
     `f:camp f:calcium f:ip3`, then `i:1 f:<x>` activate_gs, `i:2 f:<x>` activate_gi, `i:3 f:<x>` activate_gq,
-    `i:4 f:<dt> i:<k>` tick(dt) k times. A state too large to write out whole gets a digest per frame at its
-    milestone.
+    `i:4 f:<dt> i:<k>` tick(dt) k times. `metabolism::MetabolicState::trajectory` (M2 part 4): the six fields, then
+    `i:1 f:<x>` consume_atp, `i:2 f:<dt> i:<k>` regenerate_atp k times, `i:3 i:<field> f:<x>` a public field set (0
+    atp … 5 lactate). A state too large to write out whole gets a digest per frame at its milestone.
 - **inputs**, **outputs** — space-separated typed tokens (`-` when empty):
 
   | Token | Meaning |

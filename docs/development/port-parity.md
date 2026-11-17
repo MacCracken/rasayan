@@ -1071,3 +1071,37 @@ milestone.
 **Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): dose_response 20.3 → 169 ns (the correctly rounded `pow`,
 ~140 ns of it), receptor_occupancy 1.6 → 14. Cyrius only (no Rust bench): a tick 105 ns on the series branch and
 256 ns with three `expm1`, activate_gq 42 ns.
+
+### 5d. Part 4: metabolism (2026-11-17)
+
+**What is compared.** `tests/golden/metabolism.tsv` (new, 5,088 rows) through the oracle's public API:
+`MetabolicState::default()`; `validate`, `amp`, `free_adp`, `energy_charge`, `aerobic_atp_yield`, `is_anaerobic` and
+`metabolic_rate` over 329 states (the default varied field by field over the 14 edge values, the Rust tests' own
+states, the 13 × 13 grid of ATP and ADP pools Rust's energy-charge sweep crosses, 60 seeded physiological states);
+single-step rows of `consume_atp` (its return value, then the state) and `regenerate_atp`, at 14 amounts and 20 time
+steps, with the lactate clearance's series cutoff ±1 ulp at each seeded state's own oxygen; the serde documents; and
+33 trajectory frames. A metabolism script can also set a public field (`i:3 i:<field> f:<x>`), as Rust's tests and
+callers do, so the scenarios include Rust's bench loop, its conservation test at four oxygen levels, a hypoxic episode
+with recovery over an hour (the clearance on its `exp_m1` branch at 100 s steps), glucose running out under anoxia and
+fed back, and NaN or out-of-range starts. The class follows the branch: C where the clearance reaches `exp_m1` (517),
+B elsewhere (3,868: the adenylate-kinase split's `sqrt` is correctly rounded, as Rust's), T for the scripts (33), A for
+`validate`, `is_anaerobic`, the default and the documents (670).
+
+| Check | Result |
+|---|---|
+| every row | identical on the first run (classes B and C at 0 ulp; the 33 trajectories bit for bit) |
+| corrected oracle | `mpfr_ref.py` reproduces all 550 class-C and class-T rows with glibc's primitives; with MPFR 10 `regenerate_atp` rows change, where glibc's `expm1` misrounds (`metabolism.cr.tsv`). The port gives the corrected value on all 10 (ADR 3) |
+| `validate.py` | every row re-derived from its own transcription of `metabolism.rs` (pinned lines, the two constants read from its source), class C and T with an independent MPFR, and each row's class checked against its branch; 74,491 checks in all |
+| Rust tests | 28 ported (`tests/metabolism.tcyr`, 98 checks: both events' text and two refusals' among them); the ledger at 176 of 723, 0 due and unported |
+| fuzz | every input also read as a MetabolicState, written and read back bit for bit; its energy charge stays in [0, 1] and a consume-and-regenerate step from valid pools conserves ATP + ADP (4,120 documents accepted across the four struct codecs) |
+| three targets (`scripts/gates.sh`, 214 s) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 71,832 ok, 230 accepted, 0 failed; coverage 81 of 81 public fns executed |
+
+**The Cyrius forms** (ADR 0002 rows 7, 10): the methods take `*RyMetabolicState`, the mutators update it in place,
+and `consume_atp` returns what it consumed; the private `scaled_adenylates` returns 1 with its four values in a
+caller buffer, or 0 for Rust's None; `validate` walks the five pools through the shared field-name list, then checks
+`nad_ratio` by its own rule, as Rust does.
+
+**Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): metabolic_tick 17.6 → 117 ns. The loop body makes about 17 calls
+to the guard and Rust-semantics helpers (`_ry_guard_conc`, `_ry_min`, `_ry_max`, …), each a few ns, which Rust inlines;
+they are multi-statement, so `#inline` does not apply to them at the pin. Cyrius only: `regenerate_atp` at 100 s 157 ns
+(the clearance's `expm1`), `energy_charge` 53 ns.

@@ -34,6 +34,8 @@ include "src/membrane_data.cyr"
 include "src/membrane.cyr"
 include "src/signal_data.cyr"
 include "src/signal.cyr"
+include "src/metabolism_data.cyr"
+include "src/metabolism.cyr"
 
 # Keeps the loops' results observable.
 var _bn_sink = 0;
@@ -463,6 +465,46 @@ fn _bn_sig(name, kind, n): i64 {
     return 0;
 }
 
+# ── M2 part 4: metabolism, the Rust bench's twin (the same loop body), and MetabolicState (Cyrius only) ──
+
+# n calls of metabolism benchmark `kind`, its result kept: 0 metabolic_tick (Rust's body: a default state, consume 2,
+# regenerate 0.1 s), 1 regenerate_atp at 100 s (the lactate clearance on exp_m1), 2 energy_charge.
+fn _bn_metabolism(kind, n): i64 {
+    var m: RyMetabolicState;
+    ry_metabolic_state_default(&m);
+    var s: f64 = 0.0;
+    var i = 0;
+    while (i < n) {
+        if (kind == 0) {
+            ry_metabolic_state_default(&m);
+            var c: f64 = ry_metabolic_state_consume_atp(&m, 2.0);
+            ry_metabolic_state_regenerate_atp(&m, 0.1);
+            var a: f64 = m.atp;
+            s = s + a;
+        } elif (kind == 1) {
+            ry_metabolic_state_regenerate_atp(&m, 100.0);
+        } else {
+            var e: f64 = ry_metabolic_state_energy_charge(&m);
+            s = s + e;
+        }
+        i = i + 1;
+    }
+    var l: f64 = m.lactate;
+    s = s + l;
+    _bn_keep(s);
+    return 0;
+}
+
+# One metabolism benchmark of `n` calls.
+fn _bn_met(name, kind, n): i64 {
+    var b = bench_new(name);
+    bench_batch_start(b);
+    _bn_metabolism(kind, n);
+    bench_batch_stop(b, n);
+    bench_report(b);
+    return 0;
+}
+
 # One benchmark of the JSON writers: `kind` 0 the serde_json f64 form, 1 the Display form, 2 a ten-field document.
 fn _bn_json(name, kind, n): i64 {
     var b = bench_new(name);
@@ -534,6 +576,9 @@ fn main(): i64 {
     _bn_sig("signal/second_messenger tick dt 0.01", 2, 1000000);
     _bn_sig("signal/second_messenger tick dt 1", 3, 1000000);
     _bn_sig("signal/second_messenger activate_gq", 4, 1000000);
+    _bn_met("metabolic_tick", 0, 1000000);
+    _bn_met("metabolism/regenerate_atp dt 100", 1, 1000000);
+    _bn_met("metabolism/energy_charge", 2, 1000000);
     var br = bench_new("json/read MembranePermeability (3 f64)");
     bench_batch_start(br);
     _bn_read("{\"p_na\":0.04,\"p_k\":1.0,\"p_cl\":0.45}", 3, "p_na\0p_k\0p_cl\0", 100000);

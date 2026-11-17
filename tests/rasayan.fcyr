@@ -5,7 +5,7 @@
 # truncations, case flips). M1: RASAYAN_LOG, which comes from the environment, and the JSON readers (part 3b: a
 # document parsed on an arena reset per input, then read as an all-f64 struct, a [f64; 5], a string and an integer).
 # The sequence readers and each type's codec join with their milestones: M2 part 2, IonicState's and
-# MembranePermeability's; part 3, SecondMessenger's.
+# MembranePermeability's; part 3, SecondMessenger's; part 4, MetabolicState's.
 
 include "src/constants.cyr"
 include "src/constants_private.cyr"
@@ -23,6 +23,8 @@ include "src/enzyme_data.cyr"
 include "src/enzyme.cyr"
 include "src/signal_data.cyr"
 include "src/signal.cyr"
+include "src/metabolism_data.cyr"
+include "src/metabolism.cyr"
 
 var _fz_state = 0x2545F4914F6CDD1D;
 var _fz_bad = 0;
@@ -115,9 +117,10 @@ fn fz_all_finite(w, n): i64 {
     return 1;
 }
 
-# The membrane and signal codecs on one input: an accepted IonicState, MembranePermeability or SecondMessenger holds
+# The membrane, signal and metabolism codecs on one input: an accepted IonicState, MembranePermeability,
+# SecondMessenger or MetabolicState holds
 # only finite f64s, and the document its writer makes reads back to the same bits; a SecondMessenger stepped from it
-# stays in [0, 1].
+# stays in [0, 1]; a MetabolicState's energy charge is in [0, 1] and a step from valid pools conserves ATP + ADP.
 fn fuzz_membrane(data, len) {
     reset_via(_fz_arena);
     var ions: RyIonicState;
@@ -161,6 +164,31 @@ fn fuzz_membrane(data, len) {
             if (x != x || x < 0.0 || x > 1.0) { _fz_bad = _fz_bad + 1; }
             k = k + 1;
         }
+    }
+    var mt: RyMetabolicState;
+    var mb: RyMetabolicState;
+    var t10, v10 = ry_metabolic_state_from_json_a(_fz_arena, data, len, &mt);
+    if (is_ok(t10) == 1) {
+        _fz_codec_read = _fz_codec_read + 1;
+        if (fz_all_finite(&mt, 6) == 0) { _fz_bad = _fz_bad + 1; }
+        store64(_fz_sb + 8, 0);
+        var t11, v11 = ry_metabolic_state_to_json(_fz_sb, &mt);
+        var t12, v12 = ry_metabolic_state_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &mb);
+        if (is_ok(t11) == 0 || is_ok(t12) == 0 || memeq(&mb, &mt, 48) == 0) { _fz_bad = _fz_bad + 1; }
+        # The energy charge stays finite in [0, 1]; a step conserves ATP + ADP when both pools are valid.
+        var ec: f64 = ry_metabolic_state_energy_charge(&mt);
+        if (ec != ec || ec < 0.0 || ec > 1.0) { _fz_bad = _fz_bad + 1; }
+        var a0: f64 = mt.atp;
+        var d0: f64 = mt.adp;
+        var c: f64 = ry_metabolic_state_consume_atp(&mt, 0.5);
+        ry_metabolic_state_regenerate_atp(&mt, 0.5);
+        var a1: f64 = mt.atp;
+        var d1: f64 = mt.adp;
+        var before: f64 = a0 + d0;
+        var after: f64 = a1 + d1;
+        var drift: f64 = f64_abs(after - before);
+        var bound: f64 = 0.000000000001 * (1.0 + f64_abs(before));
+        if (a0 >= 0.0 && d0 >= 0.0 && drift > bound) { _fz_bad = _fz_bad + 1; }
     }
     return 0;
 }
@@ -206,7 +234,7 @@ fn main() {
     var buf = alloc(cap + 1);
     _fz_arena = arena_allocator_growable(65536);
     _fz_sb = str_builder_new();
-    var seeds = alloc(8 * 27);
+    var seeds = alloc(8 * 28);
     store64(seeds, "trace");
     store64(seeds + 8, "DEBUG");
     store64(seeds + 16, "info,warn");
@@ -234,6 +262,7 @@ fn main() {
     store64(seeds + 192, "{\"na_in\":12.0,\"na_out\":145,\"k_in\":155.0,\"k_out\":4,\"cl_in\":4.0,\"cl_out\":120}");
     store64(seeds + 200, "[12,145,155,4,4,1.2e2]");
     store64(seeds + 208, "{\"camp\":0.1,\"calcium\":0.05,\"ip3\":0.05}");
+    store64(seeds + 216, "{\"atp\":6,\"adp\":0.5,\"nad_ratio\":700,\"glucose\":5,\"oxygen\":1,\"lactate\":1}");
     var i = 0;
     while (i < 50000) {
         var n = 0;
@@ -242,7 +271,7 @@ fn main() {
             var k = 0;
             while (k < n) { store8(buf + k, fz_below(256)); k = k + 1; }
         } else {
-            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(27)));
+            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(28)));
         }
         fuzz_main(buf, n);
         fuzz_json(buf, n);
@@ -258,7 +287,7 @@ fn main() {
     fmt_int(_fz_read);
     print(", JSON documents read as a struct: ", 35);
     fmt_int(_fz_json_read);
-    print(", as an IonicState, MembranePermeability or SecondMessenger, written and read back: ", 84);
+    print(", as one of the four struct codecs, written and read back: ", 59);
     fmt_int(_fz_codec_read);
     println(")");
     return 0;

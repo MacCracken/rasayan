@@ -6,7 +6,7 @@
 > milestone hasn't come. The golden corpus (`tests/golden/`) checks every ported function on its grid besides.
 > The 2 doc tests and the example are M9's.
 
-**723 Rust tests:** 148 ported; 60 at M2, 139 at M3, 53 at M4a, 80 at M4b, 38 at M5, 108 at M6, 62 at M7, 35 at M8.
+**723 Rust tests:** 176 ported; 32 at M2, 139 at M3, 53 at M4a, 80 at M4b, 38 at M5, 108 at M6, 62 at M7, 35 at M8.
 
 | Rust file | Tests | Ported | Due, unported | Later (milestone) |
 |---|---:|---:|---:|---|
@@ -27,7 +27,7 @@
 | `src/mapk.rs` | 17 | 0 | 0 | 17 (M6) |
 | `src/mcp.rs` | 31 | 0 | 0 | 31 (M8) |
 | `src/membrane.rs` | 19 | 19 | 0 | — |
-| `src/metabolism.rs` | 26 | 0 | 0 | 26 (M2) |
+| `src/metabolism.rs` | 26 | 26 | 0 | — |
 | `src/neurotransmitter.rs` | 31 | 0 | 0 | 31 (M7) |
 | `src/nuclear_receptor.rs` | 11 | 0 | 0 | 11 (M6) |
 | `src/pathway.rs` | 34 | 0 | 0 | 34 (M5) |
@@ -38,9 +38,9 @@
 | `src/signal.rs` | 21 | 21 | 0 | — |
 | `src/signaling.rs` | 13 | 0 | 0 | 13 (M6) |
 | `src/tca.rs` | 26 | 0 | 0 | 26 (M4a) |
-| `tests/integration.rs` | 70 | 25 | 0 | 5 (M2), 3 (M3), 2 (M4a), 10 (M4b), 4 (M5), 15 (M6), 6 (M7) |
+| `tests/integration.rs` | 70 | 27 | 0 | 3 (M2), 3 (M3), 2 (M4a), 10 (M4b), 4 (M5), 15 (M6), 6 (M7) |
 | `tests/validation.rs` | 25 | 16 | 0 | 9 (M3) |
-| **Total** | **723** | **148** | **0** | |
+| **Total** | **723** | **176** | **0** | |
 
 ## Where each is ported
 
@@ -132,6 +132,32 @@
 | `src/membrane.rs` `test_resting_potential_uses_body_temperature` | `tests/membrane.tcyr` `goldman` |
 | `src/membrane.rs` `test_serde_roundtrip` | `tests/membrane.tcyr` `serde` |
 | `src/membrane.rs` `test_validate_rejects_non_finite` | `tests/membrane.tcyr` `validation` |
+| `src/metabolism.rs` `test_aerobic_yield` | `tests/metabolism.tcyr` `yields` |
+| `src/metabolism.rs` `test_aerobic_yield_continuous` | `tests/metabolism.tcyr` `yields` |
+| `src/metabolism.rs` `test_anaerobic_produces_lactate` | `tests/metabolism.tcyr` `regeneration` |
+| `src/metabolism.rs` `test_anaerobic_under_hypoxia` | `tests/metabolism.tcyr` `yields` |
+| `src/metabolism.rs` `test_atp_adp_conserved` | `tests/metabolism.tcyr` `conservation` |
+| `src/metabolism.rs` `test_consume_atp` | `tests/metabolism.tcyr` `consumption` |
+| `src/metabolism.rs` `test_consume_atp_rejects_bad_amounts` | `tests/metabolism.tcyr` `consumption` |
+| `src/metabolism.rs` `test_consume_atp_with_negative_atp_creates_nothing` | `tests/metabolism.tcyr` `consumption` |
+| `src/metabolism.rs` `test_consume_more_than_available` | `tests/metabolism.tcyr` `consumption` |
+| `src/metabolism.rs` `test_energy_charge_depleted` | `tests/metabolism.tcyr` `adenylates` |
+| `src/metabolism.rs` `test_energy_charge_finite_in_unit_interval` | `tests/metabolism.tcyr` `adenylates` |
+| `src/metabolism.rs` `test_energy_charge_limits` | `tests/metabolism.tcyr` `adenylates` |
+| `src/metabolism.rs` `test_energy_charge_monotone_in_atp_share` | `tests/metabolism.tcyr` `adenylates` |
+| `src/metabolism.rs` `test_energy_charge_resting` | `tests/metabolism.tcyr` `yields` |
+| `src/metabolism.rs` `test_energy_charge_with_amp_hand_computed` | `tests/metabolism.tcyr` `adenylates` |
+| `src/metabolism.rs` `test_glucose_and_lactate_stoichiometry` | `tests/metabolism.tcyr` `conservation` |
+| `src/metabolism.rs` `test_lactate_clears_with_oxygen` | `tests/metabolism.tcyr` `lactate` |
+| `src/metabolism.rs` `test_regen_capped_by_glucose` | `tests/metabolism.tcyr` `conservation` |
+| `src/metabolism.rs` `test_regenerate_bad_dt_is_noop` | `tests/metabolism.tcyr` `regeneration` |
+| `src/metabolism.rs` `test_regenerate_impaired_by_hypoxia` | `tests/metabolism.tcyr` `regeneration` |
+| `src/metabolism.rs` `test_regenerate_nan_oxygen_is_anoxic` | `tests/metabolism.tcyr` `regeneration` |
+| `src/metabolism.rs` `test_regenerate_zero_glucose` | `tests/metabolism.tcyr` `regeneration` |
+| `src/metabolism.rs` `test_serde_roundtrip` | `tests/metabolism.tcyr` `serde` |
+| `src/metabolism.rs` `test_validate_negative_atp` | `tests/metabolism.tcyr` `validation` |
+| `src/metabolism.rs` `test_validate_rejects_non_finite` | `tests/metabolism.tcyr` `validation` |
+| `src/metabolism.rs` `test_validate_valid` | `tests/metabolism.tcyr` `validation` |
 | `src/signal.rs` `test_activations_clamp_out_of_range_state` | `tests/signal.tcyr` `activation_hardening` |
 | `src/signal.rs` `test_activations_sanitize_intensity` | `tests/signal.tcyr` `activation_hardening` |
 | `src/signal.rs` `test_dose_response_at_ec50` | `tests/signal.tcyr` `binding` |
@@ -170,6 +196,8 @@
 | `tests/integration.rs` `test_lineweaver_burk_and_eadie_hofstee_agree` | `tests/enzyme.tcyr` `fits` |
 | `tests/integration.rs` `test_membrane_permeability_serde_roundtrip` | `tests/membrane.tcyr` `serde` |
 | `tests/integration.rs` `test_membrane_potential_physiological_range` | `tests/membrane.tcyr` `goldman` |
+| `tests/integration.rs` `test_metabolic_energy_charge_consistency` | `tests/metabolism.tcyr` `yields` |
+| `tests/integration.rs` `test_metabolic_state_serde_roundtrip` | `tests/metabolism.tcyr` `serde` |
 | `tests/integration.rs` `test_michaelis_menten_half_vmax_at_km` | `tests/enzyme.tcyr` `reference_values` |
 | `tests/integration.rs` `test_michaelis_menten_saturation` | `tests/enzyme.tcyr` `reference_values` |
 | `tests/integration.rs` `test_michaelis_menten_zero_substrate` | `tests/enzyme.tcyr` `reference_values` |

@@ -398,8 +398,78 @@ SIGNAL = {
     "signal::SecondMessenger::trajectory": _sm_trajectory,
 }
 
+# ── metabolism (M2 part 4) ──
+
+M_LACTATE_CLEARANCE = 0.001  # metabolism::LACTATE_CLEARANCE_RATE
+M_EPS = 2.220446049250313e-16  # f64::EPSILON
+
+
+def _fdiv(a, b):
+    """IEEE a / b (Python raises on a zero divisor)."""
+    if b == 0:
+        if a == 0 or a != a:
+            return math.nan
+        return math.copysign(math.inf, a) * math.copysign(1.0, b)
+    return a / b
+
+
+def _mt_rate(atp, adp):
+    """`MetabolicState::metabolic_rate` on the raw fields."""
+    demand = _fdiv(adp, atp + adp + M_EPS)
+    return _rust_min(1.0 + demand * 5.0, 10.0)
+
+
+def _mt_regen(st, dt, P):
+    """`MetabolicState::regenerate_atp` on [atp, adp, nad_ratio, glucose, oxygen, lactate]."""
+    if not (math.isfinite(dt) and dt > 0.0):
+        return st
+    atp, adp0, nad, glc0, oxy, lac = st
+    o2 = _unit(oxy)
+    adp = _conc(adp0)
+    glucose = _conc(glc0)
+    per = 2.0 + 28.0 * o2
+    rate = _mt_rate(atp, adp0) * 0.5 * (per / 30.0) * dt
+    regen = _rust_min(_rust_min(rate, adp), glucose * per)
+    used = regen / per
+    atp = atp + regen
+    adp = adp - regen
+    glucose = _rust_max(glucose - used, 0.0)
+    lactate = _relax_any(_conc(lac), 0.0, M_LACTATE_CLEARANCE * o2, dt, P)
+    return [atp, adp, nad, glucose, oxy, lactate + 2.0 * (1.0 - o2) * used]
+
+
+def _mt_consume(st, amount):
+    consumed = _rust_min(_conc(amount), _conc(st[0]))
+    return [st[0] - consumed, st[1] + consumed] + list(st[2:])
+
+
+def _mt_trajectory(a, P):
+    """A class-T script: six fields, then `1 x` consume_atp, `2 dt k` regenerate_atp k times, `3 field x` a field."""
+    st, k = list(a[:6]), 6
+    while k < len(a):
+        op = a[k]
+        if op == 1:
+            st = _mt_consume(st, a[k + 1])
+            k += 2
+        elif op == 2:
+            for _ in range(a[k + 2]):
+                st = _mt_regen(st, a[k + 1], P)
+            k += 3
+        elif op == 3:
+            st[a[k + 1]] = a[k + 2]
+            k += 3
+        else:
+            raise ValueError(f"no operation {op}")
+    return st
+
+
+METABOLISM = {
+    "metabolism::MetabolicState::regenerate_atp": lambda a, P: _mt_regen(a[:6], a[6], P),
+    "metabolism::MetabolicState::trajectory": _mt_trajectory,
+}
+
 # The modules with class-C (and class-T) rows beyond math, and their models.
-MODELS = {"integrate": INTEGRATE, "enzyme": ENZYME, "membrane": MEMBRANE, "signal": SIGNAL}
+MODELS = {"integrate": INTEGRATE, "enzyme": ENZYME, "membrane": MEMBRANE, "signal": SIGNAL, "metabolism": METABOLISM}
 
 
 def _arg(tok):

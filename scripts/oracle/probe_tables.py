@@ -35,6 +35,7 @@ GENERATED = [
     "src/alignment_data.cyr",
     "src/enzyme_data.cyr",
     "src/membrane_data.cyr",
+    "src/metabolism_data.cyr",
     "src/signal_data.cyr",
     "src/ai_data.cyr",
 ]

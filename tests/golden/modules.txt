@@ -10,5 +10,6 @@ json
 logging
 math
 membrane
+metabolism
 protein
 signal

@@ -68,3 +68,22 @@ Cyrius only (Rust has no bench for them):
 | SecondMessenger tick, dt 0.01 | 105 | three relaxations on the series branch, three `unit` guards, the inlined trace gate |
 | SecondMessenger tick, dt 1 | 256 | three correctly rounded `expm1` (~50 ns each) |
 | SecondMessenger activate_gq | 42 | four `unit` guards and the IP3 → Ca2+ coupling |
+
+## M2 part 4: metabolism
+
+| Benchmark | Rust 1.2.0 (ns) | Cyrius (ns) | Notes |
+|---|---|---|---|
+| metabolic_tick | 17.58 | 117 | Rust's loop body: a default state, consume_atp(2), regenerate_atp(0.1) |
+
+Cyrius only:
+
+| Benchmark | Cyrius (ns) | Notes |
+|---|---|---|
+| regenerate_atp, dt 100 | 157 | the lactate clearance on `expm1` (~50 ns) |
+| energy_charge | 53 | the adenylate-kinase split: one `sqrt`, three divisions |
+
+Where the time goes: about 17 calls per tick to the guard and Rust-semantics helpers (`_ry_guard_conc` ×5, `_ry_min`
+×4, `_ry_max` ×2, `_ry_guard_unit`, `_ry_guard_valid_dt`, the relaxation, the rate), each a few ns, which Rust inlines
+into its loop. They are multi-statement, and `#inline` takes only a single expression at the pin, so the calls stay;
+rewriting the M1 foundation's helpers branch-free (with the bit-pattern proofs M2 part 1 gave `_ry_is_finite`) is the
+lever if a consumer's profile asks for it.

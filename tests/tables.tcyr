@@ -17,6 +17,7 @@ include "src/protein_data.cyr"
 include "src/alignment_data.cyr"
 include "src/enzyme_data.cyr"
 include "src/membrane_data.cyr"
+include "src/metabolism_data.cyr"
 include "src/signal_data.cyr"
 include "src/ai_data.cyr"
 
@@ -104,9 +105,9 @@ fn check_alignment() {
     return 0;
 }
 
-# enzyme_data.cyr, membrane_data.cyr, signal_data.cyr, ai_data.cyr.
+# enzyme_data.cyr, membrane_data.cyr, metabolism_data.cyr, signal_data.cyr, ai_data.cyr.
 fn check_enzymes_membrane_ai() {
-    test_group("enzyme, membrane, signal and ai data");
+    test_group("enzyme, membrane, metabolism, signal and ai data");
     assert_eq(RY_KNOWN_ENZYME_COUNT, 12, "12 known enzymes");
     assert_eq(RY_KNOWN_ENZYME_CATALASE, 2, "Catalase is row 2");
     assert_eq(bits_of(RY_KNOWN_ENZYME_KCAT[RY_KNOWN_ENZYME_CATALASE]), 0x418312d000000000, "kcat 4e7");
@@ -130,6 +131,9 @@ fn check_enzymes_membrane_ai() {
     assert_eq(bits_of(RY_SIGNAL_SECOND_MESSENGER_DEFAULT_CAMP), 0x3fb999999999999a, "cAMP 0.1");
     assert_eq(bits_of(RY_SIGNAL_SECOND_MESSENGER_DEFAULT_CALCIUM), 0x3fa999999999999a, "Ca2+ 0.05");
     assert_eq(bits_of(RY_SIGNAL_SECOND_MESSENGER_DEFAULT_IP3), 0x3fa999999999999a, "IP3 0.05");
+    assert_eq(bits_of(RY_METABOLISM_METABOLIC_STATE_DEFAULT_ATP), 0x4018000000000000, "ATP 6");
+    assert_eq(bits_of(RY_METABOLISM_METABOLIC_STATE_DEFAULT_NAD_RATIO), 0x4085e00000000000, "NAD+/NADH 700");
+    assert_eq(bits_of(RY_METABOLISM_METABOLIC_STATE_DEFAULT_LACTATE), 0x3ff0000000000000, "lactate 1");
     assert_eq(_RY_AI_SYSTEM_PROMPT_LEN, 308, "the prompt is 308 bytes");
     assert_eq(strlen(&_RY_AI_SYSTEM_PROMPT), _RY_AI_SYSTEM_PROMPT_LEN, "and NUL-terminated there");
     assert_eq(_RY_AI_SYSTEM_PROMPT[0], 89, "it starts with Y");

@@ -24,10 +24,10 @@
 # What is wired up at M1 part 1:
 # - `const` rows of every module: src/constants.cyr, src/constants_private.cyr and the scalar consts of the
 #   generated data files, by Rust name;
-# - the table rows (protein, alignment, enzyme, membrane, signal): answered from the generated src/*_data.cyr columns. A
-#   row of a lookup over a table (`protein::lookup`, `enzyme::lookup_enzyme`, `alignment::substitution_score`) applies
-#   the Rust function's rule to the generated data here, so every cell is compared through the oracle's API; at M2
-#   and M3 those rows move to the ported `ry_*` functions;
+# - the table rows (protein, alignment, enzyme, membrane, signal, metabolism): answered from the generated
+#   src/*_data.cyr columns. A row of a lookup over a table (`protein::lookup`, `enzyme::lookup_enzyme`,
+#   `alignment::substitution_score`) applies the Rust function's rule to the generated data here, so every cell is
+#   compared through the oracle's API; at M2 and M3 those rows move to the ported `ry_*` functions;
 # - `math` rows: classes A and B on the builtins (abs, ceil, sqrt), src/mathx.cyr's Rust-semantics helpers and
 #   _ry_clamp and _ry_f64_to_u32 (in src/mathx.cyr since M1); class C (powf, exp, ln, exp_m1) on src/mathx.cyr's
 #   correctly rounded primitives, at 0 ulp against the corrected oracle (ADR 0003). The stdlib's counterparts stay as
@@ -54,6 +54,7 @@ include "src/alignment_data.cyr"
 include "src/enzyme_data.cyr"
 include "src/membrane_data.cyr"
 include "src/signal_data.cyr"
+include "src/metabolism_data.cyr"
 include "src/ai_data.cyr"
 include "src/fmtf.cyr"
 include "src/error.cyr"
@@ -64,6 +65,7 @@ include "src/json.cyr"
 include "src/enzyme.cyr"
 include "src/membrane.cyr"
 include "src/signal.cyr"
+include "src/metabolism.cyr"
 
 alloc_init();
 
@@ -876,6 +878,17 @@ fn _par_enzyme_json(fp, fl): i64 {
 # src/membrane_data.cyr and src/membrane.cyr (M2 part 2). Goldman's inputs are T, the six IonicState fields and the
 # three MembranePermeability fields; Nernst's `f:T i:z f:out f:in`.
 
+# 1 if inputs k .. k + n − 1 are all f64 tokens.
+#must_use
+fn _par_all_f_from(k, n): i64 {
+    var j = 0;
+    while (j < n) {
+        if (_par_is_f(k + j) == 0) { return 0; }
+        j = j + 1;
+    }
+    return 1;
+}
+
 # 1 if input k is an f64 token, 0 if not.
 #must_use
 fn _par_is_f(k): i64 {
@@ -1141,6 +1154,131 @@ fn _par_signal_json(fp, fl): i64 {
             return 1;
         }
         _par_got_fields(&sm, 3);
+        return 1;
+    }
+    return 0;
+}
+
+# ── metabolism ──────────────────────────────────────────────────────────────────────
+# src/metabolism_data.cyr and src/metabolism.cyr (M2 part 4). A MetabolicState row takes the state's six fields (atp,
+# adp, nad_ratio, glucose, oxygen, lactate), then the method's argument. A trajectory row (class T) is a script: the
+# state, then `i:1 f:x` consume_atp, `i:2 f:dt i:k` k regenerations, `i:3 i:field f:x` a field set.
+
+# Replays a trajectory script from input 6 on *m: 1, or -1 for a malformed script.
+fn _par_mt_script(m: *RyMetabolicState): i64 {
+    var w = m;
+    var k = 6;
+    while (k < _par_in_n) {
+        if (load64(_par_in_k + k * 8) != 105) { return 0 - 1; }
+        var op = _par_in(k);
+        if (op == 1 && _par_is_f(k + 1) == 1) {
+            var x: f64 = _par_f(k + 1);
+            var c: f64 = ry_metabolic_state_consume_atp(m, x);
+            k = k + 2;
+        } elif (op == 2 && _par_is_f(k + 1) == 1 && k + 2 < _par_in_n && load64(_par_in_k + (k + 2) * 8) == 105) {
+            var dt: f64 = _par_f(k + 1);
+            var n = _par_in(k + 2);
+            var j = 0;
+            while (j < n) {
+                ry_metabolic_state_regenerate_atp(m, dt);
+                j = j + 1;
+            }
+            k = k + 3;
+        } elif (op == 3 && k + 2 < _par_in_n && load64(_par_in_k + (k + 1) * 8) == 105 && _par_is_f(k + 2) == 1) {
+            var field = _par_in(k + 1);
+            if (field < 0 || field > 5) { return 0 - 1; }
+            store64(w + 8 * field, _par_in(k + 2));
+            k = k + 3;
+        } else {
+            return 0 - 1;
+        }
+    }
+    return 1;
+}
+
+# The metabolism rows: the default, MetabolicState's methods and trajectories, the serde rows.
+fn _par_metabolism(fp, fl): i64 {
+    var m: RyMetabolicState;
+    if (_par_eq(fp, fl, "metabolism::MetabolicState::default") == 1) {
+        if (_par_in_n != 0) { return 0 - 1; }
+        ry_metabolic_state_default(&m);
+        _par_got_fields(&m, 6);
+        return 1;
+    }
+    if (_par_in_n < 6 || _par_all_f_from(0, 6) == 0) { return _par_metabolism_json(fp, fl); }
+    _par_fields_in(0, &m, 6);
+    if (_par_eq(fp, fl, "metabolism::MetabolicState::trajectory") == 1) {
+        if (_par_mt_script(&m) != 1) { return 0 - 1; }
+        _par_got_fields(&m, 6);
+        return 1;
+    }
+    if (_par_in_n == 6) {
+        var r: f64 = 0.0;
+        if (_par_eq(fp, fl, "metabolism::MetabolicState::validate") == 1) {
+            var t1, v1 = ry_metabolic_state_validate(&m);
+            _par_got_outcome(t1, v1);
+            return 1;
+        } elif (_par_eq(fp, fl, "metabolism::MetabolicState::is_anaerobic") == 1) {
+            _par_got_i(ry_metabolic_state_is_anaerobic(&m));
+            return 1;
+        } elif (_par_eq(fp, fl, "metabolism::MetabolicState::amp") == 1) {
+            r = ry_metabolic_state_amp(&m);
+        } elif (_par_eq(fp, fl, "metabolism::MetabolicState::free_adp") == 1) {
+            r = ry_metabolic_state_free_adp(&m);
+        } elif (_par_eq(fp, fl, "metabolism::MetabolicState::energy_charge") == 1) {
+            r = ry_metabolic_state_energy_charge(&m);
+        } elif (_par_eq(fp, fl, "metabolism::MetabolicState::aerobic_atp_yield") == 1) {
+            r = ry_metabolic_state_aerobic_atp_yield(&m);
+        } elif (_par_eq(fp, fl, "metabolism::MetabolicState::metabolic_rate") == 1) {
+            r = ry_metabolic_state_metabolic_rate(&m);
+        } else {
+            return _par_metabolism_json(fp, fl);
+        }
+        _par_got_f(r);
+        return 1;
+    }
+    if (_par_in_n != 7 || _par_is_f(6) == 0) { return _par_metabolism_json(fp, fl); }
+    var x: f64 = _par_f(6);
+    if (_par_eq(fp, fl, "metabolism::MetabolicState::consume_atp") == 1) {
+        var c: f64 = ry_metabolic_state_consume_atp(&m, x);
+        _par_got_f(c);
+        _par_got_fields(&m, 6);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "metabolism::MetabolicState::regenerate_atp") == 1) {
+        ry_metabolic_state_regenerate_atp(&m, x);
+        _par_got_fields(&m, 6);
+        return 1;
+    }
+    return _par_metabolism_json(fp, fl);
+}
+
+# The serde rows of MetabolicState.
+fn _par_metabolism_json(fp, fl): i64 {
+    var m: RyMetabolicState;
+    if (_par_eq(fp, fl, "serde_json::to_string<MetabolicState>") == 1 && _par_all_f(6) == 1) {
+        if (_par_jsb == 0) { _par_jsb = str_builder_new(); }
+        var sb = _par_jsb;
+        store64(sb + 8, 0);
+        _par_fields_in(0, &m, 6);
+        var t1, v1 = ry_metabolic_state_to_json(sb, &m);
+        if (is_err_result(t1) == 1) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::from_slice<MetabolicState>") == 1) {
+        var lw[8];
+        var doc = _par_in_bytes(0, &lw);
+        if (doc == 0) { return 0 - 1; }
+        if (_par_jarena == 0) { _par_jarena = arena_allocator_growable(65536); }
+        _par_json_gap = _par_has_neg_zero_int(doc, load64(&lw));
+        reset_via(_par_jarena);
+        var t2, v2 = ry_metabolic_state_from_json_a(_par_jarena, doc, load64(&lw), &m);
+        if (is_err_result(t2) == 1) {
+            _par_got_err(v2);
+            return 1;
+        }
+        _par_got_fields(&m, 6);
         return 1;
     }
     return 0;
@@ -1516,6 +1654,7 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
     if (_par_eq(mp, ml, "enzyme") == 1) { return _par_enzyme(fp, fl); }
     if (_par_eq(mp, ml, "membrane") == 1) { return _par_membrane(fp, fl); }
     if (_par_eq(mp, ml, "signal") == 1) { return _par_signal(fp, fl); }
+    if (_par_eq(mp, ml, "metabolism") == 1) { return _par_metabolism(fp, fl); }
     if (_par_eq(mp, ml, "guard") == 1) { return _par_guard(fp, fl); }
     if (_par_eq(mp, ml, "integrate") == 1) { return _par_integrate(fp, fl); }
     if (_par_eq(mp, ml, "logging") == 1) { return _par_logging(fp, fl); }
@@ -1626,6 +1765,7 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "membrane::IonicState::resting_potential") == 1) { return 0; }
     if (_par_eq(fp, fl, "signal::dose_response") == 1) { return 0; }
     if (_par_eq(fp, fl, "signal::SecondMessenger::tick") == 1) { return 0; }
+    if (_par_eq(fp, fl, "metabolism::MetabolicState::regenerate_atp") == 1) { return 0; }
     return 0 - 1;
 }
 
