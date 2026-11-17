@@ -27,6 +27,10 @@ milestone (M9) sets 2.0.0.
 
 **M0 is complete** (port plan §10): every step 0–10 done, `bash scripts/gates.sh` green end to end.
 
+| Milestone | Status |
+|---|---|
+| M1 part 1 — error, guard, integrate | ✅ `src/error.cyr` (`RY_ERR_*`, `ry_error_name` / `_message`), `src/guard.cyr` (`_ry_guard_*`: validators returning a value-form Result, each refusal's DEBUG event Rust's Display text; the sanitizers), `src/integrate.cyr` (`_ry_integrate_*`, Rust's operation order); `_ry_clamp` / `_ry_f64_to_u32` into `src/mathx.cyr`. Golden `guard.tsv` 5,575 (A), `integrate.tsv` 5,998 (B 2,963, C 3,035), `integrate.cr.tsv` 39 (glibc's expm1 misrounds; ADR 3), through verbatim copies of the crate-private Rust checked on every run; all exact or accepted on the parity harness; `validate.py` 34,246 independent checks; `tests/guard.tcyr` 86, `tests/integrate.tcyr` 16 (Rust's 9 unit tests ported); benches (`port-parity.md` §4a); `scripts/gates.sh` green (147 s; the same parity summary on ELF, `--bounds`, PE and aarch64); coverage 2 of 2 public fns executed. Next: part 2, `src/logging.cyr` |
+
 ## Golden corpus
 
 | File | Rows | Classes |
@@ -40,8 +44,11 @@ milestone (M9) sets 2.0.0.
 | `tests/golden/enzyme.tsv` | 60 (table cells and `lookup_enzyme`; module rows from M2) | A |
 | `tests/golden/membrane.tsv` | 1 (`DEFAULT_PERMEABILITY`; module rows from M2) | A |
 | `tests/golden/ai.tsv` | 1 (`SYSTEM_PROMPT`; module rows from M8) | A |
+| `tests/golden/guard.tsv` | 5,575 (M1 part 1) | A |
+| `tests/golden/integrate.tsv` | 5,998 (M1 part 1) | B 2,963 · C 3,035 |
+| `tests/golden/integrate.cr.tsv` | 39 corrections (ADR 0003: glibc's expm1; written by `mpfr_ref.py`) | — |
 
-20,163 rows. Recorded with rustc 1.100.0 on glibc 2.44 x86_64 fma (rasayan 1.2.0). `--check`,
+31,736 rows (20,163 at M0, 11,573 from M1 part 1). Recorded with rustc 1.100.0 on glibc 2.44 x86_64 fma (rasayan 1.2.0). `--check`,
 `validate.py` (22,634 checks: part 2b's 11,540 and the 11,094 class-C rows against MPFR),
 `mpfr_ref.py --check` and `probe_tables.py --all-targets` (2,470 compiled values) are clean. Generated: `src/constants.cyr` (67 constants, 333 lines), `src/constants_private.cyr` (16,
 74 lines), `src/protein_data.cyr` (721 lines), `src/alignment_data.cyr` (129),
@@ -78,23 +85,26 @@ Raised by the M0 probes; each is decided when its milestone starts.
 
 `cyrius test` runs `tests/parity.tcyr`, warning-free (the same on `--bounds` and aarch64):
 
-`=== parity summary: 8 modules, 0 failing | rows: 20067 ok, 0 failed, 0 measured, 0 pending, 96 accepted (ADR 3: 96), 0 glibc-matching (failed) ===`
+`=== parity summary: 10 modules, 0 failing | rows: 31601 ok, 0 failed, 0 measured, 0 pending, 135 accepted (ADR 3: 135), 0 glibc-matching (failed) ===`
 
 - **ok:** the 108 `const` rows, the 1,229 table rows (from the generated data, index constants
-  included), the 7,732 class A/B math rows (`src/mathx.cyr`'s and `tests/parity_math.cyr`'s helpers
-  and the builtins) and 10,998 class-C rows at 0 ulp on `_ry_cr_pow`, `_ry_cr_exp`, `_ry_cr_ln` and
-  `_ry_cr_expm1`.
-- **accepted (ADR 3):** the 96 class-C rows glibc misrounds (`math.cr.tsv`: exp_m1 94, exp 1,
-  powf 1), where the port gives the correctly rounded value.
+  included), the 7,732 class A/B math rows (`src/mathx.cyr`'s helpers and the builtins), 10,998 class-C math rows at
+  0 ulp on `_ry_cr_pow`, `_ry_cr_exp`, `_ry_cr_ln` and `_ry_cr_expm1`, the 5,575 guard rows and 5,959 integrate rows
+  (the series branch and the early returns exact; the `exp_m1` branch at 0 ulp against the corrected oracle).
+- **accepted (ADR 3):** the 96 class-C math rows glibc misrounds (`math.cr.tsv`: exp_m1 94, exp 1,
+  powf 1) and the 39 integrate rows where glibc's expm1 does (`integrate.cr.tsv`: step_factors 16, activate 13,
+  produce_decay 7, relax 3), where the port gives the correctly rounded value.
 - **measured:** none. The stdlib's counterparts (`f64_exp`, `f64_ln`, their polyfills,
   `ganita_f64_pow`, `_gn_expm1`) stay as ungated shadow lines (`port-parity.md` §2c, §2d).
-- **pending:** none yet; a module row with no dispatcher entry is reported pending (M1 on).
+- **pending:** none; a module row with no dispatcher entry is reported pending.
 
 ## Tests
 
 - Cyrius: scaffold smoke test, `tests/constants.tcyr` (19 checks of `src/constants.cyr` against the
   golden bits), `tests/tables.tcyr` (77 checks: every generated file compiled together, `src/mathx_data.cyr`
-  included, a sample of cells bit for bit), `tests/parity.tcyr` (the golden corpus, above), a fuzz stub;
+  included, a sample of cells bit for bit), `tests/parity.tcyr` (the golden corpus, above), `tests/guard.tcyr`
+  (86: Rust's guard tests, the error codes, each refusal's event text), `tests/integrate.tcyr` (16: Rust's
+  integrate tests), a fuzz stub;
   `cyrius test` warning-free, `--bounds` and `cyrius audit` pass
 - MPFR sweep: `scripts/oracle/cr_verify.py` checks the four primitives on 5,314,811 arguments per target
   (`--quick`: 542,062), both paths, ELF, aarch64 and PE: 0 mismatches (`port-parity.md` §2e)
@@ -102,13 +112,16 @@ Raised by the M0 probes; each is decided when its milestone starts.
 - Gates: `bash scripts/gates.sh` runs all of the above plus the probes (`scripts/probes/run.sh --gate`: p1, p4 and
   p6 against the oracle on ELF, aarch64 and PE, p7 against the oracle's client on two loopback hoosh stubs, p11 on ELF
   and PE with its control, p2, p3 and p10 self-checking, every probe building warning-free)
-- Upstream: `docs/development/issues/` — filed 2026-11-16 into the owning repositories' working trees, uncommitted there (4 new cyrius issues with repros; 7 addenda: cyrius ×2, ganita, sakshi, bayan ×2, hoosh)
+- Upstream: `docs/development/issues/` — filed 2026-11-16 into the owning repositories' working trees, uncommitted there (4 new cyrius issues with repros at M0, a fifth at M1 part 1 — `f()?` on a #must_use fn warns;
+7 addenda: cyrius ×2, ganita, sakshi, bayan ×2, hoosh)
 
 ## Benchmarks
 
 `tests/rasayan.bcyr` (x86_64, 10⁶ calls each; `port-parity.md` §2d): `_ry_cr_exp` 46 ns (x87 builtin
 `f64_exp` 17), `_ry_cr_ln` 56 (`f64_ln` 38), `_ry_cr_expm1` 54 (`_gn_expm1` 85), `_ry_cr_pow` 149
-(`ganita_f64_pow` 209), and the loop floor (`noop`, 3 ns). The Rust twins arrive with each milestone.
+(`ganita_f64_pow` 209), and the loop floor (`noop`, 3 ns). M1 part 1: an integrator step 21–27 ns on the series
+branch and 70–75 ns on `expm1`; `conc` / `take` 9, `shift` 16, an accepted `positive` 18 ns (no Rust twin: crate-private
+and inlined in Rust). The Rust twins arrive with each milestone.
 Probe measurements (`port-parity.md` §3, measured not gated): the implicit NADH solves 582 / 259 ns
 (`balanced_nad_ratio` / `end_of_step_nadh`; Rust 155 / 98 ns); the network's 264-byte probe copy 11 ns; a
 level-gated trace event around MM +11 ns filtered out (a raw sakshi span +204 ns); a bote `tools/call` round trip
@@ -116,7 +129,8 @@ level-gated trace event around MM +11 ns filtered out (a raw sakshi span +204 ns
 
 ## Dependencies
 
-- stdlib — string, fmt, alloc, vec, str, syscalls, io, args, math, sakshi, log (sakshi and log since part 3b)
+- stdlib — string, fmt, alloc, vec, str, syscalls, io, args, math, result, sakshi, log (sakshi and log since part
+  3b; result listed at M1 part 1, vendored before through io)
 - test stdlib — assert, bench, ganita (pow / expm1 on the shadow lines and in the benches), overflow
   (the harness's `-|`)
 - optional — bote 3.8.15 (`dist/bote-core.cyr`, `[features] mcp`), with its own libro 2.11.3, majra 2.13.0,
@@ -132,5 +146,6 @@ Rust crate (crates.io): mastishk 1.1.0, sharira 1.1.0, kiran 1.0.0. No Cyrius co
 
 ## Next
 
-M1 (Foundation): error, constants, guard, integrate, mathx, json/fmtf, logging — `src/json.cyr` on bayan and
-`src/fmtf.cyr`, the level-gated event helpers on sakshi/log. The upstream drafts wait for the maintainer to file.
+M1 part 2: `src/logging.cyr` — `ry_log_init` / `ry_log_init_with_level` (`RASAYAN_LOG`: level names and
+`rasayan=<level>`, ADR 0002 row 8) and the level-gated event helpers `_ry_trace` / `_ry_debug` / `_ry_warn` (row 7).
+Part 3: `src/json.cyr` on bayan and `src/fmtf.cyr`.

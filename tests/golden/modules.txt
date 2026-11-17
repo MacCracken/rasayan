@@ -4,6 +4,8 @@ alignment
 constants
 constants_private
 enzyme
+guard
+integrate
 math
 membrane
 protein

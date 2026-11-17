@@ -1,0 +1,270 @@
+# rasayan — src/error.cyr and src/guard.cyr: Rust 1.2.0's guard.rs unit tests, ported, and the Cyrius surface
+# Stdlib auto-included via cyrius.cyml
+#
+# The four Rust tests of `guard.rs` (`mod tests`) run here as they are written; tests/golden/guard.tsv holds their
+# cases among its 5,575 rows. Beside them: every error code's name and message (ADR 0002 row 1), the −0 that `shift`
+# gives backward from an empty product pool, and each refusal's DEBUG event, captured through sakshi's subscriber
+# hook and compared with Rust's Display text of the error it stands for.
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+
+# The IEEE-754 bit pattern of an f64.
+fn bits_of(x: f64) {
+    var y: f64 = x;
+    return load64(&y);
+}
+
+# 1e-300 as a bit pattern (no exponent notation in literals; at or above 2^52 an integer keeps its bits in an f64
+# slot).
+fn tiny(): f64 {
+    var t: f64 = 0x01A56E1FC2F8F359;
+    return t;
+}
+
+# −5e-324, the negative of the smallest subnormal.
+fn neg_min_subnormal(): f64 {
+    var t: f64 = 0x8000000000000001;
+    return t;
+}
+
+# ── the captured events ──
+var _ev_buf[1024];
+var _ev_len = 0;
+var _ev_count = 0;
+
+# sakshi's subscriber: keeps the last event's message.
+fn _ev_hook(ts, level, category, msg, msg_len, extra) {
+    var n = msg_len;
+    if (n > 1024) { n = 1024; }
+    memcpy(&_ev_buf, msg, n);
+    _ev_len = msg_len;
+    _ev_count = _ev_count + 1;
+    return 0;
+}
+
+# 1 if the last captured event is the C string `want`.
+fn _ev_is(want) {
+    var n = strlen(want);
+    if (_ev_len != n) { return 0; }
+    return memeq(&_ev_buf, want, n);
+}
+
+# `validators_reject_non_finite`: each validator refuses v.
+fn rejects(v: f64, what) {
+    var t1, c1 = _ry_guard_finite("x", v);
+    assert_eq(is_err_result(t1), 1, what);
+    var t2, c2 = _ry_guard_non_negative("x", v);
+    assert_eq(is_err_result(t2), 1, what);
+    var t3, c3 = _ry_guard_positive("x", v);
+    assert_eq(is_err_result(t3), 1, what);
+    var t4, c4 = _ry_guard_fraction("x", v);
+    assert_eq(is_err_result(t4), 1, what);
+    var t5, c5 = _ry_guard_at_least("x", v, 1.0);
+    assert_eq(is_err_result(t5), 1, what);
+    assert_eq(c1 + c2 + c3 + c4 + c5, 5 * RY_ERR_NON_FINITE, "every refusal is NonFinite");
+    return 0;
+}
+
+# Rust's `validators_reject_non_finite`: NaN, +inf and -inf, each refused by every validator.
+fn validators_reject_non_finite() {
+    test_group("guard: validators_reject_non_finite");
+    var nan: f64 = _ry_nan();
+    var inf: f64 = _RY_INF;
+    var ninf: f64 = -inf;
+    rejects(nan, "NaN refused");
+    rejects(inf, "+inf refused");
+    rejects(ninf, "-inf refused");
+    return 0;
+}
+
+# Rust's `validators_ranges`, plus the code each kind of refusal returns.
+fn validators_ranges() {
+    test_group("guard: validators_ranges");
+    var t, c = _ry_guard_non_negative("x", 0.0);
+    assert_eq(is_ok(t), 1, "non_negative(0) ok");
+    var m12: f64 = -0.000000000001;
+    t, c = _ry_guard_non_negative("x", m12);
+    assert_eq(is_err_result(t), 1, "non_negative(-1e-12) refused");
+    t, c = _ry_guard_positive("x", 0.0);
+    assert_eq(is_err_result(t), 1, "positive(0) refused");
+    var tv: f64 = tiny();
+    t, c = _ry_guard_positive("x", tv);
+    assert_eq(is_ok(t), 1, "positive(1e-300) ok");
+    t, c = _ry_guard_fraction("x", 1.0);
+    assert_eq(is_ok(t), 1, "fraction(1) ok");
+    var over: f64 = 1.0 + 0.000000000001;
+    t, c = _ry_guard_fraction("x", over);
+    assert_eq(is_err_result(t), 1, "fraction(1 + 1e-12) refused");
+    t, c = _ry_guard_at_least("x", 1.0, 1.0);
+    assert_eq(is_ok(t), 1, "at_least(1, 1) ok");
+    t, c = _ry_guard_at_least("x", 0.99, 1.0);
+    assert_eq(is_err_result(t), 1, "at_least(0.99, 1) refused");
+    var nan: f64 = _ry_nan();
+    t, c = _ry_guard_non_negative("atp", nan);
+    assert_eq(c, RY_ERR_NON_FINITE, "non_negative(NaN) is NonFinite, not NegativeConcentration");
+    var m1: f64 = -1.0;
+    t, c = _ry_guard_non_negative("x", m1);
+    assert_eq(c, RY_ERR_NEGATIVE_CONCENTRATION, "non_negative(-1) is NegativeConcentration");
+    t, c = _ry_guard_positive("x", m1);
+    assert_eq(c, RY_ERR_INVALID_PARAMETER, "positive(-1) is InvalidParameter");
+    return 0;
+}
+
+# Rust's `take_and_shift_cap_at_pool`, plus the signs of the zeros take and shift return.
+fn take_and_shift_cap_at_pool() {
+    test_group("guard: take_and_shift_cap_at_pool");
+    var r: f64 = _ry_guard_take(2.0, 1.5);
+    assert(r == 1.5, "take(2, 1.5) = 1.5");
+    r = _ry_guard_take(0.5, 1.5);
+    assert(r == 0.5, "take(0.5, 1.5) = 0.5");
+    var nan: f64 = _ry_nan();
+    var m1: f64 = -1.0;
+    r = _ry_guard_take(nan, 1.0);
+    assert(r == 0.0, "take(NaN, 1) = 0");
+    r = _ry_guard_take(m1, 1.0);
+    assert(r == 0.0, "take(-1, 1) = 0");
+    r = _ry_guard_take(1.0, 0.0);
+    assert(r == 0.0, "take(1, 0) = 0");
+    r = _ry_guard_take(1.0, nan);
+    assert(r == 0.0, "take(1, NaN) = 0");
+    r = _ry_guard_shift(2.0, 1.0, 5.0);
+    assert(r == 1.0, "shift(2, 1, 5) = 1");
+    var m2: f64 = -2.0;
+    r = _ry_guard_shift(m2, 1.0, 0.5);
+    assert(r == -0.5, "shift(-2, 1, 0.5) = -0.5");
+    r = _ry_guard_shift(nan, 1.0, 1.0);
+    assert(r == 0.0, "shift(NaN, 1, 1) = 0");
+    # Rust's `-take(-amount, product)`: an empty product pool gives -0, not +0 (port-parity.md §0.7).
+    r = _ry_guard_shift(m1, 1.0, 0.0);
+    assert_eq(bits_of(r), 0x8000000000000000, "shift(-1, 1, 0) = -0");
+    r = _ry_guard_take(1.0, 0.0);
+    assert_eq(bits_of(r), 0, "take(1, 0) = +0");
+    return 0;
+}
+
+# Rust's `dt_and_sanitizers`.
+fn dt_and_sanitizers() {
+    test_group("guard: dt_and_sanitizers");
+    assert_eq(_ry_guard_valid_dt(0.01), 1, "valid_dt(0.01)");
+    var nan: f64 = _ry_nan();
+    var inf: f64 = _RY_INF;
+    var neg: f64 = -0.01;
+    assert_eq(_ry_guard_valid_dt(0.0), 0, "valid_dt(0) is false");
+    assert_eq(_ry_guard_valid_dt(neg), 0, "valid_dt(-0.01) is false");
+    assert_eq(_ry_guard_valid_dt(nan), 0, "valid_dt(NaN) is false");
+    assert_eq(_ry_guard_valid_dt(inf), 0, "valid_dt(inf) is false");
+    var r: f64 = _ry_guard_conc(nan);
+    assert(r == 0.0, "conc(NaN) = 0");
+    r = _ry_guard_conc(inf);
+    assert(r == 0.0, "conc(inf) = 0");
+    var m3: f64 = -3.0;
+    r = _ry_guard_conc(m3);
+    assert(r == 0.0, "conc(-3) = 0");
+    r = _ry_guard_conc(2.5);
+    assert(r == 2.5, "conc(2.5) = 2.5");
+    r = _ry_guard_unit(nan);
+    assert(r == 0.0, "unit(NaN) = 0");
+    r = _ry_guard_unit(inf);
+    assert(r == 1.0, "unit(inf) = 1");
+    var mh: f64 = -0.5;
+    r = _ry_guard_unit(mh);
+    assert(r == 0.0, "unit(-0.5) = 0");
+    r = _ry_guard_unit(0.25);
+    assert(r == 0.25, "unit(0.25) = 0.25");
+    return 0;
+}
+
+# src/error.cyr: every code's name and message, and the answers for a value that is no code.
+fn error_codes() {
+    test_group("error: names and messages");
+    assert_eq(RY_ERR_COUNT, 6, "six codes, RY_ERR_NONE included");
+    assert_streq(ry_error_name(RY_ERR_NONE), "None", "NONE");
+    assert_streq(ry_error_name(RY_ERR_NEGATIVE_CONCENTRATION), "NegativeConcentration", "NEGATIVE_CONCENTRATION");
+    assert_streq(ry_error_name(RY_ERR_INVALID_PARAMETER), "InvalidParameter", "INVALID_PARAMETER");
+    assert_streq(ry_error_name(RY_ERR_UNKNOWN_AMINO_ACID), "UnknownAminoAcid", "UNKNOWN_AMINO_ACID");
+    assert_streq(ry_error_name(RY_ERR_UNKNOWN_PATHWAY), "UnknownPathway", "UNKNOWN_PATHWAY");
+    assert_streq(ry_error_name(RY_ERR_NON_FINITE), "NonFinite", "NON_FINITE");
+    assert_streq(ry_error_name(RY_ERR_COUNT), "Unknown", "past the last code");
+    assert_streq(ry_error_name(0 - 1), "Unknown", "a negative value");
+    assert_streq(ry_error_message(RY_ERR_NONE), "no error", "NONE's message");
+    assert_streq(ry_error_message(RY_ERR_NON_FINITE), "non-finite value", "NON_FINITE's message");
+    assert_streq(ry_error_message(RY_ERR_UNKNOWN_PATHWAY), "unknown metabolic pathway", "UNKNOWN_PATHWAY's message");
+    assert_streq(ry_error_message(RY_ERR_COUNT), "unknown error", "no code's message");
+    var k = 1;
+    while (k < RY_ERR_COUNT) {
+        assert(strlen(ry_error_message(k)) > 0, "every code has a message");
+        k = k + 1;
+    }
+    return 0;
+}
+
+# Each refusal's DEBUG event is Rust's Display text of the error (`format!("{}", RasayanError::…)`).
+fn refusal_events() {
+    test_group("guard: refusal events are Rust's Display text");
+    sakshi_set_emit_hook(&_ev_hook);
+    sakshi_set_level(SK_DEBUG);
+    var nan: f64 = _ry_nan();
+    var inf: f64 = _RY_INF;
+    var ninf: f64 = -inf;
+    var m1: f64 = -1.0;
+    var t, c = _ry_guard_finite("atp", nan);
+    assert_eq(_ev_is("non-finite value: atp = NaN"), 1, "NonFinite, NaN");
+    t, c = _ry_guard_positive("dt", inf);
+    assert_eq(_ev_is("non-finite value: dt = inf"), 1, "NonFinite, inf");
+    t, c = _ry_guard_fraction("f", ninf);
+    assert_eq(_ev_is("non-finite value: f = -inf"), 1, "NonFinite, -inf");
+    t, c = _ry_guard_non_negative("atp", m1);
+    assert_eq(_ev_is("concentration out of range: atp = -1 (must be >= 0)"), 1, "NegativeConcentration");
+    t, c = _ry_guard_positive("km", 0.0);
+    assert_eq(_ev_is("invalid parameter: km = 0 (must be > 0)"), 1, "InvalidParameter, > 0");
+    var over: f64 = 1.0 + 0.000000000001;
+    t, c = _ry_guard_fraction("x", over);
+    assert_eq(_ev_is("invalid parameter: x = 1.000000000001 (must be in [0, 1])"), 1, "InvalidParameter, [0, 1]");
+    var lo: f64 = 1.5;
+    t, c = _ry_guard_at_least("gain", 0.99, lo);
+    assert_eq(_ev_is("invalid parameter: gain = 0.99 (must be >= 1.5)"), 1, "InvalidParameter, >= min");
+    # The longest value Display writes, -5e-324 (327 bytes), fits the 512-byte event buffer.
+    var ns: f64 = neg_min_subnormal();
+    t, c = _ry_guard_non_negative("x", ns);
+    var head = "concentration out of range: x = -0.";
+    var hl = strlen(head);
+    # 5e-324's digit is the 324th after the point: 323 zeros, then 5.
+    assert_eq(_ev_len, hl + 324 + 15, "the -5e-324 event's length");
+    assert_eq(memeq(&_ev_buf, head, hl), 1, "its head");
+    assert_eq(load8(&_ev_buf + hl + 322), 48, "a zero before the last digit");
+    assert_eq(load8(&_ev_buf + hl + 323), 53, "its last digit is 5");
+    assert_eq(memeq(&_ev_buf + hl + 324, " (must be >= 0)", 15), 1, "its tail");
+    # An accepted value emits nothing; below DEBUG a refusal emits nothing.
+    var before = _ev_count;
+    t, c = _ry_guard_positive("km", 2.5);
+    assert_eq(_ev_count, before, "Ok emits no event");
+    sakshi_set_level(SK_INFO);
+    t, c = _ry_guard_positive("km", 0.0);
+    assert_eq(_ev_count, before, "a refusal below DEBUG emits nothing");
+    assert_eq(c, RY_ERR_INVALID_PARAMETER, "and still refuses");
+    sakshi_clear_emit_hook();
+    return 0;
+}
+
+# Runs the guard and error suites.
+fn main() {
+    alloc_init();
+    validators_reject_non_finite();
+    validators_ranges();
+    take_and_shift_cap_at_pool();
+    dt_and_sanitizers();
+    error_codes();
+    refusal_events();
+    return assert_summary();
+}
+
+var exit_code = main();
+# assert_summary() returns the failure count; a wait status is 8 bits, so any failure exits 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

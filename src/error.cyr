@@ -1,0 +1,59 @@
+# error.cyr — rasayan's error codes (ADR 0002 row 1).
+#
+# A fallible rasayan function returns a value-form Result whose Err payload is one of these codes:
+# `var t, v = ry_f(..); if (is_err_result(t) == 1) { .. v is the code .. }`. The values follow the order of Rust
+# 1.2.0's `RasayanError` variants and are append-only (the Cyrius form of #[non_exhaustive]); codes Cyrius needs that
+# Rust has no variant for are appended after them, each with the milestone that first returns it. Each code has a
+# fixed message. The values that made a call fail (the parameter's name and value, the reason) are not carried in the
+# error: the failing guard reports them as Rust's Display text in a level-gated sakshi event at DEBUG
+# (`_ry_guard_fail`, src/guard.cyr), so they cost nothing unless asked for.
+#
+# The golden corpus names an error by its Rust variant (`E:NonFinite`), so ry_error_name gives that name and the
+# parity is on the code.
+
+enum RyError {
+    RY_ERR_NONE = 0;
+    RY_ERR_NEGATIVE_CONCENTRATION = 1;
+    RY_ERR_INVALID_PARAMETER = 2;
+    RY_ERR_UNKNOWN_AMINO_ACID = 3;
+    RY_ERR_UNKNOWN_PATHWAY = 4;
+    RY_ERR_NON_FINITE = 5;
+}
+
+# The number of codes, RY_ERR_NONE included: every code is in 0 .. RY_ERR_COUNT - 1.
+const RY_ERR_COUNT = 6;
+
+# The name of an error code: Rust 1.2.0's variant name (`"NonFinite"`) for the codes that mirror one, `"None"` for
+# RY_ERR_NONE, and `"Unknown"` for a value that is no code.
+#must_use
+#pure
+fn ry_error_name(code): cstring {
+    match code {
+        RY_ERR_NONE => { return "None"; }
+        RY_ERR_NEGATIVE_CONCENTRATION => { return "NegativeConcentration"; }
+        RY_ERR_INVALID_PARAMETER => { return "InvalidParameter"; }
+        RY_ERR_UNKNOWN_AMINO_ACID => { return "UnknownAminoAcid"; }
+        RY_ERR_UNKNOWN_PATHWAY => { return "UnknownPathway"; }
+        RY_ERR_NON_FINITE => { return "NonFinite"; }
+        _ => { return "Unknown"; }
+    }
+    return "Unknown";
+}
+
+# The fixed message of an error code: Rust's Display text up to its first payload (`"non-finite value"`), `"no error"`
+# for RY_ERR_NONE and `"unknown error"` for a value that is no code. The payload, which Rust formats into the text
+# (`non-finite value: km = NaN`), is in the failing guard's DEBUG event.
+#must_use
+#pure
+fn ry_error_message(code): cstring {
+    match code {
+        RY_ERR_NONE => { return "no error"; }
+        RY_ERR_NEGATIVE_CONCENTRATION => { return "concentration out of range (must be >= 0)"; }
+        RY_ERR_INVALID_PARAMETER => { return "invalid parameter"; }
+        RY_ERR_UNKNOWN_AMINO_ACID => { return "unknown amino acid"; }
+        RY_ERR_UNKNOWN_PATHWAY => { return "unknown metabolic pathway"; }
+        RY_ERR_NON_FINITE => { return "non-finite value"; }
+        _ => { return "unknown error"; }
+    }
+    return "unknown error";
+}

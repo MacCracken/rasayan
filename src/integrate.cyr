@@ -1,0 +1,84 @@
+# integrate.cyr — exact one-step updates for the linear ODEs that recur across modules (Rust 1.2.0's crate-private
+# `integrate.rs`, transcribed).
+#
+# Explicit Euler (`x += (p - k·x)·dt`) overshoots and oscillates once `k·dt > 1` and goes unstable past `k·dt > 2`,
+# which game-engine frame times or coarse simulation steps hit easily. Each helper here solves its ODE in closed form
+# over `dt` with the inputs held constant for the step (to ~1e-9 relative for small steps, where a short series
+# replaces `exp`), so the result is stable for any `dt`, never overshoots its target, and keeps a fraction inside
+# `[0, 1]`. Callers pass a valid `dt` (`_ry_guard_valid_dt`) and sanitized, finite inputs.
+#
+# Names: Rust's crate-private `integrate::<fn>` is `_ry_integrate_<fn>` (src/guard.cyr's rule). The constants are
+# generated (src/constants_private.cyr): `_RY_INTEGRATE_SERIES_MAX` and step_factors' fn-local C1..C4. Every operation
+# is in Rust's order (P9): the parity rows compare the series branch at ≤ 2 ulp (class B, expected 0) and the
+# `exp_m1` branch at 0 ulp against the corrected oracle (class C, ADR 0003; `_ry_cr_expm1`).
+
+# Step factors for `y = k·dt >= 0`: `(e^(−y), (1 − e^(−y)) / y)`.
+#
+# For `y < SERIES_MAX` the second factor `g` is its Maclaurin series through `y⁴` (relative truncation
+# `< y⁵/720 ≈ 1.3e-9`), evaluated with Estrin's scheme in Rust's grouping; the first factor is `1 − y·g`, so
+# `f + y·g == 1` holds to rounding, which keeps _ry_integrate_activate inside `[0, 1]`. Larger steps (and a NaN y)
+# use `exp_m1`, accurate for all y. Mirrors `integrate::step_factors`.
+#must_use
+#pure
+fn _ry_integrate_step_factors(y: f64): (f64, f64) {
+    if (y < _RY_INTEGRATE_SERIES_MAX) {
+        var y2: f64 = y * y;
+        # Rust's `(1.0 + C1 * y) + y2 * ((C2 + C3 * y) + y2 * C4)`, its two groups named; each rounds to f64 either way.
+        var lo: f64 = 1.0 + _RY_INTEGRATE_C1 * y;
+        var hi: f64 = (_RY_INTEGRATE_C2 + _RY_INTEGRATE_C3 * y) + y2 * _RY_INTEGRATE_C4;
+        var g: f64 = lo + y2 * hi;
+        var f: f64 = 1.0 - y * g;
+        return (f, g);
+    }
+    var ny: f64 = -y;
+    var em1: f64 = _ry_cr_expm1(ny);
+    var fe: f64 = 1.0 + em1;
+    var nem1: f64 = -em1;
+    var ge: f64 = nem1 / y;
+    return (fe, ge);
+}
+
+# Relaxes `x` toward `target` at first-order `rate` (1/s), `dx/dt = rate·(target − x)`, over `dt`. A non-positive
+# `rate` leaves `x` unchanged. Mirrors `integrate::relax`.
+#must_use
+#pure
+fn _ry_integrate_relax(x: f64, target: f64, rate: f64, dt: f64): f64 {
+    if (rate <= 0.0) { return x; }
+    var y: f64 = rate * dt;
+    var decay, _g = _ry_integrate_step_factors(y);
+    var r: f64 = target + (x - target) * decay;
+    return r;
+}
+
+# Zero-order production with first-order decay, `dx/dt = production − decay·x`, over `dt`: `x·e^(−k·dt) +
+# p·(1 − e^(−k·dt))/k`, without dividing by k. With `decay <= 0` it degenerates to `x + production·dt`. For `x >= 0`
+# and `production >= 0` the result is `>= 0`. Mirrors `integrate::produce_decay`.
+#must_use
+#pure
+fn _ry_integrate_produce_decay(x: f64, production: f64, decay: f64, dt: f64): f64 {
+    if (decay <= 0.0) {
+        var lin: f64 = x + production * dt;
+        return lin;
+    }
+    var y: f64 = decay * dt;
+    var f, g = _ry_integrate_step_factors(y);
+    var r: f64 = x * f + production * dt * g;
+    return r;
+}
+
+# Two-state activation, `dx/dt = on·(1 − x) − off·x`, where `x` is the active fraction and `on` / `off` are the
+# (non-negative) forward and reverse rate constants for this step: the steady state on/total approached at rate total,
+# written without a division as `x·e^(−T·dt) + on·dt·g(T·dt)`. For `x` in `[0, 1]` the result stays in `[0, 1]`: the
+# exact result is <= 1, and `min(.., 1.0)` absorbs a possible 1-ulp rounding excess. A non-positive `on + off` leaves
+# `x` unchanged. Mirrors `integrate::activate`.
+#must_use
+#pure
+fn _ry_integrate_activate(x: f64, on: f64, off: f64, dt: f64): f64 {
+    var total: f64 = on + off;
+    if (total <= 0.0) { return x; }
+    var y: f64 = total * dt;
+    var f, g = _ry_integrate_step_factors(y);
+    var a: f64 = x * f + on * dt * g;
+    var r: f64 = _ry_min(a, 1.0);
+    return r;
+}

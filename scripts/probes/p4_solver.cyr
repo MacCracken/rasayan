@@ -16,7 +16,6 @@ include "src/constants.cyr"
 include "src/constants_private.cyr"
 include "src/mathx_data.cyr"
 include "src/mathx.cyr"
-include "tests/parity_math.cyr"
 include "lib/bench.cyr"
 include "scripts/probes/probe_io.cyr"
 

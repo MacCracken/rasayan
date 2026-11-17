@@ -17,7 +17,7 @@ cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml          
 cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml -- --check  # verify
 python3 -I -B scripts/oracle/validate.py .                                          # independent check
 python3 -I -B scripts/oracle/probe_tables.py . --all-targets                       # every generated value, compiled
-python3 -I -B scripts/oracle/mpfr_ref.py [--write . | --check .]                   # MPFR self-checks; tests/golden/math.cr.tsv
+python3 -I -B scripts/oracle/mpfr_ref.py [--write . | --check .]                   # MPFR self-checks; tests/golden/{math,integrate}.cr.tsv
 python3 -I -B scripts/oracle/mathx_tables.py [--check | --check-ushma]             # src/mathx_data.cyr (MPFR)
 python3 -I -B scripts/oracle/cr_verify.py --quick                                  # the primitives vs MPFR, ~11 s
 python3 -I -B scripts/oracle/cr_verify.py                                          # the full sweep, ELF/aarch64/PE
@@ -55,7 +55,9 @@ in `scripts/oracle/target/` (gitignored).
 | `tests/golden/enzyme.tsv` | 60 | through the API: `KNOWN_ENZYMES` (12 entries and its length) and `lookup_enzyme` for every name as written, lowercased and uppercased, plus 10 near misses; `REGRESSION_REL_TOL` from the source; class A |
 | `tests/golden/membrane.tsv` | 1 | `DEFAULT_PERMEABILITY`'s three fields, class A |
 | `tests/golden/ai.tsv` | 1 | `SYSTEM_PROMPT`'s text, class A |
-| `tests/golden/modules.txt` | 8 | the module list the harness reads |
+| `tests/golden/guard.tsv` | 5,575 | M1 part 1: crate-private `guard.rs` through its verbatim copy (below): the validators (no output for `Ok(())`, `E:<Variant>` for an error), `valid_dt`, `conc`, `unit`, `take`, `shift`; class A |
+| `tests/golden/integrate.tsv` | 5,998 | M1 part 1: crate-private `integrate.rs` through its verbatim copy: `step_factors` (two outputs) and the three integrators across `SERIES_MAX` to `k·dt` = 1e6; B 2,963 (series branch, early returns) · C 3,035 (`exp_m1` branch) |
+| `tests/golden/modules.txt` | 10 | the module list the harness reads |
 | `src/constants.cyr` | 333 lines | the 67 public constants as `RY_` consts, under the first paragraph of their Rust doc comments |
 | `src/constants_private.cyr` | 74 lines | the 16 private constants as `_RY_<MODULE>_<NAME>` (`t_private.rs`) |
 | `src/protein_data.cyr` | 721 lines | `RY_AMINO_ACID_*` columns and index constants; `_RY_PROTEIN_*`: the lookup index, the side chains, the pKa-set table, the Bjellqvist termini, the Chou-Fasman columns, 23 scalars (`t_protein.rs`) |
@@ -130,7 +132,16 @@ Pending, at their milestones (port plan §4 step 6, §6):
   Chou-Fasman predictions are M3's;
 - the JSON rows (each module's milestone) and the MCP / request rows (M8);
 - a corrected-oracle file `<module>.cr.tsv` for each module with class-C rows, with that module's
-  operation model in `mpfr_ref.py` and `validate.py` (M2 on; `math.cr.tsv` since part 2c-1, below).
+  operation model in `mpfr_ref.py` and `validate.py` (`math.cr.tsv` since part 2c-1, `integrate.cr.tsv` since M1
+  part 1, below; M2 on for the rest).
+
+**Crate-private functions** (M1 on). The generator's crate can call only rasayan's public API, so a private layer it
+must pin is compiled from a verbatim copy: `src/v_guard.rs` and `src/v_integrate.rs` each hold one block between
+`// @verbatim <file>` and `// @end` that is a byte-for-byte span of `rust-old/src/<file>` (from the first item to the
+test module), plus, outside the block, only a `use` naming a type by its public path and the accessors the emitter
+needs (`v_integrate::factors` for the private `step_factors`). `src/verbatim.rs` checks every block against the
+`include_str!` of the oracle's file before any row is made, in both modes, so a copy that drifts can never write or
+pass a golden file. probe 4's `probe_solver` checks its copies the same way.
 
 ## Format 1
 

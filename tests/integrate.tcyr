@@ -1,0 +1,167 @@
+# rasayan — src/integrate.cyr: Rust 1.2.0's integrate.rs unit tests, ported
+# Stdlib auto-included via cyrius.cyml
+#
+# The five Rust tests of `integrate.rs` (`mod tests`) run here as they are written, with the port's correctly rounded
+# exp / exp_m1 where Rust's tests call std's. tests/golden/integrate.tsv holds their cases among its 5,998 rows.
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/integrate.cyr"
+
+# Rust's `relax_matches_analytic_and_is_stable`.
+fn relax_matches_analytic_and_is_stable() {
+    test_group("integrate: relax_matches_analytic_and_is_stable");
+    var x: f64 = _ry_integrate_relax(1.0, 0.0, 2.0, 0.5);
+    var m1: f64 = -1.0;
+    var e: f64 = _ry_cr_exp(m1);
+    var d: f64 = f64_abs(x - e);
+    assert(d < 0.000000000001, "relax(1, 0, 2, 0.5) = e^-1 within 1e-12");
+    # Huge rate·dt: lands on the target, no overshoot.
+    var r: f64 = _ry_integrate_relax(1.0, 0.25, 1000000.0, 1000.0);
+    assert(r == 0.25, "relax(1, 0.25, 1e6, 1e3) = 0.25");
+    r = _ry_integrate_relax(0.7, 0.0, 0.0, 10.0);
+    assert(r == 0.7, "relax with rate 0 leaves x");
+    return 0;
+}
+
+# Rust's `produce_decay_steady_state_and_degenerate`.
+fn produce_decay_steady_state_and_degenerate() {
+    test_group("integrate: produce_decay_steady_state_and_degenerate");
+    # Steady state p/k.
+    var x: f64 = _ry_integrate_produce_decay(0.0, 2.0, 0.5, 10000.0);
+    var d: f64 = f64_abs(x - 4.0);
+    assert(d < 0.000000001, "produce_decay(0, 2, 0.5, 1e4) = 4 within 1e-9");
+    # No decay: linear accumulation.
+    var r: f64 = _ry_integrate_produce_decay(1.0, 2.0, 0.0, 0.5);
+    assert(r == 2.0, "produce_decay(1, 2, 0, 0.5) = 2");
+    # Never negative from non-negative inputs, even for huge dt.
+    r = _ry_integrate_produce_decay(5.0, 0.0, 100.0, 1000000000.0);
+    assert(r >= 0.0, "produce_decay(5, 0, 100, 1e9) >= 0");
+    return 0;
+}
+
+# Rust's `step_factors_match_exp_across_the_series_boundary`, against the correctly rounded exp and expm1.
+fn step_factors_match_exp_across_the_series_boundary() {
+    test_group("integrate: step_factors_match_exp_across_the_series_boundary");
+    var bad_f = 0;
+    var bad_g = 0;
+    var i = 0;
+    while (i <= 400) {
+        var fi: f64 = f64_from(i);
+        var y: f64 = fi * 0.0005;   # 0 .. 0.2, straddling SERIES_MAX
+        var f, g = _ry_integrate_step_factors(y);
+        var ny: f64 = -y;
+        var ef: f64 = _ry_cr_exp(ny);
+        var df: f64 = f64_abs(f - ef);
+        if (df >= 0.0000000001) { bad_f = bad_f + 1; }
+        if (y > 0.0) {
+            var em1: f64 = _ry_cr_expm1(ny);
+            var nem1: f64 = -em1;
+            var eg: f64 = nem1 / y;
+            var dg: f64 = f64_abs(g - eg);
+            if (dg >= 0.000000002) { bad_g = bad_g + 1; }
+        } elif (g != 1.0) {
+            bad_g = bad_g + 1;
+        }
+        i = i + 1;
+    }
+    assert_eq(bad_f, 0, "f = e^-y within 1e-10 on 0 .. 0.2");
+    assert_eq(bad_g, 0, "g = (1 - e^-y)/y within 2e-9 (1 at y = 0)");
+    var big = 0;
+    var ys[32];
+    var y0: f64 = 1.0;
+    var y1: f64 = 10.0;
+    var y2: f64 = 700.0;
+    var y3: f64 = 1000000.0;
+    store64(&ys, load64(&y0));
+    store64(&ys + 8, load64(&y1));
+    store64(&ys + 16, load64(&y2));
+    store64(&ys + 24, load64(&y3));
+    var k = 0;
+    while (k < 4) {
+        var yk: f64 = load64(&ys + k * 8);
+        var f2, g2 = _ry_integrate_step_factors(yk);
+        if (f2 < 0.0 || f2 > 1.0 || g2 <= 0.0 || _ry_is_finite(g2) == 0) { big = big + 1; }
+        k = k + 1;
+    }
+    assert_eq(big, 0, "f in [0, 1], g > 0 and finite for y = 1, 10, 700, 1e6");
+    return 0;
+}
+
+# Rust's `activate_saturated_on_stays_at_most_one`.
+fn activate_saturated_on_stays_at_most_one() {
+    test_group("integrate: activate_saturated_on_stays_at_most_one");
+    # off = 0, x = 1: must stay exactly in range for small and large steps.
+    var dts[40];
+    var d0: f64 = 0.000001;
+    var d1: f64 = 0.01;
+    var d2: f64 = 0.0625;
+    var d3: f64 = 1.0;
+    var d4: f64 = 1000.0;
+    store64(&dts, load64(&d0));
+    store64(&dts + 8, load64(&d1));
+    store64(&dts + 16, load64(&d2));
+    store64(&dts + 24, load64(&d3));
+    store64(&dts + 32, load64(&d4));
+    var ons[24];
+    var o0: f64 = 0.5;
+    var o1: f64 = 3.0;
+    var o2: f64 = 50.0;
+    store64(&ons, load64(&o0));
+    store64(&ons + 8, load64(&o1));
+    store64(&ons + 16, load64(&o2));
+    var out = 0;
+    var a = 0;
+    while (a < 5) {
+        var dt: f64 = load64(&dts + a * 8);
+        var b = 0;
+        while (b < 3) {
+            var on: f64 = load64(&ons + b * 8);
+            var y: f64 = _ry_integrate_activate(1.0, on, 0.0, dt);
+            if (y < 1.0 - 0.000000000001 || y > 1.0) { out = out + 1; }
+            b = b + 1;
+        }
+        a = a + 1;
+    }
+    assert_eq(out, 0, "activate(1, on, 0, dt) in [1 - 1e-12, 1]");
+    return 0;
+}
+
+# Rust's `activate_stays_in_unit_interval`.
+fn activate_stays_in_unit_interval() {
+    test_group("integrate: activate_stays_in_unit_interval");
+    var y: f64 = _ry_integrate_activate(0.0, 1.0, 0.1, 10000.0);
+    assert(y >= 0.0 && y <= 1.0, "activate(0, 1, 0.1, 1e4) in [0, 1]");
+    y = _ry_integrate_activate(1.0, 0.0, 5.0, 10000.0);
+    assert(y >= 0.0 && y <= 1.0, "activate(1, 0, 5, 1e4) in [0, 1]");
+    y = _ry_integrate_activate(0.5, 50.0, 50.0, 100.0);
+    assert(y >= 0.0 && y <= 1.0, "activate(0.5, 50, 50, 100) in [0, 1]");
+    var on: f64 = 0.000000001;
+    y = _ry_integrate_activate(0.2, on, 0.0, 1.0);
+    assert(y >= 0.0 && y <= 1.0, "activate(0.2, 1e-9, 0, 1) in [0, 1]");
+    # Steady state on/(on+off).
+    y = _ry_integrate_activate(0.0, 3.0, 1.0, 10000.0);
+    var d: f64 = f64_abs(y - 0.75);
+    assert(d < 0.000000001, "activate(0, 3, 1, 1e4) = 0.75 within 1e-9");
+    y = _ry_integrate_activate(0.4, 0.0, 0.0, 1.0);
+    assert(y == 0.4, "activate with on + off = 0 leaves x");
+    return 0;
+}
+
+# Runs the integrate suite.
+fn main() {
+    alloc_init();
+    relax_matches_analytic_and_is_stable();
+    produce_decay_steady_state_and_degenerate();
+    step_factors_match_exp_across_the_series_boundary();
+    activate_saturated_on_stays_at_most_one();
+    activate_stays_in_unit_interval();
+    return assert_summary();
+}
+
+var exit_code = main();
+# assert_summary() returns the failure count; a wait status is 8 bits, so any failure exits 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

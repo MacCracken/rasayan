@@ -21,7 +21,7 @@
 # - Rust semantics where no Cyrius builtin has them: _ry_is_nan, _ry_is_finite, _ry_max, _ry_min, _ry_powi, rasayan's
 #   own, at the end of this file (port-parity.md §0.8). ushma's mathx has equivalents (_us_is_nan, _us_is_finite,
 #   _us_max, _us_min, _us_powi) with the same results; rasayan keeps the forms §0.8 specifies, one definition each.
-#   _ry_clamp and _ry_f64_to_u32, which ushma's mathx has no counterpart of, are in tests/parity_math.cyr until M1.
+#   _ry_clamp and _ry_f64_to_u32, which ushma's mathx has no counterpart of, follow them (test-side until M1).
 # The coefficients and constants are bit patterns in typed f64 locals (never a hex `const`).
 
 # +∞ (0x7FF0000000000000), a compile-time constant.
@@ -1248,4 +1248,28 @@ fn _ry_powi(x: f64, n): f64 {
         return r;
     }
     return mul;
+}
+
+# Rust's `x.clamp(lo, hi)`: the same two comparisons in the same order, so a NaN x passes through and a zero keeps its
+# sign (port-parity.md §0.1). Rust panics when lo > hi or a bound is NaN; no rasayan call site can reach that, so there
+# is no such branch. Mirrors `f64::clamp`.
+#must_use
+#pure
+fn _ry_clamp(x: f64, lo: f64, hi: f64): f64 {
+    var r: f64 = x;
+    if (r < lo) { r = lo; }
+    if (r > hi) { r = hi; }
+    return r;
+}
+
+# Rust's saturating `x as u32`: NaN is 0, a value at or past 2^32 is u32::MAX, a negative one (-inf included) is 0, and
+# anything else truncates toward zero (port-parity.md §0.6). Mirrors `f64 as u32`.
+#must_use
+#pure
+fn _ry_f64_to_u32(x: f64): i64 {
+    if (x != x) { return 0; }
+    if (x >= 4294967296.0) { return 4294967295; }
+    var t = f64_to(x);
+    if (t < 0) { return 0; }
+    return t;
 }

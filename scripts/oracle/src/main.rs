@@ -21,12 +21,16 @@
 //! originally). Modules are added at their milestone, with the golden grid from the port plan §6:
 //! `constants` and `math` (M0 part 2a); the table data and the rows that pin it (part 2b:
 //! `protein`, `alignment`, `enzyme`, `membrane`, `ai`, `constants_private`, with the
-//! completeness proof over every `const` and `static` item); each module's own rows from M1 on.
+//! completeness proof over every `const` and `static` item); each module's own rows from M1 on
+//! (`guard` and `integrate`, M1 part 1, through the verbatim copies `v_guard.rs` and
+//! `v_integrate.rs`, which `verbatim.rs` checks against `rust-old/src` on every run).
 
 mod cyr;
 mod glibc;
 mod grids;
 mod m_constants;
+mod m_guard;
+mod m_integrate;
 mod m_math;
 mod rustsrc;
 mod t_ai;
@@ -37,6 +41,9 @@ mod t_membrane;
 mod t_private;
 mod t_protein;
 mod tsv;
+mod v_guard;
+mod v_integrate;
+mod verbatim;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -51,13 +58,16 @@ fn amino_codes() -> Vec<char> {
         .collect()
 }
 
-/// Every golden emitter, in file-name order: `constants`, `math`, the private constants, and the
-/// modules the tables seed (M0 part 2b). Each module's function rows join its file at its
+/// Every golden emitter, in file-name order: `constants`, `math`, the private constants, the
+/// modules the tables seed (M0 part 2b), and the crate-private layers the generator reaches through
+/// verbatim copies (`guard`, `integrate`: M1). Each module's function rows join its file at its
 /// milestone.
 fn golden_modules(root: &Path) -> Result<Vec<tsv::Module>, String> {
     let read = |m: &str| rustsrc::Source::read(root, m);
     let mut v = vec![
         m_constants::emit(),
+        m_guard::emit(),
+        m_integrate::emit(),
         m_math::emit(),
         t_private::golden(root)?,
         t_protein::golden(&read("protein")?)?,
@@ -270,6 +280,9 @@ fn run() -> Result<bool, String> {
     if check {
         ok &= check_platform(&dir, &platform);
     }
+    // The crate-private functions the generator calls are copies of the oracle's text: prove it before any row.
+    let (copies, lines) = verbatim::check()?;
+    println!("verbatim {copies} copies of rust-old/src ({lines} lines): byte-identical spans");
 
     let mut outputs = Vec::new();
     let mut emitted = BTreeSet::new();

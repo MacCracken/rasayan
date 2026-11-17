@@ -24,6 +24,7 @@ rasayan's copies of the issue texts; the repros live only in cyrius.
 | Filed | Where |
 |---|---|
 | 4 new issues + repros | `cyrius/docs/development/issues/2026-11-16-{unlisted-stdlib-include-resolves-from-the-toolchain, f64-truth-test-is-not-diagnosed, exponent-literal-diagnostic-never-says-exponent, guide-builtin-result-compare-note-is-stale}.md`, repros in `cyrius/docs/development/issues/repros/` |
+| 1 new issue + repro (M1 part 1, the same day) | `cyrius/docs/development/issues/2026-11-16-must-use-warns-on-question-mark-propagation.md`, repro in `cyrius/docs/development/issues/repros/`; checked against cyrius's open and archived issues first (none covers `#must_use` with `?`) |
 | 2 addenda | `cyrius/docs/development/issues/2026-11-11-{f64-min-max-drop-nan-only-as-first-operand, vec-keeps-outgrown-buffer-and-aborts}.md` |
 | 1 addendum | `ganita/docs/development/issues/2026-11-09-correctly-rounded-exp-sin-cos-hypot.md` |
 | 1 addendum | `sakshi/docs/development/issues/2026-11-11-span-enter-has-no-level-check.md` |
@@ -42,7 +43,7 @@ makes its own scratch project under `build/` (never `/tmp`). The evidence for ea
 bash docs/development/issues/repros/2026-11-16-<slug>.sh; echo $?     # from the cyrius root; 1 = defect present
 ```
 
-## New issues (4)
+## New issues (5)
 
 | Target | Draft | Severity | Probe | Repro |
 |---|---|---|---|---|
@@ -50,6 +51,7 @@ bash docs/development/issues/repros/2026-11-16-<slug>.sh; echo $?     # from the
 | cyrius | [`2026-11-16-f64-truth-test-is-not-diagnosed.md`](2026-11-16-f64-truth-test-is-not-diagnosed.md) | Low–Medium | 12 | cyrius `repros/2026-11-16-f64-truth-test-is-not-diagnosed.sh` |
 | cyrius | [`2026-11-16-exponent-literal-diagnostic-never-says-exponent.md`](2026-11-16-exponent-literal-diagnostic-never-says-exponent.md) | Low | 12 | cyrius `repros/2026-11-16-exponent-literal-diagnostic-never-says-exponent.sh` |
 | cyrius | [`2026-11-16-guide-builtin-result-compare-note-is-stale.md`](2026-11-16-guide-builtin-result-compare-note-is-stale.md) | Low (docs) | 12 | cyrius `repros/2026-11-16-guide-builtin-result-compare-note-is-stale.sh` |
+| cyrius | [`2026-11-16-must-use-warns-on-question-mark-propagation.md`](2026-11-16-must-use-warns-on-question-mark-propagation.md) | Low–Medium | M1 part 1 (`src/guard.cyr`) | cyrius `repros/2026-11-16-must-use-warns-on-question-mark-propagation.sh` |
 
 ## Addenda to open issues (7)
 

@@ -791,3 +791,70 @@ non-finite f64 and a refusal of it on read (as serde_json), read rows compared w
 Rust's 1–2 ulp misreads, usize ≥ 2⁶³ refused until bayan's fix (M3 decides with its types), and writers that never
 grow a builder through an aborting put. `#derive(Serialize)` was not re-measured: ushma's probe 11 holds for the same
 toolchain (it writes bayan's printer's text and enum constant names, and accepts what serde refuses).
+
+## 4. M1 (Foundation)
+
+### 4a. Part 1: error, guard, integrate (2026-11-16)
+
+**What is compared.** `guard.rs` and `integrate.rs` are crate-private, so the generator cannot call them from its own
+crate. It compiles verbatim copies instead (`scripts/oracle/src/v_guard.rs`, `v_integrate.rs`: everything from the
+first item to the test module, 197 lines), and `verbatim.rs` proves on every run, write and `--check`, that each
+copy's block is a byte-for-byte span of `rust-old/src/<file>` before a row is made (probe 4's mechanism). The same text
+under the same rustc gives the same bits.
+
+| File | Rows | Grid |
+|---|---|---|
+| `guard.tsv` | 5,575, class A | the validators over 151 values (the specials, 0 and 1 and their neighbours, ±1e-12, ±1e-300, `f64::MIN`, 128 seeded), `at_least` at 7 bounds with each bound and its two neighbours; `valid_dt`, `conc`, `unit` over the same values; `take` over 14² and `shift` over 14³ edge combinations, plus 200 / 300 seeded |
+| `integrate.tsv` | 5,998: B 2,963, C 3,035 | `step_factors` at the Rust tests' 401 points, 4 ulps either side of `SERIES_MAX`, 921 decade points to 1e6, the exp overflow edge, 500 seeded; each integrator at 9 frame times × 15 `k·dt` targets (1e-12 … 1e6, both sides of the switch) × 5–6 states, the rate exactly at the cutoff, the early returns (rate 0, −0, negative), the Rust tests' cases, 600 seeded |
+| `integrate.cr.tsv` | 30 | the class-C rows whose outputs change when `expm1` is correctly rounded |
+
+A row is class C exactly where `step_factors` takes the `exp_m1` branch (`!(k·dt < SERIES_MAX)`), B on the series
+branch and on an early return.
+
+**The corrected oracle.** `mpfr_ref.py` evaluates each class-C integrate row as Rust's sequence: `k·dt` in binary64,
+one `expm1(-y)`, then `1 + em1` and `-em1 / y` and the integrator's `+ − ×` in Rust's order (Python floats are binary64,
+round to nearest), and `activate`'s `min(.., 1.0)` with Rust's rule. It first runs the model with glibc's `expm1`
+(Python's `math.expm1`, this machine's glibc 2.44): it reproduces all 3,035 class-C golden rows bit for bit, so the
+model is the oracle's sequence. With MPFR's `expm1` it changes 39: step_factors 16, activate 13, produce_decay 7,
+relax 3. `validate.py` re-derives all of it with its own model and its own MPFR binding (34,246 independent checks over
+the whole corpus, 0 failures), and pins the Rust lines its guard and integrate models stand for.
+
+**Results.**
+
+| Check | Result |
+|---|---|
+| guard, 10 functions | 5,575 of 5,575 bit-identical (error codes by variant, −0 from `shift(-a, s, 0)` included) |
+| integrate, series branch and early returns (class B) | 2,963 of 2,963 at 0 ulp |
+| integrate, `exp_m1` branch (class C, 0 ulp against the corrected oracle) | 2,996 exact, 39 accepted (ADR 3), 0 matching glibc's misrounding |
+| the corpus | 31,601 ok, 135 accepted (ADR 3), 0 failed, 0 pending |
+| three targets (`scripts/gates.sh`, 147 s, every step exit 0) | the same parity summary on x86_64 ELF, `--bounds`, PE (wine) and aarch64 (qemu); the logs identical but for the shadow lines (0 diff lines) |
+| tamper test (one bit of a corrected output, one guard error variant) | both caught by the harness and by `validate.py`; restored |
+
+**Errors and events** (ADR 0002 row 1). The codes are `RasayanError`'s variants in order (`RY_ERR_NON_FINITE` = 5). A
+validator returns `Ok(0)` / `Err(code)`; with DEBUG on, a refusal first emits Rust's Display text of the error it
+stands for. `tests/guard.tcyr` captures the events through sakshi's subscriber hook and compares them with Rust's text
+(`non-finite value: atp = NaN`, `concentration out of range: atp = -1 (must be >= 0)`, `invalid parameter: x =
+1.000000000001 (must be in [0, 1])`, `invalid parameter: gain = 0.99 (must be >= 1.5)`, …), including the longest
+Display value, −5e-324 (a 374-byte event in the 512-byte stack buffer). An accepted value and a refusal below DEBUG
+emit nothing.
+
+**A toolchain finding.** At 6.7.18, `f()?;` on a `#must_use` function that returns a `Result` warns `#must_use result
+of 'f' is discarded`, although `?` consumes the result and propagates it correctly (a 20-line program proves both: the
+warning, and the right Err and Ok values at run time). `cyrius test` must be warning-free, so `src/guard.cyr` writes
+Rust's `guard::finite(name, value)?;` out as `var t, v = ..; if (is_err_result(t) == 1) { return Err(v); }`. Every
+`validate()` from M2 on is written the same way until the diagnostic is fixed. No cyrius issue covered it; filed the
+same day in cyrius's working tree (`2026-11-16-must-use-warns-on-question-mark-propagation.md`, with a repro that exits
+1 while the warning stands; rasayan's copy in `docs/development/issues/`).
+
+**Benchmarks** (`tests/rasayan.bcyr`, x86_64, 10⁶ calls, state fed back each step):
+
+| | ns |
+|---|---|
+| `relax` / `produce_decay` / `activate`, series branch (`k·dt` = 0.01) | 21 / 22 / 27 |
+| the same on `expm1` (`k·dt` = 5) | 70 / 73 / 75 |
+| `conc` / `take` / `shift` | 9 / 9 / 16 |
+| `positive`, accepted (a value-form Result) | 18 |
+
+No Rust twin: in Rust these are crate-private and inlined into every tick, so they are measured inside the ticks'
+benchmarks from M2 on. `#inline` takes a single-expression function only, so none of these qualifies as written; the
+tick benches will show whether a branch-free form pays.

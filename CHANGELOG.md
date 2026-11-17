@@ -11,9 +11,42 @@ Cyrius port, M0 part 1 ([port plan](docs/development/rasayan-port-plan.md) §4 s
 part 2a (steps 4–5, first part), part 2b (step 6), part 2c-1 (step 7 and the corrected oracle),
 part 2c-2 (the correctly rounded primitives), part 2c-3 (their dense MPFR sweep), part 3a (step 8's
 three-target baselines and `scripts/gates.sh`, step 9's probes 1–4, 8 and 12) and part 3b (probes 6, 7, 10 and 11,
-the profiles, and step 10's upstream drafts). M0 is complete.
+the profiles, and step 10's upstream drafts). M0 is complete. M1 part 1 (the foundation's error codes, guard layer
+and integrators) follows.
 
 ### Added
+
+- **src/error.cyr** (M1 part 1) — `RY_ERR_*` codes in `RasayanError`'s variant order, append-only (`RY_ERR_NONE` 0,
+  `NEGATIVE_CONCENTRATION`, `INVALID_PARAMETER`, `UNKNOWN_AMINO_ACID`, `UNKNOWN_PATHWAY`, `NON_FINITE` 5;
+  `RY_ERR_COUNT`), `ry_error_name` (the Rust variant name the corpus uses) and `ry_error_message`
+  ([ADR 0002](docs/adr/0002-port-api-divergences.md) row 1)
+- **src/guard.cyr** (M1 part 1) — crate-private `guard.rs` transcribed as `_ry_guard_*`: the validators `finite`,
+  `non_negative`, `positive`, `fraction`, `at_least` return a value-form `Result` (`Ok(0)` / `Err(code)`); with DEBUG
+  on, a refusal first emits Rust's Display text of its error as one sakshi event (`invalid parameter: km = 0 (must be
+  > 0)`), built in a 512-byte stack buffer with `src/fmtf.cyr`'s Display form, so it never allocates; below DEBUG it
+  costs one level test. The sanitizers `valid_dt`, `conc`, `unit`, `take`, `shift`, with Rust's NaN semantics and
+  `shift`'s −0 from an empty product pool
+- **src/integrate.cyr** (M1 part 1) — `_ry_integrate_step_factors` (the degree-4 Estrin series below `SERIES_MAX`,
+  `_ry_cr_expm1` at and above it), `relax`, `produce_decay`, `activate`, every operation in Rust's order (P9)
+- **tests/golden/guard.tsv** (5,575 rows, class A: every validator over the specials, both sides of 0 and 1 and of
+  seven `at_least` bounds, and seeded values; `take` over 14² and `shift` over 14³ edge combinations), **integrate.tsv**
+  (5,998 rows: class B 2,963 on the series branch, class C 3,035 on `exp_m1`; `step_factors` at the Rust tests' grid,
+  four ulps either side of the cutoff and decades to 1e6, the integrators at nine frame times × fifteen `k·dt` targets
+  from 1e-12 to 1e6, the Rust tests' cases and seeded steps) and **integrate.cr.tsv** (39 rows where glibc's `expm1`
+  misrounds, ADR 0003). The generator reaches the crate-private functions through verbatim copies
+  (`scripts/oracle/src/v_guard.rs`, `v_integrate.rs`) that `verbatim.rs` proves are byte-identical spans of
+  `rust-old/src` on every run. `mpfr_ref.py` models integrate's sequence and first proves it reproduces every class-C
+  row with glibc's `expm1`; `validate.py` models guard and integrate on its own, with the modelled Rust lines pinned
+  (34,246 independent checks)
+- **tests/guard.tcyr** (86 checks: Rust's four `guard.rs` tests, every error code's name and message, and each
+  refusal's event captured through sakshi's subscriber hook and compared with Rust's Display text, the 374-byte
+  −5e-324 case included) and **tests/integrate.tcyr** (16: Rust's five `integrate.rs` tests)
+- **docs/development/issues/2026-11-16-must-use-warns-on-question-mark-propagation.md** (M1 part 1) — filed in cyrius's
+  working tree with its repro: `f()?;` on a `#must_use` function warns that the result is discarded although `?`
+  consumes and propagates it, so `src/` writes the propagation out until it is fixed
+- **benchmarks** (`tests/rasayan.bcyr`, x86_64, 10⁶ calls each): an integrator step 21 / 22 / 27 ns on the series
+  branch (`relax` / `produce_decay` / `activate`) and 70 / 73 / 75 ns on `expm1`; `conc` 9, `take` 9, `shift` 16 and
+  an accepted `positive` 18 ns. No Rust twin: the functions are crate-private and inlined into every tick
 
 - **scripts/oracle** — the golden-value generator (crate `rasayan-oracle`, `publish = false`): drives
   `rust-old/` read-only (path dependency, `features = ["full"]`, `Cargo.lock` seeded from the oracle's)
@@ -188,6 +221,13 @@ the profiles, and step 10's upstream drafts). M0 is complete.
 
 ### Changed
 
+- **cyrius.cyml** (M1 part 1) — `[lib]`, `[lib.mcp]` and `[lib.ai]` bundle `src/error.cyr`, `src/guard.cyr` and
+  `src/integrate.cyr` after `src/fmtf.cyr`; the bundles' sidecars now require `sakshi` and `result`. `result` is listed
+  in `[deps] stdlib` (it was vendored and locked already, through `io`)
+- **src/mathx.cyr** (M1 part 1) — `_ry_clamp` and `_ry_f64_to_u32` moved in from `tests/parity_math.cyr` (removed),
+  unchanged; the parity harness and probes 1 and 4 take them from `src/mathx.cyr`
+- **tests/parity.tcyr** (M1 part 1) — dispatchers for `guard` and `integrate`; integrate's class-C functions gated at 0
+  ulp against the corrected oracle; errors by `ry_error_name`. 31,601 rows ok and 135 accepted (ADR 3), 0 failed
 - **cyrius.cyml** (M0 part 3b) — `sakshi` and `log` in `[deps] stdlib` (vendored and locked; part 3a's probe 8 had
   compiled the toolchain's sakshi unvendored); the optional `[deps.bote]` (tag 3.8.15, `dist/bote-core.cyr`) behind
   `[features] mcp = ["bote"]`, which `cyrius deps --features mcp` vendors and locks with bote's libro, majra, patra

@@ -82,7 +82,6 @@ pub fn e(name: &'static str, v: impl std::fmt::Debug) -> Tok {
 
 /// `E:<Variant>` for a `RasayanError`: its `Debug` text up to the payload, so
 /// `NonFinite { name: "km", value: NaN }` is `E:NonFinite`.
-#[allow(dead_code)] // from M1
 pub fn err(x: &rasayan::RasayanError) -> Tok {
     let text = format!("{x:?}");
     let name = text

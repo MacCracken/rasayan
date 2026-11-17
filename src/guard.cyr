@@ -1,0 +1,176 @@
+# guard.cyr — shared numeric guards: parameter validation and input sanitization (Rust 1.2.0's crate-private
+# `guard.rs`, transcribed).
+#
+# Rust's `f64::max` / `f64::min` return the non-NaN operand and `f64::clamp` propagates NaN, so ad-hoc `.max(0.0)`
+# clamps either silently zero a NaN input or let it poison state. Every module routes validation and tick inputs
+# through these helpers instead, so that:
+# - a validator rejects NaN and ±inf, not only negatives, and rejects zero for constants used as divisors (Km, Ki,
+#   half-saturation constants);
+# - a tick treats a non-finite or non-positive `dt` as "no time passed";
+# - concentrations and fractions fed into a tick are mapped into their valid range, with NaN mapped to zero.
+#
+# Names: Rust's crate-private `guard::<fn>` is `_ry_guard_<fn>`, as a private constant `<module>::<NAME>` is
+# `_RY_<MODULE>_<NAME>` (ADR 0001, P6).
+#
+# The validators return a value-form Result, Ok(0) or Err(code) (src/error.cyr). Rust's `guard::finite(name, value)?;`
+# is written out (`var t, v = ..; if (is_err_result(t) == 1) { return Err(v); }`): at 6.7.18 `f()?` on a #must_use
+# function warns that the result is discarded, and `cyrius test` must be warning-free. A refusal costs one level test
+# unless DEBUG is on; then it first reports Rust's Display text of the error it stands for (`invalid parameter: km = 0
+# (must be > 0)`) as one sakshi event (ADR 0002 row 1). The text is built in a stack buffer, so a refusal never
+# allocates.
+
+# A str_builder over a caller's stack buffer: header `hdr` (24 bytes: buf, len, cap) on `buf` of `cap` bytes. It grows
+# onto the heap only past `cap`, as any str_builder does.
+fn _ry_sb_on(hdr, buf, cap): i64 {
+    store64(hdr, buf);
+    store64(hdr + 8, 0);
+    store64(hdr + 16, cap);
+    return hdr;
+}
+
+# The refusal `code` of the value `value` named `name` (a C string), for `return Err(..)`. With DEBUG on it first emits
+# Rust's Display text of the error as a DEBUG event: `non-finite value: <name> = <value>` (RY_ERR_NON_FINITE),
+# `concentration out of range: <name> = <value> (must be >= 0)` (RY_ERR_NEGATIVE_CONCENTRATION), or `invalid
+# parameter: <name> = <value> (<reason><min>)` (RY_ERR_INVALID_PARAMETER), where `<min>` is the bound in Display form
+# when `has_min` is 1 (`must be >= 1`) and nothing otherwise. A value is written as Rust's `{}` writes it
+# (`_ry_fmt_f64_display`: positional, at most 330 bytes for 5e-324), so 512 bytes hold every event.
+#must_use
+fn _ry_guard_fail(code, name, value: f64, reason, has_min, min: f64): i64 {
+    if (sakshi_get_level() >= SK_DEBUG) {
+        var hdr[24];
+        var buf[512];
+        var sb = _ry_sb_on(&hdr, &buf, 512);
+        if (code == RY_ERR_NEGATIVE_CONCENTRATION) {
+            str_builder_add_cstr(sb, "concentration out of range: ");
+        } elif (code == RY_ERR_INVALID_PARAMETER) {
+            str_builder_add_cstr(sb, "invalid parameter: ");
+        } else {
+            str_builder_add_cstr(sb, "non-finite value: ");
+        }
+        str_builder_add_cstr(sb, name);
+        str_builder_add_cstr(sb, " = ");
+        _ry_fmt_f64_display(sb, value);
+        if (code == RY_ERR_NEGATIVE_CONCENTRATION) {
+            str_builder_add_cstr(sb, " (must be >= 0)");
+        } elif (code == RY_ERR_INVALID_PARAMETER) {
+            str_builder_add_cstr(sb, " (");
+            str_builder_add_cstr(sb, reason);
+            if (has_min == 1) { _ry_fmt_f64_display(sb, min); }
+            str_builder_putc(sb, 41);
+        }
+        sakshi_debug(load64(sb), load64(sb + 8));
+    }
+    return code;
+}
+
+# Rejects NaN and ±inf: Ok(0), or Err(RY_ERR_NON_FINITE). Mirrors `guard::finite`.
+#must_use
+fn _ry_guard_finite(name, value: f64): Result {
+    if (_ry_is_finite(value) == 1) { return Ok(0); }
+    return Err(_ry_guard_fail(RY_ERR_NON_FINITE, name, value, 0, 0, 0.0));
+}
+
+# Requires a finite value `>= 0` (concentrations, rates, Vmax): Ok(0), Err(RY_ERR_NON_FINITE) for NaN or ±inf, or
+# Err(RY_ERR_NEGATIVE_CONCENTRATION) below 0 (−0 passes, as `-0.0 < 0.0` is false). Mirrors `guard::non_negative`.
+#must_use
+fn _ry_guard_non_negative(name, value: f64): Result {
+    var ft, fv = _ry_guard_finite(name, value);
+    if (is_err_result(ft) == 1) { return Err(fv); }
+    if (value < 0.0) {
+        return Err(_ry_guard_fail(RY_ERR_NEGATIVE_CONCENTRATION, name, value, 0, 0, 0.0));
+    }
+    return Ok(0);
+}
+
+# Requires a finite value `> 0` (constants used as divisors: Km, Ki, K½, capacities): Ok(0), Err(RY_ERR_NON_FINITE),
+# or Err(RY_ERR_INVALID_PARAMETER) at or below 0 (±0 included). Mirrors `guard::positive`.
+#must_use
+fn _ry_guard_positive(name, value: f64): Result {
+    var ft, fv = _ry_guard_finite(name, value);
+    if (is_err_result(ft) == 1) { return Err(fv); }
+    if (value <= 0.0) {
+        return Err(_ry_guard_fail(RY_ERR_INVALID_PARAMETER, name, value, "must be > 0", 0, 0.0));
+    }
+    return Ok(0);
+}
+
+# Requires a finite value in `[0, 1]` (fractions, normalized levels): Ok(0), Err(RY_ERR_NON_FINITE), or
+# Err(RY_ERR_INVALID_PARAMETER) outside the closed interval (−0 is inside). Mirrors `guard::fraction`, whose
+# `!(0.0..=1.0).contains(&value)` is `!(0.0 <= value && value <= 1.0)`.
+#must_use
+fn _ry_guard_fraction(name, value: f64): Result {
+    var ft, fv = _ry_guard_finite(name, value);
+    if (is_err_result(ft) == 1) { return Err(fv); }
+    if (value < 0.0 || value > 1.0) {
+        return Err(_ry_guard_fail(RY_ERR_INVALID_PARAMETER, name, value, "must be in [0, 1]", 0, 0.0));
+    }
+    return Ok(0);
+}
+
+# Requires a finite value `>= min` (activation multipliers `>= 1`): Ok(0), Err(RY_ERR_NON_FINITE), or
+# Err(RY_ERR_INVALID_PARAMETER) below `min`. Mirrors `guard::at_least`.
+#must_use
+fn _ry_guard_at_least(name, value: f64, min: f64): Result {
+    var ft, fv = _ry_guard_finite(name, value);
+    if (is_err_result(ft) == 1) { return Err(fv); }
+    if (value < min) {
+        return Err(_ry_guard_fail(RY_ERR_INVALID_PARAMETER, name, value, "must be >= ", 1, min));
+    }
+    return Ok(0);
+}
+
+# 1 when `dt` is a usable time step, finite and `> 0`, else 0. Ticks return a zero flux and leave state untouched
+# otherwise, so a bad frame time (NaN, negative, inf) cannot wipe or reverse a simulation. Mirrors `guard::valid_dt`.
+#must_use
+#pure
+fn _ry_guard_valid_dt(dt: f64): i64 {
+    if (_ry_is_finite(dt) == 1 && dt > 0.0) { return 1; }
+    return 0;
+}
+
+# Sanitizes a concentration-like input: NaN, ±inf and negatives (and ±0) become +0. Mirrors `guard::conc`.
+#must_use
+#pure
+fn _ry_guard_conc(x: f64): f64 {
+    if (_ry_is_finite(x) == 1 && x > 0.0) { return x; }
+    return 0.0;
+}
+
+# Sanitizes a fraction-like input into `[0, 1]`: NaN becomes +0, +inf 1, −inf 0; a zero keeps its sign. Mirrors
+# `guard::unit`.
+#must_use
+#pure
+fn _ry_guard_unit(x: f64): f64 {
+    if (_ry_is_nan(x) == 1) { return 0.0; }
+    var r: f64 = _ry_clamp(x, 0.0, 1.0);
+    return r;
+}
+
+# The amount a one-directional transfer moves this step: `amount` capped at the `pool` it drains. NaN, negative
+# amounts and empty or invalid pools move nothing (+0), so a large `dt` can never overdraw a pool and create mass.
+# Mirrors `guard::take`.
+#must_use
+#pure
+fn _ry_guard_take(amount: f64, pool: f64): f64 {
+    if (amount > 0.0 && pool > 0.0) {
+        var r: f64 = _ry_min(amount, pool);
+        return r;
+    }
+    return 0.0;
+}
+
+# The net amount a reversible step moves this step (positive = forward), capped at the substrate pool going forward
+# or the product pool going backward. Backward it is Rust's `-take(-amount, product)`: both negations are sign flips,
+# so an empty product pool gives −0 (port-parity.md §0.7). Mirrors `guard::shift`.
+#must_use
+#pure
+fn _ry_guard_shift(amount: f64, substrate: f64, product: f64): f64 {
+    if (amount < 0.0) {
+        var back: f64 = -amount;
+        var moved: f64 = _ry_guard_take(back, product);
+        var r: f64 = -moved;
+        return r;
+    }
+    var fwd: f64 = _ry_guard_take(amount, substrate);
+    return fwd;
+}

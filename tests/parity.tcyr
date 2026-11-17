@@ -3,8 +3,7 @@
 # Port plan §4 step 7, adapted from ushma's tests/parity.tcyr (kimiya's, itself tanmatra's). Format and comparison
 # rules: scripts/oracle/README.md. The module list is tests/golden/modules.txt, which the generator writes. The replay
 # machinery is tests/parity_core.cyr and tests/ulp.cyr; this file holds the dispatchers. The math rows run on
-# src/mathx.cyr (the correctly rounded primitives and the Rust-semantics helpers) and on tests/parity_math.cyr's two
-# helpers that stay test-side until M1.
+# src/mathx.cyr (the correctly rounded primitives and the Rust-semantics helpers).
 #
 # Every row of every module is one of:
 # - ok: every output matched within its class (A bit-identical, NaN matching any NaN; B <= 2 ulp; C 0 ulp against
@@ -22,7 +21,7 @@
 # against another Cyrius candidate and are never gated. The exit code is the number of modules with a failure (at
 # most a handful, so the 8-bit exit status can't wrap).
 #
-# What is wired up at M0 part 2c-2:
+# What is wired up at M1 part 1:
 # - `const` rows of every module: src/constants.cyr, src/constants_private.cyr and the scalar consts of the
 #   generated data files, by Rust name;
 # - the table rows (protein, alignment, enzyme, membrane): answered from the generated src/*_data.cyr columns. A row
@@ -30,8 +29,13 @@
 #   the Rust function's rule to the generated data here, so every cell is compared through the oracle's API; at M2
 #   and M3 those rows move to the ported `ry_*` functions;
 # - `math` rows: classes A and B on the builtins (abs, ceil, sqrt), src/mathx.cyr's Rust-semantics helpers and
-#   tests/parity_math.cyr's two; class C (powf, exp, ln, exp_m1) on src/mathx.cyr's correctly rounded primitives, at
-#   0 ulp against the corrected oracle (ADR 0003). The stdlib's counterparts stay as ungated shadow lines.
+#   _ry_clamp and _ry_f64_to_u32 (in src/mathx.cyr since M1); class C (powf, exp, ln, exp_m1) on src/mathx.cyr's
+#   correctly rounded primitives, at 0 ulp against the corrected oracle (ADR 0003). The stdlib's counterparts stay as
+#   ungated shadow lines;
+# - `guard` rows (M1): src/guard.cyr's validators (the error code, by Rust variant name, through src/error.cyr) and
+#   sanitizers, class A;
+# - `integrate` rows (M1): src/integrate.cyr, class B on the series branch and class C on the exp_m1 branch, at 0 ulp
+#   against the corrected oracle (tests/golden/integrate.cr.tsv).
 
 include "tests/ulp.cyr"
 include "src/constants.cyr"
@@ -43,16 +47,19 @@ include "src/alignment_data.cyr"
 include "src/enzyme_data.cyr"
 include "src/membrane_data.cyr"
 include "src/ai_data.cyr"
-include "tests/parity_math.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+include "src/integrate.cyr"
 
 alloc_init();
 
 include "tests/parity_core.cyr"
 
-# The Rust variant name of an error code. src/error.cyr arrives in M1; until then no row returns an error.
+# The Rust variant name of an error code (src/error.cyr).
 #must_use
 fn _par_error_name(code): i64 {
-    return "Unknown";
+    return ry_error_name(code);
 }
 
 # ── inputs ──────────────────────────────────────────────────────────────────────────
@@ -634,10 +641,103 @@ fn _par_membrane(fp, fl): i64 {
     return 1;
 }
 
+# ── guard ───────────────────────────────────────────────────────────────────────────
+# src/guard.cyr (M1). A validator's row has no output for Ok(()) and the error's Rust variant for Err (ADR 0002 row 1:
+# the code is compared, the payload is in the DEBUG event).
+
+# Appends a validator's outcome: nothing for Ok, the error for Err.
+fn _par_got_outcome(t, v) {
+    if (is_err_result(t) == 1) { _par_got_err(v); }
+    return 0;
+}
+
+# The guard rows: the validators (`s:<name> f:<value>`, at_least `… f:<min>`), valid_dt, conc, unit, take, shift.
+fn _par_guard(fp, fl): i64 {
+    if (_par_in_n >= 2 && load64(_par_in_k) == 115) {
+        var name = _par_in_cstr(0);
+        if (name == 0) { return 0 - 1; }
+        var v: f64 = _par_in(1);
+        if (_par_eq(fp, fl, "guard::finite") == 1) {
+            var t1, v1 = _ry_guard_finite(name, v);
+            _par_got_outcome(t1, v1);
+            return 1;
+        }
+        if (_par_eq(fp, fl, "guard::non_negative") == 1) {
+            var t2, v2 = _ry_guard_non_negative(name, v);
+            _par_got_outcome(t2, v2);
+            return 1;
+        }
+        if (_par_eq(fp, fl, "guard::positive") == 1) {
+            var t3, v3 = _ry_guard_positive(name, v);
+            _par_got_outcome(t3, v3);
+            return 1;
+        }
+        if (_par_eq(fp, fl, "guard::fraction") == 1) {
+            var t4, v4 = _ry_guard_fraction(name, v);
+            _par_got_outcome(t4, v4);
+            return 1;
+        }
+        if (_par_eq(fp, fl, "guard::at_least") == 1 && _par_in_n == 3) {
+            var min: f64 = _par_in(2);
+            var t5, v5 = _ry_guard_at_least(name, v, min);
+            _par_got_outcome(t5, v5);
+            return 1;
+        }
+        return 0;
+    }
+    var x: f64 = _par_in(0);
+    if (_par_eq(fp, fl, "guard::valid_dt") == 1) { _par_got_i(_ry_guard_valid_dt(x)); return 1; }
+    if (_par_eq(fp, fl, "guard::conc") == 1) { var c: f64 = _ry_guard_conc(x); _par_got_f(c); return 1; }
+    if (_par_eq(fp, fl, "guard::unit") == 1) { var u: f64 = _ry_guard_unit(x); _par_got_f(u); return 1; }
+    if (_par_in_n < 2) { return 0; }
+    var y: f64 = _par_in(1);
+    if (_par_eq(fp, fl, "guard::take") == 1) { var r: f64 = _ry_guard_take(x, y); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "guard::shift") == 1 && _par_in_n == 3) {
+        var p: f64 = _par_in(2);
+        var r2: f64 = _ry_guard_shift(x, y, p);
+        _par_got_f(r2);
+        return 1;
+    }
+    return 0;
+}
+
+# ── integrate ───────────────────────────────────────────────────────────────────────
+# src/integrate.cyr (M1): step_factors(y) -> (f, g); relax, produce_decay, activate (x, a, b, dt) -> x'.
+
+fn _par_integrate(fp, fl): i64 {
+    var a: f64 = _par_in(0);
+    if (_par_eq(fp, fl, "integrate::step_factors") == 1) {
+        var f, g = _ry_integrate_step_factors(a);
+        _par_got_f(f);
+        _par_got_f(g);
+        return 1;
+    }
+    if (_par_in_n != 4) { return 0; }
+    var b: f64 = _par_in(1);
+    var c: f64 = _par_in(2);
+    var dt: f64 = _par_in(3);
+    if (_par_eq(fp, fl, "integrate::relax") == 1) {
+        var r1: f64 = _ry_integrate_relax(a, b, c, dt);
+        _par_got_f(r1);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "integrate::produce_decay") == 1) {
+        var r2: f64 = _ry_integrate_produce_decay(a, b, c, dt);
+        _par_got_f(r2);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "integrate::activate") == 1) {
+        var r3: f64 = _ry_integrate_activate(a, b, c, dt);
+        _par_got_f(r3);
+        return 1;
+    }
+    return 0;
+}
+
 # ── math ────────────────────────────────────────────────────────────────────────────
 # `f64::` rows: the port's counterpart of each Rust std method rasayan calls (port plan §7.1, port-parity.md §0, §2d).
 # - Class A: abs and ceil (builtins); min, max, is_finite, is_nan (src/mathx.cyr), clamp and the `as u32` cast
-#   (tests/parity_math.cyr): Rust's semantics where the stdlib's differ.
+#   (src/mathx.cyr since M1): Rust's semantics where the stdlib's differ.
 # - Class B: sqrt (builtin, correctly rounded); powi (`_ry_powi`, src/mathx.cyr, `__powidf2`'s order).
 # - Class C (ADR 0003): exp, exp_m1, ln and powf (the `10_f64.powf(x)` rows included: the oracle calls glibc's pow
 #   there) on src/mathx.cyr's correctly rounded `_ry_cr_*`, compared at 0 ulp against the corrected oracle
@@ -686,6 +786,8 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
     if (_par_eq(mp, ml, "alignment") == 1) { return _par_alignment(fp, fl); }
     if (_par_eq(mp, ml, "enzyme") == 1) { return _par_enzyme(fp, fl); }
     if (_par_eq(mp, ml, "membrane") == 1) { return _par_membrane(fp, fl); }
+    if (_par_eq(mp, ml, "guard") == 1) { return _par_guard(fp, fl); }
+    if (_par_eq(mp, ml, "integrate") == 1) { return _par_integrate(fp, fl); }
     return 0;
 }
 
@@ -778,6 +880,10 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "f64::exp_m1") == 1) { return 0; }
     if (_par_eq(fp, fl, "f64::ln") == 1) { return 0; }
     if (_par_eq(fp, fl, "f64::powf") == 1) { return 0; }
+    if (_par_eq(fp, fl, "integrate::step_factors") == 1) { return 0; }
+    if (_par_eq(fp, fl, "integrate::relax") == 1) { return 0; }
+    if (_par_eq(fp, fl, "integrate::produce_decay") == 1) { return 0; }
+    if (_par_eq(fp, fl, "integrate::activate") == 1) { return 0; }
     return 0 - 1;
 }
 

@@ -1,7 +1,7 @@
 """Correctly rounded binary64 results from the system MPFR library, and rasayan's corrected oracle (ADR 0003).
 
     python3 -I -B scripts/oracle/mpfr_ref.py               # the self-checks
-    python3 -I -B scripts/oracle/mpfr_ref.py --write .     # (re)write tests/golden/math.cr.tsv
+    python3 -I -B scripts/oracle/mpfr_ref.py --write .     # (re)write tests/golden/{math,integrate}.cr.tsv
     python3 -I -B scripts/oracle/mpfr_ref.py --check .     # regenerate it in memory and compare byte for byte
 
 Each primitive returns the IEEE-754 binary64 round-to-nearest-even value of the exact mathematical result: MPFR at
@@ -22,6 +22,13 @@ call glibc's pow, not exp10: scripts/oracle/README.md, "Where the math rows come
 oracle's (glibc 2.44's), the row goes to tests/golden/math.cr.tsv with the correctly rounded outputs; the parity
 harness compares the port against those (ADR 0003 item 2). scripts/oracle/validate.py re-derives the whole set with
 its own MPFR binding and checks the file.
+
+integrate (M1 part 1): every class-C row of tests/golden/integrate.tsv takes `step_factors`' exp_m1 branch, so its
+sequence is one `expm1(-y)` (y = k·dt, computed in binary64 as Rust does) followed by + − × ÷ in Rust's order, and
+`activate`'s `min(.., 1.0)` with Rust's NaN rule. Python floats are binary64 with round-to-nearest, so the arithmetic
+around the primitive is Rust's. Before it corrects anything, the same model with glibc's expm1 (Python's math.expm1
+calls this machine's glibc) must reproduce every class-C golden row bit for bit, which proves the model is the oracle's
+sequence; the rows whose outputs change with the correctly rounded expm1 go to tests/golden/integrate.cr.tsv.
 """
 import ctypes
 import ctypes.util
@@ -163,6 +170,84 @@ def _same(x, y):
     return (math.isnan(x) and math.isnan(y)) or bits(x) == bits(y)
 
 
+def _rust_min(a, b):
+    """Rust 1.100's `a.min(b)`: a NaN b gives a; otherwise the smaller, b when they compare equal."""
+    if b != b:
+        return a
+    return a if a < b else b
+
+
+def _factors(y, em1_of):
+    """`integrate::step_factors(y)` on its exp_m1 branch, with `em1_of` as the expm1."""
+    if y < 0.0625:
+        raise ValueError(f"step_factors({y!r}) takes the series branch: no class-C row")
+    em1 = em1_of(-y)
+    return 1.0 + em1, -em1 / y
+
+
+def _relax(args, em1_of):
+    x, target, rate, dt = args
+    decay, _g = _factors(rate * dt, em1_of)
+    return [target + (x - target) * decay]
+
+
+def _produce_decay(args, em1_of):
+    x, production, decay, dt = args
+    f, g = _factors(decay * dt, em1_of)
+    return [x * f + production * dt * g]
+
+
+def _activate(args, em1_of):
+    x, on, off, dt = args
+    total = on + off
+    f, g = _factors(total * dt, em1_of)
+    return [_rust_min(x * f + on * dt * g, 1.0)]
+
+
+INTEGRATE = {  # the golden fn of a class-C integrate row -> its operation sequence (args, expm1) -> outputs
+    "integrate::step_factors": lambda args, em1_of: list(_factors(args[0], em1_of)),
+    "integrate::relax": _relax,
+    "integrate::produce_decay": _produce_decay,
+    "integrate::activate": _activate,
+}
+
+
+def integrate_corrections(golden_text):
+    """The class-C rows of integrate.tsv whose outputs differ when expm1 is correctly rounded, as (fn, inputs,
+    outputs, note) in file order; and the number of class-C rows evaluated. Raises if the model with glibc's expm1
+    does not reproduce a golden row."""
+    rows = []
+    evaluated = 0
+    for n, line in enumerate(golden_text.split("\n"), 1):
+        if not line or line.startswith("#"):
+            continue
+        cols = line.split("\t")
+        if len(cols) != 5:
+            raise ValueError(f"integrate.tsv:{n}: {len(cols)} columns")
+        fn, cls, ins, outs, _note = cols
+        if cls != "C":
+            continue
+        if fn not in INTEGRATE:
+            raise ValueError(f"integrate.tsv:{n}: class-C {fn} has no operation model here")
+        args = [_f(t) for t in ins.split(" ")]
+        want = outs.split(" ")
+        model = INTEGRATE[fn]
+        glibc = [_ftok(v) for v in model(args, math.expm1)]
+        if glibc != want and not all(_same(_f(a), _f(b)) for a, b in zip(glibc, want, strict=True)):
+            raise ValueError(f"integrate.tsv:{n}: the model with glibc's expm1 gives {glibc}, the oracle {want}")
+        c = [_ftok(v) for v in model(args, expm1)]
+        evaluated += 1
+        if all(_same(_f(a), _f(b)) for a, b in zip(c, want, strict=True)):
+            continue
+        y_arg = args[0] if fn == "integrate::step_factors" else None
+        if y_arg is None:
+            k = args[1] + args[2] if fn == "integrate::activate" else args[2]
+            y_arg = k * args[3]
+        call = f"expm1({_ftok(-y_arg)}) glibc {_ftok(math.expm1(-y_arg))} correctly rounded {_ftok(expm1(-y_arg))}"
+        rows.append((fn, ins, " ".join(c), f"oracle {outs}; {call}"))
+    return rows, evaluated
+
+
 def corrections(golden_text):
     """The class-C rows of math.tsv whose correctly rounded outputs differ from the oracle's, as
     (fn, inputs, outputs, note) in file order; and the number of class-C rows evaluated."""
@@ -194,11 +279,11 @@ def corrections(golden_text):
     return rows, evaluated
 
 
-def cr_text(golden_text, rows):
-    """tests/golden/math.cr.tsv: the golden file's provenance, the MPFR version, then the rows."""
+def cr_text(module, golden_text, rows):
+    """tests/golden/<module>.cr.tsv: the golden file's provenance, the MPFR version, then the rows."""
     prov = golden_text.split("\n", 2)[1].split(". Generated by", 1)[0]
     head = [
-        "# rasayan corrected oracle (ADR 0003), format 1: math",
+        f"# rasayan corrected oracle (ADR 0003), format 1: {module}",
         f"{prov}. Correctly rounded: MPFR {VERSION}. Generated by scripts/oracle/mpfr_ref.py; do not edit.",
         REGENERATE,
         COLUMNS,
@@ -216,23 +301,27 @@ def main(argv):
         print("usage: mpfr_ref.py [--write <root> | --check <root>]")
         return 2
     gold = pathlib.Path(argv[1]).resolve() / "tests/golden"
-    golden_text = (gold / "math.tsv").read_text()
-    rows, evaluated = corrections(golden_text)
-    text = cr_text(golden_text, rows)
-    path = gold / "math.cr.tsv"
-    per = {}
-    for fn, *_ in rows:
-        per[fn] = per.get(fn, 0) + 1
-    summary = f"{len(rows)} of {evaluated} class-C rows misrounded by glibc {dict(sorted(per.items()))}"
-    if argv[0] == "--write":
-        path.write_text(text)
-        print(f"wrote tests/golden/math.cr.tsv: {summary}")
-        return 0
-    if not path.exists() or path.read_text() != text:
-        print(f"DIFFERS  tests/golden/math.cr.tsv (regenerate with --write): {summary}")
-        return 1
-    print(f"ok       tests/golden/math.cr.tsv: {summary}")
-    return 0
+    status = 0
+    for module, make in (("math", corrections), ("integrate", integrate_corrections)):
+        golden_text = (gold / f"{module}.tsv").read_text()
+        rows, evaluated = make(golden_text)
+        text = cr_text(module, golden_text, rows)
+        path = gold / f"{module}.cr.tsv"
+        per = {}
+        for fn, *_ in rows:
+            per[fn] = per.get(fn, 0) + 1
+        summary = f"{len(rows)} of {evaluated} class-C rows changed by a correctly rounded primitive " \
+                  f"{dict(sorted(per.items()))}"
+        if argv[0] == "--write":
+            path.write_text(text)
+            print(f"wrote tests/golden/{module}.cr.tsv: {summary}")
+            continue
+        if not path.exists() or path.read_text() != text:
+            print(f"DIFFERS  tests/golden/{module}.cr.tsv (regenerate with --write): {summary}")
+            status = 1
+            continue
+        print(f"ok       tests/golden/{module}.cr.tsv: {summary}")
+    return status
 
 
 if __name__ == "__main__":
