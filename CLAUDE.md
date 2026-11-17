@@ -76,6 +76,9 @@ cyrius deps --locked
 cyrius audit                    # never pipe it through tail: you would read tail's exit status
 ```
 
+`bash scripts/gates.sh` runs all of the above, plus the oracle-side checks and the parity corpus on
+three targets (x86_64 ELF, PE, aarch64), with logs in `build/gates/`.
+
 `cyrius test` must be **warning-free**. The f64 type diagnostics are warnings, not errors, and each
 one is a bug:
 - *integer arithmetic with an f64 right operand*
@@ -128,7 +131,9 @@ one is a bug:
   tolerance class the port plan (§5) assigns. Diverge only with an ADR.
 - **Transcribe stateful and iterative code exactly** (P9): same operation order, iteration caps and
   termination tests as the oracle — every `tick()`, the sub-steppers and the metabolic network's
-  implicit NADH solves. Single-step rows and trajectory digests (class T) check them.
+  implicit NADH solves. Single-step rows and trajectory digests (class T) check them. An algebraically
+  equal rewrite is not a transcription: the textbook secant step changes 28 % of the NADH solves, and
+  `dt * 50.0` for `dt / 0.02` changes sub-step counts (probes 1, 4).
 - **Rust NaN semantics are load-bearing.** The guard layer depends on `f64::max(NaN, x) = x` and
   `clamp` propagating NaN; use the port's `_ry_min`/`_ry_max`/`_ry_clamp`, never the stdlib
   `f64_min`/`f64_max`, which differ on NaN.
@@ -154,8 +159,10 @@ one is a bug:
   per process.
 - **Profiles for optional stacks.** `[lib]` is the science (+ logging). `[lib.mcp]` adds bote,
   `[lib.ai]` adds the sandhi/TLS client.
-- **Spans on every operation Rust instrumented** (sakshi, level-gated helpers — a raw
-  `sakshi_span_enter` costs ~192 ns even when filtered out).
+- **Events where Rust emits them.** Rust 1.2.0 has 31 `tracing` events and no span. Each becomes a
+  level-gated helper (`_ry_trace` / `_ry_debug` / `_ry_warn`) that tests `sakshi_get_level()` before
+  formatting any field. Never a raw `sakshi_span_*`: it has no level check (204 ns even filtered out,
+  probe 8).
 - **No aborts in library code.** `src/` never uses `+?`, `-?` or `*?` (they exit the process),
   `assert_fatal`, `panic`, `unwrap` or `result_unwrap`. Errors return a value-form `Result` with an
   `RY_ERR_*` code.
@@ -172,9 +179,13 @@ one is a bug:
   - No exponent notation in literals (a compile error at the pin); generated files write decimals positionally.
 - **Never test an f64 for truth** (`if (x)`, `!x`): it tests the raw bits (−0.0 is true). Compare explicitly.
 - **Results through out-pointers.** A wide result fills the caller's `out: *T` and the function
-  returns a value-form `Result`. Never a freshly allocated record in the payload.
+  returns a value-form `Result`. Never a freshly allocated record in the payload. `Vec` results go into
+  a caller buffer, with the count in `Ok(count)` and `Err` for a buffer that is too small. No
+  `vec_push` in `src/`: it aborts the process when an allocation fails (probe 3).
 - **No per-call allocation on repeated paths.** `tick()`s and the network's producer probe use
-  caller or stack/arena storage; the global heap never frees.
+  caller or stack/arena storage; the global heap never frees. The network's producer probe is a frame
+  copy, `var probe: T = *net;` (probe 2: +11 ns, 0 heap). Arenas are for per-step scratch whose size
+  depends on the data.
 - **Toolchain workarounds** (open issues at the pin; port plan §2.10).
   - Bind a struct-returning call to a local before storing it into a field (`s.f = g(t.e)` miscompiles).
   - Never put an attribute (`#must_use`, `#inline`) directly before a `var` or `const`; it attaches to the next fn.

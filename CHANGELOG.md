@@ -157,6 +157,10 @@ three-target baselines and `scripts/gates.sh`, step 9's probes 1–4, 8 and 12).
 
 ### Changed
 
+- **CLAUDE.md / ADR 0002** — rules from the M0 part 3a probes: level-gated event helpers instead of
+  spans (row 7), `Vec` results into caller buffers with `Ok(count)` and no `vec_push` (row 3), the
+  producer probe as a frame copy, algebraically equal rewrites are not transcriptions, `gates.sh` as
+  the single gate.
 - **port** — `cyrius port` (Cyrius 6.7.18): the Rust 1.2.0 crate moved to `rust-old/` as tagged
   (sources byte-identical to tag `1.2.0`), with its scripts, workflows, README, architecture overview,
   benchmark history and `Cargo.lock` (now tracked). The Rust bench baseline at the tag is recorded in
