@@ -53,7 +53,7 @@ details:
   correctly rounded (0 misreads on 330,518 finite doubles). Golden read rows therefore compare the decoded value with
   the bits that were written, never with what Rust's reader made of the text.
 - **Integers at or above 2⁶³ refuse the document** in bayan 1.11.1 (an open bayan issue; rasayan's addendum is drafted
-  in `docs/development/upstream/`): rasayan's five `usize` fields (`PtmSite.position`, `DomainHit.start` / `.end`,
+  in `docs/development/issues/`): rasayan's five `usize` fields (`PtmSite.position`, `DomainHit.start` / `.end`,
   `AlignmentScore.identities` / `.length`) are written exactly by the port but read only below 2⁶³. Until bayan's fix,
   such a document is refused with the decode error (the maintainer may prefer pramana's text pre-pass; M3 decides
   with the types).

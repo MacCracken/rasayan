@@ -24,7 +24,7 @@ tolerance Rust writes (`1e-14`, `1e-12`). cycc refuses it, but neither diagnosti
 (filed as `repros/2026-11-16-exponent-literal-diagnostic-never-says-exponent.sh`), from the repo root:
 
 ```sh
-bash docs/development/upstream/repros/cyrius-exponent-literal-diagnostic-never-says-exponent.sh; echo $?
+bash docs/development/issues/repros/cyrius-exponent-literal-diagnostic-never-says-exponent.sh; echo $?
 # warning:<source>:2:21: an integer stored into an f64/f32 slot keeps its integer bits (write a float literal)
 # error:<source>:2:21: expected ';', got identifier 'e'
 # error:<source>:3:23: expected ';', got identifier 'e3'

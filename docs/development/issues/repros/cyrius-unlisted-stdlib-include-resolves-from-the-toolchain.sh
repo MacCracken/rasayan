@@ -9,7 +9,7 @@
 # Exits 1 while the defect is present: build OK, the module absent from lib/ and the lock, --locked green, and no
 # diagnostic naming it.
 #
-#   bash docs/development/upstream/repros/cyrius-unlisted-stdlib-include-resolves-from-the-toolchain.sh; echo $?
+#   bash docs/development/issues/repros/cyrius-unlisted-stdlib-include-resolves-from-the-toolchain.sh; echo $?
 set -u
 root=$(cd "$(dirname "$0")/../../../.." && pwd)
 w=$root/build/upstream-repros/unlisted-stdlib

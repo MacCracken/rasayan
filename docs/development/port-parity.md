@@ -404,7 +404,7 @@ PE under wine), on 2026-11-16. Times are the best of three runs on a machine ano
 average 5–12 of 16 cores), so they are upper bounds; speed is measured, not gated. `bash scripts/probes/run.sh`
 builds and runs them all; `--gate` is the gates.sh step (§2f). Part 3a holds probes 1, 2 (with probe 5's heap
 measurement), 3, 4, 8 and ushma's 12. Part 3b holds probes 6 (bote), 7 (hoosh), 10 (the manifest and the bundles) and
-11 (JSON), with the upstream drafts (`docs/development/upstream/`). Their Rust halves are the oracle bins
+11 (JSON), with the upstream drafts (`docs/development/issues/`). Their Rust halves are the oracle bins
 `probe_mcp`, `probe_ai` and `probe_json` (`scripts/oracle/src/bin/`), which drive the frozen 1.2.0 read-only through
 its own bote 0.92, hoosh 1.3 and serde_json 1.0.154.
 

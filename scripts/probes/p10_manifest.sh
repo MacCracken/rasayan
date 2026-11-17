@@ -133,7 +133,7 @@ EOF
             "$(wc -c < "$c/build/$name-$t$ext" 2>/dev/null || echo 0)" "$warns" \
             "$(printf '%s\n' "$log" | grep -i 'warning' | grep -c -E "$KNOWN")"
         if [ "$name-$t" = c_mcp-win ]; then
-            # Upstream (port-parity.md §3, probe 10; docs/development/upstream/bote/): a bote-core consumer compiles
+            # Upstream (port-parity.md §3, probe 10; docs/development/issues/bote/): a bote-core consumer compiles
             # bote's whole graph, and lib/majra.cyr has no PE futex. Expected to fail until that is fixed.
             if [ "$rc" -ne 0 ] && printf '%s\n' "$log" | grep -q "error:lib/majra.cyr:.*undefined variable 'SYS_FUTEX'"; then
                 echo "win      expected failure: lib/majra.cyr (bote's graph) has no SYS_FUTEX on PE (recorded constraint of the -mcp bundle)"

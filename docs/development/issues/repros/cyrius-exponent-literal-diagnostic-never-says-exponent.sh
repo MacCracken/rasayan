@@ -5,7 +5,7 @@
 # 'e'"; `1.5e3` gives "expected ';', got identifier 'e3'".
 # Exits 1 while the defect is present: the build fails and no diagnostic names the exponent form.
 #
-#   bash docs/development/upstream/repros/cyrius-exponent-literal-diagnostic-never-says-exponent.sh; echo $?
+#   bash docs/development/issues/repros/cyrius-exponent-literal-diagnostic-never-says-exponent.sh; echo $?
 set -u
 root=$(cd "$(dirname "$0")/../../../.." && pwd)
 w=$root/build/upstream-repros/e-literal

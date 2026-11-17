@@ -24,7 +24,7 @@ branch on −0.0 and nothing says so.
 `repros/2026-11-16-f64-truth-test-is-not-diagnosed.sh`), from the repo root:
 
 ```sh
-bash docs/development/upstream/repros/cyrius-f64-truth-test-is-not-diagnosed.sh; echo $?
+bash docs/development/issues/repros/cyrius-f64-truth-test-is-not-diagnosed.sh; echo $?
 # -0.0 == 0.0: 1, if (-0.0): 1, if (!-0.0): 0
 # diagnostics on the truth tests: 0
 # repro: DEFECT PRESENT (an f64 truth test compiles silently and tests the bits)

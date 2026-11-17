@@ -1,4 +1,9 @@
-# Upstream drafts from rasayan
+# Issues — rasayan
+
+rasayan's issues folder, as every project in the ecosystem keeps one. It holds the issues rasayan raised in
+other repositories (below, with their repros); rasayan's own issues are added here in the same format.
+
+## Filed in other repositories
 
 The port plan's §4 step 10 and §8: what rasayan's M0 probes found in the toolchain and the libraries it builds on,
 written up in each target repository's own issue format (cyrius's `docs/development/issues/README.md`, which hoosh's
@@ -24,7 +29,7 @@ rasayan's copies; the filed issue files differ only in their repro links and run
 | 1 addendum | `sakshi/docs/development/issues/2026-11-11-span-enter-has-no-level-check.md` |
 | 2 addenda | `bayan/docs/development/issues/2026-11-09-json-integer-above-i64-max-refuses-the-document.md`, `2026-11-11-no-serde-compatible-shortest-f64-printer.md` |
 | 1 addendum | `hoosh/docs/development/issues/2026-11-15-pramana-no-client-bundle-for-tool-calling.md` |
-Before each was drafted, the target's open and archived issues and ushma's drafts (`ushma/docs/development/upstream/`,
+Before each was drafted, the target's open and archived issues and ushma's drafts (`ushma/docs/development/issues/`,
 the only sibling port with such a directory) were searched; where the defect was already filed, the draft is an
 `.addendum.md` — the section to append to that issue, headed in the style its earlier addenda use — not a duplicate.
 
@@ -34,7 +39,7 @@ on cyrius 6.7.18 (x86_64) on 2026-11-16 and exited 1. Each `.sh` makes its own s
 says. The evidence for each is in `docs/development/port-parity.md` §3.
 
 ```sh
-bash docs/development/upstream/repros/<name>.sh; echo $?     # from the rasayan root; 1 = defect present
+bash docs/development/issues/repros/<name>.sh; echo $?     # from the rasayan root; 1 = defect present
 ```
 
 ## New issues (4)

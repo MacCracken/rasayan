@@ -4,7 +4,7 @@
 # warnings cover is diagnosed at 6.7.18 (rasayan M0 probe 12, traps 1–6).
 # Exits 1 while the defect is present: the build is warning-free AND the truth tests take the bit-pattern branch.
 #
-#   bash docs/development/upstream/repros/cyrius-f64-truth-test-is-not-diagnosed.sh; echo $?   # from the repo root
+#   bash docs/development/issues/repros/cyrius-f64-truth-test-is-not-diagnosed.sh; echo $?   # from the repo root
 set -u
 root=$(cd "$(dirname "$0")/../../../.." && pwd)
 w=$root/build/upstream-repros/f64-truth-test

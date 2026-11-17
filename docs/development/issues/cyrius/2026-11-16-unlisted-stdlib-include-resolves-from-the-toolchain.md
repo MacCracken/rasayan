@@ -29,7 +29,7 @@ get sakshi from the project's vendored `lib/` and sandhi, tls, net and the rest 
 `build/`):
 
 ```sh
-bash docs/development/upstream/repros/cyrius-unlisted-stdlib-include-resolves-from-the-toolchain.sh; echo $?
+bash docs/development/issues/repros/cyrius-unlisted-stdlib-include-resolves-from-the-toolchain.sh; echo $?
 # sakshi level 3
 # lib/sakshi.cyr vendored: 0; lock rows: 0; deps --locked rc: 0; build lines naming sakshi: 0
 # repro: DEFECT PRESENT (an unlisted stdlib include compiled from the toolchain, unvendored and unlocked, silently)

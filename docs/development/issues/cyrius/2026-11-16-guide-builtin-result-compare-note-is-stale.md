@@ -26,7 +26,7 @@ reader who trusts the note rewrites correct compares through `f64_eq` / `f64_lt`
 `docs/guides/cyrius-guide.md` there):
 
 ```sh
-bash docs/development/upstream/repros/cyrius-guide-builtin-result-compare-note-is-stale.sh; echo $?
+bash docs/development/issues/repros/cyrius-guide-builtin-result-compare-note-is-stale.sh; echo $?
 # f64_neg(+0.0) == +0.0: 1 (IEEE 1, the note says 0); f64_neg(1.0) < f64_neg(2.0): 0 (IEEE 0)
 # guide note present: 1 (…/cyrius-guide.md)
 # repro: DEFECT PRESENT (the compares are IEEE; the guide says they are integer compares)

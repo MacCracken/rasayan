@@ -176,7 +176,7 @@ the profiles, and step 10's upstream drafts). M0 is complete.
     byte by hand-written writers on `src/fmtf.cyr` and read back by bayan (all but 2, a usize ≥ 2⁶³); fmtf matches
     serde_json and Display on all 330,628 doubles of the sweep, bayan's printer differs on 18,350; a control build
     must fail. `run.sh --gate` runs all four (p6 on three targets, p11 on ELF and PE)
-- **docs/development/upstream/** (M0 step 10) — filed 2026-11-16 into each owning repository (folded stdlib modules to their own repos, not cyrius; uncommitted there), in each target's issue format:
+- **docs/development/issues/** (M0 step 10) — filed 2026-11-16 into each owning repository (folded stdlib modules to their own repos, not cyrius; uncommitted there), in each target's issue format:
   4 new issues (cyrius: an unlisted stdlib include compiles the toolchain's copy unvendored and unlocked; `if (x)` on
   an f64 is not diagnosed; the exponent literal's diagnostics never say "exponent"; the guide's 6.6.10 compare note
   is stale), each with a repro that exits 1 at 6.7.18; 7

@@ -9,7 +9,7 @@
 # The guide is read from the cyrius checkout beside this repository (CYRIUS_GUIDE=… to point elsewhere; in the
 # cyrius repository itself it is docs/guides/cyrius-guide.md).
 #
-#   bash docs/development/upstream/repros/cyrius-guide-builtin-result-compare-note-is-stale.sh; echo $?
+#   bash docs/development/issues/repros/cyrius-guide-builtin-result-compare-note-is-stale.sh; echo $?
 set -u
 root=$(cd "$(dirname "$0")/../../../.." && pwd)
 guide=${CYRIUS_GUIDE:-$root/../cyrius/docs/guides/cyrius-guide.md}
