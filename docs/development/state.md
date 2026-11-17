@@ -33,7 +33,8 @@ milestone (M9) sets 2.0.0.
 | M1 part 2 — logging, failure events, parity gates | ✅ `src/logging.cyr`: `ry_log_init` / `_with_level`, `ry_log_parse`, `ry_log_level_of` (`RASAYAN_LOG` as Rust's `EnvFilter` reads ADR 0002 row 8's grammar; refusals warn and take the default) and the event helpers (inlined gates, 4 ns filtered; a stack-buffer builder of Rust's fmt-layer text); `_ry_fail_f` / `_ry_fail_text` in `src/error.cyr` (every variant's Display text at its failure site). Golden `logging.tsv` 196 rows from Rust's own filter (verbatim statement, real environment): 135 identical, 61 accepted (row 8); `validate.py` 34,346. `tests/logging.tcyr` 87, `tests/guard.tcyr` 98 (+ Rust's 4 `test_error_display_*`); fuzz 50,000 inputs; `scripts/surface_parity.py` 0 missing; `scripts/rust_test_ledger.py`: 723 Rust tests, 13 ported, 0 due; `scripts/gates.sh` green (151 s, the same summary on ELF, `--bounds`, PE and aarch64); coverage 6 of 6 public fns |
 | M1 part 3a — the JSON writers | ✅ `src/json.cyr`'s writers (serde_json's forms; each reserves its worst case through the non-aborting grow and returns -1 when refused, so none can exit the process); `RY_ERR_DESERIALIZE` / `RY_ERR_OUT_OF_MEMORY` appended. Golden `json.tsv` 18,855 rows from serde_json 1.0.154 and Rust's Display (9,262 doubles incl. 30 exact ties found by an exact search): all byte-identical; `validate.py` 53,201. `tests/json.tcyr` 27 (the refused-allocation path). fmtf's exact printer: 3.7 µs per f64; `scripts/gates.sh` green (156 s, the same summary on ELF, `--bounds`, PE and aarch64) |
 | M1 part 3b — the JSON readers | ✅ `src/json.cyr`'s readers on bayan's tree (serde's derive rules; a raw-control-byte scan and UTF-8 checks where serde_json decodes; ±inf refused); `bayan` in `[deps] stdlib`. Golden +1,265 reader rows from serde_json's decisions, the correctly rounded value recorded (serde_json misreads 325): 1,246 match, 19 accepted under ADR 0004 (bayan's filed gaps, only when bayan reports that reason); `validate.py` 54,466; `tests/json.tcyr` 57; fuzz 1,520 struct reads; `scripts/gates.sh` green (249 s: bayan in every compile costs `probe_tables.py` 5 → 67 s, bayan's filed unicode-tables issue). **M1 is complete** |
-| M2 part 1 — enzyme | ✅ `src/enzyme.cyr`: every public function and method of `enzyme.rs`, the three serde types' codecs, the database's accessor and lookup. Golden `enzyme.tsv` +7,159 function rows (B 4,870, C 2,040, A 249), all matching; `enzyme.cr.tsv` 0 rows; `validate.py` models every row (61,625). `tests/enzyme.tcyr` 140 checks: Rust's 82 enzyme tests (58 unit, 11 integration, 13 validation); ledger 95 of 723, 0 due; surface parity 0 missing. The seven Rust twins benched (`docs/benchmarks-rust-v-cyrius.md`); `_ry_is_finite` / `_ry_is_nan` inlined; `scripts/gates.sh` green (194 s; the same summary on ELF, `--bounds`, PE and aarch64); coverage 38 of 38. Next: part 2, membrane |
+| M2 part 1 — enzyme | ✅ `src/enzyme.cyr`: every public function and method of `enzyme.rs`, the three serde types' codecs, the database's accessor and lookup. Golden `enzyme.tsv` +7,159 function rows (B 4,870, C 2,040, A 249), all matching; `enzyme.cr.tsv` 0 rows; `validate.py` models every row (61,625). `tests/enzyme.tcyr` 140 checks: Rust's 82 enzyme tests (58 unit, 11 integration, 13 validation); ledger 95 of 723, 0 due; surface parity 0 missing. The seven Rust twins benched (`docs/benchmarks-rust-v-cyrius.md`); `_ry_is_finite` / `_ry_is_nan` inlined; `scripts/gates.sh` green (194 s; the same summary on ELF, `--bounds`, PE and aarch64); coverage 38 of 38 |
+| M2 part 2 — membrane | ✅ `src/membrane.cyr`: Nernst, Goldman, Fick, both structs' `validate` and `Default`, `resting_potential`, both serde types' codecs; `IonicState::default()`'s values generated into `src/membrane_data.cyr`. Golden `membrane.tsv` +1,738 rows (C 1,026, B 450, A 262), all matching but one reader row accepted under ADR 0004 (an integer `-0`, bayan's filed gap); `membrane.cr.tsv` 0 rows; `validate.py` models every row (63,369). `tests/membrane.tcyr` 85 checks: Rust's 29 membrane tests (19 unit, 7 integration, 3 validation); ledger 124 of 723, 0 due; surface parity 0 missing; the fuzz harness reads both codecs (2,462 accepted, each written and read back bit for bit). The three Rust twins benched; enzyme's all-f64 struct writer moved into `src/json.cyr` (`_ry_jw_f64_fields`) at its third user; probe 10's stand-in edit made robust; `scripts/gates.sh` green (194 s; the same summary on ELF, `--bounds`, PE and aarch64); coverage 54 of 54. Next: part 3, signal |
 
 ## Golden corpus
 
@@ -45,8 +46,10 @@ milestone (M9) sets 2.0.0.
 | `tests/golden/constants_private.tsv` | 16 | A |
 | `tests/golden/protein.tsv` | 184 (table cells; module rows from M3) | A |
 | `tests/golden/alignment.tsv` | 1,008 (`substitution_score`; module rows from M3) | A |
-| `tests/golden/enzyme.tsv` | 60 (table cells and `lookup_enzyme`; module rows from M2) | A |
-| `tests/golden/membrane.tsv` | 1 (`DEFAULT_PERMEABILITY`; module rows from M2) | A |
+| `tests/golden/enzyme.tsv` | 7,219 (60 table cells and `lookup_enzyme`; 7,159 function rows from M2 part 1) | A 309 · B 4,870 · C 2,040 |
+| `tests/golden/enzyme.cr.tsv` | 0 corrections (glibc's pow and exp correctly rounded on every call) | — |
+| `tests/golden/membrane.tsv` | 1,739 (`DEFAULT_PERMEABILITY`; `IonicState::default` and 1,737 function rows from M2 part 2) | A 263 · B 450 · C 1,026 |
+| `tests/golden/membrane.cr.tsv` | 0 corrections (glibc's log correctly rounded on every call) | — |
 | `tests/golden/ai.tsv` | 1 (`SYSTEM_PROMPT`; module rows from M8) | A |
 | `tests/golden/guard.tsv` | 5,575 (M1 part 1) | A |
 | `tests/golden/integrate.tsv` | 5,998 (M1 part 1) | B 2,963 · C 3,035 |
@@ -54,11 +57,12 @@ milestone (M9) sets 2.0.0.
 | `tests/golden/logging.tsv` | 196 (M1 part 2: each `RASAYAN_LOG` form × 20 event targets) | A |
 | `tests/golden/json.tsv` | 20,120 (M1 part 3: serde_json's text per scalar kind, Rust's Display of an f64; serde_json's decision on each document per reader) | A |
 
-52,052 rows (20,163 at M0, 11,573 from M1 part 1, 196 from part 2, 20,120 from part 3). Recorded with rustc 1.100.0 on glibc 2.44 x86_64 fma (rasayan 1.2.0). `--check`,
+60,949 rows (20,163 at M0, 11,573 from M1 part 1, 196 from part 2, 20,120 from part 3; 7,159 from M2 part 1, 1,738
+from part 2). Recorded with rustc 1.100.0 on glibc 2.44 x86_64 fma (rasayan 1.2.0). `--check`,
 `validate.py` (22,634 checks: part 2b's 11,540 and the 11,094 class-C rows against MPFR),
 `mpfr_ref.py --check` and `probe_tables.py --all-targets` (2,470 compiled values) are clean. Generated: `src/constants.cyr` (67 constants, 333 lines), `src/constants_private.cyr` (16,
 74 lines), `src/protein_data.cyr` (721 lines), `src/alignment_data.cyr` (129),
-`src/enzyme_data.cyr` (251), `src/membrane_data.cyr` (28), `src/ai_data.cyr` (36); and from MPFR,
+`src/enzyme_data.cyr` (251), `src/membrane_data.cyr` (56), `src/ai_data.cyr` (36); and from MPFR,
 `src/mathx_data.cyr` (32 tables and constants, 1,130 lines; `mathx_tables.py --check` is clean).
 
 ## Pending decisions (maintainer)
@@ -97,8 +101,11 @@ Raised by the M0 probes; each is decided when its milestone starts.
   included), the 7,732 class A/B math rows (`src/mathx.cyr`'s helpers and the builtins), 10,998 class-C math rows at
   0 ulp on `_ry_cr_pow`, `_ry_cr_exp`, `_ry_cr_ln` and `_ry_cr_expm1`, the 5,575 guard rows and 5,959 integrate rows
   (the series branch and the early returns exact; the `exp_m1` branch at 0 ulp against the corrected oracle), and
-  135 logging rows, the 18,855 json writer rows (byte for byte) and 1,246 reader rows.
-- **accepted (ADR 4):** 19 json reader rows where bayan refuses or misreads for a filed reason (ADR 0004).
+  135 logging rows, the 18,855 json writer rows (byte for byte) and 1,246 reader rows; enzyme's 7,219 rows (Hill, Q10
+  and Arrhenius at 0 ulp on `_ry_cr_pow` / `_ry_cr_exp`) and membrane's 1,738 (Nernst, Goldman and the resting
+  potential at 0 ulp on `_ry_cr_ln`). 60,733 in all.
+- **accepted (ADR 4):** 20 reader rows where bayan refuses or misreads for a filed reason (ADR 0004): 19 json rows
+  and one membrane row (an integer `-0` in an IonicState document).
 - **accepted (ADR 2):** 61 logging rows: `RASAYAN_LOG` forms the port refuses (the default applies, with a warning)
   where Rust reads a directive the port doesn't carry (ADR 0002 row 8; counted on one summary line).
 - **accepted (ADR 3):** the 96 class-C math rows glibc misrounds (`math.cr.tsv`: exp_m1 94, exp 1,
@@ -114,9 +121,10 @@ Raised by the M0 probes; each is decided when its milestone starts.
   golden bits), `tests/tables.tcyr` (77 checks: every generated file compiled together, `src/mathx_data.cyr`
   included, a sample of cells bit for bit), `tests/parity.tcyr` (the golden corpus, above), `tests/guard.tcyr`
   (98: Rust's guard tests and its 4 error-display integration tests, the error codes, each refusal's event text),
-  `tests/integrate.tcyr` (16: Rust's integrate tests), `tests/logging.tcyr` (87), `tests/json.tcyr` (57), the fuzz
-  harness (50,000 inputs through `RASAYAN_LOG` and the JSON readers;
-  `RASAYAN_LOG` inputs);
+  `tests/integrate.tcyr` (16: Rust's integrate tests), `tests/logging.tcyr` (87), `tests/json.tcyr` (57),
+  `tests/enzyme.tcyr` (140: Rust's 82 enzyme tests), `tests/membrane.tcyr` (85: Rust's 29 membrane tests), the fuzz
+  harness (50,000 inputs through `RASAYAN_LOG`, the JSON readers and the membrane codecs, each accepted document
+  written and read back);
   `cyrius test` warning-free, `--bounds` and `cyrius audit` pass
 - MPFR sweep: `scripts/oracle/cr_verify.py` checks the four primitives on 5,314,811 arguments per target
   (`--quick`: 542,062), both paths, ELF, aarch64 and PE: 0 mismatches (`port-parity.md` §2e)
@@ -137,7 +145,10 @@ and inlined in Rust). M1 part 2: a trace event 4 ns filtered out, 5.07 µs writt
 M1 part 3a: an f64's serde_json text 3.7 µs, its Display text 3.8 µs, a ten-field document 31 µs (fmtf's exact
 bignum printer, vendored: recorded, not changed). M1 part 3b: reading a three-field document 1.9 µs, a ten-field one
 6.8 µs.
-The Rust twins arrive with each milestone.
+The Rust twins (`docs/benchmarks-rust-v-cyrius.md`), Rust 1.2.0 → Cyrius: M2 part 1, michaelis_menten 1.45 → 12 ns,
+hill_equation 17.8 → 166, mixed_inhibition 4.3 → 36, ping_pong 2.8 → 23, arrhenius 5.9 → 53, lineweaver_burk_fit
+99 → 368, enzyme_lookup 4.4 → 82; M2 part 2, nernst 9.6 → 80, goldman 11.0 → 95, fick_flux 2.5 → 22. The rest
+arrive with their milestones.
 Probe measurements (`port-parity.md` §3, measured not gated): the implicit NADH solves 582 / 259 ns
 (`balanced_nad_ratio` / `end_of_step_nadh`; Rust 155 / 98 ns); the network's 264-byte probe copy 11 ns; a
 level-gated trace event around MM +11 ns filtered out (a raw sakshi span +204 ns); a bote `tools/call` round trip
@@ -162,9 +173,10 @@ Rust crate (crates.io): mastishk 1.1.0, sharira 1.1.0, kiran 1.0.0. No Cyrius co
 
 ## Next
 
-M2 part 2: membrane (Nernst, Goldman, Fick, the permeability validate, IonicState), then signal, metabolism and
-energy, one part each (port plan §6).
+M2 part 3: signal (receptor binding, dose-response, second messengers), then metabolism and energy, one part each
+(port plan §6).
 
 Parity bookkeeping: `scripts/surface_parity.py` (every Rust public item of a ported module has its Cyrius name) and
-`scripts/rust_test_ledger.py` (`docs/development/rust-test-ledger.md`: 723 Rust tests, 13 ported, 0 due and unported)
+`scripts/rust_test_ledger.py` (`docs/development/rust-test-ledger.md`: 723 Rust tests, 124 ported, 0 due and
+unported)
 run in `scripts/gates.sh` since M1 part 2.

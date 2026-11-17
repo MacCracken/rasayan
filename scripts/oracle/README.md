@@ -53,7 +53,7 @@ in `scripts/oracle/target/` (gitignored).
 | `tests/golden/protein.tsv` | 184 | through the API: `AMINO_ACIDS` (20 entries and its length) and `lookup` for 72 characters (every ASCII letter in both cases, the letter ranges' neighbours, digits, whitespace, NUL, DEL, 7 non-ASCII); read from the source: `LOOKUP_INDEX` (26), `SIDE_CHAINS` (7), the 4 `ChainPka` sets, the Bjellqvist termini (7 + 2 arms and the two `_` defaults), `CHOU_FASMAN` (20) and 23 scalar `const` rows; class A |
 | `tests/golden/alignment.tsv` | 1,008 | `substitution_score` for all 400 ordered pairs of both matrices (800), and for the 52 other characters `lookup` is called with, on either side of `A`, in both matrices (208); class A |
 | `tests/golden/enzyme.tsv` | 7,219 | the table rows (M0: 60) and, from M2 part 1, every public function and method of `enzyme.rs` through the oracle's API (`m_enzyme.rs`): each rate law's base point varied over 14 edges and 300 seeded calls, the fits over 163 data sets, the methods, the serde documents; class B, C (`powf`, `exp`; `enzyme.cr.tsv`) or A |
-| `tests/golden/membrane.tsv` | 1 | `DEFAULT_PERMEABILITY`'s three fields, class A |
+| `tests/golden/membrane.tsv` | 1,739 | `DEFAULT_PERMEABILITY`'s three fields (M0) and, from M2 part 2, `IonicState::default()`'s six and every public function and method of `membrane.rs` through the oracle's API (`m_membrane.rs`): Nernst, Goldman and Fick over 14 edges per argument and seeded physiological (and, for Goldman, wild) calls, nine charges, the validators, `resting_potential`, the serde documents; class C (`ln`; `membrane.cr.tsv`), B or A |
 | `tests/golden/ai.tsv` | 1 | `SYSTEM_PROMPT`'s text, class A |
 | `tests/golden/guard.tsv` | 5,575 | M1 part 1: crate-private `guard.rs` through its verbatim copy (below): the validators (no output for `Ok(())`, `E:<Variant>` for an error), `valid_dt`, `conc`, `unit`, `take`, `shift`; class A |
 | `tests/golden/integrate.tsv` | 5,998 | M1 part 1: crate-private `integrate.rs` through its verbatim copy: `step_factors` (two outputs) and the three integrators across `SERIES_MAX` to `k·dt` = 1e6; B 2,963 (series branch, early returns) · C 3,035 (`exp_m1` branch) |
@@ -65,7 +65,7 @@ in `scripts/oracle/target/` (gitignored).
 | `src/protein_data.cyr` | 721 lines | `RY_AMINO_ACID_*` columns and index constants; `_RY_PROTEIN_*`: the lookup index, the side chains, the pKa-set table, the Bjellqvist termini, the Chou-Fasman columns, 23 scalars (`t_protein.rs`) |
 | `src/alignment_data.cyr` | 129 lines | `_RY_ALIGNMENT_*`: the residue order, the 26-entry index, BLOSUM62 and PAM250 as `i8[400]` (`t_alignment.rs`) |
 | `src/enzyme_data.cyr` | 251 lines | `RY_KNOWN_ENZYME_*` columns and index constants; `_RY_ENZYME_REGRESSION_REL_TOL` (`t_enzyme.rs`) |
-| `src/membrane_data.cyr` | 28 lines | `RY_MEMBRANE_DEFAULT_PERMEABILITY_{P_NA,P_K,P_CL}` (`t_membrane.rs`) |
+| `src/membrane_data.cyr` | 56 lines | `RY_MEMBRANE_DEFAULT_PERMEABILITY_{P_NA,P_K,P_CL}` and `RY_MEMBRANE_IONIC_STATE_DEFAULT_*`, the `Self { … }` literal of `impl Default for IonicState`, checked against the API (`t_membrane.rs`) |
 | `src/ai_data.cyr` | 36 lines | `_RY_AI_SYSTEM_PROMPT` (308 bytes and a NUL) and its length; for `[lib.ai]` only (`t_ai.rs`) |
 
 **Constant names** (ADR 0001, P6): a const of `constants.rs` is `RY_<NAME>` (`RY_R_GAS`); a const
@@ -135,7 +135,7 @@ Pending, at their milestones (port plan §4 step 6, §6):
 - the JSON rows (each module's milestone) and the MCP / request rows (M8);
 - a corrected-oracle file `<module>.cr.tsv` for each module with class-C rows, with that module's
   operation model in `mpfr_ref.py` and `validate.py` (`math.cr.tsv` since part 2c-1, `integrate.cr.tsv` since M1
-  part 1, below; M2 on for the rest).
+  part 1, below; `enzyme.cr.tsv` and `membrane.cr.tsv` since M2 parts 1 and 2; the rest at their milestones).
 
 **Crate-private functions** (M1 on). The generator's crate can call only rasayan's public API, so a private layer it
 must pin is compiled from a verbatim copy: `src/v_guard.rs` and `src/v_integrate.rs` each hold one block between

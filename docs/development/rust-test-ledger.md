@@ -6,7 +6,7 @@
 > milestone hasn't come. The golden corpus (`tests/golden/`) checks every ported function on its grid besides.
 > The 2 doc tests and the example are M9's.
 
-**723 Rust tests:** 95 ported; 113 at M2, 139 at M3, 53 at M4a, 80 at M4b, 38 at M5, 108 at M6, 62 at M7, 35 at M8.
+**723 Rust tests:** 124 ported; 84 at M2, 139 at M3, 53 at M4a, 80 at M4b, 38 at M5, 108 at M6, 62 at M7, 35 at M8.
 
 | Rust file | Tests | Ported | Due, unported | Later (milestone) |
 |---|---:|---:|---:|---|
@@ -26,7 +26,7 @@
 | `src/jak_stat.rs` | 12 | 0 | 0 | 12 (M6) |
 | `src/mapk.rs` | 17 | 0 | 0 | 17 (M6) |
 | `src/mcp.rs` | 31 | 0 | 0 | 31 (M8) |
-| `src/membrane.rs` | 19 | 0 | 0 | 19 (M2) |
+| `src/membrane.rs` | 19 | 19 | 0 | — |
 | `src/metabolism.rs` | 26 | 0 | 0 | 26 (M2) |
 | `src/neurotransmitter.rs` | 31 | 0 | 0 | 31 (M7) |
 | `src/nuclear_receptor.rs` | 11 | 0 | 0 | 11 (M6) |
@@ -38,9 +38,9 @@
 | `src/signal.rs` | 21 | 0 | 0 | 21 (M2) |
 | `src/signaling.rs` | 13 | 0 | 0 | 13 (M6) |
 | `src/tca.rs` | 26 | 0 | 0 | 26 (M4a) |
-| `tests/integration.rs` | 70 | 15 | 0 | 15 (M2), 3 (M3), 2 (M4a), 10 (M4b), 4 (M5), 15 (M6), 6 (M7) |
-| `tests/validation.rs` | 25 | 13 | 0 | 3 (M2), 9 (M3) |
-| **Total** | **723** | **95** | **0** | |
+| `tests/integration.rs` | 70 | 22 | 0 | 8 (M2), 3 (M3), 2 (M4a), 10 (M4b), 4 (M5), 15 (M6), 6 (M7) |
+| `tests/validation.rs` | 25 | 16 | 0 | 9 (M3) |
+| **Total** | **723** | **124** | **0** | |
 
 ## Where each is ported
 
@@ -113,6 +113,25 @@
 | `src/integrate.rs` `produce_decay_steady_state_and_degenerate` | `tests/integrate.tcyr` `produce_decay_steady_state_and_degenerate` |
 | `src/integrate.rs` `relax_matches_analytic_and_is_stable` | `tests/integrate.tcyr` `relax_matches_analytic_and_is_stable` |
 | `src/integrate.rs` `step_factors_match_exp_across_the_series_boundary` | `tests/integrate.tcyr` `step_factors_match_exp_across_the_series_boundary` |
+| `src/membrane.rs` `test_fick` | `tests/membrane.tcyr` `fick` |
+| `src/membrane.rs` `test_fick_non_finite_returns_zero` | `tests/membrane.tcyr` `fick` |
+| `src/membrane.rs` `test_fick_units_and_sign` | `tests/membrane.tcyr` `fick` |
+| `src/membrane.rs` `test_fick_zero_thickness` | `tests/membrane.tcyr` `fick` |
+| `src/membrane.rs` `test_goldman_invalid_temperature_returns_zero` | `tests/membrane.tcyr` `goldman` |
+| `src/membrane.rs` `test_goldman_non_finite_inputs_are_degenerate` | `tests/membrane.tcyr` `goldman` |
+| `src/membrane.rs` `test_ionic_validate_negative` | `tests/membrane.tcyr` `validation` |
+| `src/membrane.rs` `test_ionic_validate_valid` | `tests/membrane.tcyr` `validation` |
+| `src/membrane.rs` `test_nernst_invalid_inputs_return_zero` | `tests/membrane.tcyr` `nernst` |
+| `src/membrane.rs` `test_nernst_potassium` | `tests/membrane.tcyr` `nernst` |
+| `src/membrane.rs` `test_nernst_rt_over_f_at_body_temp` | `tests/membrane.tcyr` `nernst` |
+| `src/membrane.rs` `test_nernst_zero_concentrations` | `tests/membrane.tcyr` `nernst` |
+| `src/membrane.rs` `test_permeability_serde_roundtrip` | `tests/membrane.tcyr` `serde` |
+| `src/membrane.rs` `test_permeability_validate_negative` | `tests/membrane.tcyr` `validation` |
+| `src/membrane.rs` `test_permeability_validate_valid` | `tests/membrane.tcyr` `validation` |
+| `src/membrane.rs` `test_resting_potential` | `tests/membrane.tcyr` `goldman` |
+| `src/membrane.rs` `test_resting_potential_uses_body_temperature` | `tests/membrane.tcyr` `goldman` |
+| `src/membrane.rs` `test_serde_roundtrip` | `tests/membrane.tcyr` `serde` |
+| `src/membrane.rs` `test_validate_rejects_non_finite` | `tests/membrane.tcyr` `validation` |
 | `tests/integration.rs` `test_arrhenius_temperature_sensitivity` | `tests/enzyme.tcyr` `temperature` |
 | `tests/integration.rs` `test_enzyme_db_params_produce_valid_rates` | `tests/enzyme.tcyr` `database` |
 | `tests/integration.rs` `test_enzyme_params_serde_roundtrip` | `tests/enzyme.tcyr` `serde` |
@@ -120,13 +139,20 @@
 | `tests/integration.rs` `test_error_display_negative_concentration` | `tests/guard.tcyr` `error_display` |
 | `tests/integration.rs` `test_error_display_unknown_amino_acid` | `tests/guard.tcyr` `error_display` |
 | `tests/integration.rs` `test_error_display_unknown_pathway` | `tests/guard.tcyr` `error_display` |
+| `tests/integration.rs` `test_goldman_with_custom_permeability` | `tests/membrane.tcyr` `goldman` |
 | `tests/integration.rs` `test_inhibition_hierarchy` | `tests/enzyme.tcyr` `reference_values` |
+| `tests/integration.rs` `test_ionic_state_serde_roundtrip` | `tests/membrane.tcyr` `serde` |
 | `tests/integration.rs` `test_kinetic_fit_serde_roundtrip` | `tests/enzyme.tcyr` `serde` |
 | `tests/integration.rs` `test_known_enzyme_serialize` | `tests/enzyme.tcyr` `serde` |
 | `tests/integration.rs` `test_lineweaver_burk_and_eadie_hofstee_agree` | `tests/enzyme.tcyr` `fits` |
+| `tests/integration.rs` `test_membrane_permeability_serde_roundtrip` | `tests/membrane.tcyr` `serde` |
+| `tests/integration.rs` `test_membrane_potential_physiological_range` | `tests/membrane.tcyr` `goldman` |
 | `tests/integration.rs` `test_michaelis_menten_half_vmax_at_km` | `tests/enzyme.tcyr` `reference_values` |
 | `tests/integration.rs` `test_michaelis_menten_saturation` | `tests/enzyme.tcyr` `reference_values` |
 | `tests/integration.rs` `test_michaelis_menten_zero_substrate` | `tests/enzyme.tcyr` `reference_values` |
+| `tests/integration.rs` `test_nernst_potassium` | `tests/membrane.tcyr` `nernst` |
+| `tests/integration.rs` `test_nernst_sodium` | `tests/membrane.tcyr` `nernst` |
+| `tests/integration.rs` `test_nernst_zero_concentrations` | `tests/membrane.tcyr` `nernst` |
 | `tests/integration.rs` `test_reversible_haldane_consistency` | `tests/enzyme.tcyr` `reversible` |
 | `tests/validation.rs` `validate_arrhenius_temperature_sensitivity` | `tests/enzyme.tcyr` `temperature` |
 | `tests/validation.rs` `validate_competitive_inhibition_malonate` | `tests/enzyme.tcyr` `reference_values` |
@@ -136,8 +162,11 @@
 | `tests/validation.rs` `validate_enzyme_db_diffusion_limit` | `tests/enzyme.tcyr` `database` |
 | `tests/validation.rs` `validate_enzyme_db_hexokinase` | `tests/enzyme.tcyr` `database` |
 | `tests/validation.rs` `validate_enzyme_db_pyruvate_kinase_muscle` | `tests/enzyme.tcyr` `database` |
+| `tests/validation.rs` `validate_goldman_resting_potential` | `tests/membrane.tcyr` `goldman` |
 | `tests/validation.rs` `validate_hill_hemoglobin_at_p50` | `tests/enzyme.tcyr` `reference_values` |
 | `tests/validation.rs` `validate_hill_hemoglobin_o2_binding` | `tests/enzyme.tcyr` `reference_values` |
 | `tests/validation.rs` `validate_hill_hemoglobin_venous` | `tests/enzyme.tcyr` `reference_values` |
 | `tests/validation.rs` `validate_mm_at_km_gives_half_vmax` | `tests/enzyme.tcyr` `reference_values` |
 | `tests/validation.rs` `validate_mm_saturation` | `tests/enzyme.tcyr` `reference_values` |
+| `tests/validation.rs` `validate_nernst_potassium_mammalian` | `tests/membrane.tcyr` `nernst_reference` |
+| `tests/validation.rs` `validate_nernst_sodium_mammalian` | `tests/membrane.tcyr` `nernst_reference` |

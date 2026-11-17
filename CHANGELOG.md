@@ -13,10 +13,33 @@ part 2c-2 (the correctly rounded primitives), part 2c-3 (their dense MPFR sweep)
 three-target baselines and `scripts/gates.sh`, step 9's probes 1–4, 8 and 12) and part 3b (probes 6, 7, 10 and 11,
 the profiles, and step 10's upstream drafts). M0 is complete. M1 part 1 (the foundation's error codes, guard layer
 and integrators), part 2 (logging, the failure events, the surface-parity and Rust-test gates) and part 3 (the
-JSON writers and readers) follow: M1 is complete.
+JSON writers and readers) follow: M1 is complete. M2 part 1 (enzyme) and part 2 (membrane) follow.
 
 ### Added
 
+- **src/membrane.cyr** (M2 part 2) — `membrane.rs` transcribed: `ry_nernst` (the charge an i64, `z as f64` exact),
+  `ry_goldman` (its two weighted sums in Rust's order), `ry_fick_flux` (a negative D's zero flux is −0, as Rust's),
+  `RyMembranePermeability` and `RyIonicState` with their `validate` (the permeability's own reason, "permeability must
+  be non-negative", in the failure event), `ry_ionic_state_resting_potential`, the `Default`s
+  (`ry_<type>_default(&out)`) and the serde codecs of both types. Nernst and Goldman call the correctly rounded
+  `_ry_cr_ln` (ADR 0003)
+- **src/membrane_data.cyr** (M2 part 2) — `IonicState::default()`'s six values, generated
+  (`RY_MEMBRANE_IONIC_STATE_DEFAULT_*`) from the oracle's API and checked against the `Self { … }` literal of
+  `impl Default for IonicState`, beside `DEFAULT_PERMEABILITY`'s
+- **tests/golden/membrane.tsv** (M2 part 2, +1,738 rows) — Nernst over 14 edge values per argument, nine charges
+  (i32::MIN and MAX included), 300 seeded physiological calls and the ratio's overflow and underflow; Goldman over
+  every one of its ten inputs' edges, 300 physiological and 100 wild states, single-ion and no-ion permeabilities,
+  sums that overflow or cancel; Fick, both validators, the resting potential, both defaults, the serde documents.
+  Class C 1,026 (`ln`), B 450, A 262: all match on the first run but one reader row, an integer `-0`, bayan's filed gap
+  (ADR 0004). `membrane.cr.tsv` (0 rows: glibc's `log` is correctly rounded on every call here); `mpfr_ref.py` gains
+  `log` and the membrane models, `validate.py` models every membrane row on its own (63,369 independent checks)
+- **tests/membrane.tcyr** (M2 part 2, 85 checks) — the 19 `membrane.rs` unit tests, 7 integration tests and 3
+  validation tests (E_K ≈ −89 mV, E_Na ≈ +67 mV, the Goldman resting potential) as they are written, plus each
+  refusal's Display text, the exact serde_json documents and −0 passing: the Rust-test ledger at 124 of 723, 0 due
+  and unported. The fuzz harness reads every input as an IonicState and a MembranePermeability too: 2,462 accepted,
+  each written and read back bit for bit
+- **benchmarks** (M2 part 2) — the three membrane twins: nernst 9.6 → 80 ns, goldman 11.0 → 95 (each one correctly
+  rounded `ln`, 53 ns), fick_flux 2.5 → 22
 - **src/enzyme.cyr** (M2 part 1) — `enzyme.rs` transcribed: the rate laws (`ry_michaelis_menten`, `ry_hill_equation`
   and the shared `_ry_enzyme_hill_fraction`, the competitive / uncompetitive / mixed / substrate inhibition models,
   `ry_reversible_michaelis_menten`, `ry_haldane_keq`, `ry_ping_pong`, `ry_sequential_bisubstrate`, `ry_q10_rate`,
@@ -306,6 +329,13 @@ JSON writers and readers) follow: M1 is complete.
 
 ### Changed
 
+- **src/json.cyr** (M2 part 2) — enzyme's all-f64 struct writer moves here as `_ry_jw_f64_fields`, beside the reader
+  `_ry_jr_f64_fields`: membrane's two types are its third and fourth users
+- **scripts/surface_parity.py**, **scripts/rust_test_ledger.py** (M2 part 2) — membrane is ported: its 15 public items
+  have their names (`DEFAULT_PERMEABILITY` mapped to its three field consts and `ry_membrane_permeability_default`)
+- **cyrius.cyml** (M2 part 2) — `src/membrane.cyr` in the three bundles after `src/membrane_data.cyr`
+- **tests/parity.tcyr** (M2 part 2) — every serde reader row flags bayan's filed `-0` gap for ADR 0004 (the enzyme and
+  membrane rows as the json module's), so a stale flag never carries over
 - **src/mathx.cyr** (M2 part 1) — `_ry_is_finite` is `(x - x) == 0.0` and `_ry_is_nan` is `x != x`, each one
   branch-free `#inline` expression with the bit tests' answers on every pattern (`tests/guard.tcyr`: every special
   class and 10⁶ random patterns, x86_64 and aarch64)
@@ -375,6 +405,15 @@ JSON writers and readers) follow: M1 is complete.
   stdlib's functions (the `f64_exp` / `f64_ln` builtins and polyfills, `ganita_f64_pow`, `_gn_expm1`)
   stay as ungated shadow lines. `tests/parity_math.cyr` keeps only `_ry_clamp` and `_ry_f64_to_u32`
   (no counterpart in ushma's mathx) until M1.
+
+### Fixed
+
+- **tests/rasayan.bcyr** (M2 part 2) — the Display-form JSON bench discarded `_ry_jw_reserve`'s `#must_use` result,
+  a build warning since M1 part 3a; it writes only after a successful reserve now
+- **scripts/probes/p10_manifest.sh** (M2 part 2) — the scratch copy found where to add its `[lib.mcp]` stand-in by
+  the module that ended the list (`src/membrane_data.cyr`), so `src/membrane.cyr` after it left the edit undone, its
+  assertion failed unnoticed and both stand-in consumers failed to build. Each stand-in now goes last in its list,
+  whichever module ends it, and a failed edit fails the probe
 
 ## [1.2.0] - 2026-11-16
 

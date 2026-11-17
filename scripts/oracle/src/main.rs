@@ -35,6 +35,7 @@ mod m_integrate;
 mod m_json;
 mod m_logging;
 mod m_math;
+mod m_membrane;
 mod rustsrc;
 mod t_ai;
 mod t_alignment;

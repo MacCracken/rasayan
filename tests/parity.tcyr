@@ -61,6 +61,7 @@ include "src/integrate.cyr"
 include "src/logging.cyr"
 include "src/json.cyr"
 include "src/enzyme.cyr"
+include "src/membrane.cyr"
 
 alloc_init();
 
@@ -68,6 +69,10 @@ include "tests/parity_core.cyr"
 
 # The JSON rows' builder (reset per row) and arena (reset per document), made on first use.
 var _par_jsb = 0;
+
+# 1 when the current reader row met one of bayan's filed gaps (ADR 0004): set by each reader row (_par_json_read, the
+# enzyme and membrane serde rows) for _par_accepted.
+var _par_json_gap = 0;
 var _par_jarena = 0;
 
 # The Rust variant name of an error code (src/error.cyr).
@@ -831,6 +836,7 @@ fn _par_enzyme_json(fp, fl): i64 {
     if (_par_jarena == 0) { _par_jarena = arena_allocator_growable(65536); }
     if (_par_eq(fp, fl, "serde_json::from_slice<KineticFit>") == 1) {
         if (doc == 0) { return 0 - 1; }
+        _par_json_gap = _par_has_neg_zero_int(doc, load64(&lw));
         reset_via(_par_jarena);
         var k: RyKineticFit;
         var t4, v4 = ry_kinetic_fit_from_json_a(_par_jarena, doc, load64(&lw), &k);
@@ -843,6 +849,7 @@ fn _par_enzyme_json(fp, fl): i64 {
     }
     if (_par_eq(fp, fl, "serde_json::from_slice<EnzymeParams>") == 1) {
         if (doc == 0) { return 0 - 1; }
+        _par_json_gap = _par_has_neg_zero_int(doc, load64(&lw));
         reset_via(_par_jarena);
         var q: RyEnzymeParams;
         var t5, v5 = ry_enzyme_params_from_json_a(_par_jarena, doc, load64(&lw), &q);
@@ -863,20 +870,154 @@ fn _par_enzyme_json(fp, fl): i64 {
     return 0;
 }
 
-# ── membrane ────────────────────────────────────────────────────────────────────────
-# src/membrane_data.cyr. Nernst, Goldman and Fick arrive at M2.
+# ── membrane ──────────────────────────────────────────────────────────────────────────
+# src/membrane_data.cyr and src/membrane.cyr (M2 part 2). Goldman's inputs are T, the six IonicState fields and the
+# three MembranePermeability fields; Nernst's `f:T i:z f:out f:in`.
 
-# The membrane rows: DEFAULT_PERMEABILITY's fields (p_na, p_k, p_cl).
+# 1 if input k is an f64 token, 0 if not.
+#must_use
+fn _par_is_f(k): i64 {
+    if (k >= _par_in_n) { return 0; }
+    if (load64(_par_in_k + k * 8) == 102) { return 1; }
+    return 0;
+}
+
+# Copies `n` f64 inputs from input k into the words at `w` (a struct of n f64 fields, in declaration order).
+fn _par_fields_in(k, w, n) {
+    var j = 0;
+    while (j < n) {
+        store64(w + 8 * j, _par_in(k + j));
+        j = j + 1;
+    }
+    return 0;
+}
+
+# Appends the `n` f64 fields at `w`.
+fn _par_got_fields(w, n) {
+    var j = 0;
+    while (j < n) {
+        var x: f64 = load64(w + 8 * j);
+        _par_got_f(x);
+        j = j + 1;
+    }
+    return 0;
+}
+
+# The membrane rows: the two default values, the functions and methods, then the serde rows.
 fn _par_membrane(fp, fl): i64 {
-    if (_par_eq(fp, fl, "membrane::DEFAULT_PERMEABILITY") != 1) { return 0; }
-    if (_par_in_n != 0) { return 0 - 1; }
-    var x: f64 = RY_MEMBRANE_DEFAULT_PERMEABILITY_P_NA;
-    _par_got_f(x);
-    x = RY_MEMBRANE_DEFAULT_PERMEABILITY_P_K;
-    _par_got_f(x);
-    x = RY_MEMBRANE_DEFAULT_PERMEABILITY_P_CL;
-    _par_got_f(x);
-    return 1;
+    if (_par_eq(fp, fl, "membrane::DEFAULT_PERMEABILITY") == 1) {
+        if (_par_in_n != 0) { return 0 - 1; }
+        var x: f64 = RY_MEMBRANE_DEFAULT_PERMEABILITY_P_NA;
+        _par_got_f(x);
+        x = RY_MEMBRANE_DEFAULT_PERMEABILITY_P_K;
+        _par_got_f(x);
+        x = RY_MEMBRANE_DEFAULT_PERMEABILITY_P_CL;
+        _par_got_f(x);
+        return 1;
+    }
+    var ions: RyIonicState;
+    var perm: RyMembranePermeability;
+    if (_par_eq(fp, fl, "membrane::IonicState::default") == 1) {
+        if (_par_in_n != 0) { return 0 - 1; }
+        ry_ionic_state_default(&ions);
+        _par_got_fields(&ions, 6);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "membrane::MembranePermeability::default") == 1) {
+        if (_par_in_n != 0) { return 0 - 1; }
+        ry_membrane_permeability_default(&perm);
+        _par_got_fields(&perm, 3);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "membrane::nernst") == 1) {
+        if (_par_in_n != 4 || _par_is_f(0) == 0 || load64(_par_in_k + 8) != 105) { return 0 - 1; }
+        if (_par_is_f(2) == 0 || _par_is_f(3) == 0) { return 0 - 1; }
+        var e: f64 = ry_nernst(_par_f(0), _par_in(1), _par_f(2), _par_f(3));
+        _par_got_f(e);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "membrane::goldman") == 1 && _par_all_f(10) == 1) {
+        _par_fields_in(1, &ions, 6);
+        _par_fields_in(7, &perm, 3);
+        var g: f64 = ry_goldman(_par_f(0), &ions, &perm);
+        _par_got_f(g);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "membrane::fick_flux") == 1 && _par_all_f(3) == 1) {
+        var j: f64 = ry_fick_flux(_par_f(0), _par_f(1), _par_f(2));
+        _par_got_f(j);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "membrane::IonicState::validate") == 1 && _par_all_f(6) == 1) {
+        _par_fields_in(0, &ions, 6);
+        var t1, v1 = ry_ionic_state_validate(&ions);
+        _par_got_outcome(t1, v1);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "membrane::IonicState::resting_potential") == 1 && _par_all_f(6) == 1) {
+        _par_fields_in(0, &ions, 6);
+        var rp: f64 = ry_ionic_state_resting_potential(&ions);
+        _par_got_f(rp);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "membrane::MembranePermeability::validate") == 1 && _par_all_f(3) == 1) {
+        _par_fields_in(0, &perm, 3);
+        var t2, v2 = ry_membrane_permeability_validate(&perm);
+        _par_got_outcome(t2, v2);
+        return 1;
+    }
+    return _par_membrane_json(fp, fl);
+}
+
+# The serde rows of IonicState and MembranePermeability.
+fn _par_membrane_json(fp, fl): i64 {
+    if (_par_jsb == 0) { _par_jsb = str_builder_new(); }
+    var sb = _par_jsb;
+    store64(sb + 8, 0);
+    var ions: RyIonicState;
+    var perm: RyMembranePermeability;
+    if (_par_eq(fp, fl, "serde_json::to_string<IonicState>") == 1 && _par_all_f(6) == 1) {
+        _par_fields_in(0, &ions, 6);
+        var t1, v1 = ry_ionic_state_to_json(sb, &ions);
+        if (is_err_result(t1) == 1) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::to_string<MembranePermeability>") == 1 && _par_all_f(3) == 1) {
+        _par_fields_in(0, &perm, 3);
+        var t2, v2 = ry_membrane_permeability_to_json(sb, &perm);
+        if (is_err_result(t2) == 1) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    var lw[8];
+    var doc = _par_in_bytes(0, &lw);
+    if (_par_jarena == 0) { _par_jarena = arena_allocator_growable(65536); }
+    if (_par_eq(fp, fl, "serde_json::from_slice<IonicState>") == 1) {
+        if (doc == 0) { return 0 - 1; }
+        _par_json_gap = _par_has_neg_zero_int(doc, load64(&lw));
+        reset_via(_par_jarena);
+        var t3, v3 = ry_ionic_state_from_json_a(_par_jarena, doc, load64(&lw), &ions);
+        if (is_err_result(t3) == 1) {
+            _par_got_err(v3);
+            return 1;
+        }
+        _par_got_fields(&ions, 6);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::from_slice<MembranePermeability>") == 1) {
+        if (doc == 0) { return 0 - 1; }
+        _par_json_gap = _par_has_neg_zero_int(doc, load64(&lw));
+        reset_via(_par_jarena);
+        var t4, v4 = ry_membrane_permeability_from_json_a(_par_jarena, doc, load64(&lw), &perm);
+        if (is_err_result(t4) == 1) {
+            _par_got_err(v4);
+            return 1;
+        }
+        _par_got_fields(&perm, 3);
+        return 1;
+    }
+    return 0;
 }
 
 # ── guard ───────────────────────────────────────────────────────────────────────────
@@ -1045,9 +1186,6 @@ fn _par_json_char(fp, fl): i64 {
 }
 
 # ── json readers (part 3b) ──
-
-# 1 when the current reader row met one of bayan's filed gaps (ADR 0004): set by _par_json_read for _par_accepted.
-var _par_json_gap = 0;
 
 # The reader rows accepted under ADR 0004, for the module's summary line.
 var _par_json_acc = 0;
@@ -1356,6 +1494,9 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "enzyme::arrhenius") == 1) { return 0; }
     if (_par_eq(fp, fl, "enzyme::arrhenius_relative") == 1) { return 0; }
     if (_par_eq(fp, fl, "enzyme::EnzymeParams::rate") == 1) { return 0; }
+    if (_par_eq(fp, fl, "membrane::nernst") == 1) { return 0; }
+    if (_par_eq(fp, fl, "membrane::goldman") == 1) { return 0; }
+    if (_par_eq(fp, fl, "membrane::IonicState::resting_potential") == 1) { return 0; }
     return 0 - 1;
 }
 

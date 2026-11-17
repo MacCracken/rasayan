@@ -30,10 +30,10 @@ from pathlib import Path
 root = Path(sys.argv[1]).resolve()
 
 # The modules whose milestone has come.
-PORTED = ["constants", "error", "guard", "integrate", "logging", "enzyme"]
+PORTED = ["constants", "error", "guard", "integrate", "logging", "enzyme", "membrane"]
 # The rest, with their milestone (port plan §3.1).
 SCHEDULED = {
-    "membrane": "M2", "signal": "M2", "metabolism": "M2", "energy": "M2",
+    "signal": "M2", "metabolism": "M2", "energy": "M2",
     "protein": "M3", "alignment": "M3", "ptm": "M3", "domain": "M3",
     "glycolysis": "M4a", "tca": "M4a", "etc": "M4b", "beta_oxidation": "M4b", "amino_catabolism": "M4b",
     "pathway": "M5",
@@ -53,12 +53,19 @@ TYPES = {
     "KineticFit": ("RyKineticFit", "kinetic_fit"),
     "EnzymeParams": ("RyEnzymeParams", "enzyme_params"),
     "KnownEnzyme": ("RyKnownEnzyme", "known_enzyme"),
+    "MembranePermeability": ("RyMembranePermeability", "membrane_permeability"),
+    "IonicState": ("RyIonicState", "ionic_state"),
 }
 # Rust item -> the Cyrius names that carry it ("fn x", "const X", "enum X", "struct X"), where the rules give none.
 MAPPED = {
     "error::RasayanError: Display": ["fn ry_error_message", "fn ry_error_name"],
     # A table const: its generated count and the accessor that fills one entry (ADR 0002 row 10).
     "enzyme::const KNOWN_ENZYMES": ["const RY_KNOWN_ENZYME_COUNT", "fn ry_known_enzyme"],
+    # A struct const: one generated f64 const per field, and the Default that fills a struct from them.
+    "membrane::const DEFAULT_PERMEABILITY": [
+        "const RY_MEMBRANE_DEFAULT_PERMEABILITY_P_NA", "const RY_MEMBRANE_DEFAULT_PERMEABILITY_P_K",
+        "const RY_MEMBRANE_DEFAULT_PERMEABILITY_P_CL", "fn ry_membrane_permeability_default",
+    ],
 }
 # Public scalar constants: the Rust types src/constants.cyr carries as `const`.
 SCALAR = ("f64", "u32", "usize")

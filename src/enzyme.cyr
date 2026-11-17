@@ -552,30 +552,11 @@ fn ry_known_enzyme_catalytic_efficiency(e: *RyKnownEnzyme): f64 {
 var _RY_KINETIC_FIT_FIELDS = "km\0vmax\0r_squared\0";
 var _RY_ENZYME_PARAMS_FIELDS = "vmax\0km\0hill_n\0kcat\0";
 
-# Appends the `n` f64 fields at `w`, named by the NUL-separated `names`, as one JSON object on allocator `a`: 0, or -1
-# when the builder could not grow (nothing past the refused write is written).
-fn _ry_enzyme_jw_fields(a, sb, w, n, names): i64 {
-    var e = _ry_jw_byte(a, sb, 123);
-    var name = names;
-    var k = 0;
-    while (k < n) {
-        var first = 0;
-        if (k == 0) { first = 1; }
-        e = e | _ry_jw_key(a, sb, name, first);
-        var x: f64 = load64(w + 8 * k);
-        e = e | _ry_jw_f64(a, sb, x);
-        name = name + strlen(name) + 1;
-        k = k + 1;
-    }
-    e = e | _ry_jw_byte(a, sb, 125);
-    return e;
-}
-
 # Appends KineticFit `p` as serde_json writes it, `{"km":…,"vmax":…,"r_squared":…}`, on allocator `a`: Ok(0), or
 # Err(RY_ERR_OUT_OF_MEMORY) when the builder could not grow.
 #must_use
 fn ry_kinetic_fit_to_json_a(a, sb, p: *RyKineticFit): Result {
-    if (_ry_enzyme_jw_fields(a, sb, p, 3, _RY_KINETIC_FIT_FIELDS) != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    if (_ry_jw_f64_fields(a, sb, p, 3, _RY_KINETIC_FIT_FIELDS) != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
     return Ok(0);
 }
 
@@ -608,7 +589,7 @@ fn ry_kinetic_fit_from_json(buf, n, out: *RyKineticFit): Result {
 # Err(RY_ERR_OUT_OF_MEMORY).
 #must_use
 fn ry_enzyme_params_to_json_a(a, sb, p: *RyEnzymeParams): Result {
-    if (_ry_enzyme_jw_fields(a, sb, p, 4, _RY_ENZYME_PARAMS_FIELDS) != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    if (_ry_jw_f64_fields(a, sb, p, 4, _RY_ENZYME_PARAMS_FIELDS) != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
     return Ok(0);
 }
 

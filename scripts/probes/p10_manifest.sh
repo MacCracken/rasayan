@@ -54,17 +54,25 @@ mkdir -p "$S"
 cp -r cyrius.cyml cyrius.lock VERSION src lib dist "$S/"
 cp scripts/probes/p10_manifest/mcp.cyr "$S/src/p10_mcp.cyr"
 cp scripts/probes/p10_manifest/ai.cyr "$S/src/p10_ai.cyr"
-python3 -I -B - "$S/cyrius.cyml" <<'EOF'
+# Each stand-in goes last in its profile's module list, whichever module ends it (the lists grow every milestone). A
+# failed edit fails the probe: without it, the consumers would build bundles that lack the stand-ins.
+python3 -I -B - "$S/cyrius.cyml" <<'EOF' || FAILED+=("the scratch copy's [lib.mcp] / [lib.ai] stand-ins")
 import sys
 p = sys.argv[1]
 s = open(p).read()
+
+
+def append(section, module):
+    """`section` (one profile's text) with `module` last in its `modules = [ … ]` list."""
+    end = section.index("\n]", section.index("modules = ["))
+    return section[:end] + f'\n    "{module}",' + section[end:]
+
+
 mcp_at = s.index("\n[lib.mcp]\n")
 ai_at = s.index("\n[lib.ai]\n")
-mcp = s[mcp_at:ai_at].replace('    "src/membrane_data.cyr",\n]', '    "src/membrane_data.cyr",\n    "src/p10_mcp.cyr",\n]')
 ai_end = s.index("\n[test]\n")
-ai = s[ai_at:ai_end].replace('    "src/ai_data.cyr",\n]', '    "src/ai_data.cyr",\n    "src/p10_ai.cyr",\n]')
-s = s[:mcp_at] + mcp + ai + s[ai_end:]
-assert "p10_mcp" in s and "p10_ai" in s
+s = s[:mcp_at] + append(s[mcp_at:ai_at], "src/p10_mcp.cyr") + append(s[ai_at:ai_end], "src/p10_ai.cyr") + s[ai_end:]
+assert '"src/p10_mcp.cyr"' in s and '"src/p10_ai.cyr"' in s
 open(p, "w").write(s)
 EOF
 (cd "$S" && cyrius distlib --all 2>&1 | quiet | sed "s|$S/||g")

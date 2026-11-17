@@ -214,6 +214,9 @@ class Prims:
     def pow(self, x, y):
         return self._call("pow", (x, y), _libm(math.pow, x, y), pow(x, y))
 
+    def log(self, x):
+        return self._call("log", (x,), _libm(math.log, x), log(x))
+
 
 # ── integrate (M1 part 1) ──
 
@@ -277,8 +280,38 @@ ENZYME = {
     "enzyme::EnzymeParams::rate": lambda a, P: [a[0] * _hill_fraction(a[4], a[1], a[2], P)],
 }
 
+# ── membrane (M2 part 2) ──
+
+FARADAY = 96485.33212331002  # constants::FARADAY (Rust's literal 96_485.332_123_310_02, parsed correctly rounded)
+BODY_TEMP_K = 310.15  # constants::BODY_TEMP_K
+DEFAULT_PERMEABILITY = (0.04, 1.0, 0.45)  # membrane::DEFAULT_PERMEABILITY (p_na, p_k, p_cl)
+
+
+def _goldman(t, ions, perm, P):
+    """`membrane::goldman` on its ln branch: the weighted sums in Rust's order, then (RT/F)·ln(num/den)·1000."""
+    na_in, na_out, k_in, k_out, cl_in, cl_out = ions
+    p_na, p_k, p_cl = perm
+    num = p_na * na_out + p_k * k_out + p_cl * cl_in
+    den = p_na * na_in + p_k * k_in + p_cl * cl_out
+    return [(R_GAS * t / FARADAY) * P.log(num / den) * 1000.0]
+
+
+MEMBRANE = {
+    # nernst(T, z, out, in): z is an i32 (an `i:` token), `z as f64` exact.
+    "membrane::nernst": lambda a, P: [(R_GAS * a[0] / (float(a[1]) * FARADAY)) * P.log(a[2] / a[3]) * 1000.0],
+    "membrane::goldman": lambda a, P: _goldman(a[0], a[1:7], a[7:10], P),
+    "membrane::IonicState::resting_potential": lambda a, P: _goldman(BODY_TEMP_K, a, DEFAULT_PERMEABILITY, P),
+}
+
 # The modules with class-C rows beyond math, and their models.
-MODELS = {"integrate": INTEGRATE, "enzyme": ENZYME}
+MODELS = {"integrate": INTEGRATE, "enzyme": ENZYME, "membrane": MEMBRANE}
+
+
+def _arg(tok):
+    """An input token as a model argument: an `f:` token's float, an `i:` token's integer."""
+    if tok.startswith("i:"):
+        return int(tok[2:])
+    return _f(tok)
 
 
 def model_corrections(module, golden_text):
@@ -299,7 +332,7 @@ def model_corrections(module, golden_text):
             continue
         if fn not in models:
             raise ValueError(f"{module}.tsv:{n}: class-C {fn} has no operation model here")
-        args = [_f(t) for t in ins.split(" ")]
+        args = [_arg(t) for t in ins.split(" ")]
         want = outs.split(" ")
         glibc = [_ftok(v) for v in models[fn](args, Prims(False))]
         if not all(_same(_f(a), _f(b)) for a, b in zip(glibc, want, strict=True)):

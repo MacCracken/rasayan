@@ -30,6 +30,8 @@ include "src/protein_data.cyr"
 include "src/alignment_data.cyr"
 include "src/enzyme_data.cyr"
 include "src/enzyme.cyr"
+include "src/membrane_data.cyr"
+include "src/membrane.cyr"
 
 # Keeps the loops' results observable.
 var _bn_sink = 0;
@@ -258,8 +260,7 @@ fn _bn_fmt(which, n): i64 {
         if (which == 0) {
             _ry_jw_f64(a, sb, x);
         } else {
-            _ry_jw_reserve(a, sb, 400);
-            _ry_fmt_f64_display(sb, x);
+            if (_ry_jw_reserve(a, sb, 400) == 0) { _ry_fmt_f64_display(sb, x); }
         }
         total = total + load64(sb + 8);
         x = x * 1.0137;
@@ -379,6 +380,46 @@ fn _bn_enz(name, kind, n): i64 {
     return 0;
 }
 
+# ── M2 part 2: membrane, the Rust benches' twins (the same inputs) ──
+
+# n calls of membrane benchmark `kind`, its result kept: 0 nernst(310, 1, 4, 155), 1 goldman(310) over the default
+# IonicState and permeabilities, 2 fick_flux(1e-9, 100, 5e-9).
+fn _bn_membrane(kind, n): i64 {
+    var ions: RyIonicState;
+    ry_ionic_state_default(&ions);
+    var perm: RyMembranePermeability;
+    ry_membrane_permeability_default(&perm);
+    var d: f64 = 0.000000001;
+    var dx: f64 = 0.000000005;
+    var s: f64 = 0.0;
+    var i = 0;
+    while (i < n) {
+        if (kind == 0) {
+            var r0: f64 = ry_nernst(310.0, 1, 4.0, 155.0);
+            s = s + r0;
+        } elif (kind == 1) {
+            var r1: f64 = ry_goldman(310.0, &ions, &perm);
+            s = s + r1;
+        } else {
+            var r2: f64 = ry_fick_flux(d, 100.0, dx);
+            s = s + r2;
+        }
+        i = i + 1;
+    }
+    _bn_keep(s);
+    return 0;
+}
+
+# One membrane benchmark of `n` calls.
+fn _bn_mem(name, kind, n): i64 {
+    var b = bench_new(name);
+    bench_batch_start(b);
+    _bn_membrane(kind, n);
+    bench_batch_stop(b, n);
+    bench_report(b);
+    return 0;
+}
+
 # One benchmark of the JSON writers: `kind` 0 the serde_json f64 form, 1 the Display form, 2 a ten-field document.
 fn _bn_json(name, kind, n): i64 {
     var b = bench_new(name);
@@ -442,6 +483,9 @@ fn main(): i64 {
     _bn_enz("arrhenius", 4, 1000000);
     _bn_enz("lineweaver_burk_fit", 5, 200000);
     _bn_enz("enzyme_lookup", 6, 1000000);
+    _bn_mem("nernst", 0, 1000000);
+    _bn_mem("goldman", 1, 1000000);
+    _bn_mem("fick_flux", 2, 1000000);
     var br = bench_new("json/read MembranePermeability (3 f64)");
     bench_batch_start(br);
     _bn_read("{\"p_na\":0.04,\"p_k\":1.0,\"p_cl\":0.45}", 3, "p_na\0p_k\0p_cl\0", 100000);

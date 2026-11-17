@@ -1005,3 +1005,34 @@ fills the struct.
 proved in `tests/guard.tcyr` on x86_64 and aarch64) and gave the lookup a first-byte check: MM 13 → 12 ns, mixed
 40 → 36, ping-pong 27 → 23, the LB fit 413 → 368, the lookup 99 → 82. Hill and Arrhenius are dominated by the
 correctly rounded `pow` and `exp`, the accuracy target.
+
+### 5b. Part 2: membrane (2026-11-17)
+
+**What is compared.** `tests/golden/membrane.tsv` gains 1,738 rows through the oracle's public API: `IonicState::default()`;
+Nernst over each argument's 14 edge values, nine charges (0, ±1, ±2, ±3, `i32::MIN`, `i32::MAX`), 300 seeded
+physiological calls and the ratio's overflow and underflow; Goldman over each of its ten inputs' edges (T, the six
+concentrations, the three permeabilities), 300 physiological and 100 wild states (every input log-uniform over
+1e-9 .. 1e3), single-ion and no-ion permeabilities, and weighted sums that overflow or cancel to zero; Fick over its
+edges and 300 seeded calls (a tenth with a negative D); both validators; `resting_potential`; both defaults; the
+serde documents. The class follows the branch: C where Nernst, Goldman or `resting_potential` reaches `ln` (1,026),
+B where only + − × ÷ and the guards run (450), A for the validators, defaults and documents (262).
+
+| Check | Result |
+|---|---|
+| every row | identical on the first run (class C at 0 ulp, class B at 0 ulp) but one reader row: `{"na_in":-0,…}`, an integer `-0`, which bayan reads as +0 (its filed gap; accepted under ADR 0004, as json's own `-0` rows are) |
+| corrected oracle | the models reproduce all 1,026 class-C rows with glibc's log; with MPFR none changes (`membrane.cr.tsv`, 0 rows) |
+| `validate.py` | every row re-derived from its own transcription of `membrane.rs` (pinned lines), class C with an independent MPFR; 63,369 checks in all |
+| Rust tests | 29 ported (`tests/membrane.tcyr`, 85 checks); the ledger at 124 of 723, 0 due and unported |
+| fuzz | every input also read as an IonicState and a MembranePermeability: 2,462 accepted, each with only finite fields and written and read back bit for bit |
+| three targets (`scripts/gates.sh`, 194 s) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 60,733 ok, 216 accepted, 0 failed; coverage 54 of 54 public fns executed |
+
+**The Cyrius forms** (ADR 0002 row 10, as built): `IonicState::default()`'s literal is generated one const per field
+like `DEFAULT_PERMEABILITY`'s, and each `Default` is `ry_<type>_default(&out)`; `nernst`'s `z: i32` is an i64. A
+negative or NaN D gives Fick a −0 flux, as Rust's `-guard::conc(D)` does (unary minus on a typed f64, never
+`0.0 - x`). Both validators walk the struct's fields in declaration order through a plain address (`var w = p;`: on a
+typed `*RyIonicState`, `p + 8` would step 8 · 48 bytes), naming each field from the same NUL-separated list the JSON
+codecs use.
+
+**Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): nernst 9.6 → 80 ns, goldman 11.0 → 95, fick_flux 2.5 → 22. Each
+of the first two calls the correctly rounded `ln` once (53 ns of it, ADR 0003); the rest is the guards and the calls
+Rust inlines into its loop.

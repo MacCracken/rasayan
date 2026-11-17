@@ -1,0 +1,401 @@
+# rasayan — src/membrane.cyr: Rust 1.2.0's membrane tests, ported
+# Stdlib auto-included via cyrius.cyml
+#
+# The 19 unit tests of `membrane.rs`, the integration tests (tests/integration.rs) and the validation tests
+# (tests/validation.rs) that call only membrane, as they are written; tests/golden/membrane.tsv checks every function
+# on its grid besides. Literals Cyrius can't write positionally (f64::MAX, f64::MIN_POSITIVE, 1e-300) are bit
+# patterns.
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
+include "src/membrane_data.cyr"
+include "src/membrane.cyr"
+
+# 1 when |a − b| < tol.
+fn near(a: f64, b: f64, tol: f64) {
+    var d: f64 = f64_abs(a - b);
+    return d < tol;
+}
+
+# The f64 with bit pattern `b`.
+fn fb(b): f64 {
+    var x: f64 = b;
+    return x;
+}
+
+# NaN (k 0), +inf (1), -inf (2): the non-finite values of Rust's hardening tests.
+fn bad(k): f64 {
+    if (k == 0) { return _ry_nan(); }
+    var inf: f64 = _RY_INF;
+    if (k == 1) { return inf; }
+    return -inf;
+}
+
+# 1 when the IonicState validates.
+fn ions_ok(p: *RyIonicState) {
+    var t, v = ry_ionic_state_validate(p);
+    return is_ok(t);
+}
+
+# 1 when the MembranePermeability validates.
+fn perm_ok(p: *RyMembranePermeability) {
+    var t, v = ry_membrane_permeability_validate(p);
+    return is_ok(t);
+}
+
+# ── the captured events ──
+var _ev_buf[1024];
+var _ev_len = 0;
+
+# sakshi's subscriber: keeps the last event's message.
+fn _ev_hook(ts, level, category, msg, msg_len, extra) {
+    var n = msg_len;
+    if (n > 1024) { n = 1024; }
+    memcpy(&_ev_buf, msg, n);
+    _ev_len = msg_len;
+    return 0;
+}
+
+# 1 if the last captured event is the C string `want`.
+fn _ev_is(want) {
+    var n = strlen(want);
+    if (_ev_len != n) { return 0; }
+    return memeq(&_ev_buf, want, n);
+}
+
+# rust src/membrane.rs: test_nernst_potassium, test_nernst_zero_concentrations, test_nernst_rt_over_f_at_body_temp
+# rust src/membrane.rs: test_nernst_invalid_inputs_return_zero
+# rust tests/integration.rs: test_nernst_potassium, test_nernst_sodium, test_nernst_zero_concentrations
+fn nernst() {
+    test_group("membrane: Nernst");
+    var e: f64 = ry_nernst(310.0, 1, 4.0, 155.0);
+    assert(e < -80.0 && e > -110.0, "E_K between -110 and -80 mV");
+    e = ry_nernst(310.0, 1, 145.0, 12.0);
+    assert(e > 50.0 && e < 80.0, "E_Na between 50 and 80 mV");
+    var eps: f64 = fb(0x3CB0000000000000);
+    var z: f64 = ry_nernst(310.0, 1, 0.0, 155.0);
+    var az: f64 = f64_abs(z);
+    assert(az < eps, "no extracellular ion: 0");
+    z = ry_nernst(310.0, 1, 4.0, 0.0);
+    az = f64_abs(z);
+    assert(az < eps, "no intracellular ion: 0");
+    z = ry_nernst(310.0, 0, 4.0, 155.0);
+    az = f64_abs(z);
+    assert(az < eps, "z = 0: 0");
+    # RT/F at 310.15 K = 26.7268 mV; a ratio of e gives exactly RT/F, and a divalent ion halves it.
+    var euler: f64 = 2.718281828459045;
+    var e1: f64 = ry_nernst(RY_BODY_TEMP_K, 1, euler, 1.0);
+    assert(near(e1, 26.7268, 0.001), "RT/F = 26.7268 mV");
+    var e2: f64 = ry_nernst(RY_BODY_TEMP_K, 2, euler, 1.0);
+    var half: f64 = e1 / 2.0;
+    assert(near(e2, half, 0.000000000001), "z = 2 halves it");
+    var k = 0;
+    while (k < 4) {
+        var t: f64 = 0.0;
+        if (k == 1) { t = -310.0; }
+        if (k == 2) { t = bad(0); }
+        if (k == 3) { t = bad(1); }
+        var r: f64 = ry_nernst(t, 1, 4.0, 155.0);
+        assert(r == 0.0, "an invalid temperature: 0");
+        k = k + 1;
+    }
+    k = 0;
+    while (k < 3) {
+        var c: f64 = -4.0;
+        if (k < 2) { c = bad(k); }
+        var ro: f64 = ry_nernst(310.0, 1, c, 155.0);
+        assert(ro == 0.0, "an invalid extracellular concentration: 0");
+        var ri: f64 = ry_nernst(310.0, 1, 4.0, c);
+        assert(ri == 0.0, "an invalid intracellular concentration: 0");
+        k = k + 1;
+    }
+    # The ratio overflows or underflows: ±inf would follow, so 0.
+    var max: f64 = fb(0x7FEFFFFFFFFFFFFF);
+    var minp: f64 = fb(0x0010000000000000);
+    var ov: f64 = ry_nernst(310.0, 1, max, minp);
+    assert(ov == 0.0, "ratio overflow: 0");
+    var un: f64 = ry_nernst(310.0, 1, minp, max);
+    assert(un == 0.0, "ratio underflow: 0");
+    return 0;
+}
+
+# rust tests/validation.rs: validate_nernst_potassium_mammalian, validate_nernst_sodium_mammalian
+fn nernst_reference() {
+    test_group("membrane: Nernst reference values (Kandel 6th ed.)");
+    var e_k: f64 = ry_nernst(310.0, 1, 5.0, 140.0);
+    assert(near(e_k, -89.0, 3.0), "E_K at 37 °C ~ -89 mV");
+    var e_na: f64 = ry_nernst(310.0, 1, 145.0, 12.0);
+    assert(near(e_na, 67.0, 5.0), "E_Na at 37 °C ~ +67 mV");
+    return 0;
+}
+
+# rust src/membrane.rs: test_resting_potential, test_goldman_invalid_temperature_returns_zero
+# rust src/membrane.rs: test_goldman_non_finite_inputs_are_degenerate, test_resting_potential_uses_body_temperature
+# rust tests/integration.rs: test_membrane_potential_physiological_range, test_goldman_with_custom_permeability
+# rust tests/validation.rs: validate_goldman_resting_potential
+fn goldman() {
+    test_group("membrane: Goldman");
+    var ions: RyIonicState;
+    ry_ionic_state_default(&ions);
+    var perm: RyMembranePermeability;
+    ry_membrane_permeability_default(&perm);
+    var vm: f64 = ry_ionic_state_resting_potential(&ions);
+    assert(vm < -50.0 && vm > -100.0, "resting potential between -100 and -50 mV");
+    var g: f64 = ry_goldman(310.0, &ions, &perm);
+    assert(g >= -80.0 && g <= -50.0, "Hodgkin & Katz: -80 to -50 mV at 310 K");
+    var k = 0;
+    while (k < 4) {
+        var t: f64 = 0.0;
+        if (k == 1) { t = -1.0; }
+        if (k == 2) { t = bad(0); }
+        if (k == 3) { t = bad(1); }
+        var r: f64 = ry_goldman(t, &ions, &perm);
+        assert(r == 0.0, "an invalid temperature: 0");
+        k = k + 1;
+    }
+    # Non-finite inputs never poison the result: like every other degenerate input, they give 0.0.
+    k = 0;
+    while (k < 2) {
+        var p2: RyMembranePermeability;
+        ry_membrane_permeability_default(&p2);
+        var b: f64 = bad(k);
+        p2.p_na = b;
+        var r1: f64 = ry_goldman(RY_BODY_TEMP_K, &ions, &p2);
+        assert(r1 == 0.0, "a non-finite permeability: 0");
+        var bi: RyIonicState;
+        ry_ionic_state_default(&bi);
+        bi.cl_out = b;
+        var r2: f64 = ry_goldman(RY_BODY_TEMP_K, &bi, &perm);
+        assert(r2 == 0.0, "a non-finite concentration: 0");
+        k = k + 1;
+    }
+    var none: RyMembranePermeability;
+    none.p_na = 0.0;
+    none.p_k = 0.0;
+    none.p_cl = 0.0;
+    var rn: f64 = ry_goldman(RY_BODY_TEMP_K, &ions, &none);
+    assert(rn == 0.0, "no permeant ion: 0");
+    var expected: f64 = ry_goldman(RY_BODY_TEMP_K, &ions, &perm);
+    var rp: f64 = ry_ionic_state_resting_potential(&ions);
+    assert(rp == expected, "resting_potential is Goldman at BODY_TEMP_K");
+    var eps: f64 = fb(0x3CB0000000000000);
+    assert(near(RY_BODY_TEMP_K, 310.15, eps), "BODY_TEMP_K = 310.15");
+    # K+ alone: Goldman is the K+ Nernst potential.
+    var k_only: RyMembranePermeability;
+    k_only.p_na = 0.0;
+    k_only.p_k = 1.0;
+    k_only.p_cl = 0.0;
+    var vk: f64 = ry_goldman(310.0, &ions, &k_only);
+    var k_out: f64 = ions.k_out;
+    var k_in: f64 = ions.k_in;
+    var e_k: f64 = ry_nernst(310.0, 1, k_out, k_in);
+    assert(near(vk, e_k, 1.0), "Goldman with K+ alone ~ Nernst K+");
+    return 0;
+}
+
+# rust src/membrane.rs: test_fick, test_fick_zero_thickness, test_fick_units_and_sign, test_fick_non_finite_returns_zero
+fn fick() {
+    test_group("membrane: Fick");
+    var d: f64 = 0.000000001;
+    var dx: f64 = 0.000001;
+    var j: f64 = ry_fick_flux(d, 10.0, dx);
+    assert(j < 0.0, "down a positive gradient: negative flux");
+    var eps: f64 = fb(0x3CB0000000000000);
+    var z: f64 = ry_fick_flux(d, 10.0, 0.0);
+    var az: f64 = f64_abs(z);
+    assert(az < eps, "zero thickness: 0");
+    # D = 1e-9 m²/s, ΔC = 10 mol/m³ (10 mM), Δx = 1 µm → -1e-2 mol/(m²·s).
+    assert(near(j, -0.01, 0.000000000000001), "J = -1e-2 mol/(m²·s)");
+    var jp: f64 = ry_fick_flux(d, -10.0, dx);
+    assert(jp > 0.0, "far side less concentrated: flux in +x");
+    var k = 0;
+    while (k < 3) {
+        var v: f64 = bad(k);
+        var r1: f64 = ry_fick_flux(v, 10.0, dx);
+        assert(r1 == 0.0, "a non-finite D: 0");
+        var r2: f64 = ry_fick_flux(d, v, dx);
+        assert(r2 == 0.0, "a non-finite dC: 0");
+        var r3: f64 = ry_fick_flux(d, 10.0, v);
+        assert(r3 == 0.0, "a non-finite dx: 0");
+        k = k + 1;
+    }
+    var ndx: f64 = -dx;
+    var rn: f64 = ry_fick_flux(d, 10.0, ndx);
+    assert(rn == 0.0, "a negative thickness: 0");
+    var nd: f64 = -d;
+    var rd: f64 = ry_fick_flux(nd, 10.0, dx);
+    assert(rd == 0.0, "a negative D: no flux");
+    var max: f64 = fb(0x7FEFFFFFFFFFFFFF);
+    var tiny: f64 = fb(0x01A56E1FC2F8F359);
+    var ro: f64 = ry_fick_flux(max, max, tiny);
+    assert(ro == 0.0, "overflow: 0, not ±inf");
+    # Rust's zero keeps its sign: -conc(-1e-9) · 10 / 1e-6 is -0.
+    assert_eq(load64(&rd), 0x8000000000000000, "a negative D's zero flux is -0, as Rust's");
+    return 0;
+}
+
+# rust src/membrane.rs: test_ionic_validate_valid, test_ionic_validate_negative, test_permeability_validate_valid
+# rust src/membrane.rs: test_permeability_validate_negative, test_validate_rejects_non_finite
+fn validation() {
+    test_group("membrane: validate");
+    var ions: RyIonicState;
+    ry_ionic_state_default(&ions);
+    assert(ions_ok(&ions) == 1, "the default IonicState validates");
+    ions.na_in = -1.0;
+    assert(ions_ok(&ions) == 0, "a negative na_in is refused");
+    var perm: RyMembranePermeability;
+    ry_membrane_permeability_default(&perm);
+    assert(perm_ok(&perm) == 1, "the default permeabilities validate");
+    perm.p_na = -0.1;
+    assert(perm_ok(&perm) == 0, "a negative p_na is refused");
+    var k = 0;
+    while (k < 3) {
+        var v: f64 = bad(k);
+        var bi: RyIonicState;
+        ry_ionic_state_default(&bi);
+        bi.k_out = v;
+        assert(ions_ok(&bi) == 0, "a non-finite k_out is refused");
+        var bp: RyMembranePermeability;
+        ry_membrane_permeability_default(&bp);
+        bp.p_cl = v;
+        assert(perm_ok(&bp) == 0, "a non-finite p_cl is refused");
+        k = k + 1;
+    }
+    # The codes, and −0 passing (`-0.0 < 0.0` is false).
+    ry_ionic_state_default(&ions);
+    ions.cl_out = -0.5;
+    var t1, c1 = ry_ionic_state_validate(&ions);
+    assert_eq(c1, RY_ERR_NEGATIVE_CONCENTRATION, "IonicState: NegativeConcentration");
+    ions.cl_out = bad(0);
+    var t2, c2 = ry_ionic_state_validate(&ions);
+    assert_eq(c2, RY_ERR_NON_FINITE, "IonicState: NonFinite");
+    var nz: f64 = fb(0x8000000000000000);
+    ions.cl_out = nz;
+    assert(ions_ok(&ions) == 1, "IonicState: -0 passes");
+    ry_membrane_permeability_default(&perm);
+    perm.p_k = -1.0;
+    var t3, c3 = ry_membrane_permeability_validate(&perm);
+    assert_eq(c3, RY_ERR_INVALID_PARAMETER, "MembranePermeability: InvalidParameter");
+    perm.p_k = nz;
+    assert(perm_ok(&perm) == 1, "MembranePermeability: -0 passes");
+    # The first failing field in declaration order wins.
+    ry_membrane_permeability_default(&perm);
+    perm.p_na = -1.0;
+    perm.p_k = bad(0);
+    var t4, c4 = ry_membrane_permeability_validate(&perm);
+    assert_eq(c4, RY_ERR_INVALID_PARAMETER, "p_na before p_k");
+    return 0;
+}
+
+# The refusals' DEBUG events are Rust's Display text of the error (ADR 0002 row 1), the permeability's own reason
+# included.
+fn refusal_events() {
+    test_group("membrane: refusal events are Rust's Display text");
+    sakshi_set_emit_hook(&_ev_hook);
+    sakshi_set_level(SK_DEBUG);
+    var perm: RyMembranePermeability;
+    ry_membrane_permeability_default(&perm);
+    perm.p_na = -0.1;
+    var t1, c1 = ry_membrane_permeability_validate(&perm);
+    assert_eq(_ev_is("invalid parameter: p_na = -0.1 (permeability must be non-negative)"), 1, "a negative p_na");
+    ry_membrane_permeability_default(&perm);
+    perm.p_cl = bad(1);
+    var t2, c2 = ry_membrane_permeability_validate(&perm);
+    assert_eq(_ev_is("non-finite value: p_cl = inf"), 1, "an infinite p_cl");
+    var ions: RyIonicState;
+    ry_ionic_state_default(&ions);
+    ions.na_in = -1.0;
+    var t3, c3 = ry_ionic_state_validate(&ions);
+    assert_eq(_ev_is("concentration out of range: na_in = -1 (must be >= 0)"), 1, "a negative na_in");
+    ry_ionic_state_default(&ions);
+    ions.cl_out = bad(0);
+    var t4, c4 = ry_ionic_state_validate(&ions);
+    assert_eq(_ev_is("non-finite value: cl_out = NaN"), 1, "a NaN cl_out");
+    sakshi_set_level(SK_INFO);
+    sakshi_clear_emit_hook();
+    return 0;
+}
+
+# rust src/membrane.rs: test_serde_roundtrip, test_permeability_serde_roundtrip
+# rust tests/integration.rs: test_ionic_state_serde_roundtrip, test_membrane_permeability_serde_roundtrip
+fn serde() {
+    test_group("membrane: serde round trips");
+    var sb = str_builder_new();
+    var ions: RyIonicState;
+    ry_ionic_state_default(&ions);
+    var t1, v1 = ry_ionic_state_to_json(sb, &ions);
+    assert(is_ok(t1) == 1, "an IonicState writes");
+    var want = "{\"na_in\":12.0,\"na_out\":145.0,\"k_in\":155.0,\"k_out\":4.0,\"cl_in\":4.0,\"cl_out\":120.0}";
+    assert_eq(load64(sb + 8), strlen(want), "serde_json's IonicState document: its length");
+    assert_eq(memeq(load64(sb), want, strlen(want)), 1, "serde_json's IonicState document");
+    var back: RyIonicState;
+    var t2, v2 = ry_ionic_state_from_json(load64(sb), load64(sb + 8), &back);
+    assert(is_ok(t2) == 1, "an IonicState reads back");
+    assert_eq(memeq(&back, &ions, 48), 1, "every field, bit for bit");
+    var perm: RyMembranePermeability;
+    ry_membrane_permeability_default(&perm);
+    store64(sb + 8, 0);
+    var t3, v3 = ry_membrane_permeability_to_json(sb, &perm);
+    var pw = "{\"p_na\":0.04,\"p_k\":1.0,\"p_cl\":0.45}";
+    assert_eq(load64(sb + 8), strlen(pw), "serde_json's MembranePermeability document: its length");
+    assert_eq(memeq(load64(sb), pw, strlen(pw)), 1, "serde_json's MembranePermeability document");
+    var pb: RyMembranePermeability;
+    var t4, v4 = ry_membrane_permeability_from_json(load64(sb), load64(sb + 8), &pb);
+    assert(is_ok(t4) == 1, "a MembranePermeability reads back");
+    assert_eq(memeq(&pb, &perm, 24), 1, "every field, bit for bit");
+    # serde's refusals: a missing field, a string for a number.
+    var miss = "{\"p_na\":0.04,\"p_k\":1.0}";
+    var t5, v5 = ry_membrane_permeability_from_json(miss, strlen(miss), &pb);
+    assert_eq(v5, RY_ERR_DESERIALIZE, "a missing field is refused");
+    var str = "{\"na_in\":\"12\",\"na_out\":145,\"k_in\":155,\"k_out\":4,\"cl_in\":4,\"cl_out\":120}";
+    var t6, v6 = ry_ionic_state_from_json(str, strlen(str), &back);
+    assert_eq(v6, RY_ERR_DESERIALIZE, "a string for a number is refused");
+    return 0;
+}
+
+# The defaults: the generated values, which equal Rust's DEFAULT_PERMEABILITY and IonicState::default().
+fn defaults() {
+    test_group("membrane: defaults");
+    var ions: RyIonicState;
+    ry_ionic_state_default(&ions);
+    var a: f64 = ions.na_in;
+    var b: f64 = ions.na_out;
+    var c: f64 = ions.k_in;
+    var d: f64 = ions.k_out;
+    var e: f64 = ions.cl_in;
+    var f: f64 = ions.cl_out;
+    assert(a == 12.0 && b == 145.0 && c == 155.0 && d == 4.0 && e == 4.0 && f == 120.0, "typical mammalian neuron");
+    var perm: RyMembranePermeability;
+    ry_membrane_permeability_default(&perm);
+    var pn: f64 = perm.p_na;
+    var pk: f64 = perm.p_k;
+    var pc: f64 = perm.p_cl;
+    assert(pn == 0.04 && pk == 1.0 && pc == 0.45, "P_K : P_Na : P_Cl = 1 : 0.04 : 0.45");
+    return 0;
+}
+
+# Runs the membrane suite.
+fn main() {
+    alloc_init();
+    nernst();
+    nernst_reference();
+    goldman();
+    fick();
+    validation();
+    refusal_events();
+    serde();
+    defaults();
+    return assert_summary();
+}
+
+var exit_code = main();
+# assert_summary() returns the failure count; a wait status is 8 bits, so any failure exits 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

@@ -42,3 +42,14 @@ each one branch-free expression with the bit test's answers on every pattern (`t
 and 10⁶ random patterns, x86_64 and aarch64), and gave `ry_lookup_enzyme` its first-byte check. What is left is the
 calls Rust inlines away and the correctly rounded primitives, which are the accuracy target (ADR 0003), not a cost to
 remove.
+
+## M2 part 2: membrane
+
+| Benchmark | Rust 1.2.0 (ns) | Cyrius (ns) | Notes |
+|---|---|---|---|
+| nernst | 9.61 | 80 | one correctly rounded `ln` (53 ns, ADR 0003), against glibc's ~5; four guards, one division |
+| goldman | 10.99 | 95 | the same `ln`; two three-term weighted sums, three guards |
+| fick_flux | 2.51 | 22 | `_ry_guard_conc`, two guards, one multiply and one divide |
+
+Nothing to remove in review: each is a straight transcription with no allocation, and the gap is the correctly rounded
+`ln` and the calls Rust inlines into its benchmark loop.
