@@ -935,3 +935,42 @@ the point, found the others, which the generator lists as bit patterns.
 **Benchmarks** (x86_64): an f64's serde_json text 3.7 µs, its Display text 3.8 µs, a ten-field document 31 µs. fmtf's
 printer is exact on a bignum (Burger & Dybvig, no tables); ushma measured the same (about 3 µs for a 17-digit double).
 It is impetus's code, vendored, so the speed is recorded, not changed here; no step path prints.
+
+### 4d. Part 3b: the JSON readers (2026-11-17)
+
+**What is compared.** 1,265 reader rows: `serde_json::from_slice<T>` on each document's exact bytes, for f64, String,
+char, u32, usize, i32, `Option<f64>`, `[f64; 5]` and an all-f64 struct (`rasayan::membrane::MembranePermeability`),
+recording the value or the refusal. A number's value is the correctly rounded one, core's parse of the token: serde_json
+as rasayan builds it (no `float_roundtrip`) misreads 325 of the rows' numbers (the Faraday constant's text
+`96485.33212331001` among them) and refuses `1.7976931348623158e308`, which rounds to f64::MAX.
+
+**What serde_json does** (the rows pin it): a struct reads by name in any order or as a sequence of exactly its field
+count; unknown fields are ignored however deep (200 levels); a missing, repeated, null or mistyped field refuses; a
+key must be valid UTF-8, but an unread string is skipped undecoded (invalid UTF-8 and a lone surrogate escape there are
+accepted); a raw control byte refuses anywhere; `-0` is −0.0 for an f64 and a refusal for an integer; integers take no
+float (`1.0`, `1e2`); a leading BOM or trailing content refuses.
+
+| Check | Result |
+|---|---|
+| reader rows | 1,246 identical; 19 accepted under ADR 0004 (bayan's filed gaps: an integer `-0` 5, integers past i64 8, a repeated unread key 1, nesting past 128 in an unread member 3, a lone surrogate in an unread string 1), each only when bayan reports that reason |
+| `validate.py` | all 1,265 re-derived with Python's json (strict, duplicates kept, surrogateescape) and serde's rules |
+| `tests/json.tcyr` | a nested struct through its node; writers then readers, bit for bit (0.1, −0.0, 5e-324, MAX, the Faraday constant); one arena over 10,000 documents |
+| fuzz (`--poison --bounds`) | 50,000 inputs, 1,520 read as a struct, 0 bad answers |
+
+| Benchmark (x86_64) | µs |
+|---|---|
+| read a three-field document (parse on an arena, then serde's rules) | 1.9 |
+| read a ten-field document with 17-digit values | 6.8 |
+
+bayan's tree parse is 15–25 ns per byte (its filed issue); the readers add the scans and lookups.
+
+| three targets (`scripts/gates.sh`, 249 s, every step exit 0) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 51,837 ok, 215 accepted, 0 failed |
+|---|---|
+
+**A build cost.** With `bayan` in `[deps] stdlib`, every compile takes bayan's bundle and its unicode tables in (bayan's
+filed issue: the bundle carries the unicode tables into every binary). `probe_tables.py`, which compiles every
+generated value in small programs on three targets, went from 5 s to 67 s, and the whole of `scripts/gates.sh` from
+156 s to 249 s. Measured, not gated; P7 needs bayan's tree for the readers.
+
+**M1 is complete**: error codes, the guard layer, the integrators, logging, and the JSON writers and readers, with
+every row of their corpora against the oracle's own code (or serde_json's) and an independent re-derivation of each.

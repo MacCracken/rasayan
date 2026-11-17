@@ -292,6 +292,24 @@ fn _bn_doc(n): i64 {
     return 0;
 }
 
+# n reads of document `text` as a struct of `nf` f64 fields named `names`: bayan's tree on an arena reset per document,
+# then serde's rules.
+fn _bn_read(text, nf, names, n): i64 {
+    var a = arena_allocator_growable(65536);
+    var len = strlen(text);
+    var w[80];
+    var good = 0;
+    var i = 0;
+    while (i < n) {
+        reset_via(a);
+        var v = _ry_jr_parse(a, text, len);
+        good = good + _ry_jr_f64_fields(v, &w, nf, names);
+        i = i + 1;
+    }
+    _bn_sink = _bn_sink ^ good;
+    return 0;
+}
+
 # One benchmark of the JSON writers: `kind` 0 the serde_json f64 form, 1 the Display form, 2 a ten-field document.
 fn _bn_json(name, kind, n): i64 {
     var b = bench_new(name);
@@ -348,6 +366,22 @@ fn main(): i64 {
     _bn_json("json/f64 serde_json form", 0, 200000);
     _bn_json("json/f64 Display form", 1, 200000);
     _bn_json("json/document of ten f64 fields", 2, 20000);
+    var br = bench_new("json/read MembranePermeability (3 f64)");
+    bench_batch_start(br);
+    _bn_read("{\"p_na\":0.04,\"p_k\":1.0,\"p_cl\":0.45}", 3, "p_na\0p_k\0p_cl\0", 100000);
+    bench_batch_stop(br, 100000);
+    bench_report(br);
+    var t10 = "{\"a\":0.731,\"b\":96485.33212331001,\"c\":1e-7,\"d\":2.5,\"e\":310.15,\"f\":0.0001,";
+    var u10 = "\"g\":8.31446261815324,\"h\":700.0,\"i\":-0.0,\"j\":123456.789}";
+    var sb10 = str_builder_new();
+    str_builder_add_cstr(sb10, t10);
+    str_builder_add_cstr(sb10, u10);
+    str_builder_putc(sb10, 0);
+    var b10 = bench_new("json/read a ten-field document (17-digit values)");
+    bench_batch_start(b10);
+    _bn_read(load64(sb10), 10, "a\0b\0c\0d\0e\0f\0g\0h\0i\0j\0", 50000);
+    bench_batch_stop(b10, 50000);
+    bench_report(b10);
     if (_bn_sink == 1) { println(""); }
     return 0;
 }

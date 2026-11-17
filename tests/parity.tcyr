@@ -40,7 +40,9 @@
 #   (src/logging.cyr's ry_log_level_of), class A; a form the port refuses takes the default, and where Rust's level
 #   differs the row is accepted under ADR 0002 row 8;
 # - `json` rows (M1 part 3a): serde_json's text for every scalar kind (src/json.cyr's writers) and Rust's Display of
-#   an f64 (src/fmtf.cyr's `_ry_fmt_f64_display`), class A, byte for byte.
+#   an f64 (src/fmtf.cyr's `_ry_fmt_f64_display`), class A, byte for byte; (part 3b) serde_json's decision on each
+#   document for each scalar kind and an all-f64 struct (src/json.cyr's readers), the value correctly rounded; a row
+#   that fails where bayan refuses or misreads for a filed reason is accepted under ADR 0004.
 
 include "tests/ulp.cyr"
 include "src/constants.cyr"
@@ -815,8 +817,114 @@ fn _par_json_char(fp, fl): i64 {
     return _par_eq(fp, fl, "serde_json::to_string<char>");
 }
 
+# ── json readers (part 3b) ──
+
+var _par_jarena = 0;
+
+# 1 when the current reader row met one of bayan's filed gaps (ADR 0004): set by _par_json_read for _par_accepted.
+var _par_json_gap = 0;
+
+# The reader rows accepted under ADR 0004, for the module's summary line.
+var _par_json_acc = 0;
+
+# 1 when the document [p, p + n) holds the integer token `-0` (bayan reads it as +0: its filed issue), else 0.
+#must_use
+fn _par_has_neg_zero_int(p, n): i64 {
+    var i = 0;
+    while (i + 1 < n) {
+        if (load8(p + i) == 45 && load8(p + i + 1) == 48) {
+            var prev = 32;
+            if (i > 0) { prev = load8(p + i - 1); }
+            var next = 32;
+            if (i + 2 < n) { next = load8(p + i + 2); }
+            var numeric_prev = (prev >= 48 && prev <= 57) || prev == 101 || prev == 69 || prev == 46;
+            var continues = (next >= 48 && next <= 57) || next == 46 || next == 101 || next == 69;
+            if (numeric_prev == 0 && continues == 0) { return 1; }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# 1 when bayan's last parse error is one of its filed gaps against serde_json: a repeated key, an integer past i64,
+# nesting past 128, a lone surrogate escape.
+#must_use
+fn _par_bayan_gap(): i64 {
+    var m = bayan_json_last_error();
+    if (strstr(m, "duplicate key") >= 0) { return 1; }
+    if (strstr(m, "out of range for i64") >= 0) { return 1; }
+    if (strstr(m, "nesting too deep") >= 0) { return 1; }
+    if (strstr(m, "surrogate") >= 0) { return 1; }
+    return 0;
+}
+
+# The reader rows: `serde_json::from_slice<T>` on the document (input 0's bytes): the value, or E:Deserialize.
+fn _par_json_read(fp, fl): i64 {
+    if (_par_jarena == 0) { _par_jarena = arena_allocator_growable(65536); }
+    var a = _par_jarena;
+    reset_via(a);
+    var lw[8];
+    var p = _par_in_bytes(0, &lw);
+    if (p == 0) { return 0 - 1; }
+    var n = load64(&lw);
+    _par_json_gap = _par_has_neg_zero_int(p, n);
+    var v = _ry_jr_parse(a, p, n);
+    if (v == 0) {
+        if (_par_bayan_gap() == 1) { _par_json_gap = 1; }
+        _par_got_err(RY_ERR_DESERIALIZE);
+        return 1;
+    }
+    var w[48];
+    var w2[16];
+    var ok = 0;
+    if (_par_eq(fp, fl, "serde_json::from_slice<f64>") == 1) {
+        ok = _ry_jr_f64(v, &w);
+        if (ok == 1) { _par_got_f(load64(&w)); }
+    } elif (_par_eq(fp, fl, "serde_json::from_slice<Option<f64>>") == 1) {
+        ok = _ry_jr_opt_f64(v, &w2, &w);
+        if (ok == 1 && load64(&w2) == 0) { _par_got_none(); }
+        elif (ok == 1) { _par_got_f(load64(&w)); }
+    } elif (_par_eq(fp, fl, "serde_json::from_slice<String>") == 1) {
+        ok = _ry_jr_str(v, &w, &w2);
+        if (ok == 1) { _par_got_text(load64(&w), load64(&w2)); }
+    } elif (_par_eq(fp, fl, "serde_json::from_slice<char>") == 1) {
+        ok = _ry_jr_char(v, &w, &w2);
+        if (ok == 1) { _par_got_text(load64(&w), load64(&w2)); }
+    } elif (_par_eq(fp, fl, "serde_json::from_slice<u32>") == 1) {
+        ok = _ry_jr_int(v, 0, 4294967295, &w);
+        if (ok == 1) { _par_got_i(load64(&w)); }
+    } elif (_par_eq(fp, fl, "serde_json::from_slice<usize>") == 1) {
+        ok = _ry_jr_int(v, 0, 0x7FFFFFFFFFFFFFFF, &w);
+        if (ok == 1) { _par_got_i(load64(&w)); }
+    } elif (_par_eq(fp, fl, "serde_json::from_slice<i32>") == 1) {
+        ok = _ry_jr_int(v, 0 - 2147483648, 2147483647, &w);
+        if (ok == 1) { _par_got_i(load64(&w)); }
+    } elif (_par_eq(fp, fl, "serde_json::from_slice<[f64; 5]>") == 1) {
+        ok = _ry_jr_f64_array(v, &w, 5);
+        if (ok == 1) {
+            var k = 0;
+            while (k < 5) {
+                _par_got_f(load64(&w + 8 * k));
+                k = k + 1;
+            }
+        }
+    } elif (_par_eq(fp, fl, "serde_json::from_slice<MembranePermeability>") == 1) {
+        ok = _ry_jr_f64_fields(v, &w, 3, "p_na\0p_k\0p_cl\0");
+        if (ok == 1) {
+            _par_got_f(load64(&w));
+            _par_got_f(load64(&w + 8));
+            _par_got_f(load64(&w + 16));
+        }
+    } else {
+        return 0;
+    }
+    if (ok != 1) { _par_got_err(RY_ERR_DESERIALIZE); }
+    return 1;
+}
+
 # The writer rows: the serde_json text of one value, or Rust's Display of an f64 (`f64::fmt`).
 fn _par_json(fp, fl): i64 {
+    if (fl > 22 && memeq(fp, "serde_json::from_slice", 22) == 1) { return _par_json_read(fp, fl); }
     if (_par_jsb == 0) { _par_jsb = str_builder_new(); }
     var sb = _par_jsb;
     store64(sb + 8, 0);
@@ -1026,6 +1134,10 @@ fn _par_c_bound(fp, fl): i64 {
 # where Rust reads it as a directive the port doesn't carry.
 #must_use
 fn _par_accepted(fp, fl, ip, il): i64 {
+    if (_par_json_gap == 1 && fl > 22 && memeq(fp, "serde_json::from_slice", 22) == 1) {
+        _par_json_acc = _par_json_acc + 1;
+        return 4;
+    }
     if (_par_log_refused == 1 && fl > 9 && memeq(fp, "logging::", 9) == 1) {
         _par_log_acc = _par_log_acc + 1;
         return 2;
@@ -1049,6 +1161,12 @@ fn _par_accepted_bits(adr): i64 {
 
 # After the logging module: how many refused forms ADR 0002 row 8 accepts.
 fn _par_module_done(mp, ml) {
+    if (_par_eq(mp, ml, "json") == 1) {
+        print("  ADR 0004 (bayan's filed gaps): ", 33);
+        fmt_int(_par_json_acc);
+        println(" reader rows: a repeated or deep unread member, an integer past i64, a lone surrogate, an integer -0");
+        return 0;
+    }
     if (_par_eq(mp, ml, "logging") != 1) { return 0; }
     print("  ADR 0002 row 8: ", 18);
     fmt_int(_par_log_acc);

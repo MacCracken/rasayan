@@ -1,10 +1,12 @@
-# rasayan — src/json.cyr's writers (M1 part 3a)
+# rasayan — src/json.cyr's writers (M1 part 3a) and readers (part 3b)
 # Stdlib auto-included via cyrius.cyml
 #
 # tests/golden/json.tsv compares every writer with serde_json byte for byte. Here: the writers never abort (a builder
 # whose allocator refuses to grow gets -1 back, with nothing written, where lib/str.cyr's puts would exit the
 # process); the reserve is exact enough that the printer's puts never grow a builder; a document written field by
-# field is serde_json's; the unsigned usize path; the new error codes.
+# field is serde_json's; the unsigned usize path. The readers (golden rows: serde_json's decision on every document)
+# here: a nested struct read through its node, a write-then-read round trip, one arena reused over many documents,
+# and each helper's edges.
 
 include "src/constants.cyr"
 include "src/constants_private.cyr"
@@ -137,6 +139,111 @@ fn reserve_bounds() {
     return 0;
 }
 
+# ry_jr on a C-string document, on arena allocator `a` (reset first). The tree, or 0.
+fn doc(a, text) {
+    reset_via(a);
+    return _ry_jr_parse(a, text, strlen(text));
+}
+
+# A struct holding a struct, as NetworkState holds a TcaState: the outer object's member read through its node.
+fn nested() {
+    test_group("json readers: a nested struct through its node");
+    var a = arena_allocator_growable(4096);
+    var v = doc(a, "{\"name\":\"x\",\"perm\":{\"p_cl\":0.45,\"p_na\":0.04,\"p_k\":1.0},\"dt\":0.01}");
+    var form = _ry_jr_form(v, 3);
+    assert_eq(form, 1, "the outer object");
+    var w[24];
+    assert_eq(_ry_jr_f64_fields(_ry_jr_at(v, form, 1, "perm"), &w, 3, "p_na\0p_k\0p_cl\0"), 1, "the inner struct");
+    var x: f64 = load64(&w + 16);
+    assert(x == 0.45, "its p_cl");
+    var dt: f64 = 0.0;
+    assert_eq(_ry_jr_f64(_ry_jr_at(v, form, 2, "dt"), &dt), 1, "the outer f64 after it");
+    assert(dt == 0.01, "dt");
+    var sp[8];
+    var sn[8];
+    assert_eq(_ry_jr_str(_ry_jr_at(v, form, 0, "name"), &sp, &sn), 1, "the outer string");
+    assert_eq(load64(&sn), 1, "one byte");
+    var miss = doc(a, "{\"perm\":{\"p_na\":0.04,\"p_k\":1.0},\"dt\":0.01}");
+    var inner = _ry_jr_at(miss, 1, 1, "perm");
+    assert_eq(_ry_jr_f64_fields(inner, &w, 3, "p_na\0p_k\0p_cl\0"), 0, "an inner field missing");
+    return 0;
+}
+
+# What the writers write, the readers read back bit for bit (fmtf's shortest digits, bayan's correctly rounded parse).
+fn round_trip() {
+    test_group("json readers: write, then read back");
+    var a = arena_allocator_growable(4096);
+    var sb = str_builder_new();
+    var d = default_alloc();
+    var vals[40];
+    store64(&vals, 0x3FB999999999999A);
+    store64(&vals + 8, 0x8000000000000000);
+    store64(&vals + 16, 0x0000000000000001);
+    store64(&vals + 24, 0x7FEFFFFFFFFFFFFF);
+    store64(&vals + 32, 0x40F78E555060882C);
+    _ry_jw_f64_array(d, sb, &vals, 5);
+    reset_via(a);
+    var v = _ry_jr_parse(a, load64(sb), load64(sb + 8));
+    var back[40];
+    assert_eq(_ry_jr_f64_array(v, &back, 5), 1, "the array reads back");
+    var same = 1;
+    var k = 0;
+    while (k < 5) {
+        if (load64(&back + 8 * k) != load64(&vals + 8 * k)) { same = 0; }
+        k = k + 1;
+    }
+    assert_eq(same, 1, "bit for bit: 0.1, -0.0, 5e-324, MAX, the Faraday constant (serde_json misreads it)");
+    return 0;
+}
+
+# One arena over 10,000 documents, reset per document: every read stays correct.
+fn arena_reuse() {
+    test_group("json readers: one arena, reset per document");
+    var a = arena_allocator_growable(4096);
+    var bad = 0;
+    var i = 0;
+    while (i < 10000) {
+        var v = doc(a, "{\"p_na\":0.04,\"x\":[1,2,{\"y\":\"z\"}],\"p_k\":1.0,\"p_cl\":0.45}");
+        var w[24];
+        if (_ry_jr_f64_fields(v, &w, 3, "p_na\0p_k\0p_cl\0") != 1) { bad = bad + 1; }
+        i = i + 1;
+    }
+    assert_eq(bad, 0, "10,000 reads");
+    return 0;
+}
+
+# Each helper's edges.
+fn edges() {
+    test_group("json readers: edges");
+    var a = arena_allocator_growable(4096);
+    var w[8];
+    var p[8];
+    var n[8];
+    assert_eq(_ry_jr_char(doc(a, "\"\\ud83d\\ude00\""), &p, &n), 1, "a 4-byte char from a surrogate pair");
+    assert_eq(load64(&n), 4, "4 bytes");
+    assert_eq(_ry_jr_char(doc(a, "\"e\\u0301\""), &p, &n), 0, "two scalars are no char");
+    assert_eq(_ry_jr_str(doc(a, "\"a\\u0000b\""), &p, &n), 1, "a decoded NUL");
+    assert_eq(load64(&n), 3, "is kept in the length");
+    assert_eq(_ry_jr_int(doc(a, "4294967295"), 0, 4294967295, &w), 1, "u32::MAX");
+    assert_eq(_ry_jr_int(doc(a, "4294967296"), 0, 4294967295, &w), 0, "past u32::MAX");
+    assert_eq(_ry_jr_int(doc(a, "1.0"), 0, 4294967295, &w), 0, "a float is no u32");
+    assert_eq(_ry_jr_int(doc(a, "-2147483648"), 0 - 2147483648, 2147483647, &w), 1, "i32::MIN");
+    var has[8];
+    assert_eq(_ry_jr_opt_f64(doc(a, "null"), &has, &w), 1, "None");
+    assert_eq(load64(&has), 0, "has no value");
+    assert_eq(_ry_jr_opt_f64(doc(a, "2.5"), &has, &w), 1, "Some");
+    assert_eq(load64(&has), 1, "has a value");
+    assert_eq(_ry_jr_f64(doc(a, "1e400"), &w), 0, "1e400 is refused (bayan reads inf)");
+    assert_eq(doc(a, "{\"p\":\"a\x01b\"}"), 0, "a raw control byte in any string refuses the document");
+    var f = doc(a, "{\"p_na\":1,\"p_k\":2}");
+    var w3[24];
+    assert_eq(_ry_jr_f64_fields(f, &w3, 3, "p_na\0p_k\0p_cl\0"), 0, "a missing field");
+    assert_eq(_ry_jr_f64_fields(doc(a, "[1,2,3]"), &w3, 3, "p_na\0p_k\0p_cl\0"), 1, "the sequence form");
+    assert_eq(_ry_jr_f64_fields(doc(a, "[1,2]"), &w3, 3, "p_na\0p_k\0p_cl\0"), 0, "a short sequence");
+    assert_eq(_ry_jr_f64_fields(0, &w3, 3, "p_na\0p_k\0p_cl\0"), 0, "no tree");
+    return 0;
+}
+
 # Runs the json suite.
 fn main() {
     alloc_init();
@@ -144,6 +251,10 @@ fn main() {
     integers();
     refused_growth();
     reserve_bounds();
+    nested();
+    round_trip();
+    arena_reuse();
+    edges();
     return assert_summary();
 }
 

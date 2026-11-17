@@ -14,7 +14,7 @@ output = "build/rasayan"
 # here since M0 part 3b: part 3a's probe 8 found they resolved silently from the pinned toolchain's lib/ without being
 # vendored or locked (port-parity.md §3, probe 10). sakshi first: log.cyr includes it.
 [deps]
-stdlib = ["string", "fmt", "alloc", "vec", "str", "syscalls", "io", "args", "math", "result", "sakshi", "log"]
+stdlib = ["string", "fmt", "alloc", "vec", "str", "syscalls", "io", "args", "math", "result", "sakshi", "log", "bayan"]
 
 # bote for [lib.mcp] (port plan P5, §3.2; selah's optional pattern). Only `cyrius deps --features mcp` resolves it, so a
 # [lib] build never compiles it. bote-core, not the full bundle (probe 6, port-parity.md §3): rasayan registers its

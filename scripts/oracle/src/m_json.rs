@@ -11,11 +11,27 @@
 //!   context, DEL, 2–4-byte UTF-8, long and mixed strings;
 //! - `serde_json::to_string<u32>`, `<usize>` (up to `usize::MAX`), `<i32>`;
 //! - `serde_json::to_string<Option<f64>>` (`n:` for None) and `serde_json::to_string<[f64; 5]>`.
+//!
+//! Reader rows (M1 part 3b; inputs `s:<the document's bytes>`, outputs the value or `E:Deserialize`), each
+//! `serde_json::from_slice` on the exact bytes:
+//! - `<f64>`: every number form, the range ends (`1e400` refused, `1e-400` zero), integers past i64 / u64, blanks,
+//!   every malformed spelling, and the serde_json text of 1,000 seeded doubles. The value recorded is the correctly
+//!   rounded one (core's parse of the token): serde_json as rasayan builds it (no `float_roundtrip`) misrounds some,
+//!   and the note says so (ADR 0004's amendment: read rows compare with the correctly rounded value);
+//! - `<String>`, `<char>`: escapes, surrogate pairs and lone surrogates, raw control bytes, invalid UTF-8;
+//! - `<u32>`, `<usize>`, `<i32>`: the range ends, signs, floats, `-0`;
+//! - `<Option<f64>>`, `<[f64; 5]>`;
+//! - `<MembranePermeability>` (rasayan::membrane, three f64 fields): serde's struct rules — by name in any order or as
+//!   a sequence of exactly three, unknown fields ignored (however deep), a missing, duplicate, null or mistyped field
+//!   refused. Its numbers are short decimals serde_json reads exactly (Clinger's fast path), so these rows are about
+//!   structure.
 
 use std::hint::black_box;
 
 use crate::grids::{Rng, pow2, specials};
-use crate::tsv::{Class, Module, Tok, f, i, s};
+use rasayan::membrane::MembranePermeability;
+
+use crate::tsv::{Class, Module, Tok, f, i, s, sb};
 
 /// The exact ties (see `floats`), as bit patterns.
 const TIES: [u64; 30] = [
@@ -154,6 +170,204 @@ fn strings() -> Vec<String> {
     v
 }
 
+/// A refused document.
+fn refused() -> Tok {
+    Tok::Err("Deserialize".to_string())
+}
+
+/// The correctly rounded value of a JSON number document (its token, JSON's four blanks trimmed): core's parse.
+fn cr_of(text: &[u8]) -> f64 {
+    let t = std::str::from_utf8(text).unwrap_or_default().trim_matches([' ', '\t', '\n', '\r']);
+    t.parse().unwrap_or(f64::NAN)
+}
+
+/// A `from_slice::<f64>` row; `fname` names the Rust type read (f64, or Option<f64> for `Some`).
+fn read_f64(m: &mut Module, fname: &str, text: &[u8]) {
+    let ins = [sb(text)];
+    let got: Result<f64, _> = serde_json::from_slice(black_box(text));
+    match got {
+        Ok(v) => {
+            let c = cr_of(text);
+            if c.to_bits() == v.to_bits() {
+                m.row(fname, Class::A, &ins, &[f(c)]);
+            } else {
+                let extra = format!("serde_json reads f:{:016x}; the correctly rounded value is recorded", v.to_bits());
+                m.row_noted(fname, Class::A, &ins, &[f(c)], &extra);
+            }
+        }
+        // serde_json's own parse can round a finite number past f64::MAX and then refuse it as out of range
+        // (`1.7976931348623158e308`, which rounds to f64::MAX): the correctly rounded value is recorded.
+        Err(e) if e.to_string().starts_with("number out of range") && cr_of(text).is_finite() => {
+            let extra = "serde_json refuses it: its parse rounds past f64::MAX; the correctly rounded value is recorded";
+            m.row_noted(fname, Class::A, &ins, &[f(cr_of(text))], extra);
+        }
+        Err(_) => m.row(fname, Class::A, &ins, &[refused()]),
+    }
+}
+
+/// Bytes of a text.
+fn b(t: &str) -> Vec<u8> {
+    t.as_bytes().to_vec()
+}
+
+/// The f64 reader's documents.
+fn f64_docs() -> Vec<Vec<u8>> {
+    let mut v: Vec<Vec<u8>> = [
+        "0", "-0", "0.0", "-0.0", "1", "-1", "1.0", "1.5", "-1.5", "1e5", "1E5", "1e+5", "1e-5", "1.5e-7", "123.456",
+        "0.1", "0.30000000000000004", "1e308", "1.7976931348623157e308", "1.7976931348623158e308",
+        "1.7976931348623159e308", "1e309", "1e400", "-1e400", "1e-400", "-1e-400", "4.9e-324", "5e-324",
+        "2.4703282292062327e-324", "2.4703282292062328e-324", "2.2250738585072011e-308", "2.2250738585072014e-308",
+        "9007199254740993", "9007199254740995", "18446744073709551615", "18446744073709551616",
+        "9223372036854775807", "9223372036854775808", "-9223372036854775808", "-9223372036854775809",
+        "100000000000000000000000", "123456789012345678901234567890", "0.000000000000000000000000000001",
+        "1.00000000000000011102230246251565404236316680908203125", "8.314462618153240", "96485.33212331001",
+        "  1.5  ", "\t\n1.5\r\n", "1.5 ", "",
+        " ", "01", "-01", "1.", ".5", "+1", "-", "--1", "1e", "1e+", "1e-", "0x10", "NaN", "Infinity", "-Infinity",
+        "nan", "inf", "null", "true", "\"1.5\"", "[1.5]", "{}", "1.5 2", "1.5,", "1,5", "1.5x", "１", "1.5\u{0}",
+        "\u{feff}1.5", "1.5\u{a0}",
+    ]
+    .iter()
+    .map(|t| b(t))
+    .collect();
+    let mut rng = Rng::new(0x7265_6164);
+    for _ in 0..1000 {
+        let x = f64::from_bits(rng.bits());
+        if x.is_finite() {
+            v.push(serde_json::to_string(&x).unwrap_or_default().into_bytes());
+        }
+    }
+    v
+}
+
+fn read_rows(m: &mut Module) {
+    for d in f64_docs() {
+        read_f64(m, "serde_json::from_slice<f64>", &d);
+    }
+
+    let strs: Vec<Vec<u8>> = [
+        "\"\"", "\"abc\"", "\"\\\"\\\\\\/\\b\\f\\n\\r\\t\"", "\"\\u0041\"", "\"\\u00e9\"",
+        "\"\\u20AC\"", "\"\\u20ac\"", "\"\\ud83d\\ude00\"", "\"\\uD83D\\uDE00\"", "\"\\ud800\"",
+        "\"\\udc00\"", "\"\\ud800\\u0041\"", "\"\\ud800x\"", "\"\\u000\"", "\"\\u00g0\"", "\"\\x41\"",
+        "\"\\'\"", "\"\\a\"", "\"a\u{1}b\"", "\"a\tb\"", "\"a\nb\"", "\"a\u{7f}b\"", "\"é\"",
+        "\"ラサヤン\"", "\"😀\"", "\"abc", "\"a\" x", "\"a\"  ", "1", "null", "[\"a\"]", "\"\\u0000\"",
+        "\"a\\u0000b\"", "\"\\\"", "\"\\\\\"",
+    ]
+    .iter()
+    .map(|t| b(t))
+    .chain([
+        b"\"\xff\"".to_vec(),
+        b"\"\xc0\xaf\"".to_vec(),
+        b"\"\xed\xa0\x80\"".to_vec(),
+        b"\"\xf4\x90\x80\x80\"".to_vec(),
+        b"\"\xe2\x82\"".to_vec(),
+        b"\"ok\xe2\x82\xac\"".to_vec(),
+    ])
+    .collect();
+    for d in &strs {
+        let got: Result<String, _> = serde_json::from_slice(black_box(d));
+        let out = got.map_or_else(|_| refused(), |t| sb(t.as_bytes()));
+        m.row("serde_json::from_slice<String>", Class::A, &[sb(d)], &[out]);
+    }
+    for t in [
+        "\"a\"", "\"é\"", "\"😀\"", "\"ab\"", "\"\"", "\"\\u0041\"", "\"\\ud83d\\ude00\"", "\"\\n\"", "1",
+        "\"\\ud800\"", "\" \"",
+    ] {
+        let got: Result<char, _> = serde_json::from_slice(black_box(t.as_bytes()));
+        let out = got.map_or_else(|_| refused(), |c| s(c.to_string()));
+        m.row("serde_json::from_slice<char>", Class::A, &[sb(t.as_bytes())], &[out]);
+    }
+
+    let ints = [
+        "0", "1", "7", " 7 ", "-0", "-1", "1.0", "1e2", "3.5", "01", "null", "\"1\"", "4294967295", "4294967296",
+        "2147483647", "2147483648", "-2147483648", "-2147483649", "9223372036854775807", "9223372036854775808",
+        "18446744073709551615", "18446744073709551616", "",
+    ];
+    for t in ints {
+        let r: Result<u32, _> = serde_json::from_slice(black_box(t.as_bytes()));
+        let out = r.map_or_else(|_| refused(), i);
+        m.row("serde_json::from_slice<u32>", Class::A, &[sb(t.as_bytes())], &[out]);
+    }
+    for t in ints {
+        let r: Result<usize, _> = serde_json::from_slice(black_box(t.as_bytes()));
+        #[allow(clippy::cast_possible_wrap)]
+        let out = r.map_or_else(|_| refused(), |n| i(n as i64));
+        m.row("serde_json::from_slice<usize>", Class::A, &[sb(t.as_bytes())], &[out]);
+    }
+    for t in ints {
+        let r: Result<i32, _> = serde_json::from_slice(black_box(t.as_bytes()));
+        let out = r.map_or_else(|_| refused(), i);
+        m.row("serde_json::from_slice<i32>", Class::A, &[sb(t.as_bytes())], &[out]);
+    }
+
+    for t in ["null", " null ", "1.5", "-0", "-0.0", "1e400", "\"x\"", "[]", "nul", "", "0"] {
+        let r: Result<Option<f64>, _> = serde_json::from_slice(black_box(t.as_bytes()));
+        match r {
+            Ok(None) => m.row("serde_json::from_slice<Option<f64>>", Class::A, &[sb(t.as_bytes())], &[Tok::None]),
+            Ok(Some(_)) => read_f64(m, "serde_json::from_slice<Option<f64>>", t.as_bytes()),
+            Err(_) => m.row("serde_json::from_slice<Option<f64>>", Class::A, &[sb(t.as_bytes())], &[refused()]),
+        }
+    }
+
+    for t in [
+        "[1,2,3,4,5]", "[1.5,-0.0,0.04,1e-7,100]", " [ 1 , 2 , 3 , 4 , 5 ] ", "[1,2,3,4]", "[1,2,3,4,5,6]", "[]",
+        "{}", "[1,2,3,4,null]", "[1,2,3,4,\"5\"]", "[1,2,3,4,5,]", "[1,2,3,4,1e400]", "null", "[[1],2,3,4,5]",
+    ] {
+        let r: Result<[f64; 5], _> = serde_json::from_slice(black_box(t.as_bytes()));
+        let outs: Vec<Tok> = r.map_or_else(|_| vec![refused()], |a| a.iter().map(|&x| f(x)).collect());
+        m.row("serde_json::from_slice<[f64; 5]>", Class::A, &[sb(t.as_bytes())], &outs);
+    }
+
+    let deep = |n: usize| format!("{}{}", "[".repeat(n), "]".repeat(n));
+    let mut perm: Vec<Vec<u8>> = [
+        r#"{"p_na":0.04,"p_k":1.0,"p_cl":0.45}"#,
+        r#"{"p_cl":0.45,"p_na":0.04,"p_k":1.0}"#,
+        r#"{ "p_na" : 0.04 , "p_k" : 1.0 , "p_cl" : 0.45 }"#,
+        "\n{\"p_na\":0.04,\n\"p_k\":1.0,\t\"p_cl\":0.45}\r\n",
+        r#"{"p_na":1,"p_k":2,"p_cl":3}"#,
+        r#"{"p_na":-0.0,"p_k":1e-7,"p_cl":100}"#,
+        r#"{"p_na":0.04,"x":1,"p_k":1.0,"p_cl":0.45}"#,
+        r#"{"p_na":0.04,"x":{"y":[1,null,"z",{"w":true}]},"p_k":1.0,"p_cl":0.45}"#,
+        r#"{"p_na":0.04,"p_k":1.0}"#,
+        r#"{"p_na":0.04,"p_k":1.0,"p_cl":null}"#,
+        r#"{"p_na":0.04,"p_k":"1.0","p_cl":0.45}"#,
+        r#"{"p_na":0.04,"p_k":true,"p_cl":0.45}"#,
+        r#"{"p_na":0.04,"p_k":[1.0],"p_cl":0.45}"#,
+        r#"{"p_na":0.04,"p_na":0.05,"p_k":1.0,"p_cl":0.45}"#,
+        r#"{"x":1,"x":2,"p_na":0.04,"p_k":1.0,"p_cl":0.45}"#,
+        r#"{"p_na":1e400,"p_k":1.0,"p_cl":0.45}"#,
+        r#"{"p_na":-0,"p_k":1.0,"p_cl":0.45}"#,
+        r#"{"P_NA":0.04,"p_k":1.0,"p_cl":0.45}"#,
+        r#"{"p\u005fna":0.04,"p_k":1.0,"p_cl":0.45}"#,
+        r#"{"p_na":0.04,"p_k":1.0,"p_cl":0.45,}"#,
+        r#"{"p_na":0.04,"p_k":1.0,"p_cl":0.45} x"#,
+        r#"{"p_na":0.04,"p_k":1.0,"p_cl":0.45}{}"#,
+        r#"[0.04,1.0,0.45]"#,
+        r#"[0.04,1.0]"#,
+        r#"[0.04,1.0,0.45,1]"#,
+        r#"[]"#,
+        r#"{}"#,
+        r#"null"#,
+        r#"0.04"#,
+        r#""#,
+    ]
+    .iter()
+    .map(|t| b(t))
+    .collect();
+    for n in [100, 127, 128, 129, 200] {
+        perm.push(format!("{{\"p_na\":0.04,\"x\":{},\"p_k\":1.0,\"p_cl\":0.45}}", deep(n)).into_bytes());
+    }
+    perm.push(b"{\"p_na\":0.04,\"x\":\"a\x01b\",\"p_k\":1.0,\"p_cl\":0.45}".to_vec());
+    perm.push(b"{\"p_na\":0.04,\"x\":\"\xff\",\"p_k\":1.0,\"p_cl\":0.45}".to_vec());
+    perm.push(b"{\"p_na\":0.04,\"\xff\":1,\"p_k\":1.0,\"p_cl\":0.45}".to_vec());
+    perm.push(b"{\"p_na\":0.04,\"x\":\"\\ud800\",\"p_k\":1.0,\"p_cl\":0.45}".to_vec());
+    perm.push(b"\xef\xbb\xbf{\"p_na\":0.04,\"p_k\":1.0,\"p_cl\":0.45}".to_vec());
+    for d in &perm {
+        let r: Result<MembranePermeability, _> = serde_json::from_slice(black_box(d));
+        let outs = r.map_or_else(|_| vec![refused()], |p| vec![f(p.p_na), f(p.p_k), f(p.p_cl)]);
+        m.row("serde_json::from_slice<MembranePermeability>", Class::A, &[sb(d)], &outs);
+    }
+}
+
 pub fn emit() -> Module {
     let mut m = Module::new("json");
     let fl = floats();
@@ -218,5 +432,6 @@ pub fn emit() -> Module {
         let ins: Vec<Tok> = a.iter().map(|&x| f(x)).collect();
         m.row("serde_json::to_string<[f64; 5]>", Class::A, &ins, &[s(j)]);
     }
+    read_rows(&mut m);
     m
 }

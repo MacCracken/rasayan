@@ -1876,6 +1876,10 @@ JSON_W = {  # fn -> model, inputs -> the output token
     "serde_json::to_string<Option<f64>>": lambda ins: s_tok("null" if ins[0] == "n:" else json_f64(tok_f(ins[0]))),
     "serde_json::to_string<[f64; 5]>": lambda ins: s_tok("[" + ",".join(json_f64(tok_f(t)) for t in ins) + "]"),
 }
+JSON_R = ("serde_json::from_slice<f64>", "serde_json::from_slice<Option<f64>>", "serde_json::from_slice<String>",
+          "serde_json::from_slice<char>", "serde_json::from_slice<u32>", "serde_json::from_slice<usize>",
+          "serde_json::from_slice<i32>", "serde_json::from_slice<[f64; 5]>",
+          "serde_json::from_slice<MembranePermeability>")
 
 
 def check_json(rows, rep):
@@ -1884,6 +1888,8 @@ def check_json(rows, rep):
     ties = 0
     for n, fn, cls, ins, outs in rows:
         where = f"json.tsv:{n}"
+        if fn in JSON_R and cls == "A":
+            continue  # check_json_read
         if cls != "A" or fn not in JSON_W:
             rep.fail(where, f"{fn} class {cls}: no model, or not class A")
             continue
@@ -1907,6 +1913,132 @@ def check_json(rows, rep):
     return per, ties
 
 
+# ── json readers (M1 part 3b): serde_json's decision on each document, with the correctly rounded value ──
+#
+# Python's json module parses (strictly: no NaN / Infinity, no raw control character in a string, duplicates kept
+# through object_pairs_hook); the bytes are decoded with surrogateescape, so an invalid UTF-8 byte inside a string
+# survives as a lone surrogate and only refuses where a string is read or is a key, as serde_json decodes only those.
+# serde's rules are then applied by type: an f64 takes a finite number (a JSON integer converts correctly rounded,
+# Python's float(int)); `-0` is −0.0 for an f64 and a float to an integer reader, so refused; an integer reader takes
+# JSON integers in range only; a String must encode to UTF-8 (a lone surrogate escape refuses); a char is one scalar;
+# a struct reads by name (unknown fields ignored, a repeated known field refused) or as a sequence of exactly its
+# field count. The golden value is the correctly rounded one (ADR 0004's amendment), which Python's float() gives.
+
+class NegZero(int):
+    """The integer token `-0`: serde_json reads it as the float −0.0."""
+
+
+def py_json(b):
+    """The parsed document, or raises ValueError."""
+    def bad_constant(name):
+        raise ValueError(f"{name} is no JSON number")
+    text = b.decode("utf-8", "surrogateescape")
+    return json.loads(text, parse_constant=bad_constant, parse_int=lambda t: NegZero(0) if t == "-0" else int(t),
+                      object_pairs_hook=lambda pairs: ("OBJ", pairs))
+
+
+def utf8_ok(t):
+    try:
+        t.encode("utf-8")
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
+def serde_f64(v):
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        raise ValueError("not a number")
+    if isinstance(v, NegZero):
+        return -0.0
+    x = float(v)
+    if math.isinf(x):
+        raise ValueError("number out of range")
+    return x
+
+
+def serde_int(v, lo, hi):
+    if isinstance(v, bool) or not isinstance(v, int) or isinstance(v, NegZero):
+        raise ValueError("not an integer")
+    if not lo <= v <= hi:
+        raise ValueError("out of range")
+    return v
+
+
+def serde_str(v):
+    if not isinstance(v, str) or not utf8_ok(v):
+        raise ValueError("not a valid string")
+    return v
+
+
+def serde_struct(v, names):
+    if isinstance(v, tuple) and v[0] == "OBJ":
+        got = {}
+        for k, val in v[1]:
+            if not utf8_ok(k):
+                raise ValueError("key not UTF-8")
+            if k in names:
+                if k in got:
+                    raise ValueError(f"duplicate field {k}")
+                got[k] = val
+        return [serde_f64(got[n]) if n in got else serde_f64(None) for n in names]
+    if isinstance(v, list) and len(v) == len(names):
+        return [serde_f64(x) for x in v]
+    raise ValueError("not a struct")
+
+
+def read_model(fn, doc):
+    """The output tokens serde_json's rules give for document bytes `doc`."""
+    try:
+        v = py_json(doc)
+        if fn == "serde_json::from_slice<f64>":
+            return [fbits(serde_f64(v))]
+        if fn == "serde_json::from_slice<Option<f64>>":
+            return ["n:"] if v is None else [fbits(serde_f64(v))]
+        if fn == "serde_json::from_slice<String>":
+            return ["s:" + pct_bytes(serde_str(v).encode("utf-8"))]
+        if fn == "serde_json::from_slice<char>":
+            t = serde_str(v)
+            if len(t) != 1:
+                raise ValueError("not one char")
+            return ["s:" + pct_bytes(t.encode("utf-8"))]
+        if fn == "serde_json::from_slice<u32>":
+            return [f"i:{serde_int(v, 0, 2**32 - 1)}"]
+        if fn == "serde_json::from_slice<usize>":
+            n = serde_int(v, 0, 2**64 - 1)
+            return [f"i:{n - 2**64 if n >= 2**63 else n}"]
+        if fn == "serde_json::from_slice<i32>":
+            return [f"i:{serde_int(v, -2**31, 2**31 - 1)}"]
+        if fn == "serde_json::from_slice<[f64; 5]>":
+            if not isinstance(v, list) or len(v) != 5:
+                raise ValueError("not five")
+            return [fbits(serde_f64(x)) for x in v]
+        if fn == "serde_json::from_slice<MembranePermeability>":
+            return [fbits(x) for x in serde_struct(v, ["p_na", "p_k", "p_cl"])]
+    except (ValueError, RecursionError, KeyError):
+        return ["E:Deserialize"]
+    raise KeyError(fn)
+
+
+def check_json_read(rows, rep):
+    """Every reader row against the model; returns the rows checked."""
+    n_ok = 0
+    for n, fn, cls, ins, outs in rows:
+        if not fn.startswith("serde_json::from_slice"):
+            continue
+        where = f"json.tsv:{n}"
+        try:
+            want = read_model(fn, tok_bytes(ins[0]))
+        except KeyError:
+            rep.fail(where, f"{fn}: no model")
+            continue
+        if same_toks(outs, want):
+            rep.ok()
+            n_ok += 1
+        else:
+            rep.fail(where, f"{fn}({tok_bytes(ins[0])[:60]!r}): golden {outs}, model {want}")
+    return n_ok
+
+
 def main():
     root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
     rep = Report()
@@ -1928,6 +2060,7 @@ def main():
     int_counts, int_per = check_integrate(root, tables.get("integrate.tsv", []), rep)
     log_modelled, log_outside = check_logging(root, tables.get("logging.tsv", []), rep)
     json_per, json_ties = check_json(tables.get("json.tsv", []), rep)
+    json_read = check_json_read(tables.get("json.tsv", []), rep)
     total = sum(len(v) for v in tables.values())
     n_items, n_excused = extras.get("_counts", (0, 0))
     print(f"files: {len(files)}; rows: {total}; math classes: {dict(sorted(counts.items()))}")
@@ -1946,7 +2079,7 @@ def main():
         f"filter alone)"
     )
     print(f"json: {sum(json_per.values())} writer rows over {len(json_per)} functions; {json_ties} exact ties "
-          f"(Display rounds up, serde_json to even)")
+          f"(Display rounds up, serde_json to even); {json_read} reader rows re-derived by serde's rules")
     print(
         f"independently checked: {rep.checked} (constants, src/constants.cyr, math classes A and B, the table rows, "
         f"every cell of the generated data files, every class-C math row against MPFR, guard, integrate and its "

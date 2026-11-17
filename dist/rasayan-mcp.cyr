@@ -10,6 +10,7 @@ include "lib/sakshi.cyr"
 include "lib/log.cyr"
 include "lib/result.cyr"
 include "lib/io.cyr"
+include "lib/bayan.cyr"
 
 # --- constants.cyr ---
 
@@ -4045,6 +4046,223 @@ fn _ry_jw_unit(a, sb, name): i64 {
     str_builder_add_cstr(sb, name);
     str_builder_putc(sb, 34);
     return 0;
+}
+
+# ── readers ──
+# Readers parse with bayan's value tree on the caller's allocator (`bayan_json_v_parse_buf_a`; an arena reset per
+# document keeps nothing past what the caller resets) and apply serde's derive rules, as serde_json 1.0.154 applies
+# them (tests/golden/json.tsv pins each against serde_json's decisions):
+# - a struct reads from an object, by field name (any order; unknown fields ignored, however deep) or from an array of
+#   exactly its field count (by position, serde's sequence form); a missing field, a field of the wrong JSON type, a
+#   repeated field, or a key that is not valid UTF-8 refuses the document;
+# - an f64 takes a JSON float or integer, never `null`, and never a number that parsed to ±inf (`1e400`; bayan reads
+#   it as ±inf, serde_json refuses it); bayan's parse is correctly rounded, where serde_json's (no `float_roundtrip`)
+#   misrounds some, so the value is the correctly rounded one (ADR 0004's amendment);
+# - an integer field takes a JSON integer in its type's range, never a float (`1.0`, `1e2`);
+# - a string must be valid UTF-8 once decoded (a lone surrogate escape refuses); a char is one Unicode scalar;
+# - Option<f64>: `null` is None, anything else an f64;
+# - a raw control byte (U+0000–U+001F unescaped) in any string, read or not, refuses the document (serde_json scans
+#   every string; bayan accepts them: its filed issue). An unread string's UTF-8 is not checked, as serde_json skips
+#   it unread.
+# A refusal is a 0 from each helper; a codec returns Err(RY_ERR_DESERIALIZE). Where bayan refuses what serde_json reads
+# — a repeated key in an unread member, an integer at or past 2^63, nesting past 128 levels in an unread member, a
+# lone surrogate escape in an unread string — the document is refused, and an integer `-0` reads as +0 (serde_json:
+# −0.0 for an f64, a refusal for an integer). Each is a filed bayan issue and an ADR 0004 mapped row.
+
+# 1 when the `n` bytes at `p` are well-formed UTF-8 (RFC 3629: no overlong forms, no surrogates, nothing past
+# U+10FFFF), else 0.
+#must_use
+fn _ry_utf8_valid(p, n): i64 {
+    var i = 0;
+    while (i < n) {
+        var c = load8(p + i);
+        if (c < 128) {
+            i = i + 1;
+            continue;
+        }
+        var need = 0;
+        var lo = 128;
+        var hi = 191;
+        if (c >= 194 && c <= 223) { need = 1; }
+        elif (c == 224) { need = 2; lo = 160; }
+        elif (c >= 225 && c <= 236) { need = 2; }
+        elif (c == 237) { need = 2; hi = 159; }
+        elif (c >= 238 && c <= 239) { need = 2; }
+        elif (c == 240) { need = 3; lo = 144; }
+        elif (c >= 241 && c <= 243) { need = 3; }
+        elif (c == 244) { need = 3; hi = 143; }
+        else { return 0; }
+        if (i + need >= n) { return 0; }
+        var c1 = load8(p + i + 1);
+        if (c1 < lo || c1 > hi) { return 0; }
+        var k = 2;
+        while (k <= need) {
+            var ck = load8(p + i + k);
+            if (ck < 128 || ck > 191) { return 0; }
+            k = k + 1;
+        }
+        i = i + need + 1;
+    }
+    return 1;
+}
+
+# 1 when no string in the `n`-byte document at `buf` holds a raw control byte (RFC 8259 §7; serde_json refuses one,
+# read or not; bayan 1.11.1 does not, and once decoded it can't be told from its escape), else 0.
+#must_use
+fn _ry_jr_raw_ok(buf, n): i64 {
+    var inside = 0;
+    var i = 0;
+    while (i < n) {
+        var c = load8(buf + i);
+        if (inside == 1) {
+            if (c < 32) { return 0; }
+            if (c == 92) { i = i + 1; }
+            elif (c == 34) { inside = 0; }
+        } elif (c == 34) {
+            inside = 1;
+        }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# The value tree of the `n`-byte document at `buf`, built on allocator `a`, or 0 when it is not one JSON value (or
+# holds a raw control byte in a string).
+#must_use
+fn _ry_jr_parse(a, buf, n): i64 {
+    if (buf == 0 || n < 0) { return 0; }
+    if (_ry_jr_raw_ok(buf, n) == 0) { return 0; }
+    return bayan_json_v_parse_buf_a(a, buf, n);
+}
+
+# The form of struct node `v` with `nfields` fields: 1 an object whose keys are valid UTF-8, 2 an array of exactly
+# `nfields` elements (serde's sequence form), 0 anything else.
+#must_use
+fn _ry_jr_form(v, nfields): i64 {
+    if (v == 0) { return 0; }
+    var t = bayan_json_v_tag(v);
+    if (t == JTAG_OBJ) {
+        var k = 0;
+        var nk = bayan_json_v_obj_len(v);
+        while (k < nk) {
+            var key = bayan_json_v_obj_key(v, k);
+            if (_ry_utf8_valid(str_data(key), str_len(key)) == 0) { return 0; }
+            k = k + 1;
+        }
+        return 1;
+    }
+    if (t == JTAG_ARR && bayan_json_v_arr_len(v) == nfields) { return 2; }
+    return 0;
+}
+
+# Field `i`, named `name` (a C string), of struct node `v` in `form`: its value node, or 0 when absent.
+#must_use
+fn _ry_jr_at(v, form, i, name): i64 {
+    if (form == 1) { return bayan_json_v_obj_get_by_cstr(v, name); }
+    if (form == 2) { return bayan_json_v_arr_get(v, i); }
+    return 0;
+}
+
+# A JSON number as an f64 into *out: 1, or 0 for any other value (`null` included) and for a number that parsed to
+# ±inf (serde_json: "number out of range"). An integer converts to the nearest f64, ties to even, as serde converts.
+#must_use
+fn _ry_jr_f64(v, out): i64 {
+    if (v == 0) { return 0; }
+    var t = bayan_json_v_tag(v);
+    if (t == JTAG_FLOAT) {
+        var w = bayan_json_v_float(v);
+        if ((w & 0x7FF0000000000000) == 0x7FF0000000000000) { return 0; }
+        store64(out, w);
+        return 1;
+    }
+    if (t == JTAG_INT) {
+        store64(out, bayan_json_v_float(v));
+        return 1;
+    }
+    return 0;
+}
+
+# An Option<f64> into *has and *out: `null` is None (*has 0), any other value an f64 (*has 1). 1, or 0 when serde
+# would refuse it.
+#must_use
+fn _ry_jr_opt_f64(v, has, out): i64 {
+    if (v == 0) { return 0; }
+    if (bayan_json_v_tag(v) == JTAG_NULL) {
+        store64(has, 0);
+        store64(out, 0);
+        return 1;
+    }
+    if (_ry_jr_f64(v, out) == 0) { return 0; }
+    store64(has, 1);
+    return 1;
+}
+
+# A JSON integer in [min, max] into *out (a Rust u32, i32 or usize: serde takes no float, not even `1.0`). 1, or 0.
+#must_use
+fn _ry_jr_int(v, min, max, out): i64 {
+    if (v == 0 || bayan_json_v_tag(v) != JTAG_INT) { return 0; }
+    var n = bayan_json_v_int(v);
+    if (n < min || n > max) { return 0; }
+    store64(out, n);
+    return 1;
+}
+
+# A JSON string's bytes, UTF-8-checked, without a copy: its pointer into *out_p and its byte length (which may hold a
+# decoded U+0000) into *out_n, both into the tree. 1, or 0 for any other value or invalid UTF-8.
+#must_use
+fn _ry_jr_str(v, out_p, out_n): i64 {
+    if (v == 0 || bayan_json_v_tag(v) != JTAG_STR) { return 0; }
+    var s = bayan_json_v_str(v);
+    var p = str_data(s);
+    var n = str_len(s);
+    if (_ry_utf8_valid(p, n) == 0) { return 0; }
+    store64(out_p, p);
+    store64(out_n, n);
+    return 1;
+}
+
+# A Rust char: a JSON string of exactly one Unicode scalar, its UTF-8 bytes (1–4) into *out_p / *out_n. 1, or 0.
+#must_use
+fn _ry_jr_char(v, out_p, out_n): i64 {
+    if (_ry_jr_str(v, out_p, out_n) == 0) { return 0; }
+    var p = load64(out_p);
+    var n = load64(out_n);
+    if (n < 1 || n > 4) { return 0; }
+    var c = load8(p);
+    var want = 1;
+    if (c >= 240) { want = 4; }
+    elif (c >= 224) { want = 3; }
+    elif (c >= 192) { want = 2; }
+    if (n != want) { return 0; }
+    return 1;
+}
+
+# A JSON array of exactly `n` f64s into the `n` words at `w` (a Rust `[f64; n]`). 1, or 0.
+#must_use
+fn _ry_jr_f64_array(v, w, n): i64 {
+    if (v == 0 || bayan_json_v_tag(v) != JTAG_ARR || bayan_json_v_arr_len(v) != n) { return 0; }
+    var k = 0;
+    while (k < n) {
+        if (_ry_jr_f64(bayan_json_v_arr_get(v, k), w + 8 * k) == 0) { return 0; }
+        k = k + 1;
+    }
+    return 1;
+}
+
+# A struct of `n` f64 fields, named by the NUL-separated list `names` (`"p_na\0p_k\0p_cl\0"`, Rust's declaration
+# order), read from node `v` by serde's rules into the `n` words at `w`. 1, or 0 when serde would refuse it.
+#must_use
+fn _ry_jr_f64_fields(v, w, n, names): i64 {
+    var form = _ry_jr_form(v, n);
+    if (form == 0) { return 0; }
+    var name = names;
+    var k = 0;
+    while (k < n) {
+        if (_ry_jr_f64(_ry_jr_at(v, form, k, name), w + 8 * k) == 0) { return 0; }
+        name = name + strlen(name) + 1;
+        k = k + 1;
+    }
+    return 1;
 }
 
 # --- protein_data.cyr ---

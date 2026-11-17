@@ -12,11 +12,28 @@ part 2a (steps 4–5, first part), part 2b (step 6), part 2c-1 (step 7 and the c
 part 2c-2 (the correctly rounded primitives), part 2c-3 (their dense MPFR sweep), part 3a (step 8's
 three-target baselines and `scripts/gates.sh`, step 9's probes 1–4, 8 and 12) and part 3b (probes 6, 7, 10 and 11,
 the profiles, and step 10's upstream drafts). M0 is complete. M1 part 1 (the foundation's error codes, guard layer
-and integrators), part 2 (logging, the failure events, the surface-parity and Rust-test gates) and part 3a (the
-JSON writers) follow.
+and integrators), part 2 (logging, the failure events, the surface-parity and Rust-test gates) and part 3 (the
+JSON writers and readers) follow: M1 is complete.
 
 ### Added
 
+- **src/json.cyr** (M1 part 3b) — the readers, on bayan's value tree on the caller's arena: `_ry_jr_parse` (with a
+  raw-control-byte scan: serde_json refuses one in any string, bayan doesn't), `_form` / `_at` (serde's object and
+  sequence forms; keys UTF-8-checked), `_f64` (±inf refused), `_opt_f64`, `_int` (a typed range, no floats), `_str` /
+  `_char` (UTF-8-checked), `_f64_array`, `_f64_fields` (an all-f64 struct by a NUL-separated name list); `_ry_utf8_valid`
+- **tests/golden/json.tsv** (M1 part 3b, +1,265 reader rows) — serde_json's decision on each document for f64, String,
+  char, u32, usize, i32, `Option<f64>`, `[f64; 5]` and an all-f64 struct (`MembranePermeability`): every number form
+  and malformed spelling, escapes and surrogates, raw control bytes and invalid UTF-8 (refused where read or in a
+  key, accepted in an unread string, as serde_json skips it), missing, repeated, null and mistyped fields, unknown
+  fields however deep, the sequence form, 1,000 seeded documents. The value is the correctly rounded one: serde_json
+  as rasayan builds it misreads 325 of them, and refuses `1.7976931348623158e308` (it rounds past f64::MAX). 1,246 rows
+  match; 19 are bayan's filed gaps (an integer `-0`, integers at or past 2⁶³, a repeated key, nesting past 128 or a
+  lone surrogate in an unread member), accepted under ADR 0004 only when bayan reports that reason. `validate.py`
+  re-derives all 1,265 with Python's json and serde's rules (54,466 independent checks)
+- **tests/json.tcyr** (M1 part 3b, 57 checks: + a nested struct through its node, a write-then-read round trip bit for
+  bit, one arena over 10,000 documents, each reader's edges) and the fuzz harness's JSON target (50,000 inputs: 1,520
+  read as a struct, 0 bad answers under `--poison --bounds`)
+- **benchmarks** (M1 part 3b) — reading a three-field document 1.9 µs, a ten-field one with 17-digit values 6.8 µs
 - **src/json.cyr** (M1 part 3a) — the serde_json writers every type's codec writes with: `_ry_jw_byte`, `_key`,
   `_f64` (fmtf's serde_json form, `null` for NaN and ±inf), `_str` (serde_json's escapes), `_char`, `_u64` (a usize
   as unsigned, past i64::MAX included), `_i64`, `_null`, `_opt_f64`, `_f64_array`, `_unit`. Each takes the builder's
@@ -268,6 +285,9 @@ JSON writers) follow.
 
 ### Changed
 
+- **cyrius.cyml** (M1 part 3b) — `bayan` in `[deps] stdlib` (already vendored and locked through bote's graph; the
+  lock is unchanged); the bundles' sidecars require it. Every compile now takes bayan and its unicode tables in:
+  `scripts/gates.sh` 156 → 249 s, most of it `probe_tables.py` (5 → 67 s; bayan's filed unicode-tables issue)
 - **cyrius.cyml** (M1 part 3a) — `src/json.cyr` in `[lib]`, `[lib.mcp]` and `[lib.ai]` after `src/logging.cyr`
 - **cyrius.cyml** (M1 part 2) — `src/logging.cyr` in `[lib]`, `[lib.mcp]` and `[lib.ai]` after `src/integrate.cyr`;
   the sidecars add `log` and `io`

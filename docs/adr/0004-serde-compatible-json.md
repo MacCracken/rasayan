@@ -68,3 +68,23 @@ puts underneath never grow the builder; a refused reserve returns -1 with nothin
 pinned by `tests/golden/json.tsv` against serde_json 1.0.154 itself (18,855 rows, byte-identical, 30 exact ties
 included). fmtf's exact printer costs about 3.7 µs per f64; it is impetus's code, so its speed is recorded, not
 changed here.
+
+**As built (M1 part 3b).** The readers (`src/json.cyr`) apply serde's derive rules on bayan's tree, and the golden
+rows are serde_json's own decisions (`tests/golden/json.tsv`, 1,265 reader rows), each with the correctly rounded value.
+Three of bayan's filed gaps are closed in the port: a raw control byte in any string refuses the document (a scan
+before the parse, as serde_json scans every string), a string read or a key is UTF-8-checked (an unread string is not,
+as serde_json skips it), and a number bayan reads as ±inf is refused (serde_json's "number out of range"). Mapped, each
+a filed bayan issue, accepted only when bayan reports that reason (the harness reads `bayan_json_last_error()`):
+
+| serde_json | the port (bayan 1.11.1) | bayan issue |
+|---|---|---|
+| an integer `-0` is −0.0 for an f64, a refusal for an integer | +0.0, or the integer 0 | json-integer-negative-zero-loses-its-sign |
+| integers at or past 2⁶³ (to an f64, or a usize up to u64::MAX) | the document is refused | json-integer-above-i64-max-refuses-the-document |
+| a repeated key in a member serde ignores | refused | json-duplicate-key-has-no-opt-in-for-ignored-members |
+| a lone surrogate escape in a string serde ignores | refused | the same issue's family |
+| nesting past 128 levels in a member serde ignores | refused | json-nesting-cap-of-128-refuses-what-serde-skips |
+
+None of these appears in a document serde_json writes (it writes −0.0 as `-0.0`, a large f64 in exponent form, no
+duplicate keys); 19 of the 1,265 reader rows hit them. serde_json as rasayan 1.2.0 builds it misreads 325 of the
+rows' numbers by an ulp or two, and refuses `1.7976931348623158e308`, which rounds to f64::MAX; the port reads all of
+them correctly rounded, which is what the rows record.

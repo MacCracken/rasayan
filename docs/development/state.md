@@ -31,7 +31,8 @@ milestone (M9) sets 2.0.0.
 |---|---|
 | M1 part 1 — error, guard, integrate | ✅ `src/error.cyr` (`RY_ERR_*`, `ry_error_name` / `_message`), `src/guard.cyr` (`_ry_guard_*`: validators returning a value-form Result, each refusal's DEBUG event Rust's Display text; the sanitizers), `src/integrate.cyr` (`_ry_integrate_*`, Rust's operation order); `_ry_clamp` / `_ry_f64_to_u32` into `src/mathx.cyr`. Golden `guard.tsv` 5,575 (A), `integrate.tsv` 5,998 (B 2,963, C 3,035), `integrate.cr.tsv` 39 (glibc's expm1 misrounds; ADR 3), through verbatim copies of the crate-private Rust checked on every run; all exact or accepted on the parity harness; `validate.py` 34,246 independent checks; `tests/guard.tcyr` 86, `tests/integrate.tcyr` 16 (Rust's 9 unit tests ported); benches (`port-parity.md` §4a); `scripts/gates.sh` green (147 s; the same parity summary on ELF, `--bounds`, PE and aarch64); coverage 2 of 2 public fns executed |
 | M1 part 2 — logging, failure events, parity gates | ✅ `src/logging.cyr`: `ry_log_init` / `_with_level`, `ry_log_parse`, `ry_log_level_of` (`RASAYAN_LOG` as Rust's `EnvFilter` reads ADR 0002 row 8's grammar; refusals warn and take the default) and the event helpers (inlined gates, 4 ns filtered; a stack-buffer builder of Rust's fmt-layer text); `_ry_fail_f` / `_ry_fail_text` in `src/error.cyr` (every variant's Display text at its failure site). Golden `logging.tsv` 196 rows from Rust's own filter (verbatim statement, real environment): 135 identical, 61 accepted (row 8); `validate.py` 34,346. `tests/logging.tcyr` 87, `tests/guard.tcyr` 98 (+ Rust's 4 `test_error_display_*`); fuzz 50,000 inputs; `scripts/surface_parity.py` 0 missing; `scripts/rust_test_ledger.py`: 723 Rust tests, 13 ported, 0 due; `scripts/gates.sh` green (151 s, the same summary on ELF, `--bounds`, PE and aarch64); coverage 6 of 6 public fns |
-| M1 part 3a — the JSON writers | ✅ `src/json.cyr`'s writers (serde_json's forms; each reserves its worst case through the non-aborting grow and returns -1 when refused, so none can exit the process); `RY_ERR_DESERIALIZE` / `RY_ERR_OUT_OF_MEMORY` appended. Golden `json.tsv` 18,855 rows from serde_json 1.0.154 and Rust's Display (9,262 doubles incl. 30 exact ties found by an exact search): all byte-identical; `validate.py` 53,201. `tests/json.tcyr` 27 (the refused-allocation path). fmtf's exact printer: 3.7 µs per f64; `scripts/gates.sh` green (156 s, the same summary on ELF, `--bounds`, PE and aarch64). Next: part 3b, the readers on bayan |
+| M1 part 3a — the JSON writers | ✅ `src/json.cyr`'s writers (serde_json's forms; each reserves its worst case through the non-aborting grow and returns -1 when refused, so none can exit the process); `RY_ERR_DESERIALIZE` / `RY_ERR_OUT_OF_MEMORY` appended. Golden `json.tsv` 18,855 rows from serde_json 1.0.154 and Rust's Display (9,262 doubles incl. 30 exact ties found by an exact search): all byte-identical; `validate.py` 53,201. `tests/json.tcyr` 27 (the refused-allocation path). fmtf's exact printer: 3.7 µs per f64; `scripts/gates.sh` green (156 s, the same summary on ELF, `--bounds`, PE and aarch64) |
+| M1 part 3b — the JSON readers | ✅ `src/json.cyr`'s readers on bayan's tree (serde's derive rules; a raw-control-byte scan and UTF-8 checks where serde_json decodes; ±inf refused); `bayan` in `[deps] stdlib`. Golden +1,265 reader rows from serde_json's decisions, the correctly rounded value recorded (serde_json misreads 325): 1,246 match, 19 accepted under ADR 0004 (bayan's filed gaps, only when bayan reports that reason); `validate.py` 54,466; `tests/json.tcyr` 57; fuzz 1,520 struct reads; `scripts/gates.sh` green (249 s: bayan in every compile costs `probe_tables.py` 5 → 67 s, bayan's filed unicode-tables issue). **M1 is complete** |
 
 ## Golden corpus
 
@@ -50,9 +51,9 @@ milestone (M9) sets 2.0.0.
 | `tests/golden/integrate.tsv` | 5,998 (M1 part 1) | B 2,963 · C 3,035 |
 | `tests/golden/integrate.cr.tsv` | 39 corrections (ADR 0003: glibc's expm1; written by `mpfr_ref.py`) | — |
 | `tests/golden/logging.tsv` | 196 (M1 part 2: each `RASAYAN_LOG` form × 20 event targets) | A |
-| `tests/golden/json.tsv` | 18,855 (M1 part 3a: serde_json's text per scalar kind, Rust's Display of an f64) | A |
+| `tests/golden/json.tsv` | 20,120 (M1 part 3: serde_json's text per scalar kind, Rust's Display of an f64; serde_json's decision on each document per reader) | A |
 
-50,787 rows (20,163 at M0, 11,573 from M1 part 1, 196 from part 2, 18,855 from part 3a). Recorded with rustc 1.100.0 on glibc 2.44 x86_64 fma (rasayan 1.2.0). `--check`,
+52,052 rows (20,163 at M0, 11,573 from M1 part 1, 196 from part 2, 20,120 from part 3). Recorded with rustc 1.100.0 on glibc 2.44 x86_64 fma (rasayan 1.2.0). `--check`,
 `validate.py` (22,634 checks: part 2b's 11,540 and the 11,094 class-C rows against MPFR),
 `mpfr_ref.py --check` and `probe_tables.py --all-targets` (2,470 compiled values) are clean. Generated: `src/constants.cyr` (67 constants, 333 lines), `src/constants_private.cyr` (16,
 74 lines), `src/protein_data.cyr` (721 lines), `src/alignment_data.cyr` (129),
@@ -89,13 +90,14 @@ Raised by the M0 probes; each is decided when its milestone starts.
 
 `cyrius test` runs `tests/parity.tcyr`, warning-free (the same on `--bounds` and aarch64):
 
-`=== parity summary: 12 modules, 0 failing | rows: 50591 ok, 0 failed, 0 measured, 0 pending, 196 accepted (ADR 3: 135), 0 glibc-matching (failed) ===`
+`=== parity summary: 12 modules, 0 failing | rows: 51837 ok, 0 failed, 0 measured, 0 pending, 215 accepted (ADR 3: 135), 0 glibc-matching (failed) ===`
 
 - **ok:** the 108 `const` rows, the 1,229 table rows (from the generated data, index constants
   included), the 7,732 class A/B math rows (`src/mathx.cyr`'s helpers and the builtins), 10,998 class-C math rows at
   0 ulp on `_ry_cr_pow`, `_ry_cr_exp`, `_ry_cr_ln` and `_ry_cr_expm1`, the 5,575 guard rows and 5,959 integrate rows
   (the series branch and the early returns exact; the `exp_m1` branch at 0 ulp against the corrected oracle), and
-  135 logging rows, and the 18,855 json rows (byte for byte).
+  135 logging rows, the 18,855 json writer rows (byte for byte) and 1,246 reader rows.
+- **accepted (ADR 4):** 19 json reader rows where bayan refuses or misreads for a filed reason (ADR 0004).
 - **accepted (ADR 2):** 61 logging rows: `RASAYAN_LOG` forms the port refuses (the default applies, with a warning)
   where Rust reads a directive the port doesn't carry (ADR 0002 row 8; counted on one summary line).
 - **accepted (ADR 3):** the 96 class-C math rows glibc misrounds (`math.cr.tsv`: exp_m1 94, exp 1,
@@ -111,8 +113,8 @@ Raised by the M0 probes; each is decided when its milestone starts.
   golden bits), `tests/tables.tcyr` (77 checks: every generated file compiled together, `src/mathx_data.cyr`
   included, a sample of cells bit for bit), `tests/parity.tcyr` (the golden corpus, above), `tests/guard.tcyr`
   (98: Rust's guard tests and its 4 error-display integration tests, the error codes, each refusal's event text),
-  `tests/integrate.tcyr` (16: Rust's integrate tests), `tests/logging.tcyr` (87), `tests/json.tcyr` (27), the fuzz
-  harness (50,000
+  `tests/integrate.tcyr` (16: Rust's integrate tests), `tests/logging.tcyr` (87), `tests/json.tcyr` (57), the fuzz
+  harness (50,000 inputs through `RASAYAN_LOG` and the JSON readers;
   `RASAYAN_LOG` inputs);
   `cyrius test` warning-free, `--bounds` and `cyrius audit` pass
 - MPFR sweep: `scripts/oracle/cr_verify.py` checks the four primitives on 5,314,811 arguments per target
@@ -132,7 +134,8 @@ Raised by the M0 probes; each is decided when its milestone starts.
 branch and 70–75 ns on `expm1`; `conc` / `take` 9, `shift` 16, an accepted `positive` 18 ns (no Rust twin: crate-private
 and inlined in Rust). M1 part 2: a trace event 4 ns filtered out, 5.07 µs written (three f64 fields, ring buffer).
 M1 part 3a: an f64's serde_json text 3.7 µs, its Display text 3.8 µs, a ten-field document 31 µs (fmtf's exact
-bignum printer, vendored: recorded, not changed).
+bignum printer, vendored: recorded, not changed). M1 part 3b: reading a three-field document 1.9 µs, a ten-field one
+6.8 µs.
 The Rust twins arrive with each milestone.
 Probe measurements (`port-parity.md` §3, measured not gated): the implicit NADH solves 582 / 259 ns
 (`balanced_nad_ratio` / `end_of_step_nadh`; Rust 155 / 98 ns); the network's 264-byte probe copy 11 ns; a
@@ -158,8 +161,8 @@ Rust crate (crates.io): mastishk 1.1.0, sharira 1.1.0, kiran 1.0.0. No Cyrius co
 
 ## Next
 
-M1 part 3b: the JSON readers on bayan's value tree (ADR 0004): serde's field semantics, scalar reads against
-serde_json's accept/refuse decisions and the correctly rounded values; bayan joins `[deps] stdlib`.
+**M1 is complete.** M2 (kinetics and cell physiology): enzyme (+ the database), membrane, signal, metabolism, energy
+— their functions, validate()s, states and JSON codecs on M1's helpers (port plan §6).
 
 Parity bookkeeping: `scripts/surface_parity.py` (every Rust public item of a ported module has its Cyrius name) and
 `scripts/rust_test_ledger.py` (`docs/development/rust-test-ledger.md`: 723 Rust tests, 13 ported, 0 due and unported)

@@ -2,8 +2,9 @@
 #
 # `cyrius fuzz --poison --bounds` runs it (port plan §6: every reader of untrusted input), over 50,000 seeded inputs:
 # a quarter random bytes, the rest mutations of seeds (ushma's harness: xorshift64*, byte edits, insertions, deletions,
-# truncations, case flips). M1: RASAYAN_LOG, which comes from the environment. The sequence and JSON readers join with
-# their milestones.
+# truncations, case flips). M1: RASAYAN_LOG, which comes from the environment, and the JSON readers (part 3b: a
+# document parsed on an arena reset per input, then read as an all-f64 struct, a [f64; 5], a string and an integer).
+# The sequence readers and each type's codec join with their milestones.
 
 include "src/constants.cyr"
 include "src/constants_private.cyr"
@@ -13,11 +14,14 @@ include "src/fmtf.cyr"
 include "src/error.cyr"
 include "src/guard.cyr"
 include "src/logging.cyr"
+include "src/json.cyr"
 
 var _fz_state = 0x2545F4914F6CDD1D;
 var _fz_bad = 0;
 var _fz_read = 0;
 var _fz_cstr[2056];
+var _fz_arena = 0;
+var _fz_json_read = 0;
 
 # xorshift64*: the next pseudo-random word.
 fn fz_next(): i64 {
@@ -55,6 +59,38 @@ fn fuzz_main(data, len) {
     store8(&_fz_cstr + n, 0);
     var d = ry_log_level_of(0, 0, &_fz_cstr);
     if (d < 0 || d > RY_LOG_OFF) { _fz_bad = _fz_bad + 1; }
+    return 0;
+}
+
+# The JSON readers on one input: any outcome is fine, but an accepted struct or array holds only finite f64s, an
+# accepted string is valid UTF-8, an accepted u32 is in range.
+fn fuzz_json(data, len) {
+    reset_via(_fz_arena);
+    var v = _ry_jr_parse(_fz_arena, data, len);
+    if (v == 0) { return 0; }
+    var w[40];
+    if (_ry_jr_f64_fields(v, &w, 3, "p_na\0p_k\0p_cl\0") == 1) {
+        _fz_json_read = _fz_json_read + 1;
+        var k = 0;
+        while (k < 3) {
+            var x: f64 = load64(&w + 8 * k);
+            if (_ry_is_finite(x) == 0) { _fz_bad = _fz_bad + 1; }
+            k = k + 1;
+        }
+    }
+    if (_ry_jr_f64_array(v, &w, 5) == 1) {
+        var j = 0;
+        while (j < 5) {
+            var y: f64 = load64(&w + 8 * j);
+            if (_ry_is_finite(y) == 0) { _fz_bad = _fz_bad + 1; }
+            j = j + 1;
+        }
+    }
+    var sp[8];
+    var sn[8];
+    if (_ry_jr_str(v, &sp, &sn) == 1 && _ry_utf8_valid(load64(&sp), load64(&sn)) == 0) { _fz_bad = _fz_bad + 1; }
+    var u[8];
+    if (_ry_jr_int(v, 0, 4294967295, &u) == 1 && (load64(&u) < 0 || load64(&u) > 4294967295)) { _fz_bad = _fz_bad + 1; }
     return 0;
 }
 
@@ -97,7 +133,8 @@ fn main() {
     alloc_init();
     var cap = 2048;
     var buf = alloc(cap + 1);
-    var seeds = alloc(8 * 16);
+    _fz_arena = arena_allocator_growable(65536);
+    var seeds = alloc(8 * 24);
     store64(seeds, "trace");
     store64(seeds + 8, "DEBUG");
     store64(seeds + 16, "info,warn");
@@ -114,6 +151,14 @@ fn main() {
     store64(seeds + 104, " debug ");
     store64(seeds + 112, "5,4,3,2,1,0");
     store64(seeds + 120, "rasayan=OFF,rasayan=Trace");
+    store64(seeds + 128, "{\"p_na\":0.04,\"p_k\":1.0,\"p_cl\":0.45}");
+    store64(seeds + 136, "[0.04,1.0,0.45]");
+    store64(seeds + 144, "{\"p_cl\":1e400,\"x\":[1,{\"y\":null}],\"p_na\":-0,\"p_k\":2}");
+    store64(seeds + 152, "[1.5,-0.0,0.04,1e-7,100]");
+    store64(seeds + 160, "\"a\\u00e9\\ud83d\\ude00\\n\"");
+    store64(seeds + 168, "4294967295");
+    store64(seeds + 176, "{\"p_na\":96485.33212331001,\"p_k\":2.2250738585072011e-308,\"p_cl\":5e-324}");
+    store64(seeds + 184, "[[[[[[1]]]]],{\"a\":\"\\u0000\"},true,false,null]");
     var i = 0;
     while (i < 50000) {
         var n = 0;
@@ -122,9 +167,10 @@ fn main() {
             var k = 0;
             while (k < n) { store8(buf + k, fz_below(256)); k = k + 1; }
         } else {
-            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(16)));
+            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(24)));
         }
         fuzz_main(buf, n);
+        fuzz_json(buf, n);
         i = i + 1;
     }
     if (_fz_bad != 0) {
@@ -134,6 +180,8 @@ fn main() {
     }
     print("fuzz: ok (50000 inputs; RASAYAN_LOG values read: ", 50);
     fmt_int(_fz_read);
+    print(", JSON documents read as a struct: ", 35);
+    fmt_int(_fz_json_read);
     println(")");
     return 0;
 }
