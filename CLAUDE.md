@@ -160,6 +160,10 @@ one is a bug:
 - **f64 hygiene.**
   - Bind every builtin/call result to a `: f64` local before using it in an operator or comparison.
   - The left operand decides the operator's type: write `0.0 - x` / `x * 2.0`, never `0 - x` / `2 * x`.
+  - Wherever Rust writes a negation `-x`, write unary minus on a typed `f64` (or `f64_neg(x)`), never
+    `0.0 - x`: for x = +0 Rust's `-x` is −0 but `0.0 - x` is +0, and a zero's sign shows in class A
+    rows and in JSON (`guard::shift` returns −0 from an empty product pool; port-parity §0.7). Write
+    `0.0 - x` only where Rust itself subtracts from zero.
   - Pass f64 literals as `3.0`, never `3`, because an integer keeps its bits in an f64 slot.
   - Never put hex in a `const`: it is an integer.
   - No exponent notation in literals; generated files write decimals positionally.
