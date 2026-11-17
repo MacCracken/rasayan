@@ -24,8 +24,8 @@
 # What is wired up at M1 part 1:
 # - `const` rows of every module: src/constants.cyr, src/constants_private.cyr and the scalar consts of the
 #   generated data files, by Rust name;
-# - the table rows (protein, alignment, enzyme, membrane): answered from the generated src/*_data.cyr columns. A row
-#   of a lookup over a table (`protein::lookup`, `enzyme::lookup_enzyme`, `alignment::substitution_score`) applies
+# - the table rows (protein, alignment, enzyme, membrane, signal): answered from the generated src/*_data.cyr columns. A
+#   row of a lookup over a table (`protein::lookup`, `enzyme::lookup_enzyme`, `alignment::substitution_score`) applies
 #   the Rust function's rule to the generated data here, so every cell is compared through the oracle's API; at M2
 #   and M3 those rows move to the ported `ry_*` functions;
 # - `math` rows: classes A and B on the builtins (abs, ceil, sqrt), src/mathx.cyr's Rust-semantics helpers and
@@ -53,6 +53,7 @@ include "src/protein_data.cyr"
 include "src/alignment_data.cyr"
 include "src/enzyme_data.cyr"
 include "src/membrane_data.cyr"
+include "src/signal_data.cyr"
 include "src/ai_data.cyr"
 include "src/fmtf.cyr"
 include "src/error.cyr"
@@ -62,6 +63,7 @@ include "src/logging.cyr"
 include "src/json.cyr"
 include "src/enzyme.cyr"
 include "src/membrane.cyr"
+include "src/signal.cyr"
 
 alloc_init();
 
@@ -1020,6 +1022,130 @@ fn _par_membrane_json(fp, fl): i64 {
     return 0;
 }
 
+# ── signal ──────────────────────────────────────────────────────────────────────────
+# src/signal_data.cyr and src/signal.cyr (M2 part 3). A SecondMessenger row takes the state's three fields (camp,
+# calcium, ip3), then the method's argument, and gives the state after the call. A trajectory row (class T) is a
+# script: the state, then `i:1 f:x` activate_gs, `i:2 f:x` activate_gi, `i:3 f:x` activate_gq, `i:4 f:dt i:k` k ticks.
+
+# Replays a trajectory script from input 3 on *sm: 1, or -1 for a malformed script.
+fn _par_sm_script(sm: *RySecondMessenger): i64 {
+    var k = 3;
+    while (k < _par_in_n) {
+        if (load64(_par_in_k + k * 8) != 105 || _par_is_f(k + 1) == 0) { return 0 - 1; }
+        var op = _par_in(k);
+        if (op == 4) {
+            if (k + 2 >= _par_in_n || load64(_par_in_k + (k + 2) * 8) != 105) { return 0 - 1; }
+            var dt: f64 = _par_f(k + 1);
+            var n = _par_in(k + 2);
+            var j = 0;
+            while (j < n) {
+                ry_second_messenger_tick(sm, dt);
+                j = j + 1;
+            }
+            k = k + 3;
+        } else {
+            var x: f64 = _par_f(k + 1);
+            if (op == 1) {
+                ry_second_messenger_activate_gs(sm, x);
+            } elif (op == 2) {
+                ry_second_messenger_activate_gi(sm, x);
+            } elif (op == 3) {
+                ry_second_messenger_activate_gq(sm, x);
+            } else {
+                return 0 - 1;
+            }
+            k = k + 2;
+        }
+    }
+    return 1;
+}
+
+# The signal rows: the default, the two functions, SecondMessenger's methods and trajectories, the serde rows.
+fn _par_signal(fp, fl): i64 {
+    var sm: RySecondMessenger;
+    if (_par_eq(fp, fl, "signal::SecondMessenger::default") == 1) {
+        if (_par_in_n != 0) { return 0 - 1; }
+        ry_second_messenger_default(&sm);
+        _par_got_fields(&sm, 3);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "signal::dose_response") == 1 && _par_all_f(4) == 1) {
+        var d: f64 = ry_dose_response(_par_f(0), _par_f(1), _par_f(2), _par_f(3));
+        _par_got_f(d);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "signal::receptor_occupancy") == 1 && _par_all_f(2) == 1) {
+        var o: f64 = ry_receptor_occupancy(_par_f(0), _par_f(1));
+        _par_got_f(o);
+        return 1;
+    }
+    if (_par_in_n < 3 || _par_is_f(0) == 0 || _par_is_f(1) == 0 || _par_is_f(2) == 0) {
+        return _par_signal_json(fp, fl);
+    }
+    _par_fields_in(0, &sm, 3);
+    if (_par_eq(fp, fl, "signal::SecondMessenger::trajectory") == 1) {
+        if (_par_sm_script(&sm) != 1) { return 0 - 1; }
+        _par_got_fields(&sm, 3);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "signal::SecondMessenger::validate") == 1 && _par_in_n == 3) {
+        var t1, v1 = ry_second_messenger_validate(&sm);
+        _par_got_outcome(t1, v1);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "signal::SecondMessenger::intensity") == 1 && _par_in_n == 3) {
+        var it: f64 = ry_second_messenger_intensity(&sm);
+        _par_got_f(it);
+        return 1;
+    }
+    if (_par_in_n != 4 || _par_is_f(3) == 0) { return _par_signal_json(fp, fl); }
+    var x: f64 = _par_f(3);
+    if (_par_eq(fp, fl, "signal::SecondMessenger::activate_gs") == 1) {
+        ry_second_messenger_activate_gs(&sm, x);
+    } elif (_par_eq(fp, fl, "signal::SecondMessenger::activate_gi") == 1) {
+        ry_second_messenger_activate_gi(&sm, x);
+    } elif (_par_eq(fp, fl, "signal::SecondMessenger::activate_gq") == 1) {
+        ry_second_messenger_activate_gq(&sm, x);
+    } elif (_par_eq(fp, fl, "signal::SecondMessenger::tick") == 1) {
+        ry_second_messenger_tick(&sm, x);
+    } else {
+        return _par_signal_json(fp, fl);
+    }
+    _par_got_fields(&sm, 3);
+    return 1;
+}
+
+# The serde rows of SecondMessenger.
+fn _par_signal_json(fp, fl): i64 {
+    var sm: RySecondMessenger;
+    if (_par_eq(fp, fl, "serde_json::to_string<SecondMessenger>") == 1 && _par_all_f(3) == 1) {
+        if (_par_jsb == 0) { _par_jsb = str_builder_new(); }
+        var sb = _par_jsb;
+        store64(sb + 8, 0);
+        _par_fields_in(0, &sm, 3);
+        var t1, v1 = ry_second_messenger_to_json(sb, &sm);
+        if (is_err_result(t1) == 1) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::from_slice<SecondMessenger>") == 1) {
+        var lw[8];
+        var doc = _par_in_bytes(0, &lw);
+        if (doc == 0) { return 0 - 1; }
+        if (_par_jarena == 0) { _par_jarena = arena_allocator_growable(65536); }
+        _par_json_gap = _par_has_neg_zero_int(doc, load64(&lw));
+        reset_via(_par_jarena);
+        var t2, v2 = ry_second_messenger_from_json_a(_par_jarena, doc, load64(&lw), &sm);
+        if (is_err_result(t2) == 1) {
+            _par_got_err(v2);
+            return 1;
+        }
+        _par_got_fields(&sm, 3);
+        return 1;
+    }
+    return 0;
+}
+
 # ── guard ───────────────────────────────────────────────────────────────────────────
 # src/guard.cyr (M1). A validator's row has no output for Ok(()) and the error's Rust variant for Err (ADR 0002 row 1:
 # the code is compared, the payload is in the DEBUG event).
@@ -1389,6 +1515,7 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
     if (_par_eq(mp, ml, "alignment") == 1) { return _par_alignment(fp, fl); }
     if (_par_eq(mp, ml, "enzyme") == 1) { return _par_enzyme(fp, fl); }
     if (_par_eq(mp, ml, "membrane") == 1) { return _par_membrane(fp, fl); }
+    if (_par_eq(mp, ml, "signal") == 1) { return _par_signal(fp, fl); }
     if (_par_eq(mp, ml, "guard") == 1) { return _par_guard(fp, fl); }
     if (_par_eq(mp, ml, "integrate") == 1) { return _par_integrate(fp, fl); }
     if (_par_eq(mp, ml, "logging") == 1) { return _par_logging(fp, fl); }
@@ -1497,6 +1624,8 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "membrane::nernst") == 1) { return 0; }
     if (_par_eq(fp, fl, "membrane::goldman") == 1) { return 0; }
     if (_par_eq(fp, fl, "membrane::IonicState::resting_potential") == 1) { return 0; }
+    if (_par_eq(fp, fl, "signal::dose_response") == 1) { return 0; }
+    if (_par_eq(fp, fl, "signal::SecondMessenger::tick") == 1) { return 0; }
     return 0 - 1;
 }
 

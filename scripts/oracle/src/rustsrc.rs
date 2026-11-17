@@ -1317,6 +1317,40 @@ pub fn match_arms(src: &Source, func: &str) -> Result<(String, Vec<Arm>), String
     Ok((scrutinee, arms))
 }
 
+/// The `Self { … }` literal that `impl Default for <ty>`'s `fn default` returns, evaluated: a
+/// `Default` whose body is that literal alone (membrane's `IonicState`, signal's
+/// `SecondMessenger`, …). The return type `-> Self` is followed by the body's own `{`, so the
+/// literal is the first `Self {` inside the body.
+pub fn default_literal(src: &Source, ty: &str) -> Result<Val, String> {
+    let m = &src.module;
+    let t = &src.toks;
+    let at = (0..t.len().saturating_sub(3))
+        .find(|&k| {
+            t[k].is("impl") && t[k + 1].is("Default") && t[k + 2].is("for") && t[k + 3].is(ty)
+        })
+        .ok_or_else(|| format!("{m}.rs: no `impl Default for {ty}`"))?;
+    let open = (at..t.len())
+        .find(|&k| t[k].is("{"))
+        .ok_or_else(|| format!("{m}.rs: `impl Default for {ty}` has no body"))?;
+    let end = closing(t, open)?;
+    let fn_at = (open..end)
+        .find(|&k| t[k].is("fn") && t.get(k + 1).is_some_and(|n| n.is("default")))
+        .ok_or_else(|| format!("{m}.rs: `impl Default for {ty}` has no `fn default`"))?;
+    let body = (fn_at..end)
+        .find(|&k| t[k].is("{"))
+        .ok_or_else(|| format!("{m}.rs: `{ty}::default` has no body"))?;
+    let lit = (body + 1..end)
+        .find(|&k| t[k].is("Self") && t.get(k + 1).is_some_and(|n| n.is("{")))
+        .ok_or_else(|| format!("{m}.rs: `impl Default for {ty}` builds no `Self {{ … }}`"))?;
+    let close = closing(t, lit + 1)?;
+    if (close + 1..end).any(|k| !t[k].is("}")) {
+        return Err(format!(
+            "{m}.rs: `impl Default for {ty}` does more than return its literal"
+        ));
+    }
+    Eval::new(src)?.eval_range(lit, close, &BTreeMap::new(), 0)
+}
+
 /// The variant names of `pub enum <name> { … }`, in declaration order (unit variants only).
 pub fn enum_variants(src: &Source, name: &str) -> Result<Vec<String>, String> {
     let t = &src.toks;

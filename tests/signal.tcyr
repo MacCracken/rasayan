@@ -1,0 +1,422 @@
+# rasayan — src/signal.cyr: Rust 1.2.0's signal tests, ported
+# Stdlib auto-included via cyrius.cyml
+#
+# The 21 unit tests of `signal.rs` and the 3 integration tests (tests/integration.rs) that call only signal, as they
+# are written; tests/golden/signal.tsv checks every function, single step and trajectory besides. Literals Cyrius
+# can't write positionally (1e200, 1e-200, 1e300) are bit patterns.
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+include "src/integrate.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
+include "src/enzyme_data.cyr"
+include "src/enzyme.cyr"
+include "src/signal_data.cyr"
+include "src/signal.cyr"
+
+# 1 when |a − b| < tol.
+fn near(a: f64, b: f64, tol: f64) {
+    var d: f64 = f64_abs(a - b);
+    return d < tol;
+}
+
+# The f64 with bit pattern `b`.
+fn fb(b): f64 {
+    var x: f64 = b;
+    return x;
+}
+
+# Rust's hardening `BAD` values: NaN (k 0), +inf, -inf, -1.
+fn bad(k): f64 {
+    if (k == 0) { return _ry_nan(); }
+    var inf: f64 = _RY_INF;
+    if (k == 1) { return inf; }
+    if (k == 2) { return -inf; }
+    return -1.0;
+}
+
+# A SecondMessenger with the given levels.
+fn sm_set(p: *RySecondMessenger, camp: f64, calcium: f64, ip3: f64) {
+    p.camp = camp;
+    p.calcium = calcium;
+    p.ip3 = ip3;
+    return 0;
+}
+
+# 1 when every level is in [0, 1] (Rust's `in_unit`).
+fn in_unit(p: *RySecondMessenger) {
+    var w = p;
+    var k = 0;
+    while (k < 3) {
+        var x: f64 = load64(w + 8 * k);
+        if (x != x || x < 0.0 || x > 1.0) { return 0; }
+        k = k + 1;
+    }
+    return 1;
+}
+
+# 1 when the two states are equal field by field (Rust's derived PartialEq: NaN never equal).
+fn sm_eq(a: *RySecondMessenger, b: *RySecondMessenger) {
+    var a1: f64 = a.camp;
+    var a2: f64 = a.calcium;
+    var a3: f64 = a.ip3;
+    var b1: f64 = b.camp;
+    var b2: f64 = b.calcium;
+    var b3: f64 = b.ip3;
+    return a1 == b1 && a2 == b2 && a3 == b3;
+}
+
+# 1 when the state validates.
+fn sm_ok(p: *RySecondMessenger) {
+    var t, v = ry_second_messenger_validate(p);
+    return is_ok(t);
+}
+
+# ── the captured events ──
+var _ev_buf[1024];
+var _ev_len = 0;
+
+# sakshi's subscriber: keeps the last event's message.
+fn _ev_hook(ts, level, category, msg, msg_len, extra) {
+    var n = msg_len;
+    if (n > 1024) { n = 1024; }
+    memcpy(&_ev_buf, msg, n);
+    _ev_len = msg_len;
+    return 0;
+}
+
+# 1 if the last captured event is the C string `want`.
+fn _ev_is(want) {
+    var n = strlen(want);
+    if (_ev_len != n) { return 0; }
+    return memeq(&_ev_buf, want, n);
+}
+
+# rust src/signal.rs: test_dose_response_at_ec50, test_receptor_occupancy_at_kd, test_dose_response_zero_ligand
+# rust src/signal.rs: test_receptor_occupancy_zero_ligand
+# rust tests/integration.rs: test_dose_response_at_ec50, test_dose_response_steep_hill
+fn binding() {
+    test_group("signal: dose-response and occupancy");
+    var r: f64 = ry_dose_response(1.0, 1.0, 1.0, 1.0);
+    assert(near(r, 0.5, 0.01), "at EC50: Emax/2");
+    var occ: f64 = ry_receptor_occupancy(1.0, 1.0);
+    assert(near(occ, 0.5, 0.01), "at Kd: half bound");
+    var eps: f64 = fb(0x3CB0000000000000);
+    var z: f64 = ry_dose_response(0.0, 1.0, 1.0, 1.0);
+    var az: f64 = f64_abs(z);
+    assert(az < eps, "no ligand: no response");
+    z = ry_receptor_occupancy(0.0, 1.0);
+    az = f64_abs(z);
+    assert(az < eps, "no ligand: unoccupied");
+    var low: f64 = ry_dose_response(0.5, 1.0, 1.0, 1.0);
+    var high: f64 = ry_dose_response(0.5, 1.0, 1.0, 4.0);
+    assert(high < low, "a steeper Hill curve responds less below EC50");
+    return 0;
+}
+
+# rust src/signal.rs: test_dose_response_extremes, test_receptor_occupancy_guarded
+fn binding_hardening() {
+    test_group("signal: guarded binding");
+    var huge: f64 = fb(0x6974e718d7d7625a);
+    var tiny: f64 = fb(0x16687e92154ef7ac);
+    var r: f64 = ry_dose_response(huge, 2.0, 1.0, 2.0);
+    assert(near(r, 2.0, 0.000000000001), "a huge ligand: Emax, not inf/inf");
+    r = ry_dose_response(tiny, 2.0, tiny, 2.0);
+    assert(near(r, 1.0, 0.000000000001), "a tiny ligand at a tiny EC50: Emax/2, not 0/0");
+    var k = 0;
+    while (k < 4) {
+        var b: f64 = ry_dose_response(bad(k), 1.0, 1.0, 1.5);
+        assert(b == 0.0, "a bad ligand: 0");
+        var o: f64 = ry_receptor_occupancy(bad(k), 1.0);
+        assert(o == 0.0, "a bad ligand: unoccupied");
+        k = k + 1;
+    }
+    r = ry_dose_response(1.0, 1.0, 0.0, 2.0);
+    assert(r == 1.0, "EC50 0: Emax");
+    r = ry_dose_response(1.0, 1.0, -1.0, 2.0);
+    assert(r == 0.0, "a negative EC50: 0");
+    var nan: f64 = _ry_nan();
+    r = ry_dose_response(1.0, 1.0, 1.0, nan);
+    assert(r == 0.0, "a NaN Hill coefficient: 0");
+    var a: f64 = ry_dose_response(0.7, 3.0, 1.3, 2.8);
+    var h: f64 = ry_hill_equation(0.7, 3.0, 1.3, 2.8);
+    assert(a == h, "the enzyme Hill equation's value");
+    var o3: f64 = ry_receptor_occupancy(3.0, 1.0);
+    assert(near(o3, 0.75, 0.000000000001), "3 at Kd 1: 0.75");
+    var big: f64 = fb(0x7e37e43c8800759c);
+    var ob: f64 = ry_receptor_occupancy(big, big);
+    assert(near(ob, 0.5, 0.000000000001), "1e300 at Kd 1e300: 0.5");
+    var o0: f64 = ry_receptor_occupancy(1.0, 0.0);
+    assert(o0 == 1.0, "Kd 0: fully bound");
+    var inf: f64 = _RY_INF;
+    var m1: f64 = -1.0;
+    var kd1: f64 = ry_receptor_occupancy(1.0, m1);
+    var kd2: f64 = ry_receptor_occupancy(1.0, nan);
+    var kd3: f64 = ry_receptor_occupancy(1.0, inf);
+    assert(kd1 == 0.0 && kd2 == 0.0 && kd3 == 0.0, "a negative or non-finite Kd: 0");
+    var neg: f64 = ry_receptor_occupancy(2.0, m1);
+    assert(neg <= 1.0, "a negative Kd never gives more than 1");
+    return 0;
+}
+
+# rust src/signal.rs: test_gs_pathway, test_gi_pathway, test_gi_does_not_go_below_floor, test_gq_pathway
+# rust src/signal.rs: test_messenger_tick_decay
+fn pathways() {
+    test_group("signal: G-protein pathways and decay");
+    var sm: RySecondMessenger;
+    ry_second_messenger_default(&sm);
+    ry_second_messenger_activate_gs(&sm, 1.0);
+    var camp: f64 = sm.camp;
+    assert(camp > 0.3, "Gs raises cAMP");
+    ry_second_messenger_activate_gi(&sm, 1.0);
+    var after: f64 = sm.camp;
+    assert(after < camp, "Gi lowers it");
+    ry_second_messenger_default(&sm);
+    ry_second_messenger_activate_gi(&sm, 10.0);
+    camp = sm.camp;
+    assert(camp >= RY_SIGNAL_CAMP_FLOOR, "massive Gi stops at the floor");
+    ry_second_messenger_default(&sm);
+    ry_second_messenger_activate_gq(&sm, 1.0);
+    var ip3: f64 = sm.ip3;
+    var ca: f64 = sm.calcium;
+    assert(ip3 > 0.2 && ca > 0.1, "Gq raises IP3 and Ca2+");
+    ry_second_messenger_default(&sm);
+    ry_second_messenger_activate_gs(&sm, 1.0);
+    camp = sm.camp;
+    ry_second_messenger_tick(&sm, 1.0);
+    after = sm.camp;
+    assert(after < camp, "cAMP decays over a tick");
+    return 0;
+}
+
+# rust src/signal.rs: test_activations_sanitize_intensity, test_activations_clamp_out_of_range_state
+# rust src/signal.rs: test_gq_calcium_tracks_ip3_increment
+fn activation_hardening() {
+    test_group("signal: guarded activations");
+    var sm: RySecondMessenger;
+    var d: RySecondMessenger;
+    ry_second_messenger_default(&d);
+    var k = 0;
+    while (k < 4) {
+        ry_second_messenger_default(&sm);
+        ry_second_messenger_activate_gs(&sm, bad(k));
+        ry_second_messenger_activate_gi(&sm, bad(k));
+        ry_second_messenger_activate_gq(&sm, bad(k));
+        assert(sm_eq(&sm, &d) == 1, "a bad intensity changes nothing");
+        k = k + 1;
+    }
+    var nan: f64 = _ry_nan();
+    var mh: f64 = -0.5;
+    sm_set(&sm, 1.5, mh, nan);
+    ry_second_messenger_activate_gs(&sm, 0.1);
+    ry_second_messenger_activate_gq(&sm, 0.1);
+    assert(in_unit(&sm) == 1, "an out-of-range state is clamped into [0, 1]");
+    var m1: f64 = -1.0;
+    sm_set(&sm, m1, 0.05, 0.05);
+    ry_second_messenger_activate_gs(&sm, 0.0);
+    var camp: f64 = sm.camp;
+    assert(camp == 0.0, "a negative cAMP clamps to 0");
+    sm_set(&sm, 0.01, 0.05, 0.05);
+    ry_second_messenger_activate_gi(&sm, 0.5);
+    camp = sm.camp;
+    var eps: f64 = fb(0x3CB0000000000000);
+    assert(near(camp, 0.01, eps), "Gi never raises cAMP, even below the floor");
+    ry_second_messenger_default(&sm);
+    var ca0: f64 = sm.calcium;
+    ry_second_messenger_activate_gq(&sm, 0.0);
+    var ca: f64 = sm.calcium;
+    assert(ca == ca0, "zero intensity does not raise Ca2+");
+    ry_second_messenger_activate_gq(&sm, 1.0);
+    ca = sm.calcium;
+    var want: f64 = ca0 + 0.3 * RY_SIGNAL_IP3_CA_COUPLING;
+    assert(near(ca, want, 0.000000000001), "dIP3 = 0.3 gives dCa = 0.15");
+    ry_second_messenger_default(&sm);
+    sm.ip3 = 1.0;
+    ca0 = sm.calcium;
+    ry_second_messenger_activate_gq(&sm, 1.0);
+    ca = sm.calcium;
+    assert(ca == ca0, "saturated IP3: no more Ca2+");
+    return 0;
+}
+
+# rust src/signal.rs: test_tick_bad_dt_is_noop, test_tick_exponential_relaxation, test_tick_sanitizes_nan_state
+fn ticks() {
+    test_group("signal: exact relaxation");
+    var sm: RySecondMessenger;
+    var before: RySecondMessenger;
+    var k = 0;
+    while (k < 5) {
+        var dt: f64 = 0.0;
+        if (k == 1) { dt = -1.0; }
+        if (k == 2) { dt = bad(0); }
+        if (k == 3) { dt = bad(1); }
+        if (k == 4) { dt = bad(2); }
+        ry_second_messenger_default(&sm);
+        ry_second_messenger_activate_gs(&sm, 1.0);
+        memcpy(&before, &sm, 24);
+        ry_second_messenger_tick(&sm, dt);
+        assert(sm_eq(&sm, &before) == 1, "an invalid dt does nothing");
+        k = k + 1;
+    }
+    sm_set(&sm, 0.85, 0.62, 0.52);
+    ry_second_messenger_tick(&sm, 1.0);
+    var tol: f64 = 0.000000000001;
+    var k1: f64 = RY_SIGNAL_CAMP_DECAY_RATE;
+    var k2: f64 = RY_SIGNAL_IP3_DECAY_RATE;
+    var k3: f64 = RY_SIGNAL_CA_DECAY_RATE;
+    var e1: f64 = _ry_cr_exp(-k1);
+    var e2: f64 = _ry_cr_exp(-k2);
+    var e3: f64 = _ry_cr_exp(-k3);
+    var camp: f64 = sm.camp;
+    var ip3: f64 = sm.ip3;
+    var ca: f64 = sm.calcium;
+    var wc: f64 = RY_SIGNAL_CAMP_FLOOR + 0.8 * e1;
+    var wi: f64 = RY_SIGNAL_IP3_FLOOR + 0.5 * e2;
+    var wa: f64 = RY_SIGNAL_CA_FLOOR + 0.6 * e3;
+    assert(near(camp, wc, tol), "cAMP: floor + 0.8 e^-k");
+    assert(near(ip3, wi, tol), "IP3: floor + 0.5 e^-k");
+    assert(near(ca, wa, tol), "Ca2+: floor + 0.6 e^-k");
+    var a: RySecondMessenger;
+    var b: RySecondMessenger;
+    ry_second_messenger_default(&a);
+    a.camp = 0.9;
+    memcpy(&b, &a, 24);
+    ry_second_messenger_tick(&a, 2.0);
+    ry_second_messenger_tick(&b, 1.0);
+    ry_second_messenger_tick(&b, 1.0);
+    var ac: f64 = a.camp;
+    var bc: f64 = b.camp;
+    assert(near(ac, bc, tol), "two half steps equal one full step");
+    ry_second_messenger_tick(&sm, 1000000000.0);
+    camp = sm.camp;
+    ip3 = sm.ip3;
+    ca = sm.calcium;
+    assert(near(camp, RY_SIGNAL_CAMP_FLOOR, tol), "a huge dt lands on the cAMP floor");
+    assert(near(ip3, RY_SIGNAL_IP3_FLOOR, tol), "on the IP3 floor");
+    assert(near(ca, RY_SIGNAL_CA_FLOOR, tol), "on the Ca2+ floor");
+    ry_second_messenger_default(&sm);
+    sm.camp = _ry_nan();
+    ry_second_messenger_tick(&sm, 1.0);
+    assert(in_unit(&sm) == 1, "a NaN level is sanitized by a tick");
+    return 0;
+}
+
+# rust src/signal.rs: test_validate_valid, test_validate_out_of_range, test_validate_rejects_non_finite
+fn validation() {
+    test_group("signal: validate");
+    var sm: RySecondMessenger;
+    ry_second_messenger_default(&sm);
+    assert(sm_ok(&sm) == 1, "the default validates");
+    sm.camp = 1.5;
+    assert(sm_ok(&sm) == 0, "cAMP 1.5 is refused");
+    var k = 0;
+    while (k < 3) {
+        var v: f64 = bad(k);
+        var f = 0;
+        while (f < 3) {
+            ry_second_messenger_default(&sm);
+            if (f == 0) { sm.camp = v; }
+            if (f == 1) { sm.calcium = v; }
+            if (f == 2) { sm.ip3 = v; }
+            assert(sm_ok(&sm) == 0, "a non-finite level is refused");
+            f = f + 1;
+        }
+        k = k + 1;
+    }
+    ry_second_messenger_default(&sm);
+    sm.ip3 = -0.1;
+    assert(sm_ok(&sm) == 0, "IP3 -0.1 is refused");
+    # The codes and their events.
+    sakshi_set_emit_hook(&_ev_hook);
+    sakshi_set_level(SK_DEBUG);
+    ry_second_messenger_default(&sm);
+    sm.calcium = 1.5;
+    var t1, c1 = ry_second_messenger_validate(&sm);
+    assert_eq(c1, RY_ERR_INVALID_PARAMETER, "out of [0, 1]: InvalidParameter");
+    assert_eq(_ev_is("invalid parameter: calcium = 1.5 (must be in [0, 1])"), 1, "its Display text");
+    sm.calcium = _ry_nan();
+    var t2, c2 = ry_second_messenger_validate(&sm);
+    assert_eq(c2, RY_ERR_NON_FINITE, "NaN: NonFinite");
+    var nz: f64 = fb(0x8000000000000000);
+    sm.calcium = nz;
+    assert(sm_ok(&sm) == 1, "-0 is in [0, 1]");
+    sakshi_set_level(SK_INFO);
+    sakshi_clear_emit_hook();
+    return 0;
+}
+
+# Rust's four trace events, under the target `rasayan::signal`, their fields in Rust's order.
+fn events() {
+    test_group("signal: trace events");
+    sakshi_set_emit_hook(&_ev_hook);
+    sakshi_set_level(SK_TRACE);
+    var sm: RySecondMessenger;
+    ry_second_messenger_default(&sm);
+    ry_second_messenger_activate_gs(&sm, 1.0);
+    assert_eq(_ev_is("rasayan::signal: activate_gs intensity=1 camp_before=0.1"), 1, "activate_gs");
+    ry_second_messenger_activate_gi(&sm, 0.5);
+    assert_eq(_ev_is("rasayan::signal: activate_gi intensity=0.5 camp_before=0.4"), 1, "activate_gi");
+    ry_second_messenger_activate_gq(&sm, 2.0);
+    assert_eq(_ev_is("rasayan::signal: activate_gq intensity=2 ip3_before=0.05 ca_before=0.05"), 1, "activate_gq");
+    ry_second_messenger_tick(&sm, 0.25);
+    assert_eq(_ev_is("rasayan::signal: second_messenger_tick dt=0.25"), 1, "second_messenger_tick");
+    # An invalid dt returns before the event, as Rust's does.
+    _ev_len = 0;
+    ry_second_messenger_tick(&sm, 0.0);
+    assert_eq(_ev_len, 0, "no event for an invalid dt");
+    sakshi_set_level(SK_INFO);
+    ry_second_messenger_activate_gs(&sm, 1.0);
+    assert_eq(_ev_len, 0, "below TRACE, nothing");
+    sakshi_clear_emit_hook();
+    return 0;
+}
+
+# rust src/signal.rs: test_serde_roundtrip
+# rust tests/integration.rs: test_second_messenger_serde_roundtrip
+fn serde() {
+    test_group("signal: serde round trips");
+    var sb = str_builder_new();
+    var sm: RySecondMessenger;
+    ry_second_messenger_default(&sm);
+    var t1, v1 = ry_second_messenger_to_json(sb, &sm);
+    var want = "{\"camp\":0.1,\"calcium\":0.05,\"ip3\":0.05}";
+    assert_eq(load64(sb + 8), strlen(want), "serde_json's document: its length");
+    assert_eq(memeq(load64(sb), want, strlen(want)), 1, "serde_json's document");
+    var back: RySecondMessenger;
+    var t2, v2 = ry_second_messenger_from_json(load64(sb), load64(sb + 8), &back);
+    assert(is_ok(t2) == 1 && sm_eq(&back, &sm) == 1, "the default reads back");
+    ry_second_messenger_activate_gs(&sm, 0.7);
+    store64(sb + 8, 0);
+    var t3, v3 = ry_second_messenger_to_json(sb, &sm);
+    var t4, v4 = ry_second_messenger_from_json(load64(sb), load64(sb + 8), &back);
+    assert(is_ok(t4) == 1 && memeq(&back, &sm, 24) == 1, "after Gs 0.7, bit for bit");
+    var miss = "{\"camp\":0.1,\"calcium\":0.05}";
+    var t5, v5 = ry_second_messenger_from_json(miss, strlen(miss), &back);
+    assert_eq(v5, RY_ERR_DESERIALIZE, "a missing field is refused");
+    return 0;
+}
+
+# Runs the signal suite.
+fn main() {
+    alloc_init();
+    binding();
+    binding_hardening();
+    pathways();
+    activation_hardening();
+    ticks();
+    validation();
+    events();
+    serde();
+    return assert_summary();
+}
+
+var exit_code = main();
+# assert_summary() returns the failure count; a wait status is 8 bits, so any failure exits 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

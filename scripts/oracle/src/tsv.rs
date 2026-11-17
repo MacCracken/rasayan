@@ -24,6 +24,9 @@ pub enum Class {
     C,
     /// Iterative: relative ≤ 1e-12.
     D,
+    /// Trajectory: a script (a state, then operations) whose outputs are the full state after it,
+    /// bit-identical to the corrected oracle (M2 part 3: the first stateful type).
+    T,
 }
 
 impl Class {
@@ -33,6 +36,7 @@ impl Class {
             Self::B => 'B',
             Self::C => 'C',
             Self::D => 'D',
+            Self::T => 'T',
         }
     }
 }

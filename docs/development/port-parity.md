@@ -1036,3 +1036,38 @@ codecs use.
 **Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): nernst 9.6 → 80 ns, goldman 11.0 → 95, fick_flux 2.5 → 22. Each
 of the first two calls the correctly rounded `ln` once (53 ns of it, ADR 0003); the rest is the guards and the calls
 Rust inlines into its loop.
+
+### 5c. Part 3: signal (2026-11-17)
+
+**What is compared.** `tests/golden/signal.tsv` (new, 6,025 rows) through the oracle's public API:
+`SecondMessenger::default()`; `dose_response` and `receptor_occupancy` over each argument's 14 edge values and 300
+seeded calls, with the Rust tests' and benches' cases; single-step rows of `activate_gs`, `activate_gi`,
+`activate_gq` (the default state varied field by field over the edges, and 60 seeded states at 14 intensities each)
+and `tick` (the same states at 25 time steps: the invalid ones, both step-factor branches, each decay rate's series
+cutoff ±1 ulp, 1e9, `f64::MAX`); `validate` and `intensity`; the serde documents; and **class T**, introduced here:
+57 trajectory frames, each a script (the state, then activations and runs of ticks) whose outputs are the state
+after it. The scenarios: relaxation after a Gs pulse at six dt (0.001 … 5 s, and 0.3125, the cAMP rate's cutoff)
+over 1 to 10⁴ steps; periodic Gq every 50 steps for 20 cycles; Gs and Gi alternating; a NaN, out-of-range start;
+every dt in turn, invalid ones included. The class follows the branch: C where `dose_response` reaches `powf` or a
+relaxation `exp_m1` (1,442), B elsewhere (4,402), T for the scripts (57), A for `validate`, the default and the
+documents (124).
+
+| Check | Result |
+|---|---|
+| every row | identical on the first run (classes B and C at 0 ulp; the 57 trajectories bit for bit) |
+| corrected oracle | `mpfr_ref.py` runs every class-C and class-T row with glibc's primitives and reproduces all 1,499 (the trajectories' 10⁴-step runs included); with MPFR 4 `tick` rows change, where glibc's `expm1` misrounds (`signal.cr.tsv`). The port gives the corrected value on all 4 (ADR 3) |
+| `validate.py` | every row re-derived from its own transcription of `signal.rs` (pinned lines, the constants read from its source), class C and T with an independent MPFR, and each row's class checked against the branch it takes; 69,397 checks in all |
+| Rust tests | 24 ported (`tests/signal.tcyr`, 79 checks, the four events' text among them); the ledger at 148 of 723, 0 due and unported |
+| fuzz | every input also read as a SecondMessenger, written and read back bit for bit, then activated and stepped: every level stays in [0, 1] (3,212 documents accepted across the membrane and signal codecs) |
+| three targets (`scripts/gates.sh`, 238 s) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 66,754 ok, 220 accepted, 0 failed; coverage 67 of 67 public fns executed |
+
+**The Cyrius forms** (ADR 0002 rows 7, 10): SecondMessenger's methods take `*RySecondMessenger` and update it in
+place; its `Default` is generated like membrane's (`rustsrc::default_literal` now reads any `Default`'s literal).
+Rust's four `trace!` events are blocks behind `_ry_trace_on()` with Rust's fields in Rust's order; `tick`'s comes after
+its `valid_dt` return, as Rust's does. **Class T as built:** the frame's outputs are the full state, three f64s, so
+the comparison is stronger than a digest; a state too large to write out whole gets a digest per frame at its
+milestone.
+
+**Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): dose_response 20.3 → 169 ns (the correctly rounded `pow`,
+~140 ns of it), receptor_occupancy 1.6 → 14. Cyrius only (no Rust bench): a tick 105 ns on the series branch and
+256 ns with three `expm1`, activate_gq 42 ns.

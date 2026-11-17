@@ -303,8 +303,103 @@ MEMBRANE = {
     "membrane::IonicState::resting_potential": lambda a, P: _goldman(BODY_TEMP_K, a, DEFAULT_PERMEABILITY, P),
 }
 
-# The modules with class-C rows beyond math, and their models.
-MODELS = {"integrate": INTEGRATE, "enzyme": ENZYME, "membrane": MEMBRANE}
+# ── signal (M2 part 3) ──
+
+S_GAIN, S_COUPLING = 0.3, 0.5  # signal::ACTIVATION_GAIN, IP3_CA_COUPLING
+S_RATES = (0.1, 0.15, 0.2)  # CAMP_DECAY_RATE, IP3_DECAY_RATE, CA_DECAY_RATE
+S_FLOORS = (0.05, 0.02, 0.02)  # CAMP_FLOOR, IP3_FLOOR, CA_FLOOR
+
+
+def _unit(x):
+    """`guard::unit`: NaN → 0, else `clamp(0, 1)` (a zero keeps its sign)."""
+    if x != x:
+        return 0.0
+    if x < 0.0:
+        x = 0.0
+    if x > 1.0:
+        x = 1.0
+    return x
+
+
+def _rust_max(a, b):
+    """Rust 1.100's `a.max(b)`: a NaN operand is ignored; equal operands give b."""
+    if a != a:
+        return b
+    if b != b:
+        return a
+    return a if a > b else b
+
+
+def _factors_any(y, P):
+    """`integrate::step_factors(y)` on either branch: the Estrin series below the cutoff, exp_m1 above."""
+    if y < 0.0625:
+        c1, c2, c3, c4 = -1.0 / 2.0, 1.0 / 6.0, -1.0 / 24.0, 1.0 / 120.0
+        y2 = y * y
+        g = (1.0 + c1 * y) + y2 * ((c2 + c3 * y) + y2 * c4)
+        return 1.0 - y * g, g
+    return _factors(y, P)
+
+
+def _relax_any(x, target, rate, dt, P):
+    if rate <= 0.0:
+        return x
+    decay, _g = _factors_any(rate * dt, P)
+    return target + (x - target) * decay
+
+
+def _sm_tick(sm, dt, P):
+    """`SecondMessenger::tick` on [camp, calcium, ip3]: camp, then ip3, then calcium, as Rust writes them."""
+    if not (math.isfinite(dt) and dt > 0.0):
+        return sm
+    camp, ca, ip3 = sm
+    camp = _relax_any(_unit(camp), S_FLOORS[0], S_RATES[0], dt, P)
+    ip3 = _relax_any(_unit(ip3), S_FLOORS[1], S_RATES[1], dt, P)
+    ca = _relax_any(_unit(ca), S_FLOORS[2], S_RATES[2], dt, P)
+    return [camp, ca, ip3]
+
+
+def _sm_op(sm, op, x):
+    """`activate_gs` (1), `activate_gi` (2), `activate_gq` (3) on [camp, calcium, ip3]."""
+    camp, ca, ip3 = sm
+    i = _conc(x)
+    if op == 1:
+        camp = _unit(_unit(camp) + i * S_GAIN)
+    elif op == 2:
+        c = _unit(camp)
+        camp = _rust_max(c - i * S_GAIN, _rust_min(S_FLOORS[0], c))
+    elif op == 3:
+        before = _unit(ip3)
+        ip3 = _unit(before + i * S_GAIN)
+        ca = _unit(_unit(ca) + (ip3 - before) * S_COUPLING)
+    else:
+        raise ValueError(f"no activation {op}")
+    return [camp, ca, ip3]
+
+
+def _sm_trajectory(a, P):
+    """A class-T script: the state's three fields, then `1 x` / `2 x` / `3 x` activations and `4 dt k` ticks."""
+    sm, k = list(a[:3]), 3
+    while k < len(a):
+        op = a[k]
+        if op == 4:
+            dt, n = a[k + 1], a[k + 2]
+            for _ in range(n):
+                sm = _sm_tick(sm, dt, P)
+            k += 3
+        else:
+            sm = _sm_op(sm, op, a[k + 1])
+            k += 2
+    return sm
+
+
+SIGNAL = {
+    "signal::dose_response": lambda a, P: [a[1] * _hill_fraction(a[0], a[2], a[3], P)],
+    "signal::SecondMessenger::tick": lambda a, P: _sm_tick(a[:3], a[3], P),
+    "signal::SecondMessenger::trajectory": _sm_trajectory,
+}
+
+# The modules with class-C (and class-T) rows beyond math, and their models.
+MODELS = {"integrate": INTEGRATE, "enzyme": ENZYME, "membrane": MEMBRANE, "signal": SIGNAL}
 
 
 def _arg(tok):
@@ -315,9 +410,9 @@ def _arg(tok):
 
 
 def model_corrections(module, golden_text):
-    """The class-C rows of <module>.tsv whose outputs differ when every primitive is correctly rounded, as (fn,
-    inputs, outputs, note) in file order; and the number of class-C rows evaluated. Raises if the model with glibc's
-    primitives does not reproduce a golden row (the model is then not the oracle's sequence)."""
+    """The class-C and class-T rows of <module>.tsv whose outputs differ when every primitive is correctly rounded,
+    as (fn, inputs, outputs, note) in file order; and the number of those rows evaluated. Raises if the model with
+    glibc's primitives does not reproduce a golden row (the model is then not the oracle's sequence)."""
     models = MODELS[module]
     rows = []
     evaluated = 0
@@ -328,10 +423,10 @@ def model_corrections(module, golden_text):
         if len(cols) != 5:
             raise ValueError(f"{module}.tsv:{n}: {len(cols)} columns")
         fn, cls, ins, outs, _note = cols
-        if cls != "C":
+        if cls not in ("C", "T"):
             continue
         if fn not in models:
-            raise ValueError(f"{module}.tsv:{n}: class-C {fn} has no operation model here")
+            raise ValueError(f"{module}.tsv:{n}: class-{cls} {fn} has no operation model here")
         args = [_arg(t) for t in ins.split(" ")]
         want = outs.split(" ")
         glibc = [_ftok(v) for v in models[fn](args, Prims(False))]
@@ -414,7 +509,7 @@ def main(argv):
         per = {}
         for fn, *_ in rows:
             per[fn] = per.get(fn, 0) + 1
-        summary = f"{len(rows)} of {evaluated} class-C rows changed by a correctly rounded primitive " \
+        summary = f"{len(rows)} of {evaluated} class-C or -T rows changed by a correctly rounded primitive " \
                   f"{dict(sorted(per.items()))}"
         if argv[0] == "--write":
             path.write_text(text)

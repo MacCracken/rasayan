@@ -9,10 +9,9 @@
 //! declaration order. The function rows follow (`m_membrane.rs`).
 
 use crate::cyr::{doc_comment, doc_comment_after, f64_lit, header};
-use crate::rustsrc::{Eval, Source, Val, closing};
+use crate::rustsrc::{Eval, Source, default_literal};
 use crate::tsv::{Class, Module, f};
 use rasayan::membrane::{DEFAULT_PERMEABILITY, IonicState};
-use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 /// The items of membrane.rs this file generates.
@@ -40,42 +39,6 @@ fn ionic_fields() -> [(&'static str, f64); 6] {
     ]
 }
 
-/// The `Self { … }` literal of `impl Default for IonicState`'s `fn default`, evaluated.
-fn ionic_default_literal(src: &Source) -> Result<Val, String> {
-    let t = &src.toks;
-    let at = (0..t.len().saturating_sub(3))
-        .find(|&k| {
-            t[k].is("impl")
-                && t[k + 1].is("Default")
-                && t[k + 2].is("for")
-                && t[k + 3].is("IonicState")
-        })
-        .ok_or("membrane.rs: no `impl Default for IonicState`")?;
-    let open = (at..t.len())
-        .find(|&k| t[k].is("{"))
-        .ok_or("membrane.rs: `impl Default for IonicState` has no body")?;
-    let end = closing(t, open)?;
-    // The body of `fn default() -> Self`: the literal is the first `Self {` inside it (not the
-    // return type, which is followed by the body's own `{`).
-    let fn_at = (open..end)
-        .find(|&k| t[k].is("fn") && t.get(k + 1).is_some_and(|n| n.is("default")))
-        .ok_or("membrane.rs: `impl Default for IonicState` has no `fn default`")?;
-    let body = (fn_at..end)
-        .find(|&k| t[k].is("{"))
-        .ok_or("membrane.rs: `IonicState::default` has no body")?;
-    let lit = (body + 1..end)
-        .find(|&k| t[k].is("Self") && t.get(k + 1).is_some_and(|n| n.is("{")))
-        .ok_or("membrane.rs: `impl Default for IonicState` builds no `Self { … }`")?;
-    let close = closing(t, lit + 1)?;
-    if (close + 1..end).any(|k| !t[k].is("}")) {
-        return Err(
-            "membrane.rs: `impl Default for IonicState` does more than return its literal"
-                .to_string(),
-        );
-    }
-    Eval::new(src)?.eval_range(lit, close, &BTreeMap::new(), 0)
-}
-
 fn check(src: &Source) -> Result<(), String> {
     let v = Eval::new(src)?.named("DEFAULT_PERMEABILITY")?;
     let names: Vec<&str> = fields().iter().map(|x| x.0).collect();
@@ -92,7 +55,7 @@ fn check(src: &Source) -> Result<(), String> {
             ));
         }
     }
-    let d = ionic_default_literal(src)?;
+    let d = default_literal(src, "IonicState")?;
     let names: Vec<&str> = ionic_fields().iter().map(|x| x.0).collect();
     if d.field_names()? != names {
         return Err(format!(

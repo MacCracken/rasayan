@@ -35,6 +35,7 @@ GENERATED = [
     "src/alignment_data.cyr",
     "src/enzyme_data.cyr",
     "src/membrane_data.cyr",
+    "src/signal_data.cyr",
     "src/ai_data.cyr",
 ]
 INT_TYPES = {"i8": (-128, 127), "u8": (0, 255), "u16": (0, 65535), "u32": (0, 4294967295)}

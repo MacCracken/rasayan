@@ -53,3 +53,18 @@ remove.
 
 Nothing to remove in review: each is a straight transcription with no allocation, and the gap is the correctly rounded
 `ln` and the calls Rust inlines into its benchmark loop.
+
+## M2 part 3: signal
+
+| Benchmark | Rust 1.2.0 (ns) | Cyrius (ns) | Notes |
+|---|---|---|---|
+| dose_response | 20.31 | 169 | the Hill fraction: one correctly rounded `pow` (~140 ns, ADR 0003) |
+| receptor_occupancy | 1.61 | 14 | `_ry_guard_conc`, one division, three tests |
+
+Cyrius only (Rust has no bench for them):
+
+| Benchmark | Cyrius (ns) | Notes |
+|---|---|---|
+| SecondMessenger tick, dt 0.01 | 105 | three relaxations on the series branch, three `unit` guards, the inlined trace gate |
+| SecondMessenger tick, dt 1 | 256 | three correctly rounded `expm1` (~50 ns each) |
+| SecondMessenger activate_gq | 42 | four `unit` guards and the IP3 → Ca2+ coupling |

@@ -13,10 +13,37 @@ part 2c-2 (the correctly rounded primitives), part 2c-3 (their dense MPFR sweep)
 three-target baselines and `scripts/gates.sh`, step 9's probes 1–4, 8 and 12) and part 3b (probes 6, 7, 10 and 11,
 the profiles, and step 10's upstream drafts). M0 is complete. M1 part 1 (the foundation's error codes, guard layer
 and integrators), part 2 (logging, the failure events, the surface-parity and Rust-test gates) and part 3 (the
-JSON writers and readers) follow: M1 is complete. M2 part 1 (enzyme) and part 2 (membrane) follow.
+JSON writers and readers) follow: M1 is complete. M2 part 1 (enzyme), part 2 (membrane) and part 3 (signal)
+follow.
 
 ### Added
 
+- **src/signal.cyr** (M2 part 3) — `signal.rs` transcribed: `ry_dose_response` (on enzyme's
+  `_ry_enzyme_hill_fraction`, the correctly rounded `pow`), `ry_receptor_occupancy`, and `RySecondMessenger`, the
+  first stateful type: `activate_gs` / `_gi` / `_gq` and `tick` update it in place (three exact relaxations on
+  `_ry_integrate_relax`), with `validate`, `intensity`, the `Default` and the serde codec. Rust's four `trace!` events
+  are level-gated sakshi events under `rasayan::signal`, their fields in Rust's order
+- **src/signal_data.cyr** (M2 part 3) — `SecondMessenger::default()`'s three values
+  (`RY_SIGNAL_SECOND_MESSENGER_DEFAULT_*`), generated from the oracle's API and checked against the `Self { … }`
+  literal (`rustsrc::default_literal`, which membrane's `IonicState` now uses too)
+- **class T, trajectory** (M2 part 3) — a golden row can be a script: a state, then operations; its outputs are the
+  full state after it, compared bit for bit against the corrected oracle (the harness, `tsv.rs`, `validate.py` and
+  `mpfr_ref.py`, whose models now run scripts)
+- **tests/golden/signal.tsv** (M2 part 3, 6,025 rows) — dose-response and occupancy over 14 edge values per argument
+  and 300 seeded calls; single-step rows of every mutator and `tick` (the default state varied over the edges and 60
+  seeded states, at 14 intensities or 25 time steps, each decay rate's series cutoff ±1 ulp among them); 57
+  trajectory frames over runs of up to 10⁴ steps at dt 0.001 … 5 s (relaxation after a pulse, periodic Gq, Gs and Gi
+  alternating, a NaN start, every dt in turn); `validate`, `intensity`, the serde documents. Class B 4,402, C 1,442
+  (`powf`, `exp_m1`), T 57, A 124: all match on the first run. `signal.cr.tsv` holds 4 `tick` rows where glibc's
+  `expm1` misrounds; the port gives the correctly rounded value (ADR 0003). `validate.py` models every row and checks
+  each row's class against its branch (69,397 independent checks)
+- **tests/signal.tcyr** (M2 part 3, 79 checks) — the 21 `signal.rs` unit tests and 3 integration tests as they are
+  written, plus the four events' text and the refusal's Display text: the Rust-test ledger at 148 of 723, 0 due and
+  unported. The fuzz harness reads every input as a SecondMessenger too (3,212 documents accepted across the three
+  codecs, each written and read back bit for bit) and steps it: every level stays in [0, 1]
+- **benchmarks** (M2 part 3) — the two twins: dose_response 20.3 → 169 ns (a correctly rounded `pow`, ~140 ns of it),
+  receptor_occupancy 1.6 → 14; Cyrius only, a SecondMessenger tick 105 ns (series) / 256 ns (three `expm1`),
+  activate_gq 42 ns
 - **src/membrane.cyr** (M2 part 2) — `membrane.rs` transcribed: `ry_nernst` (the charge an i64, `z as f64` exact),
   `ry_goldman` (its two weighted sums in Rust's order), `ry_fick_flux` (a negative D's zero flux is −0, as Rust's),
   `RyMembranePermeability` and `RyIonicState` with their `validate` (the permeability's own reason, "permeability must
@@ -329,6 +356,10 @@ JSON writers and readers) follow: M1 is complete. M2 part 1 (enzyme) and part 2 
 
 ### Changed
 
+- **scripts/surface_parity.py**, **scripts/rust_test_ledger.py** (M2 part 3) — signal is ported: its 20 public items
+  have their names
+- **cyrius.cyml** (M2 part 3) — `src/signal_data.cyr` and `src/signal.cyr` in the three bundles after
+  `src/membrane.cyr`; `tests/golden/modules.txt` lists 13 modules
 - **src/json.cyr** (M2 part 2) — enzyme's all-f64 struct writer moves here as `_ry_jw_f64_fields`, beside the reader
   `_ry_jr_f64_fields`: membrane's two types are its third and fourth users
 - **scripts/surface_parity.py**, **scripts/rust_test_ledger.py** (M2 part 2) — membrane is ported: its 15 public items

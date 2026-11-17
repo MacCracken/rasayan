@@ -36,6 +36,7 @@ mod m_json;
 mod m_logging;
 mod m_math;
 mod m_membrane;
+mod m_signal;
 mod rustsrc;
 mod t_ai;
 mod t_alignment;
@@ -43,6 +44,7 @@ mod t_constants;
 mod t_enzyme;
 mod t_membrane;
 mod t_private;
+mod t_signal;
 mod t_protein;
 mod tsv;
 mod v_guard;
@@ -81,6 +83,7 @@ fn golden_modules(root: &Path) -> Result<Vec<tsv::Module>, String> {
         t_alignment::golden(&read("alignment")?, &amino_codes())?,
         t_enzyme::golden(&read("enzyme")?)?,
         t_membrane::golden(&read("membrane")?)?,
+        t_signal::golden(&read("signal")?)?,
         t_ai::golden(&read("ai")?)?,
     ];
     v.sort_by_key(|m| m.name);
@@ -120,6 +123,10 @@ fn cyrius_outputs(root: &Path, prov: &str) -> Result<Vec<Output>, String> {
         (
             "src/membrane_data.cyr",
             t_membrane::emit_cyr(&read("membrane")?, prov)?,
+        ),
+        (
+            "src/signal_data.cyr",
+            t_signal::emit_cyr(&read("signal")?, prov)?,
         ),
         ("src/ai_data.cyr", t_ai::emit_cyr(&read("ai")?, prov)?),
     ];
