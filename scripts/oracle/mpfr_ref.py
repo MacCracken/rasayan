@@ -1,7 +1,7 @@
 """Correctly rounded binary64 results from the system MPFR library, and rasayan's corrected oracle (ADR 0003).
 
     python3 -I -B scripts/oracle/mpfr_ref.py               # the self-checks
-    python3 -I -B scripts/oracle/mpfr_ref.py --write .     # (re)write tests/golden/{math,integrate}.cr.tsv
+    python3 -I -B scripts/oracle/mpfr_ref.py --write .     # (re)write tests/golden/{math,integrate,enzyme}.cr.tsv
     python3 -I -B scripts/oracle/mpfr_ref.py --check .     # regenerate it in memory and compare byte for byte
 
 Each primitive returns the IEEE-754 binary64 round-to-nearest-even value of the exact mathematical result: MPFR at
@@ -29,6 +29,12 @@ sequence is one `expm1(-y)` (y = k·dt, computed in binary64 as Rust does) follo
 around the primitive is Rust's. Before it corrects anything, the same model with glibc's expm1 (Python's math.expm1
 calls this machine's glibc) must reproduce every class-C golden row bit for bit, which proves the model is the oracle's
 sequence; the rows whose outputs change with the correctly rounded expm1 go to tests/golden/integrate.cr.tsv.
+
+enzyme (M2 part 1): the class-C rows are Hill (`powf`), Q10 (`powf`), Arrhenius (`exp`) and EnzymeParams::rate on its
+Hill path, each one primitive call inside + − × ÷ in Rust's order. The same check runs first (the model with glibc's
+pow / exp must reproduce every row), then the corrected rows go to tests/golden/enzyme.cr.tsv. The models share one
+machinery (`Prims`, `model_corrections`): a model calls its primitives through `P`, glibc's or MPFR's, and a corrected
+row's note lists each call glibc misrounded.
 """
 import ctypes
 import ctypes.util
@@ -177,45 +183,109 @@ def _rust_min(a, b):
     return a if a < b else b
 
 
-def _factors(y, em1_of):
-    """`integrate::step_factors(y)` on its exp_m1 branch, with `em1_of` as the expm1."""
+def _libm(fn, *args):
+    """This machine's glibc through Python's math, with C's results where Python raises."""
+    try:
+        return fn(*args)
+    except OverflowError:
+        return math.inf
+    except ValueError:
+        return math.nan
+
+
+class Prims:
+    """The primitives a model calls: glibc's (Python's math calls this machine's libm) or the correctly rounded ones
+    (MPFR). Every call is logged, for the note of a corrected row."""
+
+    def __init__(self, correct):
+        self.correct = correct
+        self.calls = []
+
+    def _call(self, name, args, g, c):
+        self.calls.append((name, args, g, c))
+        return c if self.correct else g
+
+    def exp(self, x):
+        return self._call("exp", (x,), _libm(math.exp, x), exp(x))
+
+    def expm1(self, x):
+        return self._call("expm1", (x,), _libm(math.expm1, x), expm1(x))
+
+    def pow(self, x, y):
+        return self._call("pow", (x, y), _libm(math.pow, x, y), pow(x, y))
+
+
+# ── integrate (M1 part 1) ──
+
+def _factors(y, P):
+    """`integrate::step_factors(y)` on its exp_m1 branch."""
     if y < 0.0625:
         raise ValueError(f"step_factors({y!r}) takes the series branch: no class-C row")
-    em1 = em1_of(-y)
+    em1 = P.expm1(-y)
     return 1.0 + em1, -em1 / y
 
 
-def _relax(args, em1_of):
+def _relax(args, P):
     x, target, rate, dt = args
-    decay, _g = _factors(rate * dt, em1_of)
+    decay, _g = _factors(rate * dt, P)
     return [target + (x - target) * decay]
 
 
-def _produce_decay(args, em1_of):
+def _produce_decay(args, P):
     x, production, decay, dt = args
-    f, g = _factors(decay * dt, em1_of)
+    f, g = _factors(decay * dt, P)
     return [x * f + production * dt * g]
 
 
-def _activate(args, em1_of):
+def _activate(args, P):
     x, on, off, dt = args
     total = on + off
-    f, g = _factors(total * dt, em1_of)
+    f, g = _factors(total * dt, P)
     return [_rust_min(x * f + on * dt * g, 1.0)]
 
 
-INTEGRATE = {  # the golden fn of a class-C integrate row -> its operation sequence (args, expm1) -> outputs
-    "integrate::step_factors": lambda args, em1_of: list(_factors(args[0], em1_of)),
+INTEGRATE = {  # the golden fn of a class-C integrate row -> its operation sequence (args, primitives) -> outputs
+    "integrate::step_factors": lambda args, P: list(_factors(args[0], P)),
     "integrate::relax": _relax,
     "integrate::produce_decay": _produce_decay,
     "integrate::activate": _activate,
 }
 
+# ── enzyme (M2 part 1) ──
 
-def integrate_corrections(golden_text):
-    """The class-C rows of integrate.tsv whose outputs differ when expm1 is correctly rounded, as (fn, inputs,
-    outputs, note) in file order; and the number of class-C rows evaluated. Raises if the model with glibc's expm1
-    does not reproduce a golden row."""
+R_GAS = 8.31446261815324  # constants::R_GAS, the same literal as Rust's (both parse correctly rounded)
+
+
+def _conc(x):
+    return x if math.isfinite(x) and x > 0.0 else 0.0
+
+
+def _hill_fraction(s_, k, n, P):
+    """`hill_fraction` on its powf branch (a class-C row reaches it)."""
+    s_ = _conc(s_)
+    if s_ <= 0.0 or n != n or k == 0.0 or not (0.0 < k < math.inf):
+        raise ValueError("hill_fraction off its powf branch: no class-C row")
+    return 1.0 / (1.0 + P.pow(k / s_, n))
+
+
+ENZYME = {
+    "enzyme::hill_equation": lambda a, P: [a[1] * _hill_fraction(a[0], a[2], a[3], P)],
+    "enzyme::q10_rate": lambda a, P: [a[0] * P.pow(a[1], (a[2] - a[3]) / 10.0)],
+    "enzyme::arrhenius": lambda a, P: [a[0] * P.exp(-a[1] / (R_GAS * a[2]))],
+    "enzyme::arrhenius_relative": lambda a, P: [a[0] * P.exp(a[1] / R_GAS * (1.0 / a[2] - 1.0 / a[3]))],
+    # EnzymeParams { vmax, km, hill_n, kcat }.rate(s) on its Hill path: hill_equation(s, vmax, km, hill_n).
+    "enzyme::EnzymeParams::rate": lambda a, P: [a[0] * _hill_fraction(a[4], a[1], a[2], P)],
+}
+
+# The modules with class-C rows beyond math, and their models.
+MODELS = {"integrate": INTEGRATE, "enzyme": ENZYME}
+
+
+def model_corrections(module, golden_text):
+    """The class-C rows of <module>.tsv whose outputs differ when every primitive is correctly rounded, as (fn,
+    inputs, outputs, note) in file order; and the number of class-C rows evaluated. Raises if the model with glibc's
+    primitives does not reproduce a golden row (the model is then not the oracle's sequence)."""
+    models = MODELS[module]
     rows = []
     evaluated = 0
     for n, line in enumerate(golden_text.split("\n"), 1):
@@ -223,28 +293,28 @@ def integrate_corrections(golden_text):
             continue
         cols = line.split("\t")
         if len(cols) != 5:
-            raise ValueError(f"integrate.tsv:{n}: {len(cols)} columns")
+            raise ValueError(f"{module}.tsv:{n}: {len(cols)} columns")
         fn, cls, ins, outs, _note = cols
         if cls != "C":
             continue
-        if fn not in INTEGRATE:
-            raise ValueError(f"integrate.tsv:{n}: class-C {fn} has no operation model here")
+        if fn not in models:
+            raise ValueError(f"{module}.tsv:{n}: class-C {fn} has no operation model here")
         args = [_f(t) for t in ins.split(" ")]
         want = outs.split(" ")
-        model = INTEGRATE[fn]
-        glibc = [_ftok(v) for v in model(args, math.expm1)]
-        if glibc != want and not all(_same(_f(a), _f(b)) for a, b in zip(glibc, want, strict=True)):
-            raise ValueError(f"integrate.tsv:{n}: the model with glibc's expm1 gives {glibc}, the oracle {want}")
-        c = [_ftok(v) for v in model(args, expm1)]
+        glibc = [_ftok(v) for v in models[fn](args, Prims(False))]
+        if not all(_same(_f(a), _f(b)) for a, b in zip(glibc, want, strict=True)):
+            raise ValueError(f"{module}.tsv:{n}: the model with glibc's primitives gives {glibc}, the oracle {want}")
+        pc = Prims(True)
+        c = [_ftok(v) for v in models[fn](args, pc)]
         evaluated += 1
         if all(_same(_f(a), _f(b)) for a, b in zip(c, want, strict=True)):
             continue
-        y_arg = args[0] if fn == "integrate::step_factors" else None
-        if y_arg is None:
-            k = args[1] + args[2] if fn == "integrate::activate" else args[2]
-            y_arg = k * args[3]
-        call = f"expm1({_ftok(-y_arg)}) glibc {_ftok(math.expm1(-y_arg))} correctly rounded {_ftok(expm1(-y_arg))}"
-        rows.append((fn, ins, " ".join(c), f"oracle {outs}; {call}"))
+        calls = [
+            f"{name}({', '.join(_ftok(x) for x in cargs)}) glibc {_ftok(g)} correctly rounded {_ftok(cv)}"
+            for name, cargs, g, cv in pc.calls
+            if not _same(g, cv)
+        ]
+        rows.append((fn, ins, " ".join(c), f"oracle {outs}; " + "; ".join(calls)))
     return rows, evaluated
 
 
@@ -302,7 +372,8 @@ def main(argv):
         return 2
     gold = pathlib.Path(argv[1]).resolve() / "tests/golden"
     status = 0
-    for module, make in (("math", corrections), ("integrate", integrate_corrections)):
+    makers = [("math", corrections)] + [(m, lambda t, m=m: model_corrections(m, t)) for m in MODELS]
+    for module, make in makers:
         golden_text = (gold / f"{module}.tsv").read_text()
         rows, evaluated = make(golden_text)
         text = cr_text(module, golden_text, rows)

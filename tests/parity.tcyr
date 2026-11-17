@@ -60,10 +60,15 @@ include "src/guard.cyr"
 include "src/integrate.cyr"
 include "src/logging.cyr"
 include "src/json.cyr"
+include "src/enzyme.cyr"
 
 alloc_init();
 
 include "tests/parity_core.cyr"
+
+# The JSON rows' builder (reset per row) and arena (reset per document), made on first use.
+var _par_jsb = 0;
+var _par_jarena = 0;
 
 # The Rust variant name of an error code (src/error.cyr).
 #must_use
@@ -571,17 +576,18 @@ fn _par_alignment(fp, fl): i64 {
 # KNOWN_ENZYMES[r]'s fields in KnownEnzyme's order: name, EC number, substrate, km, kcat, hill_n. -1 when r's name is
 # not the one its index constant is named after.
 fn _par_fill_enzyme(r): i64 {
-    var name = _par_blob(&_RY_KNOWN_ENZYME_NAME_BYTES, _RY_KNOWN_ENZYME_NAME_OFF[r]);
-    if (_par_tab_agrees(_par_tab_enzyme, r, name) != 1) { return 0 - 1; }
-    _par_got_cstr(name);
-    _par_got_cstr(_par_blob(&_RY_KNOWN_ENZYME_EC_NUMBER_BYTES, _RY_KNOWN_ENZYME_EC_NUMBER_OFF[r]));
-    _par_got_cstr(_par_blob(&_RY_KNOWN_ENZYME_SUBSTRATE_BYTES, _RY_KNOWN_ENZYME_SUBSTRATE_OFF[r]));
-    var x: f64 = RY_KNOWN_ENZYME_KM[r];
-    _par_got_f(x);
-    x = RY_KNOWN_ENZYME_KCAT[r];
-    _par_got_f(x);
-    x = RY_KNOWN_ENZYME_HILL_N[r];
-    _par_got_f(x);
+    var e: RyKnownEnzyme;
+    if (ry_known_enzyme(r, &e) != 1) { return 0 - 1; }
+    if (_par_tab_agrees(_par_tab_enzyme, r, e.name) != 1) { return 0 - 1; }
+    _par_got_cstr(e.name);
+    _par_got_cstr(e.ec_number);
+    _par_got_cstr(e.substrate);
+    var km: f64 = e.km;
+    _par_got_f(km);
+    var kcat: f64 = e.kcat;
+    _par_got_f(kcat);
+    var hill_n: f64 = e.hill_n;
+    _par_got_f(hill_n);
     return 1;
 }
 
@@ -608,13 +614,8 @@ fn _par_lookup_enzyme(): i64 {
     var lw[8];
     var p = _par_in_bytes(0, &lw);
     if (p == 0) { return 0 - 1; }
-    var n = load64(&lw);
-    var r = 0;
-    while (r < RY_KNOWN_ENZYME_COUNT) {
-        var e = _par_blob(&_RY_KNOWN_ENZYME_NAME_BYTES, _RY_KNOWN_ENZYME_NAME_OFF[r]);
-        if (_par_eq_ascii_ci(e, strlen(e), p, n) == 1) { return _par_fill_enzyme(r); }
-        r = r + 1;
-    }
+    var r = ry_lookup_enzyme(p, load64(&lw));
+    if (r >= 0) { return _par_fill_enzyme(r); }
     _par_got_none();
     return 1;
 }
@@ -631,6 +632,234 @@ fn _par_enzyme(fp, fl): i64 {
         return _par_fill_enzyme(r);
     }
     if (_par_eq(fp, fl, "enzyme::lookup_enzyme") == 1) { return _par_lookup_enzyme(); }
+    return _par_enzyme_fn(fp, fl);
+}
+
+# Input k as an f64.
+#must_use
+fn _par_f(k): f64 {
+    var x: f64 = _par_in(k);
+    return x;
+}
+
+# 1 if the row's inputs are `n` f64 tokens.
+#must_use
+fn _par_all_f(n): i64 {
+    if (_par_in_n != n) { return 0; }
+    var k = 0;
+    while (k < n) {
+        if (load64(_par_in_k + k * 8) != 102) { return 0; }
+        k = k + 1;
+    }
+    return 1;
+}
+
+# The (s, v) pairs of a fit row (`v:<n>` then 2n f64s) into `data` (room for 32 pairs): n, or -1.
+fn _par_fit_data(data): i64 {
+    if (_par_in_n < 1 || load64(_par_in_k) != 118) { return 0 - 1; }
+    var n = _par_in(0);
+    if (n < 0 || n > 32 || _par_in_n != 1 + 2 * n) { return 0 - 1; }
+    var k = 0;
+    while (k < 2 * n) {
+        store64(data + 8 * k, _par_in(1 + k));
+        k = k + 1;
+    }
+    return n;
+}
+
+# Appends a fit's outcome: km vmax r_squared, or None.
+fn _par_got_fit(found, fit: *RyKineticFit) {
+    if (found == 0) {
+        _par_got_none();
+        return 0;
+    }
+    var km: f64 = fit.km;
+    var vmax: f64 = fit.vmax;
+    var r2: f64 = fit.r_squared;
+    _par_got_f(km);
+    _par_got_f(vmax);
+    _par_got_f(r2);
+    return 0;
+}
+
+# The enzyme function, method and serde rows (M2 part 1): src/enzyme.cyr.
+fn _par_enzyme_fn(fp, fl): i64 {
+    var r: f64 = 0.0;
+    if (_par_eq(fp, fl, "enzyme::michaelis_menten") == 1 && _par_all_f(3) == 1) {
+        r = ry_michaelis_menten(_par_f(0), _par_f(1), _par_f(2));
+    } elif (_par_eq(fp, fl, "enzyme::hill_equation") == 1 && _par_all_f(4) == 1) {
+        r = ry_hill_equation(_par_f(0), _par_f(1), _par_f(2), _par_f(3));
+    } elif (_par_eq(fp, fl, "enzyme::competitive_inhibition") == 1 && _par_all_f(5) == 1) {
+        r = ry_competitive_inhibition(_par_f(0), _par_f(1), _par_f(2), _par_f(3), _par_f(4));
+    } elif (_par_eq(fp, fl, "enzyme::uncompetitive_inhibition") == 1 && _par_all_f(5) == 1) {
+        r = ry_uncompetitive_inhibition(_par_f(0), _par_f(1), _par_f(2), _par_f(3), _par_f(4));
+    } elif (_par_eq(fp, fl, "enzyme::mixed_inhibition") == 1 && _par_all_f(6) == 1) {
+        r = ry_mixed_inhibition(_par_f(0), _par_f(1), _par_f(2), _par_f(3), _par_f(4), _par_f(5));
+    } elif (_par_eq(fp, fl, "enzyme::substrate_inhibition") == 1 && _par_all_f(4) == 1) {
+        r = ry_substrate_inhibition(_par_f(0), _par_f(1), _par_f(2), _par_f(3));
+    } elif (_par_eq(fp, fl, "enzyme::reversible_michaelis_menten") == 1 && _par_all_f(6) == 1) {
+        r = ry_reversible_michaelis_menten(_par_f(0), _par_f(1), _par_f(2), _par_f(3), _par_f(4), _par_f(5));
+    } elif (_par_eq(fp, fl, "enzyme::haldane_keq") == 1 && _par_all_f(4) == 1) {
+        r = ry_haldane_keq(_par_f(0), _par_f(1), _par_f(2), _par_f(3));
+    } elif (_par_eq(fp, fl, "enzyme::ping_pong") == 1 && _par_all_f(5) == 1) {
+        r = ry_ping_pong(_par_f(0), _par_f(1), _par_f(2), _par_f(3), _par_f(4));
+    } elif (_par_eq(fp, fl, "enzyme::sequential_bisubstrate") == 1 && _par_all_f(6) == 1) {
+        r = ry_sequential_bisubstrate(_par_f(0), _par_f(1), _par_f(2), _par_f(3), _par_f(4), _par_f(5));
+    } elif (_par_eq(fp, fl, "enzyme::q10_rate") == 1 && _par_all_f(4) == 1) {
+        r = ry_q10_rate(_par_f(0), _par_f(1), _par_f(2), _par_f(3));
+    } elif (_par_eq(fp, fl, "enzyme::arrhenius") == 1 && _par_all_f(3) == 1) {
+        r = ry_arrhenius(_par_f(0), _par_f(1), _par_f(2));
+    } elif (_par_eq(fp, fl, "enzyme::arrhenius_relative") == 1 && _par_all_f(4) == 1) {
+        r = ry_arrhenius_relative(_par_f(0), _par_f(1), _par_f(2), _par_f(3));
+    } else {
+        return _par_enzyme_other(fp, fl);
+    }
+    _par_got_f(r);
+    return 1;
+}
+
+# The fits, EnzymeParams' and KnownEnzyme's methods, and the serde rows.
+fn _par_enzyme_other(fp, fl): i64 {
+    if (_par_eq(fp, fl, "enzyme::lineweaver_burk_fit") == 1 || _par_eq(fp, fl, "enzyme::eadie_hofstee_fit") == 1) {
+        var data[512];
+        var n = _par_fit_data(&data);
+        if (n < 0) { return 0 - 1; }
+        var fit: RyKineticFit;
+        var found = 0;
+        if (_par_eq(fp, fl, "enzyme::lineweaver_burk_fit") == 1) {
+            found = ry_lineweaver_burk_fit(&data, n, &fit);
+        } else {
+            found = ry_eadie_hofstee_fit(&data, n, &fit);
+        }
+        _par_got_fit(found, &fit);
+        return 1;
+    }
+    var p: RyEnzymeParams;
+    var sb = 0;
+    if (_par_in_n >= 4 && load64(_par_in_k) == 102) {
+        var vmax: f64 = _par_f(0);
+        var km: f64 = _par_f(1);
+        var hn: f64 = _par_f(2);
+        var kcat: f64 = _par_f(3);
+        p.vmax = vmax;
+        p.km = km;
+        p.hill_n = hn;
+        p.kcat = kcat;
+    }
+    if (_par_eq(fp, fl, "enzyme::EnzymeParams::validate") == 1 && _par_all_f(4) == 1) {
+        var t, v = ry_enzyme_params_validate(&p);
+        if (is_err_result(t) == 1) { _par_got_err(v); }
+        return 1;
+    }
+    if (_par_eq(fp, fl, "enzyme::EnzymeParams::catalytic_efficiency") == 1 && _par_all_f(4) == 1) {
+        var ce: f64 = ry_enzyme_params_catalytic_efficiency(&p);
+        _par_got_f(ce);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "enzyme::EnzymeParams::rate") == 1 && _par_all_f(5) == 1) {
+        var rt: f64 = ry_enzyme_params_rate(&p, _par_f(4));
+        _par_got_f(rt);
+        return 1;
+    }
+    var e: RyKnownEnzyme;
+    if (_par_eq(fp, fl, "enzyme::KnownEnzyme::params") == 1 && _par_in_n == 2) {
+        if (ry_known_enzyme(_par_in(0), &e) != 1) { return 0 - 1; }
+        var out: RyEnzymeParams;
+        ry_known_enzyme_params(&e, _par_f(1), &out);
+        var a1: f64 = out.vmax;
+        var a2: f64 = out.km;
+        var a3: f64 = out.hill_n;
+        var a4: f64 = out.kcat;
+        _par_got_f(a1);
+        _par_got_f(a2);
+        _par_got_f(a3);
+        _par_got_f(a4);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "enzyme::KnownEnzyme::catalytic_efficiency") == 1 && _par_in_n == 1) {
+        if (ry_known_enzyme(_par_in(0), &e) != 1) { return 0 - 1; }
+        var ke: f64 = ry_known_enzyme_catalytic_efficiency(&e);
+        _par_got_f(ke);
+        return 1;
+    }
+    return _par_enzyme_json(fp, fl);
+}
+
+# The serde rows of KineticFit, EnzymeParams and KnownEnzyme.
+fn _par_enzyme_json(fp, fl): i64 {
+    if (_par_jsb == 0) { _par_jsb = str_builder_new(); }
+    var sb = _par_jsb;
+    store64(sb + 8, 0);
+    if (_par_eq(fp, fl, "serde_json::to_string<KineticFit>") == 1 && _par_all_f(3) == 1) {
+        var fit: RyKineticFit;
+        var f1: f64 = _par_f(0);
+        var f2: f64 = _par_f(1);
+        var f3: f64 = _par_f(2);
+        fit.km = f1;
+        fit.vmax = f2;
+        fit.r_squared = f3;
+        var t1, v1 = ry_kinetic_fit_to_json(sb, &fit);
+        if (is_err_result(t1) == 1) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::to_string<EnzymeParams>") == 1 && _par_all_f(4) == 1) {
+        var p: RyEnzymeParams;
+        var g1: f64 = _par_f(0);
+        var g2: f64 = _par_f(1);
+        var g3: f64 = _par_f(2);
+        var g4: f64 = _par_f(3);
+        p.vmax = g1;
+        p.km = g2;
+        p.hill_n = g3;
+        p.kcat = g4;
+        var t2, v2 = ry_enzyme_params_to_json(sb, &p);
+        if (is_err_result(t2) == 1) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::to_string<KnownEnzyme>") == 1 && _par_in_n == 1) {
+        var e: RyKnownEnzyme;
+        if (ry_known_enzyme(_par_in(0), &e) != 1) { return 0 - 1; }
+        var t3, v3 = ry_known_enzyme_to_json(sb, &e);
+        if (is_err_result(t3) == 1) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    var lw[8];
+    var doc = _par_in_bytes(0, &lw);
+    if (_par_jarena == 0) { _par_jarena = arena_allocator_growable(65536); }
+    if (_par_eq(fp, fl, "serde_json::from_slice<KineticFit>") == 1) {
+        if (doc == 0) { return 0 - 1; }
+        reset_via(_par_jarena);
+        var k: RyKineticFit;
+        var t4, v4 = ry_kinetic_fit_from_json_a(_par_jarena, doc, load64(&lw), &k);
+        if (is_err_result(t4) == 1) {
+            _par_got_err(v4);
+            return 1;
+        }
+        _par_got_fit(1, &k);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::from_slice<EnzymeParams>") == 1) {
+        if (doc == 0) { return 0 - 1; }
+        reset_via(_par_jarena);
+        var q: RyEnzymeParams;
+        var t5, v5 = ry_enzyme_params_from_json_a(_par_jarena, doc, load64(&lw), &q);
+        if (is_err_result(t5) == 1) {
+            _par_got_err(v5);
+            return 1;
+        }
+        var h1: f64 = q.vmax;
+        var h2: f64 = q.km;
+        var h3: f64 = q.hill_n;
+        var h4: f64 = q.kcat;
+        _par_got_f(h1);
+        _par_got_f(h2);
+        _par_got_f(h3);
+        _par_got_f(h4);
+        return 1;
+    }
     return 0;
 }
 
@@ -809,8 +1038,6 @@ fn _par_logging(fp, fl): i64 {
 # ── json ────────────────────────────────────────────────────────────────────────────
 # src/json.cyr's writers (M1 part 3a), on the default allocator, into one builder reset per row.
 
-var _par_jsb = 0;
-
 # 1 for a `char` writer row.
 #must_use
 fn _par_json_char(fp, fl): i64 {
@@ -818,8 +1045,6 @@ fn _par_json_char(fp, fl): i64 {
 }
 
 # ── json readers (part 3b) ──
-
-var _par_jarena = 0;
 
 # 1 when the current reader row met one of bayan's filed gaps (ADR 0004): set by _par_json_read for _par_accepted.
 var _par_json_gap = 0;
@@ -1126,6 +1351,11 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "integrate::relax") == 1) { return 0; }
     if (_par_eq(fp, fl, "integrate::produce_decay") == 1) { return 0; }
     if (_par_eq(fp, fl, "integrate::activate") == 1) { return 0; }
+    if (_par_eq(fp, fl, "enzyme::hill_equation") == 1) { return 0; }
+    if (_par_eq(fp, fl, "enzyme::q10_rate") == 1) { return 0; }
+    if (_par_eq(fp, fl, "enzyme::arrhenius") == 1) { return 0; }
+    if (_par_eq(fp, fl, "enzyme::arrhenius_relative") == 1) { return 0; }
+    if (_par_eq(fp, fl, "enzyme::EnzymeParams::rate") == 1) { return 0; }
     return 0 - 1;
 }
 

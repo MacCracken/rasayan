@@ -29,6 +29,7 @@ mod cyr;
 mod glibc;
 mod grids;
 mod m_constants;
+mod m_enzyme;
 mod m_guard;
 mod m_integrate;
 mod m_json;

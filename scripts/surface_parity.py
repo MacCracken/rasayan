@@ -30,10 +30,10 @@ from pathlib import Path
 root = Path(sys.argv[1]).resolve()
 
 # The modules whose milestone has come.
-PORTED = ["constants", "error", "guard", "integrate", "logging"]
+PORTED = ["constants", "error", "guard", "integrate", "logging", "enzyme"]
 # The rest, with their milestone (port plan §3.1).
 SCHEDULED = {
-    "enzyme": "M2", "membrane": "M2", "signal": "M2", "metabolism": "M2", "energy": "M2",
+    "membrane": "M2", "signal": "M2", "metabolism": "M2", "energy": "M2",
     "protein": "M3", "alignment": "M3", "ptm": "M3", "domain": "M3",
     "glycolysis": "M4a", "tca": "M4a", "etc": "M4b", "beta_oxidation": "M4b", "amino_catabolism": "M4b",
     "pathway": "M5",
@@ -50,10 +50,15 @@ PREFIX = {"logging": "ry_log_"}
 # Rust type -> (Cyrius type, the `ry_<t>_` prefix of its functions). Each module adds its types at its milestone.
 TYPES = {
     "RasayanError": ("RyError", "error"),
+    "KineticFit": ("RyKineticFit", "kinetic_fit"),
+    "EnzymeParams": ("RyEnzymeParams", "enzyme_params"),
+    "KnownEnzyme": ("RyKnownEnzyme", "known_enzyme"),
 }
 # Rust item -> the Cyrius names that carry it ("fn x", "const X", "enum X", "struct X"), where the rules give none.
 MAPPED = {
     "error::RasayanError: Display": ["fn ry_error_message", "fn ry_error_name"],
+    # A table const: its generated count and the accessor that fills one entry (ADR 0002 row 10).
+    "enzyme::const KNOWN_ENZYMES": ["const RY_KNOWN_ENZYME_COUNT", "fn ry_known_enzyme"],
 }
 # Public scalar constants: the Rust types src/constants.cyr carries as `const`.
 SCALAR = ("f64", "u32", "usize")

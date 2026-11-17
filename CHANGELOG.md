@@ -17,6 +17,27 @@ JSON writers and readers) follow: M1 is complete.
 
 ### Added
 
+- **src/enzyme.cyr** (M2 part 1) — `enzyme.rs` transcribed: the rate laws (`ry_michaelis_menten`, `ry_hill_equation`
+  and the shared `_ry_enzyme_hill_fraction`, the competitive / uncompetitive / mixed / substrate inhibition models,
+  `ry_reversible_michaelis_menten`, `ry_haldane_keq`, `ry_ping_pong`, `ry_sequential_bisubstrate`, `ry_q10_rate`,
+  `ry_arrhenius`, `ry_arrhenius_relative`), the two linearized fits (no copy of the data: the transform runs in each
+  pass of the centred regression), `RyKineticFit`, `RyEnzymeParams` (validate, catalytic efficiency, rate),
+  `RyKnownEnzyme` with `ry_known_enzyme` / `ry_lookup_enzyme` over the generated table, and the serde codecs of the
+  three types ([ADR 0002](docs/adr/0002-port-api-divergences.md) row 2 for the Option forms)
+- **tests/golden/enzyme.tsv** (M2 part 1, +7,159 rows) — every function over its base point varied one argument at a
+  time across 14 edge values, 300 seeded realistic calls each, the Rust tests' cases; the fits over ideal, noisy,
+  slow-enzyme, degenerate, filtered and short data; the methods; the serde documents. Class B 4,870, C 2,040 (Hill and
+  Q10's `powf`, Arrhenius's `exp`), A 249: all match on the first run. `enzyme.cr.tsv` (0 rows: glibc's pow and exp are
+  correctly rounded on every call here), written by `mpfr_ref.py`, whose models now share one machinery (`Prims`,
+  `model_corrections`; integrate moved onto it, its file unchanged). `validate.py` models every enzyme row on its own
+  (61,625 independent checks)
+- **tests/enzyme.tcyr** (M2 part 1, 140 checks) — the 58 `enzyme.rs` unit tests, 11 integration tests and 13
+  validation tests (hemoglobin's Hill curve, malonate's competitive inhibition, Arrhenius, the enzyme database's
+  reference values) as they are written: the Rust-test ledger at 95 of 723, 0 due and unported
+- **docs/benchmarks-rust-v-cyrius.md** (M2 part 1) — the Rust-v-Cyrius record, M1's Cyrius-only numbers and enzyme's
+  seven twins: michaelis_menten 1.45 → 12 ns, hill_equation 17.8 → 166 (a correctly rounded pow), mixed_inhibition
+  4.3 → 36, ping_pong 2.8 → 23, arrhenius 5.9 → 53 (a correctly rounded exp), lineweaver_burk_fit 99 → 368,
+  enzyme_lookup 4.4 → 82
 - **src/json.cyr** (M1 part 3b) — the readers, on bayan's value tree on the caller's arena: `_ry_jr_parse` (with a
   raw-control-byte scan: serde_json refuses one in any string, bayan doesn't), `_form` / `_at` (serde's object and
   sequence forms; keys UTF-8-checked), `_f64` (±inf refused), `_opt_f64`, `_int` (a typed range, no floats), `_str` /
@@ -285,6 +306,15 @@ JSON writers and readers) follow: M1 is complete.
 
 ### Changed
 
+- **src/mathx.cyr** (M2 part 1) — `_ry_is_finite` is `(x - x) == 0.0` and `_ry_is_nan` is `x != x`, each one
+  branch-free `#inline` expression with the bit tests' answers on every pattern (`tests/guard.tcyr`: every special
+  class and 10⁶ random patterns, x86_64 and aarch64)
+- **Performance** (M2 part 1) — michaelis_menten 13 → 12 ns, mixed_inhibition 40 → 36, ping_pong 27 → 23,
+  lineweaver_burk_fit 413 → 368, enzyme_lookup 99 → 82 (a first-byte check before each name's length), guard/positive
+  18 → 16 (`docs/benchmarks-rust-v-cyrius.md`)
+- **scripts/surface_parity.py**, **scripts/rust_test_ledger.py** (M2 part 1) — enzyme is ported: its 30 public items
+  have their names (`KNOWN_ENZYMES` mapped to `RY_KNOWN_ENZYME_COUNT` and `ry_known_enzyme`)
+- **cyrius.cyml** (M2 part 1) — `src/enzyme.cyr` in the three bundles after `src/enzyme_data.cyr`
 - **cyrius.cyml** (M1 part 3b) — `bayan` in `[deps] stdlib` (already vendored and locked through bote's graph; the
   lock is unchanged); the bundles' sidecars require it. Every compile now takes bayan and its unicode tables in:
   `scripts/gates.sh` 156 → 249 s, most of it `probe_tables.py` (5 → 67 s; bayan's filed unicode-tables issue)

@@ -55,6 +55,7 @@ modules = [
     "src/protein_data.cyr",
     "src/alignment_data.cyr",
     "src/enzyme_data.cyr",
+    "src/enzyme.cyr",
     "src/membrane_data.cyr",
 ]
 
@@ -75,6 +76,7 @@ modules = [
     "src/protein_data.cyr",
     "src/alignment_data.cyr",
     "src/enzyme_data.cyr",
+    "src/enzyme.cyr",
     "src/membrane_data.cyr",
 ]
 
@@ -96,6 +98,7 @@ modules = [
     "src/protein_data.cyr",
     "src/alignment_data.cyr",
     "src/enzyme_data.cyr",
+    "src/enzyme.cyr",
     "src/membrane_data.cyr",
     "src/ai_data.cyr",
 ]

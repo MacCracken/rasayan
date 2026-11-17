@@ -1,0 +1,736 @@
+# rasayan — src/enzyme.cyr: Rust 1.2.0's enzyme tests, ported
+# Stdlib auto-included via cyrius.cyml
+#
+# The 58 unit tests of `enzyme.rs`, the 11 integration tests (tests/integration.rs) and the 13 validation tests
+# (tests/validation.rs) that call only enzyme, as they are written; tests/golden/enzyme.tsv checks every function on
+# its grid besides. Literals Cyrius can't write positionally (1e200, 1e-200, 1e-300) are bit patterns.
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
+include "src/enzyme_data.cyr"
+include "src/enzyme.cyr"
+
+# 1 when |a − b| < tol.
+fn near(a: f64, b: f64, tol: f64) {
+    var d: f64 = f64_abs(a - b);
+    return d < tol;
+}
+
+# The f64 with bit pattern `b`.
+fn fb(b): f64 {
+    var x: f64 = b;
+    return x;
+}
+
+# The bad inputs of Rust's hardening tests: NaN, +inf, -inf, -1.
+fn bad(k): f64 {
+    if (k == 0) { return _ry_nan(); }
+    var inf: f64 = _RY_INF;
+    if (k == 1) { return inf; }
+    if (k == 2) { return -inf; }
+    return -1.0;
+}
+
+# `n` (s, MM(s, vmax, km)) points at `data` from the f64s at `ss`.
+fn mm_data(data, ss, n, vmax: f64, km: f64) {
+    var k = 0;
+    while (k < n) {
+        var s: f64 = load64(ss + 8 * k);
+        var v: f64 = ry_michaelis_menten(s, vmax, km);
+        store64(data + 16 * k, load64(&s));
+        store64(data + 16 * k + 8, load64(&v));
+        k = k + 1;
+    }
+    return 0;
+}
+
+# Stores f64 x as word k of `buf`.
+fn put(buf, k, x: f64) {
+    store64(buf + 8 * k, load64(&x));
+    return 0;
+}
+
+# An EnzymeParams.
+fn params(p: *RyEnzymeParams, vmax: f64, km: f64, hill_n: f64, kcat: f64) {
+    p.vmax = vmax;
+    p.km = km;
+    p.hill_n = hill_n;
+    p.kcat = kcat;
+    return 0;
+}
+
+# 1 when p validates.
+fn valid(p: *RyEnzymeParams) {
+    var t, v = ry_enzyme_params_validate(p);
+    return is_ok(t);
+}
+
+# Database entry `name` into *e (the test fails if there is none).
+fn entry(name, e: *RyKnownEnzyme) {
+    var i = ry_lookup_enzyme(name, strlen(name));
+    assert(i >= 0, name);
+    ry_known_enzyme(i, e);
+    return i;
+}
+
+# rust src/enzyme.rs: test_michaelis_menten_at_km, test_michaelis_menten_saturation
+# rust src/enzyme.rs: test_michaelis_menten_zero_substrate
+# rust src/enzyme.rs: test_hill_cooperativity, test_hill_equation_zero_substrate
+fn single_substrate() {
+    test_group("enzyme: single-substrate rates");
+    var r: f64 = ry_michaelis_menten(1.0, 10.0, 1.0);
+    assert(near(r, 5.0, 0.01), "MM at Km");
+    r = ry_michaelis_menten(1000.0, 10.0, 1.0);
+    assert(near(r, 10.0, 0.1), "MM saturation");
+    r = ry_michaelis_menten(0.0, 10.0, 1.0);
+    assert(near(r, 0.0, 0.0000000000000002220446049250313), "MM zero substrate");
+    var n1: f64 = ry_hill_equation(0.5, 1.0, 1.0, 1.0);
+    var n4: f64 = ry_hill_equation(0.5, 1.0, 1.0, 4.0);
+    assert(n4 < n1, "Hill cooperativity");
+    r = ry_hill_equation(0.0, 10.0, 1.0, 2.0);
+    assert(r == 0.0, "Hill zero substrate");
+    return 0;
+}
+
+# rust src/enzyme.rs: test_competitive_inhibition_raises_km, test_competitive_inhibition_zero_ki
+# rust src/enzyme.rs: test_mixed_inhibition_reduces_rate, test_mixed_inhibition_equals_noncompetitive_when_ki_equal
+# rust src/enzyme.rs: test_mixed_inhibition_zero_inhibitor_equals_mm, test_substrate_inhibition_bell_curve
+# rust src/enzyme.rs: test_substrate_inhibition_low_s_matches_mm
+fn inhibition() {
+    test_group("enzyme: inhibition");
+    var un: f64 = ry_michaelis_menten(1.0, 10.0, 1.0);
+    var ci: f64 = ry_competitive_inhibition(1.0, 1.0, 10.0, 1.0, 1.0);
+    assert(ci < un, "competitive raises Km");
+    ci = ry_competitive_inhibition(1.0, 1.0, 10.0, 1.0, 0.0);
+    assert(ci == 0.0, "competitive with Ki 0");
+    var mi: f64 = ry_mixed_inhibition(1.0, 1.0, 10.0, 1.0, 1.0, 1.0);
+    assert(mi < un, "mixed reduces the rate");
+    assert(near(mi, 2.5, 0.01), "mixed with Ki = Ki' is noncompetitive: 2.5");
+    var mm2: f64 = ry_michaelis_menten(2.0, 10.0, 1.0);
+    var mx0: f64 = ry_mixed_inhibition(2.0, 0.0, 10.0, 1.0, 1.0, 1.0);
+    assert(near(mm2, mx0, 0.01), "mixed without inhibitor is MM");
+    var lo: f64 = ry_substrate_inhibition(0.5, 10.0, 1.0, 10.0);
+    var mid: f64 = ry_substrate_inhibition(3.0, 10.0, 1.0, 10.0);
+    var hi: f64 = ry_substrate_inhibition(100.0, 10.0, 1.0, 10.0);
+    assert(mid > lo && mid > hi, "substrate inhibition: a bell curve");
+    var mmlo: f64 = ry_michaelis_menten(0.01, 10.0, 1.0);
+    var silo: f64 = ry_substrate_inhibition(0.01, 10.0, 1.0, 100.0);
+    var rel: f64 = f64_abs(mmlo - silo) / mmlo;
+    assert(rel < 0.01, "at low [S] it matches MM");
+    return 0;
+}
+
+# rust src/enzyme.rs: test_reversible_forward_only, test_reversible_at_equilibrium, test_haldane_keq
+# rust tests/integration.rs: test_reversible_haldane_consistency
+fn reversible() {
+    test_group("enzyme: reversible kinetics");
+    var rev: f64 = ry_reversible_michaelis_menten(1.0, 0.0, 10.0, 1.0, 5.0, 1.0);
+    var mm: f64 = ry_michaelis_menten(1.0, 10.0, 1.0);
+    assert(near(rev, mm, 0.01), "no product: forward MM");
+    var back: f64 = ry_reversible_michaelis_menten(1.0, 100.0, 10.0, 1.0, 5.0, 1.0);
+    assert(back < 0.0, "much product: net reverse");
+    var keq: f64 = ry_haldane_keq(10.0, 1.0, 5.0, 2.0);
+    assert(near(keq, 4.0, 0.0000000000000002220446049250313), "Keq = 4");
+    var k2: f64 = ry_haldane_keq(10.0, 1.0, 5.0, 2.0);
+    var p: f64 = k2 * 1.0;
+    var at_eq: f64 = ry_reversible_michaelis_menten(1.0, p, 10.0, 1.0, 5.0, 2.0);
+    assert(f64_abs(at_eq) < 0.01, "at equilibrium the rate is about 0");
+    return 0;
+}
+
+# rust src/enzyme.rs: test_ping_pong_symmetric, test_ping_pong_saturating, test_ping_pong_zero_substrate
+# rust src/enzyme.rs: test_sequential_saturating, test_sequential_zero_substrate
+fn bisubstrate() {
+    test_group("enzyme: bi-substrate");
+    var r: f64 = ry_ping_pong(1.0, 1.0, 10.0, 1.0, 1.0);
+    assert(near(r, 10.0 / 3.0, 0.01), "ping-pong symmetric: Vmax/3");
+    r = ry_ping_pong(1000.0, 1000.0, 10.0, 1.0, 1.0);
+    assert(near(r, 10.0, 0.1), "ping-pong saturates");
+    r = ry_ping_pong(0.0, 1.0, 10.0, 1.0, 1.0);
+    var r2: f64 = ry_ping_pong(1.0, 0.0, 10.0, 1.0, 1.0);
+    assert(r == 0.0 && r2 == 0.0, "ping-pong without a substrate");
+    r = ry_sequential_bisubstrate(1000.0, 1000.0, 10.0, 1.0, 1.0, 1.0);
+    assert(near(r, 10.0, 0.1), "sequential saturates");
+    r = ry_sequential_bisubstrate(0.0, 1.0, 10.0, 1.0, 1.0, 1.0);
+    assert(r == 0.0, "sequential without a substrate");
+    return 0;
+}
+
+# rust src/enzyme.rs: test_q10, test_arrhenius_higher_temp_faster, test_arrhenius_zero_temp
+# rust src/enzyme.rs: test_arrhenius_relative_consistency, test_arrhenius_relative_same_temp
+# rust tests/integration.rs: test_arrhenius_temperature_sensitivity
+# rust tests/validation.rs: validate_arrhenius_temperature_sensitivity
+fn temperature() {
+    test_group("enzyme: temperature dependence");
+    var q: f64 = ry_q10_rate(1.0, 2.0, 37.0, 27.0);
+    assert(near(q, 2.0, 0.01), "Q10 2 over 10 degrees");
+    var k1: f64 = ry_arrhenius(10000000000.0, 50000.0, 300.0);
+    var k2: f64 = ry_arrhenius(10000000000.0, 50000.0, 310.0);
+    assert(k2 > k1, "Arrhenius: hotter is faster");
+    var k0: f64 = ry_arrhenius(10000000000.0, 50000.0, 0.0);
+    assert(k0 == 0.0, "Arrhenius at 0 K");
+    var kr: f64 = ry_arrhenius_relative(k1, 50000.0, 300.0, 310.0);
+    var rel: f64 = f64_abs(k2 - kr) / k2;
+    assert(rel < 0.0000000001, "the relative form agrees with the direct one");
+    var same: f64 = ry_arrhenius_relative(5.0, 50000.0, 300.0, 300.0);
+    assert(near(same, 5.0, 0.0000000000000002220446049250313), "the same temperature keeps the rate");
+    var ratio: f64 = k2 / k1;
+    assert(ratio > 1.5 && ratio < 3.0, "about double over 10 K");
+    var a1: f64 = ry_arrhenius(10000000000.0, 50000.0, 298.0);
+    var a2: f64 = ry_arrhenius(10000000000.0, 50000.0, 308.0);
+    var r25: f64 = a2 / a1;
+    assert(r25 >= 1.8 && r25 <= 2.2, "Ea 50 kJ/mol from 25 to 35 degrees: about double");
+    return 0;
+}
+
+# rust src/enzyme.rs: test_lineweaver_burk_fit_known_data, test_eadie_hofstee_fit_known_data
+# rust src/enzyme.rs: test_lineweaver_burk_insufficient_data, test_eadie_hofstee_insufficient_data
+# rust tests/integration.rs: test_lineweaver_burk_and_eadie_hofstee_agree
+fn fits() {
+    test_group("enzyme: linearization fits");
+    var ss[48];
+    put(&ss, 0, 0.5);
+    put(&ss, 1, 1.0);
+    put(&ss, 2, 2.0);
+    put(&ss, 3, 5.0);
+    put(&ss, 4, 10.0);
+    var data[160];
+    mm_data(&data, &ss, 5, 10.0, 1.0);
+    var lb: RyKineticFit;
+    assert_eq(ry_lineweaver_burk_fit(&data, 5, &lb), 1, "LB fits ideal data");
+    var km: f64 = lb.km;
+    var vm: f64 = lb.vmax;
+    var r2: f64 = lb.r_squared;
+    assert(near(km, 1.0, 0.01) && near(vm, 10.0, 0.01) && r2 > 0.99, "LB recovers Km 1, Vmax 10");
+    var eh: RyKineticFit;
+    assert_eq(ry_eadie_hofstee_fit(&data, 5, &eh), 1, "EH fits ideal data");
+    km = eh.km;
+    vm = eh.vmax;
+    r2 = eh.r_squared;
+    assert(near(km, 1.0, 0.01) && near(vm, 10.0, 0.01) && r2 > 0.99, "EH recovers Km 1, Vmax 10");
+    var one[16];
+    put(&one, 0, 1.0);
+    put(&one, 1, 5.0);
+    assert_eq(ry_lineweaver_burk_fit(&one, 1, &lb), 0, "LB: one point is None");
+    assert_eq(ry_lineweaver_burk_fit(&one, 0, &lb), 0, "LB: no point is None");
+    assert_eq(ry_eadie_hofstee_fit(&one, 1, &eh), 0, "EH: one point is None");
+    put(&ss, 0, 0.2);
+    put(&ss, 1, 0.5);
+    put(&ss, 2, 1.0);
+    put(&ss, 3, 2.0);
+    put(&ss, 4, 5.0);
+    put(&ss, 5, 10.0);
+    mm_data(&data, &ss, 6, 8.0, 0.5);
+    ry_lineweaver_burk_fit(&data, 6, &lb);
+    ry_eadie_hofstee_fit(&data, 6, &eh);
+    var k1: f64 = lb.km;
+    var k2: f64 = eh.km;
+    var v1: f64 = lb.vmax;
+    var v2: f64 = eh.vmax;
+    assert(near(k1, k2, 0.05) && near(v1, v2, 0.05), "LB and EH agree on ideal data");
+    return 0;
+}
+
+# rust src/enzyme.rs: test_kinetic_fit_serde_roundtrip, test_serde_roundtrip
+# rust tests/integration.rs: test_enzyme_params_serde_roundtrip, test_known_enzyme_serialize
+# rust tests/integration.rs: test_kinetic_fit_serde_roundtrip
+fn serde() {
+    test_group("enzyme: serde round trips");
+    var sb = str_builder_new();
+    var fit: RyKineticFit;
+    fit.km = 1.0;
+    fit.vmax = 10.0;
+    fit.r_squared = 0.99;
+    var t, v = ry_kinetic_fit_to_json(sb, &fit);
+    var back: RyKineticFit;
+    var t2, v2 = ry_kinetic_fit_from_json(load64(sb), load64(sb + 8), &back);
+    var bk: f64 = back.km;
+    assert(is_ok(t2) == 1 && bk == 1.0, "a KineticFit reads back");
+    var p: RyEnzymeParams;
+    params(&p, 12.5, 0.003, 2.8, 450.0);
+    store64(sb + 8, 0);
+    var t3, v3 = ry_enzyme_params_to_json(sb, &p);
+    var q: RyEnzymeParams;
+    var t4, v4 = ry_enzyme_params_from_json(load64(sb), load64(sb + 8), &q);
+    var qv: f64 = q.vmax;
+    var qk: f64 = q.km;
+    var qh: f64 = q.hill_n;
+    var qc: f64 = q.kcat;
+    assert(is_ok(t4) == 1 && qv == 12.5 && qk == 0.003 && qh == 2.8 && qc == 450.0, "an EnzymeParams reads back");
+    params(&p, 10.0, 1.0, 2.5, 50.0);
+    store64(sb + 8, 0);
+    var tw, vw = ry_enzyme_params_to_json(sb, &p);
+    var t5, v5 = ry_enzyme_params_from_json(load64(sb), load64(sb + 8), &q);
+    qv = q.vmax;
+    assert(is_ok(t5) == 1 && qv == 10.0, "the unit test's EnzymeParams reads back");
+    var e: RyKnownEnzyme;
+    entry("Catalase", &e);
+    store64(sb + 8, 0);
+    var tk, vk = ry_known_enzyme_to_json(sb, &e);
+    str_builder_putc(sb, 0);
+    assert(strstr(load64(sb), "Catalase") >= 0, "a KnownEnzyme's document names it");
+    var ss[24];
+    put(&ss, 0, 0.5);
+    put(&ss, 1, 1.0);
+    put(&ss, 2, 5.0);
+    var data[48];
+    mm_data(&data, &ss, 3, 10.0, 1.0);
+    ry_lineweaver_burk_fit(&data, 3, &fit);
+    store64(sb + 8, 0);
+    var tf, vf = ry_kinetic_fit_to_json(sb, &fit);
+    var t6, v6 = ry_kinetic_fit_from_json(load64(sb), load64(sb + 8), &back);
+    var fk: f64 = fit.km;
+    var fv: f64 = fit.vmax;
+    bk = back.km;
+    var bv: f64 = back.vmax;
+    assert(is_ok(t6) == 1 && bk == fk && bv == fv, "a fitted KineticFit reads back bit for bit");
+    return 0;
+}
+
+# rust src/enzyme.rs: test_enzyme_params_rate, test_validate_valid, test_validate_negative_vmax
+# rust src/enzyme.rs: test_validate_rejects_non_finite_and_zero_divisors
+fn enzyme_params() {
+    test_group("enzyme: EnzymeParams");
+    var p: RyEnzymeParams;
+    params(&p, 10.0, 1.0, 1.0, 100.0);
+    var r: f64 = ry_enzyme_params_rate(&p, 1.0);
+    var ce: f64 = ry_enzyme_params_catalytic_efficiency(&p);
+    assert(near(r, 5.0, 0.01), "rate at Km");
+    assert(near(ce, 100.0, 0.0000000000000002220446049250313), "kcat / Km");
+    assert_eq(valid(&p), 1, "valid params validate");
+    params(&p, -1.0, 1.0, 1.0, 100.0);
+    assert_eq(valid(&p), 0, "negative vmax");
+    var k = 0;
+    while (k < 3) {
+        var v: f64 = bad(k);
+        params(&p, v, 1.0, 1.0, 100.0);
+        assert_eq(valid(&p), 0, "non-finite vmax");
+        params(&p, 10.0, v, 1.0, 100.0);
+        assert_eq(valid(&p), 0, "non-finite km");
+        params(&p, 10.0, 1.0, 1.0, v);
+        assert_eq(valid(&p), 0, "non-finite kcat");
+        params(&p, 10.0, 1.0, v, 100.0);
+        assert_eq(valid(&p), 0, "non-finite hill_n");
+        k = k + 1;
+    }
+    params(&p, 10.0, 0.0, 1.0, 100.0);
+    assert_eq(valid(&p), 0, "km 0 (a divisor)");
+    params(&p, 10.0, 1.0, 0.0, 100.0);
+    assert_eq(valid(&p), 0, "hill_n 0");
+    params(&p, 0.0, 1.0, 1.0, 0.0);
+    assert_eq(valid(&p), 1, "an inactive enzyme (vmax and kcat 0) validates");
+    return 0;
+}
+
+# rust src/enzyme.rs: test_lookup_enzyme_by_name, test_lookup_enzyme_case_insensitive, test_lookup_enzyme_not_found
+# rust src/enzyme.rs: test_known_enzyme_params, test_known_enzyme_catalytic_efficiency, test_known_enzyme_count
+# rust src/enzyme.rs: test_allosteric_enzymes_have_hill_gt_1, test_pyruvate_kinase_is_muscle_m1
+# rust src/enzyme.rs: test_catalase_below_diffusion_limit, test_known_enzymes_respect_diffusion_limit
+# rust tests/integration.rs: test_enzyme_db_params_produce_valid_rates
+# rust tests/validation.rs: validate_enzyme_db_carbonic_anhydrase, validate_enzyme_db_catalase
+# rust tests/validation.rs: validate_enzyme_db_diffusion_limit, validate_enzyme_db_pyruvate_kinase_muscle
+# rust tests/validation.rs: validate_enzyme_db_hexokinase
+fn database() {
+    test_group("enzyme: the database");
+    var e: RyKnownEnzyme;
+    entry("Catalase", &e);
+    assert_streq(e.ec_number, "1.11.1.6", "Catalase's EC number");
+    var kc: f64 = e.kcat;
+    var kmc: f64 = e.km;
+    assert(kc > 10000000.0, "Catalase kcat > 1e7");
+    assert(near(kmc, 1.1, 0.000000001), "Catalase Km 1.1 M");
+    var eff: f64 = ry_known_enzyme_catalytic_efficiency(&e);
+    assert(f64_abs(eff - 40000000.0) / 40000000.0 < 0.15, "Catalase kcat/Km about 4e7");
+    entry("carbonic anhydrase", &e);
+    assert_streq(e.ec_number, "4.2.1.1", "case-insensitive lookup");
+    kc = e.kcat;
+    assert(kc > 500000.0 && kc < 2000000.0, "carbonic anhydrase kcat about 1e6");
+    assert_eq(ry_lookup_enzyme("nonexistent_enzyme", 18), 0 - 1, "an unknown name");
+    entry("Hexokinase", &e);
+    var p: RyEnzymeParams;
+    ry_known_enzyme_params(&e, 0.000001, &p);
+    var pk: f64 = p.kcat;
+    var pv: f64 = p.vmax;
+    assert(near(pk, 100.0, 0.0000000000000002220446049250313), "params keeps kcat");
+    assert(near(pv, 100.0 * 0.000001, 0.0000000000000002220446049250313), "Vmax = kcat [E]");
+    var hk: f64 = e.km;
+    assert(hk < 0.001 && hk > 0.00001, "hexokinase Km about 0.1 mM");
+    entry("Triose phosphate isomerase", &e);
+    eff = ry_known_enzyme_catalytic_efficiency(&e);
+    assert(eff > 1000000.0, "TPI near the diffusion limit");
+    assert_eq(RY_KNOWN_ENZYME_COUNT, 12, "12 entries");
+    entry("Phosphofructokinase", &e);
+    var hn: f64 = e.hill_n;
+    assert(hn > 1.0, "PFK is cooperative");
+    entry("Aspartate transcarbamoylase", &e);
+    hn = e.hill_n;
+    assert(hn > 1.0, "ATCase is cooperative");
+    entry("Pyruvate kinase", &e);
+    hn = e.hill_n;
+    var pkm: f64 = e.km;
+    assert(near(hn, 1.0, 0.0000000000000002220446049250313), "PK is the hyperbolic M1 isoform");
+    assert(pkm >= 0.00003 && pkm <= 0.00008, "Km(PEP) 0.03-0.08 mM");
+    ry_known_enzyme_params(&e, 0.000001, &p);
+    var at_km: f64 = ry_enzyme_params_rate(&p, pkm);
+    pv = p.vmax;
+    assert(f64_abs(at_km - pv / 2.0) < 0.000000000000001, "hill_n 1 routes through MM: v(Km) = Vmax/2");
+    var bad_rows = 0;
+    var i = 0;
+    while (i < RY_KNOWN_ENZYME_COUNT) {
+        ry_known_enzyme(i, &e);
+        var ef: f64 = ry_known_enzyme_catalytic_efficiency(&e);
+        if (ef > 1000000000.0) { bad_rows = bad_rows + 1; }
+        ry_known_enzyme_params(&e, 0.000001, &p);
+        if (valid(&p) != 1) { bad_rows = bad_rows + 1; }
+        var h: f64 = e.hill_n;
+        if (h < 1.0 || h > 6.0) { bad_rows = bad_rows + 1; }
+        var km_i: f64 = e.km;
+        var rate: f64 = ry_enzyme_params_rate(&p, km_i);
+        if (rate <= 0.0 || _ry_is_finite(rate) == 0) { bad_rows = bad_rows + 1; }
+        i = i + 1;
+    }
+    assert_eq(bad_rows, 0, "every entry: kcat/Km <= 1e9, valid params, nH in [1, 6], a finite rate at Km");
+    return 0;
+}
+
+# rust src/enzyme.rs: test_bad_substrate_gives_zero_rate, test_reversible_sanitizes_substrate_and_product
+# rust src/enzyme.rs: test_bad_inhibitor_means_no_inhibition, test_zero_inhibitor_ignores_ki
+# rust src/enzyme.rs: test_infinite_ki_means_no_inhibition, test_present_inhibitor_with_invalid_ki_fully_inhibits
+fn hardening_rates() {
+    test_group("enzyme: hardening, rates");
+    var wrong = 0;
+    var mm: f64 = ry_michaelis_menten(2.0, 10.0, 1.0);
+    var fwd: f64 = ry_reversible_michaelis_menten(1.0, 0.0, 10.0, 1.0, 5.0, 1.0);
+    var rev: f64 = ry_reversible_michaelis_menten(0.0, 1.0, 10.0, 1.0, 5.0, 1.0);
+    var k = 0;
+    while (k < 4) {
+        var s: f64 = bad(k);
+        var r: f64 = ry_michaelis_menten(s, 10.0, 1.0);
+        if (r != 0.0) { wrong = wrong + 1; }
+        r = ry_hill_equation(s, 10.0, 1.0, 2.5);
+        if (r != 0.0) { wrong = wrong + 1; }
+        r = ry_competitive_inhibition(s, 1.0, 10.0, 1.0, 1.0);
+        if (r != 0.0) { wrong = wrong + 1; }
+        r = ry_uncompetitive_inhibition(s, 1.0, 10.0, 1.0, 1.0);
+        if (r != 0.0) { wrong = wrong + 1; }
+        r = ry_mixed_inhibition(s, 1.0, 10.0, 1.0, 1.0, 2.0);
+        if (r != 0.0) { wrong = wrong + 1; }
+        r = ry_substrate_inhibition(s, 10.0, 1.0, 5.0);
+        if (r != 0.0) { wrong = wrong + 1; }
+        r = ry_ping_pong(s, 1.0, 10.0, 1.0, 1.0);
+        if (r != 0.0) { wrong = wrong + 1; }
+        r = ry_ping_pong(1.0, s, 10.0, 1.0, 1.0);
+        if (r != 0.0) { wrong = wrong + 1; }
+        r = ry_sequential_bisubstrate(s, 1.0, 10.0, 1.0, 1.0, 1.0);
+        if (r != 0.0) { wrong = wrong + 1; }
+        r = ry_sequential_bisubstrate(1.0, s, 10.0, 1.0, 1.0, 1.0);
+        if (r != 0.0) { wrong = wrong + 1; }
+        r = ry_reversible_michaelis_menten(1.0, s, 10.0, 1.0, 5.0, 1.0);
+        if (near(r, fwd, 0.000000000001) == 0) { wrong = wrong + 1; }
+        r = ry_reversible_michaelis_menten(s, 1.0, 10.0, 1.0, 5.0, 1.0);
+        if (near(r, rev, 0.000000000001) == 0) { wrong = wrong + 1; }
+        r = ry_competitive_inhibition(2.0, s, 10.0, 1.0, 1.0);
+        if (near(r, mm, 0.000000000001) == 0) { wrong = wrong + 1; }
+        r = ry_uncompetitive_inhibition(2.0, s, 10.0, 1.0, 1.0);
+        if (near(r, mm, 0.000000000001) == 0) { wrong = wrong + 1; }
+        r = ry_mixed_inhibition(2.0, s, 10.0, 1.0, 1.0, 1.0);
+        if (near(r, mm, 0.000000000001) == 0) { wrong = wrong + 1; }
+        k = k + 1;
+    }
+    assert_eq(wrong, 0, "bad substrate: 0; bad product: no product; bad inhibitor: no inhibition");
+    var nan: f64 = _ry_nan();
+    var z: f64 = ry_reversible_michaelis_menten(1.0, 1.0, 10.0, nan, 5.0, 1.0);
+    assert(z == 0.0, "reversible with a NaN Km_f");
+    var kis[40];
+    put(&kis, 0, 0.0);
+    put(&kis, 1, -1.0);
+    put(&kis, 2, nan);
+    put(&kis, 3, _RY_INF);
+    put(&kis, 4, fb(0x01A56E1FC2F8F359));
+    wrong = 0;
+    var j = 0;
+    while (j < 5) {
+        var ki: f64 = load64(&kis + 8 * j);
+        var c0: f64 = ry_competitive_inhibition(2.0, 0.0, 10.0, 1.0, ki);
+        var u0: f64 = ry_uncompetitive_inhibition(2.0, 0.0, 10.0, 1.0, ki);
+        var m0: f64 = ry_mixed_inhibition(2.0, 0.0, 10.0, 1.0, ki, ki);
+        if (near(c0, mm, 0.000000000001) == 0 || near(u0, mm, 0.000000000001) == 0) { wrong = wrong + 1; }
+        if (near(m0, mm, 0.000000000001) == 0) { wrong = wrong + 1; }
+        j = j + 1;
+    }
+    assert_eq(wrong, 0, "no inhibitor: Ki is ignored");
+    var inf: f64 = _RY_INF;
+    var c: f64 = ry_competitive_inhibition(2.0, 5.0, 10.0, 1.0, inf);
+    var u: f64 = ry_uncompetitive_inhibition(2.0, 5.0, 10.0, 1.0, inf);
+    var m: f64 = ry_mixed_inhibition(2.0, 5.0, 10.0, 1.0, inf, inf);
+    assert(near(c, mm, 0.000000000001) && near(u, mm, 0.000000000001) && near(m, mm, 0.000000000001), "Ki inf");
+    var comp: f64 = ry_competitive_inhibition(2.0, 5.0, 10.0, 1.0, 1.0);
+    var mc: f64 = ry_mixed_inhibition(2.0, 5.0, 10.0, 1.0, 1.0, inf);
+    assert(near(mc, comp, 0.000000000001), "Ki' inf: mixed is competitive");
+    var unc: f64 = ry_uncompetitive_inhibition(2.0, 5.0, 10.0, 1.0, 1.0);
+    var mu: f64 = ry_mixed_inhibition(2.0, 5.0, 10.0, 1.0, inf, 1.0);
+    assert(near(mu, unc, 0.000000000001), "Ki inf: mixed is uncompetitive");
+    var si: f64 = ry_substrate_inhibition(2.0, 10.0, 1.0, inf);
+    assert(near(si, mm, 0.000000000001), "Ks inf: plain MM");
+    wrong = 0;
+    j = 0;
+    while (j < 3) {
+        var kb: f64 = load64(&kis + 8 * j);
+        var x1: f64 = ry_competitive_inhibition(2.0, 1.0, 10.0, 1.0, kb);
+        var x2: f64 = ry_uncompetitive_inhibition(2.0, 1.0, 10.0, 1.0, kb);
+        var x3: f64 = ry_mixed_inhibition(2.0, 1.0, 10.0, 1.0, kb, 1.0);
+        var x4: f64 = ry_mixed_inhibition(2.0, 1.0, 10.0, 1.0, 1.0, kb);
+        if (x1 != 0.0 || x2 != 0.0 || x3 != 0.0 || x4 != 0.0) { wrong = wrong + 1; }
+        j = j + 1;
+    }
+    assert_eq(wrong, 0, "a present inhibitor with Ki 0, -1 or NaN fully inhibits");
+    return 0;
+}
+
+# rust src/enzyme.rs: test_hill_extreme_concentrations, test_hill_k_edge_cases, test_q10_invalid_base_returns_zero
+fn hardening_hill() {
+    test_group("enzyme: hardening, Hill and Q10");
+    var v: f64 = ry_hill_equation(fb(0x6974E718D7D7625A), 10.0, 1.0, 2.0);
+    assert(near(v, 10.0, 0.000000000001), "a huge s: Vmax, not NaN");
+    v = ry_hill_equation(fb(0x16687E92154EF7AC), 10.0, fb(0x16687E92154EF7AC), 2.0);
+    assert(near(v, 5.0, 0.000000000001), "tiny s and K: Vmax/2, not 0/0");
+    v = ry_hill_equation(fb(0x16787E92154EF7AC), 1.0, fb(0x16687E92154EF7AC), 3.0);
+    assert(near(v, 8.0 / 9.0, 0.000000000001), "tiny, ratio 2: 8/9");
+    var neg: f64 = -0.5;
+    v = ry_hill_equation(neg, 10.0, 1.0, 2.5);
+    assert(v == 0.0, "a negative s gives 0");
+    var sp: f64 = _ry_cr_pow(0.7, 2.8);
+    var kp: f64 = _ry_cr_pow(1.3, 2.8);
+    var textbook: f64 = sp / (kp + sp);
+    v = ry_hill_equation(0.7, 1.0, 1.3, 2.8);
+    assert(near(v, textbook, 0.00000000000001), "the textbook form in the normal range");
+    v = ry_hill_equation(0.5, 10.0, 0.0, 2.0);
+    assert(v == 10.0, "K 0: saturated");
+    v = ry_hill_equation(0.0, 10.0, 0.0, 2.0);
+    assert(v == 0.0, "K 0 and s 0: no substrate");
+    var nan: f64 = _ry_nan();
+    var inf: f64 = _RY_INF;
+    var m1: f64 = -1.0;
+    var a: f64 = ry_hill_equation(0.5, 10.0, m1, 2.0);
+    var b: f64 = ry_hill_equation(0.5, 10.0, nan, 2.0);
+    var c: f64 = ry_hill_equation(0.5, 10.0, inf, 2.0);
+    assert(a == 0.0 && b == 0.0 && c == 0.0, "K negative, NaN or inf: no binding");
+    v = ry_hill_equation(1.0, 10.0, 1.0, nan);
+    assert(v == 0.0, "n NaN: 0");
+    var hf: f64 = _ry_enzyme_hill_fraction(1.0, 1.0, nan);
+    assert(hf == 0.0, "hill_fraction with n NaN");
+    hf = _ry_enzyme_hill_fraction(1.0, 1.0, 4.0);
+    assert(near(hf, 0.5, 0.0000000000000002220446049250313), "hill_fraction at s = K: 1/2");
+    var q0: f64 = ry_q10_rate(1.0, 0.0, 37.0, 27.0);
+    var q1: f64 = ry_q10_rate(1.0, -2.0, 37.0, 27.0);
+    var q2: f64 = ry_q10_rate(1.0, nan, 37.0, 27.0);
+    var q3: f64 = ry_q10_rate(1.0, inf, 37.0, 27.0);
+    assert(q0 == 0.0 && q1 == 0.0 && q2 == 0.0 && q3 == 0.0, "Q10 0, negative, NaN, inf: 0");
+    var q4: f64 = ry_q10_rate(1.0, 2.0, 17.0, 27.0);
+    assert(near(q4, 0.5, 0.000000000001), "below the reference temperature: slower");
+    return 0;
+}
+
+# rust src/enzyme.rs: test_lineweaver_burk_rejects_non_positive_fit, test_fits_skip_non_finite_points
+# rust src/enzyme.rs: test_fits_slow_enzyme
+fn hardening_fits() {
+    test_group("enzyme: hardening, fits");
+    var d[112];
+    var fit: RyKineticFit;
+    put(&d, 0, 1.0);
+    put(&d, 1, 5.0);
+    put(&d, 2, 2.0);
+    put(&d, 3, 4.0);
+    put(&d, 4, 4.0);
+    put(&d, 5, 3.0);
+    assert_eq(ry_lineweaver_burk_fit(&d, 3, &fit), 0, "a falling rate: negative Km, None");
+    put(&d, 0, 0.1);
+    put(&d, 1, 0.1);
+    put(&d, 2, 1.0);
+    put(&d, 3, 2.0);
+    put(&d, 4, 10.0);
+    put(&d, 5, 100.0);
+    assert_eq(ry_lineweaver_burk_fit(&d, 3, &fit), 0, "a negative intercept: None");
+    var ss[32];
+    put(&ss, 0, 0.5);
+    put(&ss, 1, 1.0);
+    put(&ss, 2, 2.0);
+    put(&ss, 3, 5.0);
+    var data[112];
+    mm_data(&data, &ss, 4, 10.0, 1.0);
+    var nan: f64 = _ry_nan();
+    var inf: f64 = _RY_INF;
+    put(&data, 8, nan);
+    put(&data, 9, 1.0);
+    put(&data, 10, 1.0);
+    put(&data, 11, inf);
+    put(&data, 12, inf);
+    put(&data, 13, 3.0);
+    assert_eq(ry_lineweaver_burk_fit(&data, 7, &fit), 1, "LB skips non-finite points");
+    var km: f64 = fit.km;
+    var vm: f64 = fit.vmax;
+    assert(near(km, 1.0, 0.000001) && near(vm, 10.0, 0.000001), "and recovers Km, Vmax");
+    assert_eq(ry_eadie_hofstee_fit(&data, 7, &fit), 1, "EH skips them too");
+    km = fit.km;
+    vm = fit.vmax;
+    assert(near(km, 1.0, 0.000001) && near(vm, 10.0, 0.000001), "and recovers Km, Vmax");
+    put(&ss, 0, 0.0002);
+    put(&ss, 1, 0.0005);
+    put(&ss, 2, 0.001);
+    put(&ss, 3, 0.002);
+    var s6[48];
+    memcpy(&s6, &ss, 32);
+    put(&s6, 4, 0.005);
+    put(&s6, 5, 0.01);
+    var vmax: f64 = 0.000000000001;
+    var kmt: f64 = 0.001;
+    mm_data(&data, &s6, 6, vmax, kmt);
+    assert_eq(ry_lineweaver_burk_fit(&data, 6, &fit), 1, "LB fits a slow enzyme");
+    km = fit.km;
+    vm = fit.vmax;
+    var r2: f64 = fit.r_squared;
+    assert(f64_abs(km - kmt) / kmt < 0.000001 && f64_abs(vm - vmax) / vmax < 0.000001, "LB: Km 1 mM, Vmax 1e-12");
+    assert(r2 > 0.999999, "LB: R2");
+    assert_eq(ry_eadie_hofstee_fit(&data, 6, &fit), 1, "EH fits a slow enzyme");
+    km = fit.km;
+    vm = fit.vmax;
+    r2 = fit.r_squared;
+    assert(f64_abs(km - kmt) / kmt < 0.000001 && f64_abs(vm - vmax) / vmax < 0.000001, "EH: Km 1 mM, Vmax 1e-12");
+    assert(r2 > 0.999999, "EH: R2");
+    return 0;
+}
+
+# The regression on raw points (kind 0) into slope, intercept, R²: 1, or 0.
+fn regress(pts, n, out) {
+    return _ry_enzyme_linear_regression(pts, n, 0, out);
+}
+
+# rust src/enzyme.rs: test_linear_regression_degenerate_and_exact
+fn regression() {
+    test_group("enzyme: linear regression");
+    var p[96];
+    var o[24];
+    put(&p, 0, 0.000000001);
+    put(&p, 1, 1.0);
+    put(&p, 2, 0.000000001);
+    put(&p, 3, 2.0);
+    assert_eq(regress(&p, 2, &o), 0, "all x equal (1e-9): degenerate");
+    put(&p, 0, 1000000000.0);
+    put(&p, 1, 1.0);
+    put(&p, 2, 1000000000.0);
+    put(&p, 3, 2.0);
+    put(&p, 4, 1000000000.0);
+    put(&p, 5, 3.0);
+    assert_eq(regress(&p, 3, &o), 0, "all x equal (1e9): degenerate");
+    put(&p, 0, 0.0);
+    put(&p, 1, 1.0);
+    put(&p, 2, 0.0);
+    put(&p, 3, 2.0);
+    assert_eq(regress(&p, 2, &o), 0, "all x 0: degenerate");
+    var nan: f64 = _ry_nan();
+    put(&p, 0, 1.0);
+    put(&p, 1, 1.0);
+    put(&p, 2, 2.0);
+    put(&p, 3, nan);
+    assert_eq(regress(&p, 2, &o), 0, "a non-finite point: None");
+    var i = 0;
+    while (i < 5) {
+        var x: f64 = 100000.0 + f64_from(i);
+        put(&p, 2 * i, x);
+        put(&p, 2 * i + 1, 3.0 * x + 2.0);
+        i = i + 1;
+    }
+    assert_eq(regress(&p, 5, &o), 1, "offset data fits");
+    var slope: f64 = load64(&o);
+    var icpt: f64 = load64(&o + 8);
+    var r2: f64 = load64(&o + 16);
+    assert(near(slope, 3.0, 0.000000001) && near(icpt, 2.0, 0.001) && r2 > 0.999999, "centred sums: exact slope");
+    i = 0;
+    while (i < 5) {
+        var x2: f64 = 100000000.0 + f64_from(i);
+        put(&p, 2 * i, x2);
+        put(&p, 2 * i + 1, 3.0 * x2 + 2.0);
+        i = i + 1;
+    }
+    assert_eq(regress(&p, 5, &o), 0, "a spread below 1e-6 of the magnitude: degenerate");
+    put(&p, 0, 1.0);
+    put(&p, 1, 4.0);
+    put(&p, 2, 2.0);
+    put(&p, 3, 4.0);
+    assert_eq(regress(&p, 2, &o), 1, "flat y fits");
+    slope = load64(&o);
+    r2 = load64(&o + 16);
+    assert(slope == 0.0 && r2 == 0.0, "with slope 0 and R2 0");
+    return 0;
+}
+
+# rust tests/integration.rs: test_michaelis_menten_half_vmax_at_km, test_michaelis_menten_saturation
+# rust tests/integration.rs: test_michaelis_menten_zero_substrate, test_inhibition_hierarchy
+# rust tests/validation.rs: validate_mm_at_km_gives_half_vmax, validate_mm_saturation
+# rust tests/validation.rs: validate_hill_hemoglobin_o2_binding, validate_hill_hemoglobin_at_p50
+# rust tests/validation.rs: validate_hill_hemoglobin_venous, validate_competitive_inhibition_malonate
+# rust tests/validation.rs: validate_competitive_inhibition_zero_inhibitor_equals_mm
+fn reference_values() {
+    test_group("enzyme: integration and validation references");
+    var r: f64 = ry_michaelis_menten(1.0, 10.0, 1.0);
+    assert(near(r, 5.0, 0.01), "half Vmax at Km");
+    r = ry_michaelis_menten(10000.0, 10.0, 1.0);
+    assert(near(r, 10.0, 0.01), "saturation");
+    r = ry_michaelis_menten(0.0, 10.0, 1.0);
+    assert(r == 0.0, "zero substrate");
+    var base: f64 = ry_michaelis_menten(1.0, 10.0, 1.0);
+    var comp: f64 = ry_competitive_inhibition(1.0, 1.0, 10.0, 1.0, 1.0);
+    var unc: f64 = ry_uncompetitive_inhibition(1.0, 1.0, 10.0, 1.0, 1.0);
+    var mix: f64 = ry_mixed_inhibition(1.0, 1.0, 10.0, 1.0, 1.0, 1.0);
+    assert(comp < base && unc < base && mix < base, "every inhibition lowers the rate");
+    r = ry_michaelis_menten(5.0, 100.0, 5.0);
+    assert(near(r, 50.0, 0.001), "MM at Km: Vmax/2");
+    r = ry_michaelis_menten(1000.0, 100.0, 1.0);
+    assert(near(r, 100.0, 0.2), "MM at [S] >> Km: Vmax");
+    var sat: f64 = ry_hill_equation(100.0, 1.0, 26.8, 2.8);
+    assert(near(sat, 0.975, 0.02), "hemoglobin at pO2 100: 97.5 %");
+    sat = ry_hill_equation(26.8, 1.0, 26.8, 2.8);
+    assert(near(sat, 0.5, 0.001), "at P50: 50 %");
+    sat = ry_hill_equation(40.0, 1.0, 26.8, 2.8);
+    assert(near(sat, 0.75, 0.05), "venous pO2 40: 75 %");
+    var km_app: f64 = 0.4 * (1.0 + 1.0 / 0.05);
+    assert(near(km_app, 8.4, 0.01), "malonate: apparent Km 8.4");
+    var at: f64 = ry_competitive_inhibition(km_app, 1.0, 10.0, 0.4, 0.05);
+    assert(near(at, 5.0, 0.1), "at the apparent Km: Vmax/2");
+    var mm: f64 = ry_michaelis_menten(2.0, 10.0, 0.4);
+    var ci: f64 = ry_competitive_inhibition(2.0, 0.0, 10.0, 0.4, 0.05);
+    assert(near(mm, ci, 0.001), "no inhibitor: MM");
+    return 0;
+}
+
+# Runs the enzyme suite.
+fn main() {
+    alloc_init();
+    single_substrate();
+    inhibition();
+    reversible();
+    bisubstrate();
+    temperature();
+    fits();
+    serde();
+    enzyme_params();
+    database();
+    hardening_rates();
+    hardening_hill();
+    hardening_fits();
+    regression();
+    reference_values();
+    return assert_summary();
+}
+
+var exit_code = main();
+# assert_summary() returns the failure count; a wait status is 8 bits, so any failure exits 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

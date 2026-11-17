@@ -26,6 +26,10 @@ include "src/guard.cyr"
 include "src/integrate.cyr"
 include "src/logging.cyr"
 include "src/json.cyr"
+include "src/protein_data.cyr"
+include "src/alignment_data.cyr"
+include "src/enzyme_data.cyr"
+include "src/enzyme.cyr"
 
 # Keeps the loops' results observable.
 var _bn_sink = 0;
@@ -310,6 +314,71 @@ fn _bn_read(text, nf, names, n): i64 {
     return 0;
 }
 
+# ── M2 part 1: enzyme, the Rust benches' twins (rust-old/benches/benchmarks.rs: the same inputs) ──
+
+# n calls of enzyme benchmark `kind`, its result kept: 0 michaelis_menten(1, 10, 1), 1 hill_equation(0.5, 10, 1, 4),
+# 2 mixed_inhibition(1, 0.5, 10, 1, 2, 3), 3 ping_pong(1, 2, 10, 0.5, 1), 4 arrhenius(1e10, 50000, 310),
+# 5 lineweaver_burk_fit of seven MM(10, 1) points, 6 lookup_enzyme("Catalase").
+fn _bn_enzyme(kind, n): i64 {
+    var data[112];
+    var ss[56];
+    store64(&ss, 0x3FB999999999999A);
+    store64(&ss + 8, 0x3FD0000000000000);
+    store64(&ss + 16, 0x3FE0000000000000);
+    store64(&ss + 24, 0x3FF0000000000000);
+    store64(&ss + 32, 0x4000000000000000);
+    store64(&ss + 40, 0x4014000000000000);
+    store64(&ss + 48, 0x4024000000000000);
+    var k = 0;
+    while (k < 7) {
+        var sk: f64 = load64(&ss + 8 * k);
+        var vk: f64 = ry_michaelis_menten(sk, 10.0, 1.0);
+        store64(&data + 16 * k, load64(&sk));
+        store64(&data + 16 * k + 8, load64(&vk));
+        k = k + 1;
+    }
+    var fit: RyKineticFit;
+    var s: f64 = 0.0;
+    var hits = 0;
+    var i = 0;
+    while (i < n) {
+        if (kind == 0) {
+            var r0: f64 = ry_michaelis_menten(1.0, 10.0, 1.0);
+            s = s + r0;
+        } elif (kind == 1) {
+            var r1: f64 = ry_hill_equation(0.5, 10.0, 1.0, 4.0);
+            s = s + r1;
+        } elif (kind == 2) {
+            var r2: f64 = ry_mixed_inhibition(1.0, 0.5, 10.0, 1.0, 2.0, 3.0);
+            s = s + r2;
+        } elif (kind == 3) {
+            var r3: f64 = ry_ping_pong(1.0, 2.0, 10.0, 0.5, 1.0);
+            s = s + r3;
+        } elif (kind == 4) {
+            var r4: f64 = ry_arrhenius(10000000000.0, 50000.0, 310.0);
+            s = s + r4;
+        } elif (kind == 5) {
+            hits = hits + ry_lineweaver_burk_fit(&data, 7, &fit);
+        } else {
+            hits = hits + ry_lookup_enzyme("Catalase", 8);
+        }
+        i = i + 1;
+    }
+    _bn_keep(s);
+    _bn_sink = _bn_sink ^ hits;
+    return 0;
+}
+
+# One enzyme benchmark of `n` calls.
+fn _bn_enz(name, kind, n): i64 {
+    var b = bench_new(name);
+    bench_batch_start(b);
+    _bn_enzyme(kind, n);
+    bench_batch_stop(b, n);
+    bench_report(b);
+    return 0;
+}
+
 # One benchmark of the JSON writers: `kind` 0 the serde_json f64 form, 1 the Display form, 2 a ten-field document.
 fn _bn_json(name, kind, n): i64 {
     var b = bench_new(name);
@@ -366,6 +435,13 @@ fn main(): i64 {
     _bn_json("json/f64 serde_json form", 0, 200000);
     _bn_json("json/f64 Display form", 1, 200000);
     _bn_json("json/document of ten f64 fields", 2, 20000);
+    _bn_enz("michaelis_menten", 0, 1000000);
+    _bn_enz("hill_equation", 1, 1000000);
+    _bn_enz("mixed_inhibition", 2, 1000000);
+    _bn_enz("ping_pong", 3, 1000000);
+    _bn_enz("arrhenius", 4, 1000000);
+    _bn_enz("lineweaver_burk_fit", 5, 200000);
+    _bn_enz("enzyme_lookup", 6, 1000000);
     var br = bench_new("json/read MembranePermeability (3 f64)");
     bench_batch_start(br);
     _bn_read("{\"p_na\":0.04,\"p_k\":1.0,\"p_cl\":0.45}", 3, "p_na\0p_k\0p_cl\0", 100000);

@@ -2748,23 +2748,25 @@ fn _ry_cr_pow_acc(x: f64, y: f64): f64 {
 # `math` row of tests/golden/math.tsv. The stdlib's f64_min / f64_max differ from Rust when the second operand is
 # NaN, and the stdlib has no is_nan, is_finite or powi (port-parity.md §0.1, §0.3, §0.4).
 
-# 1 if x is a NaN: the exponent all ones and a non-zero fraction, as a bit test (port-parity.md §0.3), so every NaN
-# pattern counts, a signalling or negative one included. Mirrors `f64::is_nan`.
+# 1 if x is a NaN, else 0: `x != x`, which is 1 exactly for every NaN pattern (signalling and negative ones
+# included: an IEEE compare, ucomisd's unordered flag) — the same answers as the bit test of port-parity.md §0.3.
+# One branch-free expression, so #inline takes it. Mirrors `f64::is_nan`.
 #must_use
 #pure
+#inline
 fn _ry_is_nan(x: f64): i64 {
-    var b = load64(&x);
-    if ((b & 0x7FFFFFFFFFFFFFFF) > 0x7FF0000000000000) { return 1; }
-    return 0;
+    return x != x;
 }
 
-# 1 if x is finite: the exponent is not all ones (port-parity.md §0.3). Mirrors `f64::is_finite`.
+# 1 if x is finite, else 0: `(x - x) == 0.0`. For every finite x, x − x is +0 (round to nearest: an exact zero
+# difference is +0); for ±inf and NaN it is NaN, which compares unequal. The same answers as the exponent bit test of
+# port-parity.md §0.3 on every bit pattern, with no memory round trip; one expression, so #inline takes it. Mirrors
+# `f64::is_finite`.
 #must_use
 #pure
+#inline
 fn _ry_is_finite(x: f64): i64 {
-    var b = load64(&x);
-    if ((b & 0x7FF0000000000000) != 0x7FF0000000000000) { return 1; }
-    return 0;
+    return (x - x) == 0.0;
 }
 
 # The larger of a and b, as rustc 1.100.0 lowers `a.max(b)`: a NaN operand is ignored (NaN only when both are), and
@@ -5373,6 +5375,677 @@ var RY_KNOWN_ENZYME_HILL_N: f64[12] = {
     1.0,  # Pyruvate kinase
     2.4,  # Aspartate transcarbamoylase
 };
+
+# --- enzyme.cyr ---
+
+# enzyme.cyr — enzyme kinetics: Michaelis-Menten, inhibition, allosteric regulation, multi-substrate kinetics,
+# linearization fits, and the enzyme database (Rust 1.2.0's `enzyme.rs`, transcribed).
+#
+# Rates for enzyme-catalyzed reactions. Concentrations in molar (M), rates in M/s, temperatures in kelvin, energies in
+# J/mol. Rate functions treat a NaN, infinite or negative substrate, product or inhibitor concentration as 0
+# (`_ry_guard_conc`), so a bad input yields a finite rate instead of propagating NaN into a simulation.
+#
+# Every operation is in Rust's order: tests/golden/enzyme.tsv compares each function with the oracle's at ≤ 2 ulp
+# where only + − × ÷ run (class B, expected 0) and at 0 ulp against the corrected oracle where Hill and Q10 call `powf`
+# and Arrhenius `exp` (class C, ADR 0003: `_ry_cr_pow`, `_ry_cr_exp`).
+#
+# The Cyrius forms (ADR 0002 rows 2, 3, 10):
+# - KineticFit, EnzymeParams and KnownEnzyme are structs (RyKineticFit, RyEnzymeParams, RyKnownEnzyme), methods take
+#   a pointer: `ry_enzyme_params_rate(&p, s)`;
+# - the fits' Option<KineticFit> is a 1 (Some: *out filled) or 0 (None: *out untouched), and their `&[(f64, f64)]` a
+#   pointer to n (s, v) pairs of f64 (16 bytes each);
+# - `lookup_enzyme`'s Option<&KnownEnzyme> is the entry's index into the generated table (src/enzyme_data.cyr), or
+#   -1; `ry_known_enzyme(i, &e)` fills a RyKnownEnzyme from it;
+# - each serde type has `ry_<type>_to_json` (and `_a`, on an allocator) and, for KineticFit and EnzymeParams,
+#   `ry_<type>_from_json` (and `_a`), src/json.cyr's writers and readers.
+
+# ── single-substrate rate equations ──
+
+# Michaelis-Menten reaction rate, `v = Vmax * [S] / (Km + [S])`: substrate (M), vmax (M/s), km (M). Mirrors
+# `enzyme::michaelis_menten`.
+#must_use
+#pure
+fn ry_michaelis_menten(substrate: f64, vmax: f64, km: f64): f64 {
+    var s: f64 = _ry_guard_conc(substrate);
+    var denom: f64 = km + s;
+    if (denom > 0.0) {
+        var r: f64 = vmax * s / denom;
+        return r;
+    }
+    return 0.0;
+}
+
+# The Hill equation's fractional saturation, `s^n / (k^n + s^n)`, in [0, 1], evaluated as `1 / (1 + (k/s)^n)` (one
+# `powf`, no inf/inf for a large s, no 0/0 when both powers underflow). s NaN, <= 0 or infinite → 0; k == 0 → 1; k
+# negative, NaN or +inf → 0; n NaN → 0. Shared by ry_hill_equation and signal's dose-response functions. Mirrors the
+# crate-private `enzyme::hill_fraction`.
+#must_use
+#pure
+fn _ry_enzyme_hill_fraction(substrate: f64, k: f64, n: f64): f64 {
+    var s: f64 = _ry_guard_conc(substrate);
+    if (s <= 0.0 || _ry_is_nan(n) == 1) { return 0.0; }
+    if (k == 0.0) { return 1.0; }
+    if (k > 0.0 && k < _RY_INF) {
+        var q: f64 = k / s;
+        var p: f64 = _ry_cr_pow(q, n);
+        var r: f64 = 1.0 / (1.0 + p);
+        return r;
+    }
+    return 0.0;
+}
+
+# Hill equation for cooperative / allosteric binding, `v = Vmax * [S]^n / (K_half^n + [S]^n)`, as `Vmax / (1 +
+# (K_half/[S])^n)`: a NaN, negative or infinite [S] gives 0; K_half == 0 gives Vmax for any positive [S]; a negative or
+# non-finite K_half gives 0. Mirrors `enzyme::hill_equation`.
+#must_use
+#pure
+fn ry_hill_equation(substrate: f64, vmax: f64, k_half: f64, n: f64): f64 {
+    var frac: f64 = _ry_enzyme_hill_fraction(substrate, k_half, n);
+    var r: f64 = vmax * frac;
+    return r;
+}
+
+# ── inhibition models ──
+# With [I] == 0 there is no inhibition whatever Ki is; Ki = +inf means that mode of inhibition is absent; with
+# [I] > 0, a Ki that is <= 0 or NaN is the limit Ki → 0 (infinitely tight binding) and the rate is 0.
+
+# The inhibition factor `1 + [I]/Ki` as (1, factor), or (0, 0) when the inhibitor is present and Ki is <= 0 or NaN
+# (fully inhibited). Mirrors the private `inhibition_factor`'s Option<f64>.
+#must_use
+#pure
+fn _ry_enzyme_inhibition_factor(inhibitor: f64, ki: f64): (i64, f64) {
+    var i: f64 = _ry_guard_conc(inhibitor);
+    if (i <= 0.0) { return (1, 1.0); }
+    if (ki > 0.0) {
+        var f: f64 = 1.0 + i / ki;
+        return (1, f);
+    }
+    return (0, 0.0);
+}
+
+# Competitive inhibition, `v = Vmax * [S] / (Km * (1 + [I]/Ki) + [S])`: the apparent Km rises, Vmax is unchanged.
+# Mirrors `enzyme::competitive_inhibition`.
+#must_use
+#pure
+fn ry_competitive_inhibition(substrate: f64, inhibitor: f64, vmax: f64, km: f64, ki: f64): f64 {
+    var has, factor = _ry_enzyme_inhibition_factor(inhibitor, ki);
+    if (has == 0) { return 0.0; }
+    var km_app: f64 = km * factor;
+    var r: f64 = ry_michaelis_menten(substrate, vmax, km_app);
+    return r;
+}
+
+# Uncompetitive inhibition, `v = Vmax / (1 + [I]/Ki) * [S] / (Km / (1 + [I]/Ki) + [S])`: Vmax and Km fall together.
+# Mirrors `enzyme::uncompetitive_inhibition`.
+#must_use
+#pure
+fn ry_uncompetitive_inhibition(substrate: f64, inhibitor: f64, vmax: f64, km: f64, ki: f64): f64 {
+    var has, factor = _ry_enzyme_inhibition_factor(inhibitor, ki);
+    if (has == 0) { return 0.0; }
+    var vmax_app: f64 = vmax / factor;
+    var km_app: f64 = km / factor;
+    var r: f64 = ry_michaelis_menten(substrate, vmax_app, km_app);
+    return r;
+}
+
+# Mixed (noncompetitive) inhibition, `v = Vmax * [S] / (Km * (1 + [I]/Ki) + [S] * (1 + [I]/Ki'))`: the inhibitor
+# binds the free enzyme (Ki) and the enzyme-substrate complex (Ki'); Ki == Ki' is pure noncompetitive inhibition.
+# Mirrors `enzyme::mixed_inhibition`.
+#must_use
+#pure
+fn ry_mixed_inhibition(substrate: f64, inhibitor: f64, vmax: f64, km: f64, ki: f64, ki_prime: f64): f64 {
+    var ha, alpha = _ry_enzyme_inhibition_factor(inhibitor, ki);
+    var hp, alpha_prime = _ry_enzyme_inhibition_factor(inhibitor, ki_prime);
+    if (ha == 0 || hp == 0) { return 0.0; }
+    var s: f64 = _ry_guard_conc(substrate);
+    var denom: f64 = km * alpha + s * alpha_prime;
+    if (denom > 0.0) {
+        var r: f64 = vmax * s / denom;
+        return r;
+    }
+    return 0.0;
+}
+
+# Substrate inhibition, `v = Vmax * [S] / (Km + [S] + [S]^2 / Ks)`: Michaelis-Menten at low [S], falling at high [S].
+# Ks NaN or <= 0 gives 0; Ks = +inf is plain Michaelis-Menten. Mirrors `enzyme::substrate_inhibition`.
+#must_use
+#pure
+fn ry_substrate_inhibition(substrate: f64, vmax: f64, km: f64, ks: f64): f64 {
+    if (_ry_is_nan(ks) == 1 || ks <= 0.0) { return 0.0; }
+    var s: f64 = _ry_guard_conc(substrate);
+    var denom: f64 = km + s + s * s / ks;
+    if (denom > 0.0) {
+        var r: f64 = vmax * s / denom;
+        return r;
+    }
+    return 0.0;
+}
+
+# ── reversible kinetics ──
+
+# Reversible Michaelis-Menten (Haldane-simplified, no dead-end cross term), `v = (Vf * [S]/Km_f - Vr * [P]/Km_r) /
+# (1 + [S]/Km_f + [P]/Km_r)`: positive is net forward. Both Km must be > 0, else 0. Mirrors
+# `enzyme::reversible_michaelis_menten`.
+#must_use
+#pure
+fn ry_reversible_michaelis_menten(substrate: f64, product: f64, vmax_f: f64, km_f: f64, vmax_r: f64, km_r: f64): f64 {
+    if ((km_f > 0.0 && km_r > 0.0) == 0) { return 0.0; }
+    var s: f64 = _ry_guard_conc(substrate);
+    var p: f64 = _ry_guard_conc(product);
+    var num: f64 = vmax_f * s / km_f - vmax_r * p / km_r;
+    var den: f64 = 1.0 + s / km_f + p / km_r;
+    if (den > 0.0) {
+        var r: f64 = num / den;
+        return r;
+    }
+    return 0.0;
+}
+
+# The Haldane relationship, `Keq = (Vmax_f * Km_r) / (Vmax_r * Km_f)`; 0 when `Vmax_r * Km_f <= 0`. Mirrors
+# `enzyme::haldane_keq`.
+#must_use
+#pure
+fn ry_haldane_keq(vmax_f: f64, km_f: f64, vmax_r: f64, km_r: f64): f64 {
+    var den: f64 = vmax_r * km_f;
+    if (den <= 0.0) { return 0.0; }
+    var num: f64 = vmax_f * km_r;
+    var r: f64 = num / den;
+    return r;
+}
+
+# ── multi-substrate kinetics ──
+
+# Ping-pong (double-displacement) bi-substrate rate, `v = Vmax * [A] * [B] / (Km_A * [B] + Km_B * [A] + [A] * [B])`.
+# Mirrors `enzyme::ping_pong`.
+#must_use
+#pure
+fn ry_ping_pong(a0: f64, b0: f64, vmax: f64, km_a: f64, km_b: f64): f64 {
+    var a: f64 = _ry_guard_conc(a0);
+    var b: f64 = _ry_guard_conc(b0);
+    var denom: f64 = km_a * b + km_b * a + a * b;
+    if (denom > 0.0) {
+        var r: f64 = vmax * a * b / denom;
+        return r;
+    }
+    return 0.0;
+}
+
+# Sequential (ordered or random) bi-substrate rate, `v = Vmax * [A] * [B] / (Ki_A * Km_B + Km_B * [A] + Km_A * [B] +
+# [A] * [B])`: both substrates bind before catalysis. Mirrors `enzyme::sequential_bisubstrate`.
+#must_use
+#pure
+fn ry_sequential_bisubstrate(a0: f64, b0: f64, vmax: f64, km_a: f64, km_b: f64, ki_a: f64): f64 {
+    var a: f64 = _ry_guard_conc(a0);
+    var b: f64 = _ry_guard_conc(b0);
+    var denom: f64 = ki_a * km_b + km_b * a + km_a * b + a * b;
+    if (denom > 0.0) {
+        var r: f64 = vmax * a * b / denom;
+        return r;
+    }
+    return 0.0;
+}
+
+# ── temperature dependence ──
+
+# The Q10 model, `rate_new = rate_ref * Q10^((T - T_ref) / 10)`; a Q10 that is <= 0 or non-finite gives 0. Mirrors
+# `enzyme::q10_rate`.
+#must_use
+#pure
+fn ry_q10_rate(rate_ref: f64, q10: f64, temp: f64, temp_ref: f64): f64 {
+    if (_ry_is_finite(q10) == 1 && q10 > 0.0) {
+        var e: f64 = (temp - temp_ref) / 10.0;
+        var p: f64 = _ry_cr_pow(q10, e);
+        var r: f64 = rate_ref * p;
+        return r;
+    }
+    return 0.0;
+}
+
+# The Arrhenius equation, `k = A * exp(-Ea / (R * T))`: pre-exponential A, activation energy Ea (J/mol), T (K); 0 for
+# T <= 0. Mirrors `enzyme::arrhenius`.
+#must_use
+#pure
+fn ry_arrhenius(pre_exponential: f64, activation_energy: f64, temp_kelvin: f64): f64 {
+    if (temp_kelvin <= 0.0) { return 0.0; }
+    var nea: f64 = -activation_energy;
+    var rt: f64 = RY_R_GAS * temp_kelvin;
+    var x: f64 = nea / rt;
+    var e: f64 = _ry_cr_exp(x);
+    var r: f64 = pre_exponential * e;
+    return r;
+}
+
+# The two-temperature Arrhenius form, `k2 = k1 * exp((Ea / R) * (1/T1 - 1/T2))`; 0 when T1 or T2 is <= 0. Mirrors
+# `enzyme::arrhenius_relative`.
+#must_use
+#pure
+fn ry_arrhenius_relative(rate_at_t1: f64, activation_energy: f64, t1: f64, t2: f64): f64 {
+    if (t1 <= 0.0 || t2 <= 0.0) { return 0.0; }
+    var ear: f64 = activation_energy / RY_R_GAS;
+    var i1: f64 = 1.0 / t1;
+    var i2: f64 = 1.0 / t2;
+    var d: f64 = i1 - i2;
+    var x: f64 = ear * d;
+    var e: f64 = _ry_cr_exp(x);
+    var r: f64 = rate_at_t1 * e;
+    return r;
+}
+
+# ── linearization fits ──
+
+# A kinetic fit: estimated Km (M), Vmax (M/s) and the linear fit's R². Rust's `KineticFit`.
+struct RyKineticFit {
+    km: f64;
+    vmax: f64;
+    r_squared: f64;
+}
+
+# Point `k` of the n (s, v) pairs at `data`, as the regression of `kind` sees it, into the two words at `xy`: kind 0
+# the pair itself; 1 Lineweaver-Burk's (1/s, 1/v) and 2 Eadie-Hofstee's (v/s, v), for a usable point only (finite s
+# and v, both > 0: Rust's `valid_point` filter). 1 when the point is in, else 0.
+fn _ry_enzyme_point(data, k, kind, xy): i64 {
+    var s: f64 = load64(data + 16 * k);
+    var v: f64 = load64(data + 16 * k + 8);
+    if (kind == 0) {
+        store64(xy, load64(&s));
+        store64(xy + 8, load64(&v));
+        return 1;
+    }
+    if ((_ry_is_finite(s) == 1 && _ry_is_finite(v) == 1 && s > 0.0 && v > 0.0) == 0) { return 0; }
+    if (kind == 1) {
+        var x1: f64 = 1.0 / s;
+        var y1: f64 = 1.0 / v;
+        store64(xy, load64(&x1));
+        store64(xy + 8, load64(&y1));
+        return 1;
+    }
+    var x2: f64 = v / s;
+    store64(xy, load64(&x2));
+    store64(xy + 8, load64(&v));
+    return 1;
+}
+
+# Ordinary least squares on the points `_ry_enzyme_point(data, k, kind)` gives, with centred two-pass sums (Sxx =
+# Σ(x − x̄)², Sxy = Σ(x − x̄)(y − ȳ)) and a relative degeneracy test (Sxx <= 1e-12·Σx²), in Rust's summation order.
+# (slope, intercept, R²) into the three words at `out` and 1, or 0 (Rust's None) when fewer than 2 points are in,
+# any is non-finite, all x are numerically equal, or the fit overflows. The transform is applied in each pass, so no
+# transformed copy of the data is made. Mirrors the private `linear_regression` (over the fits' transformed points).
+fn _ry_enzyme_linear_regression(data, n, kind, out): i64 {
+    var xy[16];
+    var count = 0;
+    var sum_x: f64 = 0.0;
+    var sum_y: f64 = 0.0;
+    var k = 0;
+    while (k < n) {
+        if (_ry_enzyme_point(data, k, kind, &xy) == 1) {
+            var x: f64 = load64(&xy);
+            var y: f64 = load64(&xy + 8);
+            if (_ry_is_finite(x) == 0 || _ry_is_finite(y) == 0) { return 0; }
+            sum_x = sum_x + x;
+            sum_y = sum_y + y;
+            count = count + 1;
+        }
+        k = k + 1;
+    }
+    if (count < 2) { return 0; }
+    var nf: f64 = f64_from(count);
+    var mean_x: f64 = sum_x / nf;
+    var mean_y: f64 = sum_y / nf;
+    var sxx: f64 = 0.0;
+    var sxy: f64 = 0.0;
+    var syy: f64 = 0.0;
+    var sum_x2: f64 = 0.0;
+    k = 0;
+    while (k < n) {
+        if (_ry_enzyme_point(data, k, kind, &xy) == 1) {
+            var px: f64 = load64(&xy);
+            var py: f64 = load64(&xy + 8);
+            var dx: f64 = px - mean_x;
+            var dy: f64 = py - mean_y;
+            sxx = sxx + dx * dx;
+            sxy = sxy + dx * dy;
+            syy = syy + dy * dy;
+            sum_x2 = sum_x2 + px * px;
+        }
+        k = k + 1;
+    }
+    var tol: f64 = _RY_ENZYME_REGRESSION_REL_TOL * sum_x2;
+    if (_ry_is_finite(sxx) == 0 || sxx <= tol) { return 0; }
+    var slope: f64 = sxy / sxx;
+    var intercept: f64 = mean_y - slope * mean_x;
+    if ((_ry_is_finite(slope) == 1 && _ry_is_finite(intercept) == 1) == 0) { return 0; }
+    var r2: f64 = 0.0;
+    if (syy > 0.0) {
+        var q: f64 = sxy / syy;
+        var raw: f64 = slope * q;
+        r2 = _ry_clamp(raw, 0.0, 1.0);
+    }
+    store64(out, load64(&slope));
+    store64(out + 8, load64(&intercept));
+    store64(out + 16, load64(&r2));
+    return 1;
+}
+
+# 1 when a fitted Km / Vmax pair is physically meaningful (both finite and > 0), else 0. Mirrors `valid_fit`.
+#must_use
+#pure
+fn _ry_enzyme_valid_fit(km: f64, vmax: f64): i64 {
+    if (_ry_is_finite(km) == 1 && _ry_is_finite(vmax) == 1 && km > 0.0 && vmax > 0.0) { return 1; }
+    return 0;
+}
+
+# Fits Km and Vmax to the n (s, v) pairs at `data` by Lineweaver-Burk (double-reciprocal) linearization, `1/v =
+# (Km/Vmax)·(1/[S]) + 1/Vmax`, skipping zero, negative and non-finite points. 1 with *out filled, or 0 (None) when
+# fewer than 2 usable points remain, the regression is degenerate, or the fitted Km or Vmax is not finite and > 0.
+# Mirrors `enzyme::lineweaver_burk_fit`.
+fn ry_lineweaver_burk_fit(data, n, out: *RyKineticFit): i64 {
+    var r[24];
+    if (_ry_enzyme_linear_regression(data, n, 1, &r) == 0) { return 0; }
+    var slope: f64 = load64(&r);
+    var intercept: f64 = load64(&r + 8);
+    var r2: f64 = load64(&r + 16);
+    var vmax: f64 = 1.0 / intercept;
+    var km: f64 = slope * vmax;
+    if (_ry_enzyme_valid_fit(km, vmax) == 0) { return 0; }
+    out.km = km;
+    out.vmax = vmax;
+    out.r_squared = r2;
+    return 1;
+}
+
+# Fits Km and Vmax by Eadie-Hofstee linearization, `v = Vmax − Km·(v/[S])` (slope −Km, intercept Vmax): less
+# sensitive than Lineweaver-Burk to outliers at extreme concentrations. Same filtering and None cases. Mirrors
+# `enzyme::eadie_hofstee_fit`.
+fn ry_eadie_hofstee_fit(data, n, out: *RyKineticFit): i64 {
+    var r[24];
+    if (_ry_enzyme_linear_regression(data, n, 2, &r) == 0) { return 0; }
+    var slope: f64 = load64(&r);
+    var vmax: f64 = load64(&r + 8);
+    var r2: f64 = load64(&r + 16);
+    var km: f64 = -slope;
+    if (_ry_enzyme_valid_fit(km, vmax) == 0) { return 0; }
+    out.km = km;
+    out.vmax = vmax;
+    out.r_squared = r2;
+    return 1;
+}
+
+# ── EnzymeParams ──
+
+# Enzyme parameters for one reaction: Vmax (M/s), Km (M), the Hill coefficient (1.0 for Michaelis-Menten), kcat (1/s).
+# Rust's `EnzymeParams`.
+struct RyEnzymeParams {
+    vmax: f64;
+    km: f64;
+    hill_n: f64;
+    kcat: f64;
+}
+
+# Ok(0) when every field is finite, vmax and kcat >= 0 and km and hill_n > 0; else the first failing guard's Err (in
+# Rust's order: vmax, km, kcat, hill_n). Mirrors `EnzymeParams::validate`.
+#must_use
+fn ry_enzyme_params_validate(p: *RyEnzymeParams): Result {
+    var vmax: f64 = p.vmax;
+    var km: f64 = p.km;
+    var kcat: f64 = p.kcat;
+    var hill_n: f64 = p.hill_n;
+    var t1, v1 = _ry_guard_non_negative("vmax", vmax);
+    if (is_err_result(t1) == 1) { return Err(v1); }
+    var t2, v2 = _ry_guard_positive("km", km);
+    if (is_err_result(t2) == 1) { return Err(v2); }
+    var t3, v3 = _ry_guard_non_negative("kcat", kcat);
+    if (is_err_result(t3) == 1) { return Err(v3); }
+    var t4, v4 = _ry_guard_positive("hill_n", hill_n);
+    if (is_err_result(t4) == 1) { return Err(v4); }
+    return Ok(0);
+}
+
+# Catalytic efficiency kcat / Km (0 unless Km > 0). Mirrors `EnzymeParams::catalytic_efficiency`.
+#must_use
+#pure
+fn ry_enzyme_params_catalytic_efficiency(p: *RyEnzymeParams): f64 {
+    var km: f64 = p.km;
+    var kcat: f64 = p.kcat;
+    if (km > 0.0) {
+        var r: f64 = kcat / km;
+        return r;
+    }
+    return 0.0;
+}
+
+# The reaction rate at `substrate`: Michaelis-Menten when |hill_n − 1| < f64::EPSILON, else the Hill equation with
+# K_half = km. Mirrors `EnzymeParams::rate`.
+#must_use
+#pure
+fn ry_enzyme_params_rate(p: *RyEnzymeParams, substrate: f64): f64 {
+    var vmax: f64 = p.vmax;
+    var km: f64 = p.km;
+    var hill_n: f64 = p.hill_n;
+    var eps: f64 = 0x3CB0000000000000;
+    var d: f64 = hill_n - 1.0;
+    var ad: f64 = f64_abs(d);
+    if (ad < eps) {
+        var mm: f64 = ry_michaelis_menten(substrate, vmax, km);
+        return mm;
+    }
+    var h: f64 = ry_hill_equation(substrate, vmax, km, hill_n);
+    return h;
+}
+
+# ── the enzyme database ──
+
+# A well-characterized enzyme with published kinetic constants: its name, EC number and primary substrate (C strings
+# into the generated table), Km (M), kcat (1/s), the Hill coefficient. Rust's `KnownEnzyme`; the entries are
+# src/enzyme_data.cyr's columns (`RY_KNOWN_ENZYME_*`, Rust's KNOWN_ENZYMES).
+struct RyKnownEnzyme {
+    name;
+    ec_number;
+    substrate;
+    km: f64;
+    kcat: f64;
+    hill_n: f64;
+}
+
+# Fills *out with database entry `i` (0 … RY_KNOWN_ENZYME_COUNT − 1, Rust's `KNOWN_ENZYMES[i]`): 1, or 0 when `i` is no
+# entry.
+fn ry_known_enzyme(i, out: *RyKnownEnzyme): i64 {
+    if (i < 0 || i >= RY_KNOWN_ENZYME_COUNT) { return 0; }
+    out.name = &_RY_KNOWN_ENZYME_NAME_BYTES + _RY_KNOWN_ENZYME_NAME_OFF[i];
+    out.ec_number = &_RY_KNOWN_ENZYME_EC_NUMBER_BYTES + _RY_KNOWN_ENZYME_EC_NUMBER_OFF[i];
+    out.substrate = &_RY_KNOWN_ENZYME_SUBSTRATE_BYTES + _RY_KNOWN_ENZYME_SUBSTRATE_OFF[i];
+    var km: f64 = RY_KNOWN_ENZYME_KM[i];
+    var kcat: f64 = RY_KNOWN_ENZYME_KCAT[i];
+    var hill_n: f64 = RY_KNOWN_ENZYME_HILL_N[i];
+    out.km = km;
+    out.kcat = kcat;
+    out.hill_n = hill_n;
+    return 1;
+}
+
+# The index of the database entry named [name, name + len), compared ignoring ASCII case (Rust's
+# `eq_ignore_ascii_case`), the first that matches; -1 when none does. Mirrors `enzyme::lookup_enzyme`'s
+# Option<&KnownEnzyme> (ry_known_enzyme fills the entry).
+#must_use
+fn ry_lookup_enzyme(name, len): i64 {
+    if (len <= 0) { return 0 - 1; }
+    var c0 = load8(name);
+    if (c0 >= 65 && c0 <= 90) { c0 = c0 + 32; }
+    var r = 0;
+    while (r < RY_KNOWN_ENZYME_COUNT) {
+        var e = &_RY_KNOWN_ENZYME_NAME_BYTES + _RY_KNOWN_ENZYME_NAME_OFF[r];
+        # The first byte, case-folded, before the length: most entries differ there.
+        var e0 = load8(e);
+        if (e0 >= 65 && e0 <= 90) { e0 = e0 + 32; }
+        var el = 0;
+        if (e0 == c0) { el = strlen(e); }
+        if (el == len) {
+            var same = 1;
+            var k = 0;
+            while (k < len) {
+                var x = load8(e + k);
+                var y = load8(name + k);
+                if (x >= 65 && x <= 90) { x = x + 32; }
+                if (y >= 65 && y <= 90) { y = y + 32; }
+                if (x != y) {
+                    same = 0;
+                    break;
+                }
+                k = k + 1;
+            }
+            if (same == 1) { return r; }
+        }
+        r = r + 1;
+    }
+    return 0 - 1;
+}
+
+# Fills *out with the EnzymeParams of entry `e` at total enzyme concentration `enzyme_conc` (M): Vmax = kcat·[E], Km,
+# hill_n and kcat as the entry's. Mirrors `KnownEnzyme::params`.
+fn ry_known_enzyme_params(e: *RyKnownEnzyme, enzyme_conc: f64, out: *RyEnzymeParams) {
+    var kcat: f64 = e.kcat;
+    var km: f64 = e.km;
+    var hill_n: f64 = e.hill_n;
+    var vmax: f64 = kcat * enzyme_conc;
+    out.vmax = vmax;
+    out.km = km;
+    out.hill_n = hill_n;
+    out.kcat = kcat;
+    return 0;
+}
+
+# Catalytic efficiency kcat / Km (1/(M·s)) of entry `e` (0 unless Km > 0). Mirrors `KnownEnzyme::catalytic_efficiency`.
+#must_use
+#pure
+fn ry_known_enzyme_catalytic_efficiency(e: *RyKnownEnzyme): f64 {
+    var km: f64 = e.km;
+    var kcat: f64 = e.kcat;
+    if (km > 0.0) {
+        var r: f64 = kcat / km;
+        return r;
+    }
+    return 0.0;
+}
+
+# ── JSON (P7: serde_json's documents) ──
+
+# The NUL-separated field names of the two all-f64 serde types, in Rust's declaration order.
+var _RY_KINETIC_FIT_FIELDS = "km\0vmax\0r_squared\0";
+var _RY_ENZYME_PARAMS_FIELDS = "vmax\0km\0hill_n\0kcat\0";
+
+# Appends the `n` f64 fields at `w`, named by the NUL-separated `names`, as one JSON object on allocator `a`: 0, or -1
+# when the builder could not grow (nothing past the refused write is written).
+fn _ry_enzyme_jw_fields(a, sb, w, n, names): i64 {
+    var e = _ry_jw_byte(a, sb, 123);
+    var name = names;
+    var k = 0;
+    while (k < n) {
+        var first = 0;
+        if (k == 0) { first = 1; }
+        e = e | _ry_jw_key(a, sb, name, first);
+        var x: f64 = load64(w + 8 * k);
+        e = e | _ry_jw_f64(a, sb, x);
+        name = name + strlen(name) + 1;
+        k = k + 1;
+    }
+    e = e | _ry_jw_byte(a, sb, 125);
+    return e;
+}
+
+# Appends KineticFit `p` as serde_json writes it, `{"km":…,"vmax":…,"r_squared":…}`, on allocator `a`: Ok(0), or
+# Err(RY_ERR_OUT_OF_MEMORY) when the builder could not grow.
+#must_use
+fn ry_kinetic_fit_to_json_a(a, sb, p: *RyKineticFit): Result {
+    if (_ry_enzyme_jw_fields(a, sb, p, 3, _RY_KINETIC_FIT_FIELDS) != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return Ok(0);
+}
+
+# ry_kinetic_fit_to_json_a on the default allocator (a builder from str_builder_new).
+#must_use
+fn ry_kinetic_fit_to_json(sb, p: *RyKineticFit): Result {
+    return ry_kinetic_fit_to_json_a(default_alloc(), sb, p);
+}
+
+# Reads a KineticFit from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`, which the caller
+# resets): Ok(0) with *out filled, or Err(RY_ERR_DESERIALIZE).
+#must_use
+fn ry_kinetic_fit_from_json_a(a, buf, n, out: *RyKineticFit): Result {
+    var w[24];
+    var v = _ry_jr_parse(a, buf, n);
+    if (_ry_jr_f64_fields(v, &w, 3, _RY_KINETIC_FIT_FIELDS) == 0) {
+        return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "KineticFit", 10));
+    }
+    memcpy(out, &w, 24);
+    return Ok(0);
+}
+
+# ry_kinetic_fit_from_json_a on the default allocator (the tree is never freed: for a one-off read).
+#must_use
+fn ry_kinetic_fit_from_json(buf, n, out: *RyKineticFit): Result {
+    return ry_kinetic_fit_from_json_a(default_alloc(), buf, n, out);
+}
+
+# Appends EnzymeParams `p` as serde_json writes it, `{"vmax":…,"km":…,"hill_n":…,"kcat":…}`: Ok(0), or
+# Err(RY_ERR_OUT_OF_MEMORY).
+#must_use
+fn ry_enzyme_params_to_json_a(a, sb, p: *RyEnzymeParams): Result {
+    if (_ry_enzyme_jw_fields(a, sb, p, 4, _RY_ENZYME_PARAMS_FIELDS) != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return Ok(0);
+}
+
+# ry_enzyme_params_to_json_a on the default allocator.
+#must_use
+fn ry_enzyme_params_to_json(sb, p: *RyEnzymeParams): Result {
+    return ry_enzyme_params_to_json_a(default_alloc(), sb, p);
+}
+
+# Reads an EnzymeParams by serde's rules: Ok(0) with *out filled, or Err(RY_ERR_DESERIALIZE).
+#must_use
+fn ry_enzyme_params_from_json_a(a, buf, n, out: *RyEnzymeParams): Result {
+    var w[32];
+    var v = _ry_jr_parse(a, buf, n);
+    if (_ry_jr_f64_fields(v, &w, 4, _RY_ENZYME_PARAMS_FIELDS) == 0) {
+        return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "EnzymeParams", 12));
+    }
+    memcpy(out, &w, 32);
+    return Ok(0);
+}
+
+# ry_enzyme_params_from_json_a on the default allocator.
+#must_use
+fn ry_enzyme_params_from_json(buf, n, out: *RyEnzymeParams): Result {
+    return ry_enzyme_params_from_json_a(default_alloc(), buf, n, out);
+}
+
+# Appends KnownEnzyme `e` as serde_json writes it (Serialize only in Rust: `&'static str` fields), `{"name":…,
+# "ec_number":…,"substrate":…,"km":…,"kcat":…,"hill_n":…}`: Ok(0), or Err(RY_ERR_OUT_OF_MEMORY).
+#must_use
+fn ry_known_enzyme_to_json_a(a, sb, e: *RyKnownEnzyme): Result {
+    var km: f64 = e.km;
+    var kcat: f64 = e.kcat;
+    var hill_n: f64 = e.hill_n;
+    var r = _ry_jw_byte(a, sb, 123);
+    r = r | _ry_jw_key(a, sb, "name", 1);
+    r = r | _ry_jw_str(a, sb, e.name, strlen(e.name));
+    r = r | _ry_jw_key(a, sb, "ec_number", 0);
+    r = r | _ry_jw_str(a, sb, e.ec_number, strlen(e.ec_number));
+    r = r | _ry_jw_key(a, sb, "substrate", 0);
+    r = r | _ry_jw_str(a, sb, e.substrate, strlen(e.substrate));
+    r = r | _ry_jw_key(a, sb, "km", 0);
+    r = r | _ry_jw_f64(a, sb, km);
+    r = r | _ry_jw_key(a, sb, "kcat", 0);
+    r = r | _ry_jw_f64(a, sb, kcat);
+    r = r | _ry_jw_key(a, sb, "hill_n", 0);
+    r = r | _ry_jw_f64(a, sb, hill_n);
+    r = r | _ry_jw_byte(a, sb, 125);
+    if (r != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return Ok(0);
+}
+
+# ry_known_enzyme_to_json_a on the default allocator.
+#must_use
+fn ry_known_enzyme_to_json(sb, e: *RyKnownEnzyme): Result {
+    return ry_known_enzyme_to_json_a(default_alloc(), sb, e);
+}
 
 # --- membrane_data.cyr ---
 

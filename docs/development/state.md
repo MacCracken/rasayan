@@ -33,6 +33,7 @@ milestone (M9) sets 2.0.0.
 | M1 part 2 — logging, failure events, parity gates | ✅ `src/logging.cyr`: `ry_log_init` / `_with_level`, `ry_log_parse`, `ry_log_level_of` (`RASAYAN_LOG` as Rust's `EnvFilter` reads ADR 0002 row 8's grammar; refusals warn and take the default) and the event helpers (inlined gates, 4 ns filtered; a stack-buffer builder of Rust's fmt-layer text); `_ry_fail_f` / `_ry_fail_text` in `src/error.cyr` (every variant's Display text at its failure site). Golden `logging.tsv` 196 rows from Rust's own filter (verbatim statement, real environment): 135 identical, 61 accepted (row 8); `validate.py` 34,346. `tests/logging.tcyr` 87, `tests/guard.tcyr` 98 (+ Rust's 4 `test_error_display_*`); fuzz 50,000 inputs; `scripts/surface_parity.py` 0 missing; `scripts/rust_test_ledger.py`: 723 Rust tests, 13 ported, 0 due; `scripts/gates.sh` green (151 s, the same summary on ELF, `--bounds`, PE and aarch64); coverage 6 of 6 public fns |
 | M1 part 3a — the JSON writers | ✅ `src/json.cyr`'s writers (serde_json's forms; each reserves its worst case through the non-aborting grow and returns -1 when refused, so none can exit the process); `RY_ERR_DESERIALIZE` / `RY_ERR_OUT_OF_MEMORY` appended. Golden `json.tsv` 18,855 rows from serde_json 1.0.154 and Rust's Display (9,262 doubles incl. 30 exact ties found by an exact search): all byte-identical; `validate.py` 53,201. `tests/json.tcyr` 27 (the refused-allocation path). fmtf's exact printer: 3.7 µs per f64; `scripts/gates.sh` green (156 s, the same summary on ELF, `--bounds`, PE and aarch64) |
 | M1 part 3b — the JSON readers | ✅ `src/json.cyr`'s readers on bayan's tree (serde's derive rules; a raw-control-byte scan and UTF-8 checks where serde_json decodes; ±inf refused); `bayan` in `[deps] stdlib`. Golden +1,265 reader rows from serde_json's decisions, the correctly rounded value recorded (serde_json misreads 325): 1,246 match, 19 accepted under ADR 0004 (bayan's filed gaps, only when bayan reports that reason); `validate.py` 54,466; `tests/json.tcyr` 57; fuzz 1,520 struct reads; `scripts/gates.sh` green (249 s: bayan in every compile costs `probe_tables.py` 5 → 67 s, bayan's filed unicode-tables issue). **M1 is complete** |
+| M2 part 1 — enzyme | ✅ `src/enzyme.cyr`: every public function and method of `enzyme.rs`, the three serde types' codecs, the database's accessor and lookup. Golden `enzyme.tsv` +7,159 function rows (B 4,870, C 2,040, A 249), all matching; `enzyme.cr.tsv` 0 rows; `validate.py` models every row (61,625). `tests/enzyme.tcyr` 140 checks: Rust's 82 enzyme tests (58 unit, 11 integration, 13 validation); ledger 95 of 723, 0 due; surface parity 0 missing. The seven Rust twins benched (`docs/benchmarks-rust-v-cyrius.md`); `_ry_is_finite` / `_ry_is_nan` inlined; `scripts/gates.sh` green (194 s; the same summary on ELF, `--bounds`, PE and aarch64); coverage 38 of 38. Next: part 2, membrane |
 
 ## Golden corpus
 
@@ -161,8 +162,8 @@ Rust crate (crates.io): mastishk 1.1.0, sharira 1.1.0, kiran 1.0.0. No Cyrius co
 
 ## Next
 
-**M1 is complete.** M2 (kinetics and cell physiology): enzyme (+ the database), membrane, signal, metabolism, energy
-— their functions, validate()s, states and JSON codecs on M1's helpers (port plan §6).
+M2 part 2: membrane (Nernst, Goldman, Fick, the permeability validate, IonicState), then signal, metabolism and
+energy, one part each (port plan §6).
 
 Parity bookkeeping: `scripts/surface_parity.py` (every Rust public item of a ported module has its Cyrius name) and
 `scripts/rust_test_ledger.py` (`docs/development/rust-test-ledger.md`: 723 Rust tests, 13 ported, 0 due and unported)

@@ -265,5 +265,6 @@ pub fn golden(src: &Source) -> Result<Module, String> {
         let outs = lookup_enzyme(&name).map_or_else(|| vec![Tok::None], entry_toks);
         m.row("enzyme::lookup_enzyme", Class::A, &[s(name)], &outs);
     }
+    crate::m_enzyme::rows(&mut m);
     Ok(m)
 }

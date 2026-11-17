@@ -293,6 +293,65 @@ fn error_display() {
     return 0;
 }
 
+# The bit tests src/mathx.cyr's _ry_is_nan / _ry_is_finite replaced (port-parity.md §0.3). 1 for a NaN pattern: an
+# all-ones exponent with a non-zero fraction.
+fn nan_bits(b) {
+    return (b & 0x7FFFFFFFFFFFFFFF) > 0x7FF0000000000000;
+}
+
+# 1 for a finite pattern: an exponent that is not all ones.
+fn finite_bits(b) {
+    return (b & 0x7FF0000000000000) != 0x7FF0000000000000;
+}
+
+# The inlined `x != x` and `(x - x) == 0.0` answer as the bit tests do on every class of bit pattern (both zeros,
+# subnormals, normals, both infinities, quiet and signalling NaNs of both signs with assorted payloads) and on 10^6
+# xorshift patterns.
+fn predicates() {
+    test_group("mathx: _ry_is_nan and _ry_is_finite against the bit tests");
+    var specials[128];
+    store64(&specials, 0);
+    store64(&specials + 8, 0x8000000000000000);
+    store64(&specials + 16, 1);
+    store64(&specials + 24, 0x800FFFFFFFFFFFFF);
+    store64(&specials + 32, 0x0010000000000000);
+    store64(&specials + 40, 0x7FEFFFFFFFFFFFFF);
+    store64(&specials + 48, 0x7FF0000000000000);
+    store64(&specials + 56, 0xFFF0000000000000);
+    store64(&specials + 64, 0x7FF8000000000000);
+    store64(&specials + 72, 0xFFF8000000000000);
+    store64(&specials + 80, 0x7FF0000000000001);
+    store64(&specials + 88, 0xFFF0000000000001);
+    store64(&specials + 96, 0x7FF7FFFFFFFFFFFF);
+    store64(&specials + 104, 0x7FFFFFFFFFFFFFFF);
+    store64(&specials + 112, 0xFFFFFFFFFFFFFFFF);
+    store64(&specials + 120, 0x3FF0000000000000);
+    var wrong = 0;
+    var k = 0;
+    while (k < 16) {
+        var b = load64(&specials + 8 * k);
+        var x: f64 = b;
+        if (_ry_is_nan(x) != nan_bits(b) || _ry_is_finite(x) != finite_bits(b)) { wrong = wrong + 1; }
+        k = k + 1;
+    }
+    assert_eq(wrong, 0, "every special class");
+    var st = 0x2545F4914F6CDD1D;
+    var i = 0;
+    while (i < 1000000) {
+        st = st ^ ((st >> 12) & 0x000FFFFFFFFFFFFF);
+        st = st ^ (st << 25);
+        st = st ^ ((st >> 27) & 0x0000001FFFFFFFFF);
+        var bits = st * 0x2545F4914F6CDD1D;
+        # Every fourth pattern gets an all-ones exponent, so NaNs and infinities are well represented.
+        if ((i & 3) == 0) { bits = bits | 0x7FF0000000000000; }
+        var y: f64 = bits;
+        if (_ry_is_nan(y) != nan_bits(bits) || _ry_is_finite(y) != finite_bits(bits)) { wrong = wrong + 1; }
+        i = i + 1;
+    }
+    assert_eq(wrong, 0, "10^6 random patterns, a quarter with an all-ones exponent");
+    return 0;
+}
+
 # Runs the guard and error suites.
 fn main() {
     alloc_init();
@@ -303,6 +362,7 @@ fn main() {
     error_codes();
     refusal_events();
     error_display();
+    predicates();
     return assert_summary();
 }
 

@@ -974,3 +974,34 @@ generated value in small programs on three targets, went from 5 s to 67 s, and t
 
 **M1 is complete**: error codes, the guard layer, the integrators, logging, and the JSON writers and readers, with
 every row of their corpora against the oracle's own code (or serde_json's) and an independent re-derivation of each.
+
+## 5. M2 (Kinetics and cell physiology)
+
+### 5a. Part 1: enzyme (2026-11-17)
+
+**What is compared.** `tests/golden/enzyme.tsv` gains 7,159 rows through the oracle's public API: each rate law over
+its base point varied one argument at a time across 14 edge values (±0, ±1, ½, 2, 1e±300, the smallest normal and
+subnormal, `f64::MAX`, ±inf, NaN) and 300 seeded realistic calls, plus the Rust tests' cases; both fits over ideal,
+noisy (150 seeded data sets), slow-enzyme, degenerate, filtered and short data; `EnzymeParams`' and `KnownEnzyme`'s
+methods (`rate` either side of `|hill_n − 1| < ε`); the serde documents of the three serde types. The class follows
+the branch: C where Hill and Q10 call `powf` or Arrhenius `exp` (2,040), B where only + − × ÷ run (4,870), A for
+`validate` and the documents (249).
+
+| Check | Result |
+|---|---|
+| every row | identical on the first run (class C at 0 ulp; class B at 0 ulp, none needed the tolerance) |
+| corrected oracle | the models reproduce all 2,040 class-C rows with glibc's pow / exp; with MPFR none changes (`enzyme.cr.tsv`, 0 rows) |
+| `validate.py` | every row re-derived from its own transcription of `enzyme.rs` (pinned lines), class C with an independent MPFR |
+| Rust tests | 82 ported (`tests/enzyme.tcyr`, 140 checks); the ledger at 95 of 723, 0 due and unported |
+| three targets (`scripts/gates.sh`, 194 s) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 58,996 ok, 215 accepted, 0 failed; coverage 38 of 38 public fns executed |
+
+**The Cyrius forms** (ADR 0002 row 2): the fits return 1 with `*out` filled or 0 for None and take n (s, v) pairs; the
+regression applies its transform in each of its two passes instead of collecting a transformed copy (the same
+operations in the same order, no allocation); `lookup_enzyme` returns the entry's index or −1 and `ry_known_enzyme`
+fills the struct.
+
+**Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): the seven Rust twins, 4–19× Rust's. The review inlined
+`_ry_is_finite` and `_ry_is_nan` as single expressions (`(x - x) == 0.0`, `x != x`; their answers on every bit pattern
+proved in `tests/guard.tcyr` on x86_64 and aarch64) and gave the lookup a first-byte check: MM 13 → 12 ns, mixed
+40 → 36, ping-pong 27 → 23, the LB fit 413 → 368, the lookup 99 → 82. Hill and Arrhenius are dominated by the
+correctly rounded `pow` and `exp`, the accuracy target.
