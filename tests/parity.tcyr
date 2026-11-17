@@ -38,7 +38,9 @@
 #   against the corrected oracle (tests/golden/integrate.cr.tsv);
 # - `logging` rows (M1 part 2): the level each rasayan event target gets from RASAYAN_LOG and the default
 #   (src/logging.cyr's ry_log_level_of), class A; a form the port refuses takes the default, and where Rust's level
-#   differs the row is accepted under ADR 0002 row 8.
+#   differs the row is accepted under ADR 0002 row 8;
+# - `json` rows (M1 part 3a): serde_json's text for every scalar kind (src/json.cyr's writers) and Rust's Display of
+#   an f64 (src/fmtf.cyr's `_ry_fmt_f64_display`), class A, byte for byte.
 
 include "tests/ulp.cyr"
 include "src/constants.cyr"
@@ -55,6 +57,7 @@ include "src/error.cyr"
 include "src/guard.cyr"
 include "src/integrate.cyr"
 include "src/logging.cyr"
+include "src/json.cyr"
 
 alloc_init();
 
@@ -801,6 +804,68 @@ fn _par_logging(fp, fl): i64 {
     return 1;
 }
 
+# ── json ────────────────────────────────────────────────────────────────────────────
+# src/json.cyr's writers (M1 part 3a), on the default allocator, into one builder reset per row.
+
+var _par_jsb = 0;
+
+# 1 for a `char` writer row.
+#must_use
+fn _par_json_char(fp, fl): i64 {
+    return _par_eq(fp, fl, "serde_json::to_string<char>");
+}
+
+# The writer rows: the serde_json text of one value, or Rust's Display of an f64 (`f64::fmt`).
+fn _par_json(fp, fl): i64 {
+    if (_par_jsb == 0) { _par_jsb = str_builder_new(); }
+    var sb = _par_jsb;
+    store64(sb + 8, 0);
+    var a = default_alloc();
+    var rc = 0 - 2;
+    var k0 = load64(_par_in_k);
+    if (_par_eq(fp, fl, "serde_json::to_string<f64>") == 1 && k0 == 102) {
+        var x: f64 = _par_in(0);
+        rc = _ry_jw_f64(a, sb, x);
+    } elif (_par_eq(fp, fl, "f64::fmt") == 1 && k0 == 102) {
+        var y: f64 = _par_in(0);
+        _ry_fmt_f64_display(sb, y);
+        rc = 0;
+    } elif (_par_eq(fp, fl, "serde_json::to_string<String>") == 1 || _par_json_char(fp, fl) == 1) {
+        var lw[8];
+        var p = _par_in_bytes(0, &lw);
+        if (p == 0) { return 0 - 1; }
+        if (_par_json_char(fp, fl) == 1) {
+            rc = _ry_jw_char(a, sb, p, load64(&lw));
+        } else {
+            rc = _ry_jw_str(a, sb, p, load64(&lw));
+        }
+    } elif (_par_eq(fp, fl, "serde_json::to_string<u32>") == 1 || _par_eq(fp, fl, "serde_json::to_string<usize>") == 1)
+    {
+        rc = _ry_jw_u64(a, sb, _par_in(0));
+    } elif (_par_eq(fp, fl, "serde_json::to_string<i32>") == 1) {
+        rc = _ry_jw_i64(a, sb, _par_in(0));
+    } elif (_par_eq(fp, fl, "serde_json::to_string<Option<f64>>") == 1) {
+        if (k0 == 110) {
+            rc = _ry_jw_opt_f64(a, sb, 0, 0.0);
+        } else {
+            var z: f64 = _par_in(0);
+            rc = _ry_jw_opt_f64(a, sb, 1, z);
+        }
+    } elif (_par_eq(fp, fl, "serde_json::to_string<[f64; 5]>") == 1 && _par_in_n == 5) {
+        var arr[40];
+        var j = 0;
+        while (j < 5) {
+            store64(&arr + 8 * j, _par_in(j));
+            j = j + 1;
+        }
+        rc = _ry_jw_f64_array(a, sb, &arr, 5);
+    }
+    if (rc == 0 - 2) { return 0; }
+    if (rc != 0) { return 0 - 1; }
+    _par_got_text(load64(sb), load64(sb + 8));
+    return 1;
+}
+
 # ── math ────────────────────────────────────────────────────────────────────────────
 # `f64::` rows: the port's counterpart of each Rust std method rasayan calls (port plan §7.1, port-parity.md §0, §2d).
 # - Class A: abs and ceil (builtins); min, max, is_finite, is_nan (src/mathx.cyr), clamp and the `as u32` cast
@@ -856,6 +921,7 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
     if (_par_eq(mp, ml, "guard") == 1) { return _par_guard(fp, fl); }
     if (_par_eq(mp, ml, "integrate") == 1) { return _par_integrate(fp, fl); }
     if (_par_eq(mp, ml, "logging") == 1) { return _par_logging(fp, fl); }
+    if (_par_eq(mp, ml, "json") == 1) { return _par_json(fp, fl); }
     return 0;
 }
 

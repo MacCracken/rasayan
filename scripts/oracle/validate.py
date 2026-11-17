@@ -35,6 +35,8 @@ compares bit for bit:
   expm1 on the recorded platform, and `integrate.cr.tsv` against the same MPFR binding as `math.cr.tsv`'s check;
 - `logging.tsv` (M1 part 2): the 20 targets against its own scan of rust-old/src for tracing events, and every row in
   ADR 0002 row 8's grammar re-derived from the rule (the rest are counted: Rust's filter alone answers them);
+- `json.tsv` (M1 part 3a): serde_json's text and Rust's Display of an f64 from Python's shortest digits (`repr`)
+  and an exact-fraction tie test, strings by Python's json.dumps, integers and arrays by definition;
 - the table data (M0 part 2b), with its own reader of the Rust source (regular expressions over
   rustfmt's layout and Python's binary64 arithmetic, nothing shared with the generator's
   tokenizer): every row of `protein`, `alignment`, `enzyme`, `membrane`, `ai` and
@@ -51,12 +53,14 @@ Exit status 1 on any failure; the last line is `FAILURES: <n>`.
 import ast
 import ctypes
 import ctypes.util
+import json
 import math
 import pathlib
 import platform
 import re
 import struct
 import sys
+from fractions import Fraction
 
 TOKEN = re.compile(r"^(f:[0-9a-f]{16}|i:-?[0-9]+|e:[A-Za-z0-9_]+\.[A-Za-z0-9_]+|s:\S*|n:|E:[A-Za-z0-9_]+|v:[0-9]+)$")
 SCALARS = ("f64", "f32", "usize", "u64", "u32", "i64", "i32", "u8", "bool")
@@ -1772,6 +1776,137 @@ def check_logging(root, rows, rep):
     return modelled, outside
 
 
+# ── json (M1 part 3a): serde_json's text, and Rust's Display of an f64 ──
+#
+# The f64 texts are re-derived from Python's `repr`, the shortest digits that read back (David Gay's dtoa: among the
+# shortest, the closest to the exact value, an exact tie to the even digit, as serde_json's zmij rounds it). Rust's
+# Display (core's Grisu/Dragon) rounds an exact tie up instead: the model finds a tie with exact fractions and takes
+# the larger digit. The forms: serde_json is positional while the decimal exponent k of the first digit is in
+# −5..=15, with `.0` on an integer, else `d.ddde±k` (`1e+16`, `1.5e-7`), `null` for NaN and ±inf; Display is always
+# positional, no `.0`, `NaN` / `inf` / `-inf`. Strings are Python's json.dumps (ensure_ascii off: it escapes exactly
+# what serde_json escapes, with lowercase hex), integers and arrays by their definition.
+
+def shortest(x):
+    """(digits, k) of |x| > 0: the shortest round-trip digits (no leading or trailing zeros) and the decimal exponent
+    of the first one; ties to even (repr)."""
+    r = repr(abs(x))
+    m, _, e = r.partition("e")
+    e = int(e) if e else 0
+    ip, _, fp = m.partition(".")
+    if fp == "0":
+        fp = ""
+    digits = (ip + fp).lstrip("0")
+    k = e + len(ip.lstrip("0") or "") - 1 if ip.lstrip("0") else e - (len(fp) - len(fp.lstrip("0"))) - 1
+    return digits.rstrip("0") or "0", k
+
+
+def display_digits(x):
+    """shortest(), with an exact tie rounded up (in magnitude), as core's Display rounds it."""
+    d, k = shortest(x)
+    q = k - len(d) + 1  # the unit of the last digit is 10^q
+    X = abs(Fraction(x))
+    c = Fraction(int(d)) * Fraction(10) ** q
+    half = Fraction(1, 2) * Fraction(10) ** q
+    if X - c == -half or X - c == half:
+        other = 2 * X - c
+        if other > c and float(other) == abs(x):
+            up = int(d) + 1
+            s = str(up)
+            if len(s) > len(d):
+                return s.rstrip("0"), k + 1
+            return s.rstrip("0"), k
+    return d, k
+
+
+def positional(d, k, int_suffix):
+    if k >= len(d) - 1:
+        return d + "0" * (k - len(d) + 1) + (".0" if int_suffix else "")
+    if k >= 0:
+        return d[: k + 1] + "." + d[k + 1:]
+    return "0." + "0" * (-k - 1) + d
+
+
+def json_f64(x):
+    if math.isnan(x) or math.isinf(x):
+        return "null"
+    sign = "-" if math.copysign(1.0, x) < 0 else ""
+    if x == 0:
+        return sign + "0.0"
+    d, k = shortest(x)
+    if -5 <= k <= 15:
+        return sign + positional(d, k, True)
+    mant = d[0] + ("." + d[1:] if len(d) > 1 else "")
+    return f"{sign}{mant}e{'+' if k > 0 else '-'}{abs(k)}"
+
+
+def display_f64(x):
+    if math.isnan(x):
+        return "NaN"
+    if math.isinf(x):
+        return "inf" if x > 0 else "-inf"
+    sign = "-" if math.copysign(1.0, x) < 0 else ""
+    if x == 0:
+        return sign + "0"
+    d, k = display_digits(x)
+    return sign + positional(d, k, False)
+
+
+def pct_bytes(b):
+    return "".join(chr(c) if 0x21 <= c <= 0x7E and c != 0x25 else f"%{c:02X}" for c in b)
+
+
+def s_tok(text):
+    return "s:" + pct_bytes(text.encode("utf-8"))
+
+
+def u64_of(n):
+    return n + (1 << 64) if n < 0 else n
+
+
+JSON_W = {  # fn -> model, inputs -> the output token
+    "serde_json::to_string<f64>": lambda ins: s_tok(json_f64(tok_f(ins[0]))),
+    "f64::fmt": lambda ins: s_tok(display_f64(tok_f(ins[0]))),
+    "serde_json::to_string<String>": lambda ins: s_tok(json.dumps(tok_bytes(ins[0]).decode("utf-8"),
+                                                                   ensure_ascii=False)),
+    "serde_json::to_string<char>": lambda ins: s_tok(json.dumps(tok_bytes(ins[0]).decode("utf-8"),
+                                                                 ensure_ascii=False)),
+    "serde_json::to_string<u32>": lambda ins: s_tok(str(int(ins[0][2:]))),
+    "serde_json::to_string<usize>": lambda ins: s_tok(str(u64_of(int(ins[0][2:])))),
+    "serde_json::to_string<i32>": lambda ins: s_tok(str(int(ins[0][2:]))),
+    "serde_json::to_string<Option<f64>>": lambda ins: s_tok("null" if ins[0] == "n:" else json_f64(tok_f(ins[0]))),
+    "serde_json::to_string<[f64; 5]>": lambda ins: s_tok("[" + ",".join(json_f64(tok_f(t)) for t in ins) + "]"),
+}
+
+
+def check_json(rows, rep):
+    """Every json.tsv row against the model; returns rows per function and the exact ties seen."""
+    per = {}
+    ties = 0
+    for n, fn, cls, ins, outs in rows:
+        where = f"json.tsv:{n}"
+        if cls != "A" or fn not in JSON_W:
+            rep.fail(where, f"{fn} class {cls}: no model, or not class A")
+            continue
+        try:
+            want = JSON_W[fn](ins)
+        except (ValueError, IndexError, UnicodeDecodeError) as e:
+            rep.fail(where, f"{fn}{tuple(ins)}: {e}")
+            continue
+        per[fn] = per.get(fn, 0) + 1
+        if fn == "f64::fmt":
+            x = tok_f(ins[0])
+            if math.isfinite(x) and x != 0 and display_digits(x) != shortest(x):
+                ties += 1
+        if outs == [want]:
+            rep.ok()
+        else:
+            rep.fail(where, f"{fn}{tuple(ins)}: golden {outs}, model {want}")
+    missing = sorted(set(JSON_W) - set(per))
+    if missing:
+        rep.fail("json.tsv", f"no rows for {missing}")
+    return per, ties
+
+
 def main():
     root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
     rep = Report()
@@ -1792,6 +1927,7 @@ def main():
     guard_per = check_guard(root, tables.get("guard.tsv", []), rep)
     int_counts, int_per = check_integrate(root, tables.get("integrate.tsv", []), rep)
     log_modelled, log_outside = check_logging(root, tables.get("logging.tsv", []), rep)
+    json_per, json_ties = check_json(tables.get("json.tsv", []), rep)
     total = sum(len(v) for v in tables.values())
     n_items, n_excused = extras.get("_counts", (0, 0))
     print(f"files: {len(files)}; rows: {total}; math classes: {dict(sorted(counts.items()))}")
@@ -1809,10 +1945,12 @@ def main():
         f"logging: {log_modelled} rows re-derived from ADR 0002 row 8's grammar; {log_outside} outside it (Rust's "
         f"filter alone)"
     )
+    print(f"json: {sum(json_per.values())} writer rows over {len(json_per)} functions; {json_ties} exact ties "
+          f"(Display rounds up, serde_json to even)")
     print(
         f"independently checked: {rep.checked} (constants, src/constants.cyr, math classes A and B, the table rows, "
         f"every cell of the generated data files, every class-C math row against MPFR, guard, integrate and its "
-        f"corrections, logging)"
+        f"corrections, logging, json)"
     )
     print(f"FAILURES: {rep.failures}")
     return 1 if rep.failures else 0

@@ -12,10 +12,30 @@ part 2a (steps 4–5, first part), part 2b (step 6), part 2c-1 (step 7 and the c
 part 2c-2 (the correctly rounded primitives), part 2c-3 (their dense MPFR sweep), part 3a (step 8's
 three-target baselines and `scripts/gates.sh`, step 9's probes 1–4, 8 and 12) and part 3b (probes 6, 7, 10 and 11,
 the profiles, and step 10's upstream drafts). M0 is complete. M1 part 1 (the foundation's error codes, guard layer
-and integrators) and part 2 (logging, the failure events, the surface-parity and Rust-test gates) follow.
+and integrators), part 2 (logging, the failure events, the surface-parity and Rust-test gates) and part 3a (the
+JSON writers) follow.
 
 ### Added
 
+- **src/json.cyr** (M1 part 3a) — the serde_json writers every type's codec writes with: `_ry_jw_byte`, `_key`,
+  `_f64` (fmtf's serde_json form, `null` for NaN and ±inf), `_str` (serde_json's escapes), `_char`, `_u64` (a usize
+  as unsigned, past i64::MAX included), `_i64`, `_null`, `_opt_f64`, `_f64_array`, `_unit`. Each takes the builder's
+  allocator, reserves its worst case through the non-aborting grow first and returns -1 when refused, writing
+  nothing: no writer can reach lib/str.cyr's process exit (ADR 0004's amendment)
+- **src/error.cyr** (M1 part 3a) — `RY_ERR_DESERIALIZE` (6) and `RY_ERR_OUT_OF_MEMORY` (7), appended after Rust's
+  variants (`RY_ERR_COUNT` 8)
+- **tests/golden/json.tsv** (M1 part 3a, 18,855 rows, class A) — serde_json 1.0.154's text for every scalar kind the
+  69 serde types hold (f64, String, char, u32, usize to `usize::MAX`, i32, `Option<f64>`, `[f64; 5]`) and Rust's
+  Display of an f64, over 9,262 doubles: the specials, every power of ten and its neighbours, both sides of the
+  positional / exponent switches, powers of two, the subnormal and normal edges, 2⁵³ neighbours, 30 exact ties found
+  by an exact-fraction search (where Display rounds up and serde_json to even), 2,500 seeded. All byte-identical on
+  the first run. `validate.py` re-derives every row from Python's shortest digits and an exact tie test, and the
+  strings from Python's json.dumps (53,201 independent checks)
+- **tests/json.tcyr** (27 checks: a document field by field, the unsigned usize path, the reserve bounds, and a builder
+  on an allocator that refuses its first allocation: every writer returns -1, nothing is written, the process goes on)
+- **benchmarks** (M1 part 3a) — an f64's text 3.7 µs (serde_json form) / 3.8 µs (Display); a ten-field document
+  31 µs: fmtf's exact bignum printer, impetus's code, vendored, so its speed is recorded, not changed here (ushma
+  measured the same, about 3 µs per 17-digit double). No Rust twin (rasayan's benches have no serde bench)
 - **src/logging.cyr** (M1 part 2) — `ry_log_init` / `ry_log_init_with_level` (Rust's `logging::init` /
   `init_with_level`), `ry_log_parse` and `ry_log_level_of`: `RASAYAN_LOG` read exactly as Rust's `EnvFilter` reads ADR
   0002 row 8's grammar (lists of level words, digits 0–5, `rasayan[=<level>]`; an empty value is OFF), anything else
@@ -248,6 +268,7 @@ and integrators) and part 2 (logging, the failure events, the surface-parity and
 
 ### Changed
 
+- **cyrius.cyml** (M1 part 3a) — `src/json.cyr` in `[lib]`, `[lib.mcp]` and `[lib.ai]` after `src/logging.cyr`
 - **cyrius.cyml** (M1 part 2) — `src/logging.cyr` in `[lib]`, `[lib.mcp]` and `[lib.ai]` after `src/integrate.cyr`;
   the sidecars add `log` and `io`
 - **ADR 0002** (M1 part 2) — row 8 records the grammar as built and what Rust does outside it (a misspelled or

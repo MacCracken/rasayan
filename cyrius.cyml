@@ -38,8 +38,8 @@ mcp = ["bote"]
 # constants, the correctly rounded primitives (src/mathx_data.cyr before src/mathx.cyr, which reads its tables), the
 # shortest-digit f64 printer (src/fmtf.cyr, vendored at part 3b for probe 11; P7), the M1 foundation (error codes, the
 # guard layer, which writes its refusal events with fmtf's Display form, the integrators, and logging: RASAYAN_LOG and
-# the event helpers) and the table data. Each module joins at its milestone (json next in M1), its data file ahead of
-# it. src/ai_data.cyr is not here: it belongs to [lib.ai] (with src/ai.cyr, M8), as src/mcp.cyr to [lib.mcp].
+# the event helpers; json: the serde_json writers, readers at part 3b) and the table data. Each module joins at its
+# milestone, its data file ahead of it. src/ai_data.cyr is not here: it belongs to [lib.ai] (with src/ai.cyr, M8), as src/mcp.cyr to [lib.mcp].
 [lib]
 modules = [
     "src/constants.cyr",
@@ -51,6 +51,7 @@ modules = [
     "src/guard.cyr",
     "src/integrate.cyr",
     "src/logging.cyr",
+    "src/json.cyr",
     "src/protein_data.cyr",
     "src/alignment_data.cyr",
     "src/enzyme_data.cyr",
@@ -70,6 +71,7 @@ modules = [
     "src/guard.cyr",
     "src/integrate.cyr",
     "src/logging.cyr",
+    "src/json.cyr",
     "src/protein_data.cyr",
     "src/alignment_data.cyr",
     "src/enzyme_data.cyr",
@@ -90,6 +92,7 @@ modules = [
     "src/guard.cyr",
     "src/integrate.cyr",
     "src/logging.cyr",
+    "src/json.cyr",
     "src/protein_data.cyr",
     "src/alignment_data.cyr",
     "src/enzyme_data.cyr",

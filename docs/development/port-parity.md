@@ -911,3 +911,27 @@ checks of their text.
 public scalar constants of the scheduled modules; 0 missing. `scripts/rust_test_ledger.py`: 723 Rust tests (628 unit,
 70 integration, 25 validation), 13 ported, 0 due and unported. Each caught its tamper (a renamed function, a misnamed
 marker).
+
+### 4c. Part 3a: the JSON writers (2026-11-16)
+
+**What is compared.** `tests/golden/json.tsv` is serde_json 1.0.154 itself (as rasayan 1.2.0 resolves it), called on
+each scalar kind the 69 serde types hold, and Rust's `{}` of an f64: 18,855 rows. The doubles (9,262) cover the
+specials, every power of ten from 1e-324 to 1e308 with its neighbours (both sides of serde_json's switch between
+positional and exponent form at decimal exponents −5 and 15), powers of two, the subnormal and normal edges, 2⁵³ and
+its neighbours, short decimals, 2,500 seeded values, and **30 exact ties**: values halfway between two shortest
+candidates that both read back, where core's Display rounds up and serde_json's zmij to the even digit. The first grid
+had 2; an exact search with Python fractions over `N + k/2^(j+1)`, in the range where 17 significant digits reach past
+the point, found the others, which the generator lists as bit patterns.
+
+| Check | Result |
+|---|---|
+| `serde_json::to_string<f64>`, `f64::fmt` | 9,262 + 9,262 byte-identical (30 rows where the two printers pick different digits) |
+| `<String>` (153), `<char>` (133): every ASCII byte, the escapes, DEL, 2–4-byte UTF-8, U+2028/9, long strings | byte-identical |
+| `<u32>`, `<usize>` (to `usize::MAX`: the unsigned path), `<i32>`, `<Option<f64>>`, `<[f64; 5]>` | byte-identical |
+| `validate.py` | every row re-derived from Python's shortest digits (`repr`) and an exact tie test, strings from `json.dumps` (53,201 checks) |
+| a refused grow (`tests/json.tcyr`, an allocator failing its first allocation) | every writer returns -1, writes nothing, and the process goes on |
+| three targets (`scripts/gates.sh`, 156 s, every step exit 0) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 50,591 ok, 196 accepted, 0 failed |
+
+**Benchmarks** (x86_64): an f64's serde_json text 3.7 µs, its Display text 3.8 µs, a ten-field document 31 µs. fmtf's
+printer is exact on a bignum (Burger & Dybvig, no tables); ushma measured the same (about 3 µs for a 17-digit double).
+It is impetus's code, vendored, so the speed is recorded, not changed here; no step path prints.

@@ -18,13 +18,17 @@ enum RyError {
     RY_ERR_UNKNOWN_AMINO_ACID = 3;
     RY_ERR_UNKNOWN_PATHWAY = 4;
     RY_ERR_NON_FINITE = 5;
+    # Cyrius only, from here (M1 part 3).
+    RY_ERR_DESERIALIZE = 6;
+    RY_ERR_OUT_OF_MEMORY = 7;
 }
 
 # The number of codes, RY_ERR_NONE included: every code is in 0 .. RY_ERR_COUNT - 1.
-const RY_ERR_COUNT = 6;
+const RY_ERR_COUNT = 8;
 
-# The name of an error code: Rust 1.2.0's variant name (`"NonFinite"`) for the codes that mirror one, `"None"` for
-# RY_ERR_NONE, and `"Unknown"` for a value that is no code.
+# The name of an error code: Rust 1.2.0's variant name (`"NonFinite"`) for the codes that mirror one, `"Deserialize"`
+# for the JSON readers' code (Rust's serde_json::Error), `"OutOfMemory"` for a refused allocation (where Rust aborts
+# the process), `"None"` for RY_ERR_NONE, and `"Unknown"` for a value that is no code.
 #must_use
 #pure
 fn ry_error_name(code): cstring {
@@ -35,6 +39,8 @@ fn ry_error_name(code): cstring {
         RY_ERR_UNKNOWN_AMINO_ACID => { return "UnknownAminoAcid"; }
         RY_ERR_UNKNOWN_PATHWAY => { return "UnknownPathway"; }
         RY_ERR_NON_FINITE => { return "NonFinite"; }
+        RY_ERR_DESERIALIZE => { return "Deserialize"; }
+        RY_ERR_OUT_OF_MEMORY => { return "OutOfMemory"; }
         _ => { return "Unknown"; }
     }
     return "Unknown";
@@ -53,6 +59,8 @@ fn ry_error_message(code): cstring {
         RY_ERR_UNKNOWN_AMINO_ACID => { return "unknown amino acid"; }
         RY_ERR_UNKNOWN_PATHWAY => { return "unknown metabolic pathway"; }
         RY_ERR_NON_FINITE => { return "non-finite value"; }
+        RY_ERR_DESERIALIZE => { return "malformed JSON document"; }
+        RY_ERR_OUT_OF_MEMORY => { return "an allocation was refused"; }
         _ => { return "unknown error"; }
     }
     return "unknown error";

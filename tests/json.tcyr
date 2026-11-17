@@ -1,0 +1,153 @@
+# rasayan — src/json.cyr's writers (M1 part 3a)
+# Stdlib auto-included via cyrius.cyml
+#
+# tests/golden/json.tsv compares every writer with serde_json byte for byte. Here: the writers never abort (a builder
+# whose allocator refuses to grow gets -1 back, with nothing written, where lib/str.cyr's puts would exit the
+# process); the reserve is exact enough that the printer's puts never grow a builder; a document written field by
+# field is serde_json's; the unsigned usize path; the new error codes.
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/json.cyr"
+
+# 1 if builder `sb` holds exactly the C string `want`.
+fn holds(sb, want) {
+    var n = strlen(want);
+    if (load64(sb + 8) != n) { return 0; }
+    return memeq(load64(sb), want, n);
+}
+
+# The f64 with bit pattern `b` (at or above 2^52 an integer keeps its bits in an f64 slot).
+fn f_of(b): f64 {
+    var x: f64 = b;
+    return x;
+}
+
+# A struct written field by field, as M2's codecs will write theirs: MembranePermeability's document.
+fn document() {
+    test_group("json: a document, field by field");
+    var sb = str_builder_new();
+    var a = default_alloc();
+    var e = _ry_jw_byte(a, sb, 123);
+    e = e | _ry_jw_key(a, sb, "p_na", 1);
+    e = e | _ry_jw_f64(a, sb, 0.04);
+    e = e | _ry_jw_key(a, sb, "p_k", 0);
+    e = e | _ry_jw_f64(a, sb, 1.0);
+    e = e | _ry_jw_key(a, sb, "p_cl", 0);
+    e = e | _ry_jw_f64(a, sb, 0.45);
+    e = e | _ry_jw_byte(a, sb, 125);
+    assert_eq(e, 0, "every write succeeds");
+    assert_eq(holds(sb, "{\"p_na\":0.04,\"p_k\":1.0,\"p_cl\":0.45}"), 1, "serde_json's text");
+    store64(sb + 8, 0);
+    var nan: f64 = _ry_nan();
+    _ry_jw_byte(a, sb, 91);
+    _ry_jw_f64(a, sb, nan);
+    _ry_jw_byte(a, sb, 44);
+    _ry_jw_null(a, sb);
+    _ry_jw_byte(a, sb, 44);
+    _ry_jw_opt_f64(a, sb, 1, 2.5);
+    _ry_jw_byte(a, sb, 44);
+    _ry_jw_unit(a, sb, "Lehninger");
+    _ry_jw_byte(a, sb, 44);
+    _ry_jw_char(a, sb, "W", 1);
+    _ry_jw_byte(a, sb, 93);
+    assert_eq(holds(sb, "[null,null,2.5,\"Lehninger\",\"W\"]"), 1, "NaN, None, Some, a unit variant, a char");
+    return 0;
+}
+
+# Integers: usize as unsigned (a usize past i64::MAX is a negative word here), i32 signed.
+fn integers() {
+    test_group("json: integers");
+    var sb = str_builder_new();
+    var a = default_alloc();
+    _ry_jw_u64(a, sb, 0 - 1);
+    assert_eq(holds(sb, "18446744073709551615"), 1, "usize::MAX");
+    store64(sb + 8, 0);
+    _ry_jw_u64(a, sb, 0x8000000000000000);
+    assert_eq(holds(sb, "9223372036854775808"), 1, "2^63");
+    store64(sb + 8, 0);
+    _ry_jw_u64(a, sb, 0 - 10);
+    assert_eq(holds(sb, "18446744073709551606"), 1, "2^64 - 10 (last digit 6)");
+    store64(sb + 8, 0);
+    _ry_jw_u64(a, sb, 9223372036854775807);
+    assert_eq(holds(sb, "9223372036854775807"), 1, "i64::MAX");
+    store64(sb + 8, 0);
+    _ry_jw_i64(a, sb, 0 - 2147483648);
+    assert_eq(holds(sb, "-2147483648"), 1, "i32::MIN");
+    store64(sb + 8, 0);
+    assert_eq(_ry_jw_char(a, sb, "", 0), 0 - 1, "a char is 1 to 4 bytes");
+    assert_eq(load64(sb + 8), 0, "and nothing is written");
+    return 0;
+}
+
+# A builder over an 8-byte stack buffer on an allocator that refuses its first allocation: each writer that needs
+# more room returns -1 and writes nothing; the process goes on (lib/str.cyr's puts would have exited it).
+fn refused_growth() {
+    test_group("json: a refused grow returns -1, never exits");
+    var a = fail_after_n_allocs(0);
+    assert(a != 0, "a test allocator");
+    var hdr[24];
+    var buf[8];
+    store64(&hdr, &buf);
+    store64(&hdr + 8, 0);
+    store64(&hdr + 16, 8);
+    var sb = &hdr;
+    assert_eq(_ry_jw_byte(a, sb, 123), 0, "a byte fits the 8 bytes");
+    var big: f64 = f_of(0x8010000000000000);
+    assert_eq(_ry_jw_f64(a, sb, big), 0 - 1, "an f64 needs 32: refused");
+    assert_eq(_ry_jw_key(a, sb, "chain_length", 0), 0 - 1, "a key past the room: refused");
+    assert_eq(_ry_jw_str(a, sb, "Hexokinase", 10), 0 - 1, "a string: refused");
+    assert_eq(_ry_jw_u64(a, sb, 7), 0 - 1, "an integer: refused");
+    var arr[16];
+    store64(&arr, 0);
+    store64(&arr + 8, 0);
+    assert_eq(_ry_jw_f64_array(a, sb, &arr, 2), 0 - 1, "an array: refused");
+    assert_eq(load64(sb + 8), 1, "only the first byte was written");
+    assert_eq(load8(&buf), 123, "and it is `{`");
+    assert_eq(_ry_jw_null(a, sb), 0, "null fits the room left");
+    assert_eq(holds(sb, "{null"), 1, "and is written");
+    return 0;
+}
+
+# The reserve covers every printer's worst case: the longest serde_json f64 texts write into exactly the room
+# reserved, with no grow (the builder's buffer never moves).
+fn reserve_bounds() {
+    test_group("json: the reserve covers the longest f64 texts");
+    var sb = str_builder_new();
+    var a = default_alloc();
+    assert_eq(_ry_jw_reserve(a, sb, _RY_JW_F64_MAX), 0, "room for one f64");
+    var before = load64(sb);
+    var m: f64 = f_of(0x8010000000000000);
+    _ry_jw_f64(a, sb, m);
+    assert_eq(holds(sb, "-2.2250738585072014e-308"), 1, "-MIN_POSITIVE");
+    assert(load64(sb + 8) <= _RY_JW_F64_MAX, "within the bound");
+    store64(sb + 8, 0);
+    var mx: f64 = f_of(0xFFEFFFFFFFFFFFFF);
+    _ry_jw_f64(a, sb, mx);
+    assert_eq(holds(sb, "-1.7976931348623157e+308"), 1, "-MAX");
+    store64(sb + 8, 0);
+    var pos: f64 = f_of(0xBEE9E3B6AD9E6E2F);
+    _ry_jw_f64(a, sb, pos);
+    assert(load64(sb + 8) <= _RY_JW_F64_MAX, "a 17-digit positional text, within the bound");
+    assert_eq(load64(sb), before, "the buffer never moved");
+    return 0;
+}
+
+# Runs the json suite.
+fn main() {
+    alloc_init();
+    document();
+    integers();
+    refused_growth();
+    reserve_bounds();
+    return assert_summary();
+}
+
+var exit_code = main();
+# assert_summary() returns the failure count; a wait status is 8 bits, so any failure exits 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

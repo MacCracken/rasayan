@@ -25,6 +25,7 @@ include "src/error.cyr"
 include "src/guard.cyr"
 include "src/integrate.cyr"
 include "src/logging.cyr"
+include "src/json.cyr"
 
 # Keeps the loops' results observable.
 var _bn_sink = 0;
@@ -240,6 +241,67 @@ fn _bn_event(n): i64 {
     return 0;
 }
 
+# n f64 texts, serde_json's form (which = 0) or Display's (1), x walking geometrically over 1e-30 .. 1e30 so the
+# digit count and the form vary; the builder reset each call.
+fn _bn_fmt(which, n): i64 {
+    var sb = str_builder_new();
+    var a = default_alloc();
+    var x: f64 = 0.000000000000000000000000000001;
+    var total = 0;
+    var i = 0;
+    while (i < n) {
+        store64(sb + 8, 0);
+        if (which == 0) {
+            _ry_jw_f64(a, sb, x);
+        } else {
+            _ry_jw_reserve(a, sb, 400);
+            _ry_fmt_f64_display(sb, x);
+        }
+        total = total + load64(sb + 8);
+        x = x * 1.0137;
+        if (x > 1000000000000000000000000000000.0) { x = 0.000000000000000000000000000001; }
+        i = i + 1;
+    }
+    _bn_sink = _bn_sink ^ total;
+    return 0;
+}
+
+# n documents of ten f64 fields (a tick state's size), written field by field as the codecs will write them.
+fn _bn_doc(n): i64 {
+    var sb = str_builder_new();
+    var a = default_alloc();
+    var x: f64 = 0.731;
+    var total = 0;
+    var i = 0;
+    while (i < n) {
+        store64(sb + 8, 0);
+        var e = _ry_jw_byte(a, sb, 123);
+        var k = 0;
+        while (k < 10) {
+            e = e | _ry_jw_key(a, sb, "glucose", k == 0);
+            var v: f64 = x + 0.25;
+            e = e | _ry_jw_f64(a, sb, v);
+            x = x * 1.0001;
+            k = k + 1;
+        }
+        e = e | _ry_jw_byte(a, sb, 125);
+        total = total + load64(sb + 8) + e;
+        i = i + 1;
+    }
+    _bn_sink = _bn_sink ^ total;
+    return 0;
+}
+
+# One benchmark of the JSON writers: `kind` 0 the serde_json f64 form, 1 the Display form, 2 a ten-field document.
+fn _bn_json(name, kind, n): i64 {
+    var b = bench_new(name);
+    bench_batch_start(b);
+    if (kind == 2) { _bn_doc(n); } else { _bn_fmt(kind, n); }
+    bench_batch_stop(b, n);
+    bench_report(b);
+    return 0;
+}
+
 # One benchmark of `n` events at the current level.
 fn _bn_ev(name, n): i64 {
     var b = bench_new(name);
@@ -283,6 +345,9 @@ fn main(): i64 {
     _ry_log_apply(LOG_TRACE);
     _bn_ev("logging/trace event, 3 f64 fields, to the ring buffer", 100000);
     _ry_log_apply(LOG_INFO);
+    _bn_json("json/f64 serde_json form", 0, 200000);
+    _bn_json("json/f64 Display form", 1, 200000);
+    _bn_json("json/document of ten f64 fields", 2, 20000);
     if (_bn_sink == 1) { println(""); }
     return 0;
 }

@@ -31,6 +31,7 @@ mod grids;
 mod m_constants;
 mod m_guard;
 mod m_integrate;
+mod m_json;
 mod m_logging;
 mod m_math;
 mod rustsrc;
@@ -70,6 +71,7 @@ fn golden_modules(root: &Path) -> Result<Vec<tsv::Module>, String> {
         m_constants::emit(),
         m_guard::emit(),
         m_integrate::emit(),
+        m_json::emit(),
         m_logging::emit(),
         m_math::emit(),
         t_private::golden(root)?,

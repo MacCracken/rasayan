@@ -3268,13 +3268,17 @@ enum RyError {
     RY_ERR_UNKNOWN_AMINO_ACID = 3;
     RY_ERR_UNKNOWN_PATHWAY = 4;
     RY_ERR_NON_FINITE = 5;
+    # Cyrius only, from here (M1 part 3).
+    RY_ERR_DESERIALIZE = 6;
+    RY_ERR_OUT_OF_MEMORY = 7;
 }
 
 # The number of codes, RY_ERR_NONE included: every code is in 0 .. RY_ERR_COUNT - 1.
-const RY_ERR_COUNT = 6;
+const RY_ERR_COUNT = 8;
 
-# The name of an error code: Rust 1.2.0's variant name (`"NonFinite"`) for the codes that mirror one, `"None"` for
-# RY_ERR_NONE, and `"Unknown"` for a value that is no code.
+# The name of an error code: Rust 1.2.0's variant name (`"NonFinite"`) for the codes that mirror one, `"Deserialize"`
+# for the JSON readers' code (Rust's serde_json::Error), `"OutOfMemory"` for a refused allocation (where Rust aborts
+# the process), `"None"` for RY_ERR_NONE, and `"Unknown"` for a value that is no code.
 #must_use
 #pure
 fn ry_error_name(code): cstring {
@@ -3285,6 +3289,8 @@ fn ry_error_name(code): cstring {
         RY_ERR_UNKNOWN_AMINO_ACID => { return "UnknownAminoAcid"; }
         RY_ERR_UNKNOWN_PATHWAY => { return "UnknownPathway"; }
         RY_ERR_NON_FINITE => { return "NonFinite"; }
+        RY_ERR_DESERIALIZE => { return "Deserialize"; }
+        RY_ERR_OUT_OF_MEMORY => { return "OutOfMemory"; }
         _ => { return "Unknown"; }
     }
     return "Unknown";
@@ -3303,6 +3309,8 @@ fn ry_error_message(code): cstring {
         RY_ERR_UNKNOWN_AMINO_ACID => { return "unknown amino acid"; }
         RY_ERR_UNKNOWN_PATHWAY => { return "unknown metabolic pathway"; }
         RY_ERR_NON_FINITE => { return "non-finite value"; }
+        RY_ERR_DESERIALIZE => { return "malformed JSON document"; }
+        RY_ERR_OUT_OF_MEMORY => { return "an allocation was refused"; }
         _ => { return "unknown error"; }
     }
     return "unknown error";
@@ -3890,6 +3898,152 @@ fn _ry_debug(sb) {
 # Emits the event built in `sb` at WARN (Rust's `tracing::warn!`).
 fn _ry_warn(sb) {
     sakshi_warn(load64(sb), load64(sb + 8));
+    return 0;
+}
+
+# --- json.cyr ---
+
+# json.cyr — the shared JSON helpers behind every rasayan type's codec (P7, ADR 0004 and its amendment).
+#
+# rasayan writes the documents serde_json 1.0.154 writes for the Rust crate's 69 serializable types, so a Rust
+# program's JSON (saved states and configs, MCP tool results) passes through unchanged. tests/golden/json.tsv pins
+# each helper against serde_json itself; each type's codec (from M2) writes its fields in Rust's declaration order
+# with these, and its documents join its module's rows.
+#
+# ── writers ──
+# Each appends to a str_builder `sb` and takes the allocator `a` the builder grows on (lib/alloc.cyr; `default_alloc()`
+# for a builder from str_builder_new), as lib/str.cyr's `_a` forms do. It first reserves room for the most it can
+# write through the non-aborting grow (`_sb_grow_a`), then writes: once the room is there, the puts underneath (the
+# vendored printer's, lib/str.cyr's escaper's) never grow the builder, so they never reach lib/str.cyr's `_sb_die`,
+# which exits the process when a grow is refused (ADR 0004's amendment; rasayan's addendum to the open vec issue).
+# Each returns 0, or -1 when the room was refused, having written nothing; a codec ORs the results and returns
+# Err(RY_ERR_OUT_OF_MEMORY) for a nonzero total:
+#
+#     var e = _ry_jw_byte(a, sb, 123);
+#     e = e | _ry_jw_key(a, sb, "atp", 1);
+#     e = e | _ry_jw_f64(a, sb, s.atp);
+#     e = e | _ry_jw_byte(a, sb, 125);
+#     if (e != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+#
+# The forms are serde_json's: an f64 by fmtf's serde_json form (`null` for NaN and ±inf: serde_json writes them so and
+# refuses them on read); a string with serde_json's escapes (`\"` `\\` `\b` `\t` `\n` `\f` `\r`, `\u00xx` in lowercase
+# hex for the other bytes below 0x20, everything else, DEL and UTF-8 included, as is); a char as a one-character
+# string; integers in decimal, a usize as unsigned; None as `null`; a fixed array as a JSON array; a unit enum variant
+# as its name in quotes.
+
+# The most bytes fmtf's serde_json form writes for one f64 (24: `-2.2250738585072014e-308`), rounded up.
+const _RY_JW_F64_MAX = 32;
+
+# Reserves room for `n` more bytes in `sb` on allocator `a`: 0, or -1 when the allocator refused it.
+#must_use
+fn _ry_jw_reserve(a, sb, n): i64 {
+    if (n < 0) { return 0 - 1; }
+    return _sb_grow_a(a, sb, n);
+}
+
+# Appends the byte `c` (`{`, `}`, `[`, `]`, `,`). 0, or -1.
+fn _ry_jw_byte(a, sb, c): i64 {
+    if (_ry_jw_reserve(a, sb, 1) != 0) { return 0 - 1; }
+    str_builder_putc(sb, c);
+    return 0;
+}
+
+# Appends `"name":` (C string `name`, a Rust field name: no escapes needed), preceded by a comma unless `first` is 1.
+# 0, or -1.
+fn _ry_jw_key(a, sb, name, first): i64 {
+    var n = strlen(name);
+    if (_ry_jw_reserve(a, sb, n + 4) != 0) { return 0 - 1; }
+    if (first != 1) { str_builder_putc(sb, 44); }
+    str_builder_putc(sb, 34);
+    str_builder_add_cstr(sb, name);
+    str_builder_putc(sb, 34);
+    str_builder_putc(sb, 58);
+    return 0;
+}
+
+# Appends x as serde_json writes an f64 (`null` for NaN and ±inf). 0, or -1.
+fn _ry_jw_f64(a, sb, x: f64): i64 {
+    if (_ry_jw_reserve(a, sb, _RY_JW_F64_MAX) != 0) { return 0 - 1; }
+    _ry_fmt_f64_json(sb, x);
+    return 0;
+}
+
+# Appends the `n` bytes at `p` (UTF-8: a Rust String or &str) as a JSON string, escaped as serde_json escapes it.
+# At most 6 bytes per byte plus the quotes. 0, or -1.
+fn _ry_jw_str(a, sb, p, n): i64 {
+    if (n < 0 || _ry_jw_reserve(a, sb, 6 * n + 2) != 0) { return 0 - 1; }
+    var t[16];
+    store64(&t, p);
+    store64(&t + 8, n);
+    str_builder_add_json_str(sb, &t);
+    return 0;
+}
+
+# Appends a Rust char, the `n` UTF-8 bytes at `p` (1–4), as serde_json writes it: a one-character string. 0, or -1.
+fn _ry_jw_char(a, sb, p, n): i64 {
+    if (n < 1 || n > 4) { return 0 - 1; }
+    return _ry_jw_str(a, sb, p, n);
+}
+
+# Appends the word `n` as an unsigned decimal (a Rust usize or u32: a usize at or past 2^63 is a negative i64 here).
+# 0, or -1.
+fn _ry_jw_u64(a, sb, n): i64 {
+    if (_ry_jw_reserve(a, sb, 20) != 0) { return 0 - 1; }
+    if (n >= 0) {
+        str_builder_add_int(sb, n);
+        return 0;
+    }
+    # n read unsigned is v = 2^64 + n: write v / 10, then its last digit. (v >> 1) / 5 = v / 10, with the shift made
+    # logical by the mask; v - 10 * (v / 10) wraps to the digit.
+    var q = ((n >> 1) & 0x7FFFFFFFFFFFFFFF) / 5;
+    var d = n - q * 10;
+    str_builder_add_int(sb, q);
+    str_builder_putc(sb, 48 + d);
+    return 0;
+}
+
+# Appends the signed integer `n` in decimal (a Rust i32). 0, or -1.
+fn _ry_jw_i64(a, sb, n): i64 {
+    if (_ry_jw_reserve(a, sb, 20) != 0) { return 0 - 1; }
+    str_builder_add_int(sb, n);
+    return 0;
+}
+
+# Appends `null` (Rust's None). 0, or -1.
+fn _ry_jw_null(a, sb): i64 {
+    if (_ry_jw_reserve(a, sb, 4) != 0) { return 0 - 1; }
+    str_builder_add_cstr(sb, "null");
+    return 0;
+}
+
+# Appends an Option<f64>: `null` when `has` is 0, else x as an f64. 0, or -1.
+fn _ry_jw_opt_f64(a, sb, has, x: f64): i64 {
+    if (has == 0) { return _ry_jw_null(a, sb); }
+    return _ry_jw_f64(a, sb, x);
+}
+
+# Appends the `n` f64s at `p` as a JSON array (a Rust `[f64; n]`). 0, or -1.
+fn _ry_jw_f64_array(a, sb, p, n): i64 {
+    if (n < 0 || _ry_jw_reserve(a, sb, n * (_RY_JW_F64_MAX + 1) + 2) != 0) { return 0 - 1; }
+    str_builder_putc(sb, 91);
+    var k = 0;
+    while (k < n) {
+        if (k > 0) { str_builder_putc(sb, 44); }
+        var x: f64 = load64(p + 8 * k);
+        _ry_fmt_f64_json(sb, x);
+        k = k + 1;
+    }
+    str_builder_putc(sb, 93);
+    return 0;
+}
+
+# Appends a unit enum variant as serde writes it: its name (C string, a Rust identifier) in quotes. 0, or -1.
+fn _ry_jw_unit(a, sb, name): i64 {
+    var n = strlen(name);
+    if (_ry_jw_reserve(a, sb, n + 2) != 0) { return 0 - 1; }
+    str_builder_putc(sb, 34);
+    str_builder_add_cstr(sb, name);
+    str_builder_putc(sb, 34);
     return 0;
 }
 

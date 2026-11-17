@@ -60,3 +60,11 @@ details:
 - **Writers must not abort**: `str_builder_putc` / `_add_cstr` exit the process when a builder cannot grow
   (`lib/str.cyr`'s `_sb_die`; rasayan's addendum to the open vec issue). M1's `src/json.cyr` sizes each builder for its
   document before writing (or writes through the `_a` forms) so the vendored printer's puts never grow it.
+
+**As built (M1 part 3a).** Each writer helper in `src/json.cyr` takes the builder's allocator, reserves its own worst
+case through `_sb_grow_a` (an f64 32 bytes, a string 6 per byte plus 2, an integer 20) and only then writes, so the
+puts underneath never grow the builder; a refused reserve returns -1 with nothing written, and a codec answers
+`Err(RY_ERR_OUT_OF_MEMORY)` (appended after Rust's variants, with `RY_ERR_DESERIALIZE` for the readers). The forms are
+pinned by `tests/golden/json.tsv` against serde_json 1.0.154 itself (18,855 rows, byte-identical, 30 exact ties
+included). fmtf's exact printer costs about 3.7 µs per f64; it is impetus's code, so its speed is recorded, not
+changed here.
