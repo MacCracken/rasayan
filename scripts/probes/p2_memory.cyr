@@ -1,0 +1,338 @@
+# Probe 2 (port plan §2.10, §4 step 9; and probe 5's heap measurement, which cannot run on the real network until
+# M5): the metabolic network's producer probe without the heap. Each network step does `let mut probe =
+# self.clone();` and runs the producers on the copy (pathway.rs `step`). MetabolicNetwork is 33 f64 (glycolysis 11,
+# TCA 9, ETC 3, β-oxidation 2, amino acid catabolism 3, and 5 shared pools: 264 bytes). The global allocator is a
+# bump with no free and a library must never alloc_reset, so the copy has to live in the frame or in an arena.
+# Measured over 10^6 steps each (heap: alloc_used() before and after; time: lib/bench.cyr):
+# - the producers' stand-in alone on a persistent struct (the floor: no copy);
+# - `var probe: P2Network = *net;`, a by-value copy into the step's frame (Rust's clone);
+# - the same through a by-value parameter (the caller's struct copied at the call);
+# - an arena reset each step and the copy into a slot allocated from it (the per-step arena pattern);
+# - a scratch slot the caller allocated once, copied into each step;
+# - the anti-pattern, a fresh alloc() per step (10^4 steps), which grows the heap for the life of the process;
+# - a 65-f64 struct (520 bytes, the size of the per-step NetworkTick result) copied into the frame.
+#
+#   cyrius build scripts/probes/p2_memory.cyr build/p2 && ./build/p2
+include "lib/bench.cyr"
+include "scripts/probes/probe_io.cyr"
+
+struct P2Glycolysis {
+    glucose: f64;
+    g6p: f64;
+    f6p: f64;
+    f16bp: f64;
+    dhap: f64;
+    g3p: f64;
+    bpg13: f64;
+    pg3: f64;
+    pg2: f64;
+    pep: f64;
+    pyruvate: f64;
+}
+struct P2Tca {
+    acetyl_coa: f64;
+    citrate: f64;
+    isocitrate: f64;
+    alpha_kg: f64;
+    succinyl_coa: f64;
+    succinate: f64;
+    fumarate: f64;
+    malate: f64;
+    oxaloacetate: f64;
+}
+struct P2Etc {
+    pmf: f64;
+    qh2_fraction: f64;
+    cytc_reduced: f64;
+}
+struct P2BetaOx {
+    acyl_coa: f64;
+    free_fatty_acid: f64;
+}
+struct P2Amino {
+    amino_acid_pool: f64;
+    glutamate: f64;
+    ammonium: f64;
+}
+struct P2Network {
+    glycolysis: P2Glycolysis;
+    tca: P2Tca;
+    etc: P2Etc;
+    beta_ox: P2BetaOx;
+    amino_catab: P2Amino;
+    atp: f64;
+    adp: f64;
+    nad_ratio: f64;
+    oxygen: f64;
+    malonyl_coa: f64;
+}
+
+# 65 f64: the network, then 32 more (the per-step NetworkTick result is 67 f64, NetworkFlux 62).
+struct P2Wide {
+    net: P2Network;
+    g: P2Glycolysis;
+    t: P2Tca;
+    e: P2Etc;
+    b: P2BetaOx;
+    x0: f64;
+    x1: f64;
+    x2: f64;
+    x3: f64;
+    x4: f64;
+    x5: f64;
+    x6: f64;
+}
+
+var _p2_sink: f64 = 0.0;
+
+# A struct's address as a *f64 over its f64 fields (every field here is an f64, packed from offset 0).
+#must_use
+fn p2_as_f64p(p): *f64 { return p; }
+
+# An untyped word (an allocation) as a *P2Network: impetus's cast-helper idiom.
+#must_use
+fn p2_as_net(p): *P2Network { return p; }
+
+# A stand-in for the producers run on the probe copy: reads and writes fields across the sub-states and returns
+# this step's NADH output, as `probe.produce(..)` does.
+fn p2_produce(p: *P2Network, h: f64): f64 {
+    var flux: f64 = h * p.glycolysis.glucose;
+    p.glycolysis.glucose = p.glycolysis.glucose - flux;
+    p.glycolysis.pyruvate = p.glycolysis.pyruvate + (2.0 * flux);
+    p.tca.citrate = p.tca.citrate + (h * p.tca.acetyl_coa);
+    p.amino_catab.glutamate = p.amino_catab.glutamate + (h * p.amino_catab.amino_acid_pool);
+    var nadh: f64 = ((2.0 * flux) + (h * p.tca.acetyl_coa)) + (h * p.beta_ox.acyl_coa);
+    return nadh;
+}
+
+# Rust's `let mut probe = self.clone(); probe.produce(..)`: the copy is a frame object of this call.
+fn p2_step_frame(net: *P2Network, h: f64): f64 {
+    var probe: P2Network = *net;
+    var r: f64 = p2_produce(&probe, h);
+    return r;
+}
+
+# The same with the copy made at the call: a by-value struct parameter is the callee's own copy.
+fn p2_step_byval(probe: P2Network, h: f64): f64 {
+    var r: f64 = p2_produce(&probe, h);
+    return r;
+}
+
+# The per-step arena pattern: reset, allocate the slot, copy into it.
+fn p2_step_arena(net: *P2Network, arena, h: f64): f64 {
+    arena_reset(arena);
+    var slot: *P2Network = p2_as_net(arena_alloc(arena, sizeof(P2Network)));
+    slot = *net;
+    var r: f64 = p2_produce(slot, h);
+    return r;
+}
+
+# A scratch slot the caller owns, copied into each step.
+fn p2_step_scratch(net: *P2Network, scratch: *P2Network, h: f64): f64 {
+    scratch = *net;
+    var r: f64 = p2_produce(scratch, h);
+    return r;
+}
+
+# The anti-pattern: a fresh allocation per step, never freed.
+fn p2_step_alloc(net: *P2Network, h: f64): f64 {
+    var slot: *P2Network = p2_as_net(alloc(sizeof(P2Network)));
+    slot = *net;
+    var r: f64 = p2_produce(slot, h);
+    return r;
+}
+
+# The 65-f64 copy into the frame, then one field read.
+fn p2_step_wide(w: *P2Wide): f64 {
+    var c: P2Wide = *w;
+    c.x6 = c.x6 + 1.0;
+    var r: f64 = c.net.glycolysis.glucose + c.x6;
+    return r;
+}
+
+# Prints `label: n bytes of global heap over k steps`; returns n.
+fn p2_heap(label, before, k): i64 {
+    var grew = alloc_used() - before;
+    print(label, strlen(label));
+    print(": ", 2);
+    fmt_int(grew);
+    print(" bytes of global heap over ", 27);
+    fmt_int(k);
+    println(" steps");
+    return grew;
+}
+
+# Fills a network with distinct values so a wrong copy shows.
+fn p2_fill(n: *P2Network): i64 {
+    var p: *f64 = p2_as_f64p(n);
+    var i = 0;
+    while (i < 33) {
+        var v: f64 = f64_from(i + 1);
+        p[i] = v * 0.125;
+        i = i + 1;
+    }
+    return 0;
+}
+
+# 1 if every field of the network still holds p2_fill's value: the copies must not write through to the original.
+fn p2_intact(n: *P2Network): i64 {
+    var p: *f64 = p2_as_f64p(n);
+    var i = 0;
+    while (i < 33) {
+        var v: f64 = f64_from(i + 1);
+        var want: f64 = v * 0.125;
+        if (p[i] != want) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# Runs every measurement.
+fn main(): i64 {
+    alloc_init();
+    var steps = 1000000;
+    var h: f64 = 0.02;
+    var grew = 0;
+    var net: P2Network;
+    p2_fill(&net);
+    print("sizeof(P2Network) ", 18);
+    fmt_int(sizeof(P2Network));
+    print(", sizeof(P2Wide) ", 17);
+    fmt_int(sizeof(P2Wide));
+    println("");
+
+    var b0 = bench_new("p2/no copy (the producers' stand-in alone)");
+    var work: P2Network = net;
+    var h0 = alloc_used();
+    bench_batch_start(b0);
+    var i = 0;
+    while (i < steps) {
+        var r0: f64 = p2_produce(&work, h);
+        _p2_sink = _p2_sink + r0;
+        i = i + 1;
+    }
+    bench_batch_stop(b0, steps);
+    bench_report(b0);
+    grew = grew + p2_heap("no copy", h0, steps);
+
+    var b1 = bench_new("p2/frame copy (var probe: P2Network = *net)");
+    h0 = alloc_used();
+    bench_batch_start(b1);
+    i = 0;
+    while (i < steps) {
+        var r1: f64 = p2_step_frame(&net, h);
+        _p2_sink = _p2_sink + r1;
+        i = i + 1;
+    }
+    bench_batch_stop(b1, steps);
+    bench_report(b1);
+    grew = grew + p2_heap("frame copy", h0, steps);
+
+    var b2 = bench_new("p2/by-value parameter");
+    h0 = alloc_used();
+    bench_batch_start(b2);
+    i = 0;
+    while (i < steps) {
+        var r2: f64 = p2_step_byval(net, h);
+        _p2_sink = _p2_sink + r2;
+        i = i + 1;
+    }
+    bench_batch_stop(b2, steps);
+    bench_report(b2);
+    grew = grew + p2_heap("by-value parameter", h0, steps);
+
+    var arena = arena_new_growable(sizeof(P2Network) * 4);
+    var cap0 = arena_capacity_total(arena);
+    var b3 = bench_new("p2/arena reset + slot + copy, per step");
+    h0 = alloc_used();
+    bench_batch_start(b3);
+    i = 0;
+    while (i < steps) {
+        var r3: f64 = p2_step_arena(&net, arena, h);
+        _p2_sink = _p2_sink + r3;
+        i = i + 1;
+    }
+    bench_batch_stop(b3, steps);
+    bench_report(b3);
+    grew = grew + p2_heap("arena reset per step", h0, steps);
+    print("arena capacity: before ", 23);
+    fmt_int(cap0);
+    print(", after ", 8);
+    fmt_int(arena_capacity_total(arena));
+    println(" bytes");
+
+    var scratch: *P2Network = p2_as_net(alloc(sizeof(P2Network)));
+    var b4 = bench_new("p2/caller scratch slot, copy per step");
+    h0 = alloc_used();
+    bench_batch_start(b4);
+    i = 0;
+    while (i < steps) {
+        var r4: f64 = p2_step_scratch(&net, scratch, h);
+        _p2_sink = _p2_sink + r4;
+        i = i + 1;
+    }
+    bench_batch_stop(b4, steps);
+    bench_report(b4);
+    grew = grew + p2_heap("caller scratch slot", h0, steps);
+
+    var few = 10000;
+    var b5 = bench_new("p2/fresh alloc per step (anti-pattern)");
+    h0 = alloc_used();
+    bench_batch_start(b5);
+    i = 0;
+    while (i < few) {
+        var r5: f64 = p2_step_alloc(&net, h);
+        _p2_sink = _p2_sink + r5;
+        i = i + 1;
+    }
+    bench_batch_stop(b5, few);
+    bench_report(b5);
+    p2_heap("fresh alloc per step", h0, few);
+
+    var wide: P2Wide;
+    var wp: *f64 = p2_as_f64p(&wide);
+    var k = 0;
+    while (k < 65) {
+        var wv: f64 = f64_from(k);
+        wp[k] = wv;
+        k = k + 1;
+    }
+    var b6 = bench_new("p2/65-f64 frame copy");
+    h0 = alloc_used();
+    bench_batch_start(b6);
+    i = 0;
+    while (i < steps) {
+        var r6: f64 = p2_step_wide(&wide);
+        _p2_sink = _p2_sink + r6;
+        i = i + 1;
+    }
+    bench_batch_stop(b6, steps);
+    bench_report(b6);
+    grew = grew + p2_heap("65-f64 frame copy", h0, steps);
+
+    # The copies are copies: the original is untouched, and a copy holds every field.
+    var check: P2Network = net;
+    var cp: *P2Network = &check;
+    print("original intact after every variant: ", 37);
+    fmt_int(p2_intact(&net));
+    print("; a frame copy holds all 33 fields: ", 36);
+    fmt_int(p2_intact(cp));
+    print("; the scratch slot holds them before the producers ran: ", 56);
+    scratch = *(&net);
+    var held = p2_intact(scratch);
+    fmt_int(held);
+    println("");
+    fmt_hex0x(load64(&_p2_sink));
+    println(" (the sink)");
+    # The probe's claims, as an exit status: no heap growth in any variant but the anti-pattern, and real copies.
+    var arena_grew = arena_capacity_total(arena) - cap0;
+    var ok = 1;
+    if (grew != 0 || arena_grew != 0) { ok = 0; }
+    if (p2_intact(&net) != 1 || p2_intact(cp) != 1 || held != 1) { ok = 0; }
+    pio_ok("probe 2: zero heap growth over 10^6 steps in every copy pattern, copies intact: ", ok);
+    if (ok == 1) { return 0; }
+    return 1;
+}
+
+var r = main();
+sys_exit_group(r);

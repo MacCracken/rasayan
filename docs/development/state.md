@@ -21,7 +21,8 @@ milestone (M9) sets 2.0.0.
 | M0 part 2c-1 — step 7 + the corrected oracle | ✅ the parity harness `tests/parity.tcyr` (`tests/parity_core.cyr`, `tests/ulp.cyr` from ushma; `tests/parity_math.cyr`, the §0.8 helpers test-side until M1) runs in `cyrius test`: 9,069 ok, 0 failed, 11,094 class-C rows measured on the stdlib, 0 pending (`port-parity.md` §2a); the MPFR corrected oracle `scripts/oracle/mpfr_ref.py` writes `tests/golden/math.cr.tsv` (glibc misrounds 96 of 11,094 class-C rows: exp_m1 94, exp 1, powf 1), which `validate.py` re-derives with its own MPFR binding (§2b); the stdlib's class-C baseline against it (§2c) |
 | M0 part 2c-2 — the correctly rounded primitives | ✅ `src/mathx.cyr` vendored from ushma (commit `24893c9`; kimiya `5b14c85`): `_ry_cr_exp`, `_ry_cr_expm1`, `_ry_cr_ln`, `_ry_cr_pow` and their fast / accurate entry points (37 functions, the reachability closure of 12 roots; atan2, tanh and their helpers dropped), plus the §0.8 helpers `_ry_is_nan`, `_ry_is_finite`, `_ry_max`, `_ry_min`, `_ry_powi` moved from `tests/parity_math.cyr` (`_ry_clamp`, `_ry_f64_to_u32` stay test-side: ushma's mathx has no counterpart); `src/mathx_data.cyr` (32 items) from `scripts/oracle/mathx_tables.py`, bit-identical to ushma's; the harness gates class C at 0 ulp against the corrected oracle: every row exact, the 96 glibc misroundings accepted (ADR 3), identical on x86_64 ELF, `--bounds` and aarch64 (`port-parity.md` §2d); `[lib]` and `dist/rasayan.cyr` |
 | M0 part 2c-3 — the dense MPFR sweep | ✅ `scripts/oracle/cr_verify.py` (ushma's tool, kimiya's originally, cut to exp, expm1, ln, pow; ushma's argument families unchanged with their seeds, plus rasayan's call sites and every class-C corpus argument): 5,314,811 arguments per target against MPFR, the accurate path forced on 411,760, **0 mismatches**, fast path equal to the full result wherever its test passes, bits and flags identical on x86_64 ELF, aarch64 and PE; fast path falls back on exp 2.45·10⁻⁴, expm1 5.06·10⁻³ (the overflow end, by design), ln 5.49·10⁻⁵, pow 1.58·10⁻⁴ (`port-parity.md` §2e). `--quick` (542,062 arguments, ~11 s) for routine use; `--tamper` self-test. No ADR amendment |
-| M0 steps 7–10 (rest) | ⏳ part 3: baselines on three targets, probes 1–8, upstream |
+| M0 part 3a — step 8 baselines, step 9 probes | ✅ `scripts/gates.sh` (ushma's, adapted): every gate in turn, one target at a time, logs in `build/gates/`, 84–117 s, all green; the three-target baseline: one parity summary on x86_64 ELF, `--bounds`, PE (wine) and aarch64 (qemu), 0 failing, the logs identical but for the two ungated builtin shadow lines on aarch64 (`port-parity.md` §2f). Probes (`scripts/probes/run.sh`, §3): **1** sub-step counts, 44,266 rows from the oracle bin `probe_substeps` (tied to the real ticks), 0 mismatches on three targets — 342 of the network's exact multiples k·h take k + 1 sub-steps in Rust too; **2** the producer probe as a 264-byte frame copy (+11 ns, 0 heap over 10⁶ steps; probe 5's soak moves to M5); **3** caller buffer + count for every `Vec` result (0 heap, fastest; `vec_push` aborts); **4** the implicit NADH solves transcribed: 200,000 solves from the oracle bin `probe_solver` (a verbatim copy, text-checked) bit-identical with identical iteration counts and exits on three targets; the textbook secant form differs on 28 %; **8** Rust emits 31 events and no span: level-gated event helpers (+11 ns filtered; a raw sakshi span costs 204 ns); **12** f64 hygiene confirmed at the pin |
+| M0 part 3b — probes 6, 7; step 10 | ⏳ bote 3.8.15 round-trip, hoosh 2.12.3 API (P8), the upstream filings |
 
 ## Golden corpus
 
@@ -83,12 +84,17 @@ milestone (M9) sets 2.0.0.
 - MPFR sweep: `scripts/oracle/cr_verify.py` checks the four primitives on 5,314,811 arguments per target
   (`--quick`: 542,062), both paths, ELF, aarch64 and PE: 0 mismatches (`port-parity.md` §2e)
 - Oracle: 628 unit + 70 integration + 25 validation + 2 doc tests pass in `rust-old/` (`--all-features`)
+- Gates: `bash scripts/gates.sh` runs all of the above plus the probes (`scripts/probes/run.sh --gate`: p1 and p4
+  against the oracle on ELF, aarch64 and PE, p2 and p3 self-checking, every probe building warning-free)
 
 ## Benchmarks
 
 `tests/rasayan.bcyr` (x86_64, 10⁶ calls each; `port-parity.md` §2d): `_ry_cr_exp` 46 ns (x87 builtin
 `f64_exp` 17), `_ry_cr_ln` 56 (`f64_ln` 38), `_ry_cr_expm1` 54 (`_gn_expm1` 85), `_ry_cr_pow` 149
 (`ganita_f64_pow` 209), and the loop floor (`noop`, 3 ns). The Rust twins arrive with each milestone.
+Probe measurements (`port-parity.md` §3, measured not gated): the implicit NADH solves 582 / 259 ns
+(`balanced_nad_ratio` / `end_of_step_nadh`; Rust 155 / 98 ns); the network's 264-byte probe copy 11 ns; a
+level-gated trace event around MM +11 ns filtered out (a raw sakshi span +204 ns).
 
 ## Dependencies
 
@@ -103,5 +109,5 @@ Rust crate (crates.io): mastishk 1.1.0, sharira 1.1.0, kiran 1.0.0. No Cyrius co
 
 ## Next
 
-M0 part 3: baselines on three targets (the harness and benches on PE; `cr_verify.py` already runs there),
-probes 1–8, upstream.
+M0 part 3b: probes 6 (bote 3.8.15 tool registration and dispatch) and 7 (hoosh 2.12.3's inference API, P8), then
+the upstream filings (step 10, port plan §8). Then M1.

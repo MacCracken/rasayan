@@ -1,0 +1,176 @@
+# Probe 12 (ushma's M0 probe 12, rasayan port plan §4 step 9): which of CLAUDE.md's f64 traps the 6.7.18 compiler
+# flags, and what the unflagged ones do at run time. Each `t*` fn holds one trap; building this file lists the
+# diagnostics (port-parity.md §3 records which trap gets one), and running it prints what the traps compute. The
+# warning-free `cyrius test` gate is what catches the flagged ones, so only the unflagged ones need a CLAUDE.md rule
+# of their own. This file is the one probe that must NOT build warning-free (scripts/probes/run.sh counts its
+# diagnostics: 8 warnings, at traps 1, 2, 3, 4, 5, 6 and both diagnosed halves of 9).
+#
+#   cyrius build scripts/probes/p12_f64_hygiene.cyr build/p12 2>&1 | grep -v '^note' && ./build/p12
+#   cyrius build -D P12_EXPONENT scripts/probes/p12_f64_hygiene.cyr build/p12e    # trap 10: a compile error
+
+# Trap 1: `0 - x`, an integer operation on an f64's bits (the left operand types the operator).
+fn t1_zero_minus(x: f64): f64 {
+    var r: f64 = 0 - x;
+    return r;
+}
+
+# Trap 2: `2 * x`.
+fn t2_int_times(x: f64): f64 {
+    var r: f64 = 2 * x;
+    return r;
+}
+
+# Trap 3: an integer literal passed to an f64 parameter keeps its bits (3 is the subnormal 1.5e-323).
+fn t3_callee(x: f64): f64 {
+    var r: f64 = x * 1.0;
+    return r;
+}
+
+# The caller of trap 3.
+fn t3_int_arg(): f64 {
+    var r: f64 = t3_callee(3);
+    return r;
+}
+
+# Trap 4: a builtin's result bound untyped, then compared as if it were an f64.
+fn t4_untyped_cmp(u: f64): i64 {
+    var r = f64_sqrt(u);
+    if (r < 1.0) { return 1; }
+    return 0;
+}
+
+# Trap 5: an integer stored into a typed f64 local.
+fn t5_int_store(): f64 {
+    var r: f64 = 7;
+    return r;
+}
+
+# Trap 6: f64 compared with an integer.
+fn t6_mixed_cmp(x: f64): i64 {
+    if (x < 1) { return 1; }
+    return 0;
+}
+
+# Trap 7: `if (x)` on an f64 tests the raw bits: true for -0.0, which compares equal to 0.0.
+fn t7_truthy(x: f64): i64 {
+    if (x) { return 1; }
+    return 0;
+}
+
+# Trap 8: Rust's `-x` written `0.0 - x`. For x = +0 Rust gives -0; `0.0 - x` gives +0 (no diagnostic: both are f64
+# operations). Unary minus on a typed f64 and f64_neg give -0.
+fn t8_neg_forms(x: f64, which): f64 {
+    if (which == 0) {
+        var a: f64 = 0.0 - x;
+        return a;
+    }
+    if (which == 1) {
+        var b: f64 = -x;
+        return b;
+    }
+    var c: f64 = f64_neg(x);
+    return c;
+}
+
+# Trap 9: a hex const is an integer. Used in f64 arithmetic it is an integer operand (diagnosed); stored into an f64
+# slot it keeps its bits silently (not diagnosed: here the bits happen to be 1.0's, but a value written in hex as a
+# number, 0x10 meaning 16.0, becomes a subnormal).
+const P12_HEX_ONE = 0x3FF0000000000000;
+const P12_HEX_SIXTEEN = 0x10;
+
+# The diagnosed half of trap 9: the hex const as an f64 operand.
+fn t9_hex_operand(x: f64): f64 {
+    var r: f64 = x * P12_HEX_SIXTEEN;
+    return r;
+}
+
+# The silent half of trap 9: the hex consts stored into f64 slots.
+fn t9_hex_store(which): f64 {
+    if (which == 0) {
+        var a: f64 = P12_HEX_ONE;
+        return a;
+    }
+    var b: f64 = P12_HEX_SIXTEEN;
+    return b;
+}
+
+# Trap 11: a builtin's result compared directly. The compare is an INTEGER compare of the bit patterns (the guide,
+# "Float builtin results in arithmetic"): f64_neg(+0) == +0 is 0, and f64_neg(a) < f64_neg(b) orders negatives
+# backwards. Bound to a `: f64` local first, the compare is IEEE.
+fn t11_builtin_cmp(x: f64, which): i64 {
+    if (which == 0) {
+        if (f64_neg(x) == x) { return 1; }
+        return 0;
+    }
+    var n: f64 = f64_neg(x);
+    if (n == x) { return 1; }
+    return 0;
+}
+
+# Trap 11's ordering half: f64_neg(a) < f64_neg(b) for a = 1, b = 2 (IEEE: -1 < -2 is false).
+fn t11_builtin_order(a: f64, b: f64, which): i64 {
+    if (which == 0) {
+        if (f64_neg(a) < f64_neg(b)) { return 1; }
+        return 0;
+    }
+    var na: f64 = f64_neg(a);
+    var nb: f64 = f64_neg(b);
+    if (na < nb) { return 1; }
+    return 0;
+}
+
+#ifdef P12_EXPONENT
+# Trap 10: exponent notation in a literal is a compile error (`expected ';', got identifier 'e'`).
+fn t10_exponent(): f64 {
+    var r: f64 = 1e-14;
+    return r;
+}
+#endif
+
+# Prints `label 0x<bits>`.
+fn p12_bits(label, x: f64): i64 {
+    print(label, strlen(label));
+    fmt_hex0x(load64(&x));
+    println("");
+    return 0;
+}
+
+# Calls every trap so none is eliminated as unreachable, and prints what the unflagged ones compute.
+fn main(): i64 {
+    alloc_init();
+    var a: f64 = 1.5;
+    var s: f64 = t1_zero_minus(a) + t2_int_times(a) + t3_int_arg() + t5_int_store() + t9_hex_operand(a);
+    var k = t4_untyped_cmp(a) + t6_mixed_cmp(a);
+    if (s > 0.0) { k = k + 1; }
+    var pz: f64 = 0.0;
+    var nz: f64 = -pz;
+    p12_bits("trap 3: t3_callee(3) gives ", t3_int_arg());
+    print("trap 7: if (x) for x = -0.0 takes the branch: ", 46);
+    fmt_int(t7_truthy(nz));
+    print(" (and -0.0 == 0.0 is ", 21);
+    fmt_int(nz == pz);
+    println(")");
+    p12_bits("trap 8: 0.0 - (+0) = ", t8_neg_forms(pz, 0));
+    p12_bits("trap 8: -(+0)      = ", t8_neg_forms(pz, 1));
+    p12_bits("trap 8: f64_neg(+0) = ", t8_neg_forms(pz, 2));
+    p12_bits("trap 8: 0.0 - (-0) = ", t8_neg_forms(nz, 0));
+    p12_bits("trap 8: -(-0)      = ", t8_neg_forms(nz, 1));
+    p12_bits("trap 9: var f: f64 = 0x3FF0000000000000 (const) gives ", t9_hex_store(0));
+    p12_bits("trap 9: var f: f64 = 0x10 (const) gives ", t9_hex_store(1));
+    print("trap 11: f64_neg(+0) == +0 compared directly ", 45);
+    fmt_int(t11_builtin_cmp(pz, 0));
+    print(", bound to an f64 local first ", 30);
+    fmt_int(t11_builtin_cmp(pz, 1));
+    println("");
+    var one: f64 = 1.0;
+    var two: f64 = 2.0;
+    print("trap 11: f64_neg(1) < f64_neg(2) compared directly ", 51);
+    fmt_int(t11_builtin_order(one, two, 0));
+    print(", bound to f64 locals first ", 28);
+    fmt_int(t11_builtin_order(one, two, 1));
+    println("");
+    return k;
+}
+
+var r = main();
+sys_exit_group(0);

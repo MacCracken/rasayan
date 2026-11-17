@@ -167,8 +167,9 @@ one is a bug:
     rows and in JSON (`guard::shift` returns −0 from an empty product pool; port-parity §0.7). Write
     `0.0 - x` only where Rust itself subtracts from zero.
   - Pass f64 literals as `3.0`, never `3`, because an integer keeps its bits in an f64 slot.
-  - Never put hex in a `const`: it is an integer.
-  - No exponent notation in literals; generated files write decimals positionally.
+  - Never put hex in a `const`: it is an integer (stored into an f64 slot it keeps its bits, with no warning at or
+    above 2⁵²; probe 12).
+  - No exponent notation in literals (a compile error at the pin); generated files write decimals positionally.
 - **Never test an f64 for truth** (`if (x)`, `!x`): it tests the raw bits (−0.0 is true). Compare explicitly.
 - **Results through out-pointers.** A wide result fills the caller's `out: *T` and the function
   returns a value-form `Result`. Never a freshly allocated record in the payload.

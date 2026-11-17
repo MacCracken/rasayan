@@ -1,0 +1,399 @@
+# Probe 4 (port plan §2.2, §4 step 9, P9): the metabolic network's implicit NAD+/NADH solves transcribed into Cyrius
+# — pathway.rs `solve_decreasing` (Illinois-modified regula falsi), the two balances it solves (`balanced_nad_ratio`,
+# `end_of_step_nadh`) and what they call (`nadh_oxidized`, `ratio_of`, `nad_factor`, glycolysis.rs
+# `gapdh_nad_factor`, guard.rs `conc`) — compared with the oracle on seeded balances: the result's bits, the
+# iteration count and how the solve ended must all be identical. Rust's side is
+# scripts/oracle/src/bin/probe_solver/ (build/probe-solver/solver.txt; its rows and exit codes are documented there).
+#
+# The closure Rust passes (`impl Fn(f64) -> f64`, capturing the balance's inputs) becomes a fn pointer called through
+# callptr with a context struct (port plan §7.3): `excess(ctx, n)`. The iteration count and the exit come back through
+# an out-pointer `st` (st[0] iterations, st[1] exit), which M5's golden rows need.
+#
+#   cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml --bin probe_solver
+#   cyrius build scripts/probes/p4_solver.cyr build/p4 && ./build/p4      # also --aarch64 (qemu), --win (wine)
+#   cyrius build -D P4_ALT scripts/probes/p4_solver.cyr build/p4alt && ./build/p4alt   # the control: must mismatch
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "tests/parity_math.cyr"
+include "lib/bench.cyr"
+include "scripts/probes/probe_io.cyr"
+
+# The inputs `balanced_nad_ratio`'s closure captures (the producers' outputs already sanitized).
+struct P4Balance { pool: f64; glycolytic: f64; mitochondrial: f64; c_ci: f64; c_ldh: f64; }
+
+# The inputs `end_of_step_nadh`'s closure captures.
+struct P4Avail { avail: f64; c_ci: f64; c_ldh: f64; }
+
+# guard.rs `conc`: NaN, ±inf and negatives become 0.
+#must_use
+#pure
+fn p4_conc(x: f64): f64 {
+    if (_ry_is_finite(x) == 1) {
+        if (x > 0.0) { return x; }
+    }
+    return 0.0;
+}
+
+# pathway.rs `nad_factor`: `(ratio / RESTING_NAD_RATIO).min(MAX_NAD_FACTOR)`.
+#must_use
+#pure
+fn p4_nad_factor(ratio: f64): f64 {
+    var q: f64 = ratio / RY_RESTING_NAD_RATIO;
+    var m: f64 = _ry_min(q, RY_MAX_NAD_FACTOR);
+    return m;
+}
+
+# pathway.rs `ratio_of`: `((NAD_POOL_TOTAL - n) / n).clamp(NAD_RATIO_MIN, NAD_RATIO_MAX)`.
+#must_use
+#pure
+fn p4_ratio_of(n: f64): f64 {
+    var q: f64 = (RY_PATHWAY_NAD_POOL_TOTAL - n) / n;
+    var c: f64 = _ry_clamp(q, RY_PATHWAY_NAD_RATIO_MIN, RY_PATHWAY_NAD_RATIO_MAX);
+    return c;
+}
+
+# pathway.rs `nadh_oxidized`: `c_ci * n / (COMPLEX_I_KM_NADH + n) + c_ldh * n / (LDH_KM_NADH + n)`.
+#must_use
+#pure
+fn p4_nadh_oxidized(n: f64, c_ci: f64, c_ldh: f64): f64 {
+    var ci: f64 = (c_ci * n) / (RY_ETC_COMPLEX_I_KM_NADH + n);
+    var ldh: f64 = (c_ldh * n) / (RY_PATHWAY_LDH_KM_NADH + n);
+    var s: f64 = ci + ldh;
+    return s;
+}
+
+# glycolysis.rs `gapdh_nad_factor`: `r / (K + (1 + K)·r) / resting`, r = conc(nad_ratio), resting the same at
+# RESTING_NAD_RATIO.
+#must_use
+#pure
+fn p4_gapdh_nad_factor(nad_ratio: f64): f64 {
+    var r: f64 = p4_conc(nad_ratio);
+    var k: f64 = RY_GLYCOLYSIS_GAPDH_KM_NAD_FRACTION;
+    var resting: f64 = RY_RESTING_NAD_RATIO / (k + ((1.0 + k) * RY_RESTING_NAD_RATIO));
+    var g: f64 = (r / (k + ((1.0 + k) * r))) / resting;
+    return g;
+}
+
+# `balanced_nad_ratio`'s closure: pool + glycolytic·g(r(n)) + mitochondrial·f(r(n)) − oxidized(n) − n.
+#must_use
+fn p4_balance_excess(c: *P4Balance, n: f64): f64 {
+    var r: f64 = p4_ratio_of(n);
+    var g: f64 = p4_gapdh_nad_factor(r);
+    var f: f64 = p4_nad_factor(r);
+    var ox: f64 = p4_nadh_oxidized(n, c.c_ci, c.c_ldh);
+    var e: f64 = (((c.pool + (c.glycolytic * g)) + (c.mitochondrial * f)) - ox) - n;
+    return e;
+}
+
+# `end_of_step_nadh`'s closure: avail − oxidized(n) − n.
+#must_use
+fn p4_avail_excess(c: *P4Avail, n: f64): f64 {
+    var ox: f64 = p4_nadh_oxidized(n, c.c_ci, c.c_ldh);
+    var e: f64 = (c.avail - ox) - n;
+    return e;
+}
+
+# pathway.rs `solve_decreasing`, statement for statement: the root of a decreasing excess on [lo, hi] by
+# Illinois-modified regula falsi. `excess` is called through callptr as excess(ctx, x). st[0] gets the loop
+# iterations entered, st[1] how the solve ended (0 lo, 1 hi, 2 exact root, 3 bracket/tolerance break, 4 the cap).
+fn p4_solve_decreasing(lo0: f64, hi0: f64, excess, ctx, st: *i64): f64 {
+    var lo: f64 = lo0;
+    var hi: f64 = hi0;
+    st[0] = 0;
+    var f_lo: f64 = callptr(excess, ctx, lo);
+    if (f_lo <= 0.0) {
+        st[1] = 0;
+        return lo;
+    }
+    var f_hi: f64 = callptr(excess, ctx, hi);
+    if (f_hi >= 0.0) {
+        st[1] = 1;
+        return hi;
+    }
+    var last = 0;
+    var it = 0;
+    st[1] = 4;
+    while (it < _RY_PATHWAY_SOLVE_MAX_ITERATIONS) {
+        it = it + 1;
+        st[0] = it;
+        var x: f64 = ((lo * f_hi) - (hi * f_lo)) / (f_hi - f_lo);
+        #ifdef P4_ALT
+        # The control (build with -D P4_ALT): the same secant step in its algebraically equal textbook form, which the
+        # oracle does not use. It shows how far a transcription that is right on paper drifts from Rust's bits.
+        x = lo - ((f_lo * (hi - lo)) / (f_hi - f_lo));
+        #endif
+        var inside = 0;
+        if (x > lo) {
+            if (x < hi) { inside = 1; }
+        }
+        if (inside == 0) {
+            st[1] = 3;
+            break;
+        }
+        var width: f64 = hi - lo;
+        var tol: f64 = _RY_PATHWAY_SOLVE_RELATIVE_TOLERANCE * hi;
+        if (width <= tol) {
+            st[1] = 3;
+            break;
+        }
+        var f_x: f64 = callptr(excess, ctx, x);
+        if (f_x > 0.0) {
+            lo = x;
+            f_lo = f_x;
+            if (last == 0 - 1) { f_hi = f_hi * 0.5; }
+            last = 0 - 1;
+        } else {
+            if (f_x < 0.0) {
+                hi = x;
+                f_hi = f_x;
+                if (last == 1) { f_lo = f_lo * 0.5; }
+                last = 1;
+            } else {
+                st[1] = 2;
+                return x;
+            }
+        }
+    }
+    var mid: f64 = 0.5 * (lo + hi);
+    return mid;
+}
+
+# pathway.rs `balanced_nad_ratio`: the ratio at the solved NADH, which goes to *nout.
+fn p4_balanced_nad_ratio(pool: f64, gly: f64, mito: f64, c_ci: f64, c_ldh: f64, st: *i64, nout: *f64): f64 {
+    var ctx: P4Balance;
+    var g: f64 = p4_conc(gly);
+    var m: f64 = p4_conc(mito);
+    ctx.pool = pool;
+    ctx.glycolytic = g;
+    ctx.mitochondrial = m;
+    ctx.c_ci = c_ci;
+    ctx.c_ldh = c_ldh;
+    var lo: f64 = RY_PATHWAY_NAD_POOL_TOTAL / (1.0 + RY_PATHWAY_NAD_RATIO_MAX);
+    var hi: f64 = RY_PATHWAY_NAD_POOL_TOTAL / (1.0 + RY_PATHWAY_NAD_RATIO_MIN);
+    var n: f64 = p4_solve_decreasing(lo, hi, &p4_balance_excess, &ctx, st);
+    nout[0] = n;
+    var r: f64 = p4_ratio_of(n);
+    return r;
+}
+
+# pathway.rs `end_of_step_nadh`: 0 for avail <= 0 (st[1] = 5, no solve), else the solved NADH.
+fn p4_end_of_step_nadh(avail: f64, c_ci: f64, c_ldh: f64, st: *i64): f64 {
+    if (avail <= 0.0) {
+        st[0] = 0;
+        st[1] = 5;
+        return 0.0;
+    }
+    var ctx: P4Avail;
+    ctx.avail = avail;
+    ctx.c_ci = c_ci;
+    ctx.c_ldh = c_ldh;
+    var n: f64 = p4_solve_decreasing(0.0, avail, &p4_avail_excess, &ctx, st);
+    return n;
+}
+
+# An untyped word (an allocation) as a *f64: impetus's cast-helper idiom.
+#must_use
+fn p4_as_f64p(p): *f64 { return p; }
+
+# The next token as an f64 (its bits).
+#must_use
+fn p4_f(): f64 {
+    var x: f64 = 0.0;
+    store64(&x, pio_hex());
+    return x;
+}
+
+# Prints a mismatch: the row's index, what differs, Rust's and Cyrius's values.
+fn p4_bad(kind, row, what, want, got): i64 {
+    print("  MISMATCH ", 11);
+    print(kind, strlen(kind));
+    print(" row ", 5);
+    fmt_int(row);
+    print(" ", 1);
+    print(what, strlen(what));
+    print(": rust ", 7);
+    fmt_hex0x(want);
+    print(" cyrius ", 8);
+    fmt_hex0x(got);
+    println("");
+    return 0;
+}
+
+# Mismatches printed so far (the first 12 are shown).
+var _p4_shown = 0;
+
+# 1 if Rust's and Cyrius's words agree; else prints the mismatch (the first 12) and gives 0.
+fn p4_same(kind, row, what, want, got): i64 {
+    if (want == got) { return 1; }
+    if (_p4_shown < 12) {
+        p4_bad(kind, row, what, want, got);
+        _p4_shown = _p4_shown + 1;
+    }
+    return 0;
+}
+
+# Per kind (0 balanced, 1 end-of-step): rows, mismatching rows, exits (6 codes), iterations (0..100).
+var _p4_rows: i64[2];
+var _p4_bad: i64[2];
+var _p4_exit: i64[12];
+var _p4_hist: i64[101];
+# Physiological rows (the first six of every ten, probe_solver's family split): per kind, rows, iterations summed, most.
+var _p4_phys: i64[6];
+
+# Counts one physiological row's iterations (base 0 balanced, 3 end-of-step).
+fn p4_phys(base, iters): i64 {
+    _p4_phys[base] = _p4_phys[base] + 1;
+    _p4_phys[base + 1] = _p4_phys[base + 1] + iters;
+    if (iters > _p4_phys[base + 2]) { _p4_phys[base + 2] = iters; }
+    return 0;
+}
+
+# Prints a kind's physiological iteration count: rows, mean (two decimals), most.
+fn p4_phys_say(label, base): i64 {
+    print(label, strlen(label));
+    fmt_int(_p4_phys[base]);
+    print(" rows, mean iterations ", 23);
+    var hundredths = 0;
+    if (_p4_phys[base] > 0) { hundredths = (_p4_phys[base + 1] * 100) / _p4_phys[base]; }
+    fmt_int(hundredths / 100);
+    print(".", 1);
+    if ((hundredths % 100) < 10) { print("0", 1); }
+    fmt_int(hundredths % 100);
+    print(", most ", 7);
+    fmt_int(_p4_phys[base + 2]);
+    println("");
+    return 0;
+}
+
+# Reads every row, solves it, compares bits, iterations and exit; then times the solves. Exits 1 on any mismatch.
+fn main(): i64 {
+    alloc_init();
+    if (pio_open("build/probe-solver/solver.txt") != 1) {
+        println("probe 4: run the oracle's probe_solver bin first (see this file's header)");
+        return 1;
+    }
+    # Inputs kept for the timing pass: up to 200,000 rows of each kind, five f64 per balanced row, three per end row.
+    var cap = 200000;
+    var bin = alloc(cap * 40);
+    var ein = alloc(cap * 24);
+    var bp: *f64 = p4_as_f64p(bin);
+    var ep: *f64 = p4_as_f64p(ein);
+    var st: i64[2];
+    var nout: f64[1];
+    while (1) {
+        var tag = pio_tag();
+        if (tag < 0) { break; }
+        if (tag == 66) {
+            var pool: f64 = p4_f();
+            var gly: f64 = p4_f();
+            var mito: f64 = p4_f();
+            var cci: f64 = p4_f();
+            var cldh: f64 = p4_f();
+            var want_n = pio_hex();
+            var want_r = pio_hex();
+            var want_it = pio_int();
+            var want_ex = pio_int();
+            var k = _p4_rows[0];
+            if (k < cap) {
+                bp[5 * k] = pool;
+                bp[(5 * k) + 1] = gly;
+                bp[(5 * k) + 2] = mito;
+                bp[(5 * k) + 3] = cci;
+                bp[(5 * k) + 4] = cldh;
+            }
+            _p4_rows[0] = k + 1;
+            var r: f64 = p4_balanced_nad_ratio(pool, gly, mito, cci, cldh, &st, &nout);
+            var got_n = load64(&nout);
+            var got_r = load64(&r);
+            _p4_exit[st[1]] = _p4_exit[st[1]] + 1;
+            _p4_hist[st[0]] = _p4_hist[st[0]] + 1;
+            if ((k % 10) < 6) { p4_phys(0, st[0]); }
+            var ok = 1;
+            ok = ok & p4_same("balanced", k, "solved NADH", want_n, got_n);
+            ok = ok & p4_same("balanced", k, "ratio", want_r, got_r);
+            ok = ok & p4_same("balanced", k, "iterations", want_it, st[0]);
+            ok = ok & p4_same("balanced", k, "exit", want_ex, st[1]);
+            if (ok == 0) { _p4_bad[0] = _p4_bad[0] + 1; }
+        } else {
+            var avail: f64 = p4_f();
+            var eci: f64 = p4_f();
+            var eldh: f64 = p4_f();
+            var want_e = pio_hex();
+            var want_eit = pio_int();
+            var want_eex = pio_int();
+            var j = _p4_rows[1];
+            if (j < cap) {
+                ep[3 * j] = avail;
+                ep[(3 * j) + 1] = eci;
+                ep[(3 * j) + 2] = eldh;
+            }
+            _p4_rows[1] = j + 1;
+            var e: f64 = p4_end_of_step_nadh(avail, eci, eldh, &st);
+            var got_e = load64(&e);
+            _p4_exit[6 + st[1]] = _p4_exit[6 + st[1]] + 1;
+            _p4_hist[st[0]] = _p4_hist[st[0]] + 1;
+            if ((j % 10) < 6) { p4_phys(3, st[0]); }
+            var eok = 1;
+            eok = eok & p4_same("end-of-step", j, "NADH", want_e, got_e);
+            eok = eok & p4_same("end-of-step", j, "iterations", want_eit, st[0]);
+            eok = eok & p4_same("end-of-step", j, "exit", want_eex, st[1]);
+            if (eok == 0) { _p4_bad[1] = _p4_bad[1] + 1; }
+        }
+    }
+    pio_say("probe 4: balanced_nad_ratio rows ", _p4_rows[0]);
+    pio_say("probe 4: balanced_nad_ratio mismatching rows (bits, iterations or exit) ", _p4_bad[0]);
+    pio_say("probe 4: end_of_step_nadh rows ", _p4_rows[1]);
+    pio_say("probe 4: end_of_step_nadh mismatching rows (bits, iterations or exit) ", _p4_bad[1]);
+    var lbl = "probe 4: exits (lo, hi, root, break, cap, none): balanced ";
+    print(lbl, strlen(lbl));
+    var x = 0;
+    while (x < 6) { fmt_int(_p4_exit[x]); print(" ", 1); x = x + 1; }
+    print("| end-of-step ", 14);
+    x = 6;
+    while (x < 12) { fmt_int(_p4_exit[x]); print(" ", 1); x = x + 1; }
+    println("");
+    var most = 0;
+    x = 0;
+    while (x <= 100) { if (_p4_hist[x] > 0) { most = x; } x = x + 1; }
+    pio_say("probe 4: most iterations ", most);
+    p4_phys_say("probe 4: physiological balanced: ", 0);
+    p4_phys_say("probe 4: physiological end-of-step: ", 3);
+
+    # Timing: every balanced row, then every end-of-step row, solved again.
+    var nb = _p4_rows[0];
+    if (nb > cap) { nb = cap; }
+    var ne = _p4_rows[1];
+    if (ne > cap) { ne = cap; }
+    var sink: f64 = 0.0;
+    var b1 = bench_new("p4/balanced_nad_ratio");
+    bench_batch_start(b1);
+    var i = 0;
+    while (i < nb) {
+        var q = 5 * i;
+        var rr: f64 = p4_balanced_nad_ratio(bp[q], bp[q + 1], bp[q + 2], bp[q + 3], bp[q + 4], &st, &nout);
+        sink = sink + rr;
+        i = i + 1;
+    }
+    bench_batch_stop(b1, nb);
+    bench_report(b1);
+    var b2 = bench_new("p4/end_of_step_nadh");
+    bench_batch_start(b2);
+    i = 0;
+    while (i < ne) {
+        var en: f64 = p4_end_of_step_nadh(ep[3 * i], ep[(3 * i) + 1], ep[(3 * i) + 2], &st);
+        sink = sink + en;
+        i = i + 1;
+    }
+    bench_batch_stop(b2, ne);
+    bench_report(b2);
+    pio_hexsay("probe 4: (timing sink) ", load64(&sink));
+    var total_bad = _p4_bad[0] + _p4_bad[1];
+    pio_say("probe 4: mismatching rows ", total_bad);
+    if (total_bad != 0) { return 1; }
+    return 0;
+}
+
+var r = main();
+sys_exit_group(r);

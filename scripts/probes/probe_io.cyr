@@ -1,0 +1,102 @@
+# probe_io.cyr — what the probes share: the token reader of the oracle-compared ones (p1, p4), each reading a text
+# file a probe bin in scripts/oracle/src/bin/ wrote (whitespace-separated tokens, f64 values as their 16-hex-digit
+# bit patterns; adapted from ushma's scripts/probes/p1_p9_hisab.cyr, ushma commit 34e53b2), and the one-line
+# reports every probe prints.
+
+var _pio_buf = 0;
+var _pio_len = 0;
+var _pio_at = 0;
+
+# Reads a whole data file; 0 if it can't be read.
+fn pio_open(path): i64 {
+    var lenw[8];
+    var buf = file_read_whole(path, &lenw);
+    if (buf == 0) { return 0; }
+    _pio_buf = buf;
+    _pio_len = load64(&lenw);
+    _pio_at = 0;
+    return 1;
+}
+
+# 1 for the bytes a token ends at: space, tab, CR and LF.
+#must_use
+fn _pio_blank(c): i64 {
+    if (c == 32 || c == 10 || c == 13 || c == 9) { return 1; }
+    return 0;
+}
+
+# The next token's offset, its length in *lenp; -1 at the end of the file.
+fn pio_token(lenp): i64 {
+    while (_pio_at < _pio_len) {
+        if (_pio_blank(load8(_pio_buf + _pio_at)) == 0) { break; }
+        _pio_at = _pio_at + 1;
+    }
+    if (_pio_at >= _pio_len) { return 0 - 1; }
+    var s = _pio_at;
+    while (_pio_at < _pio_len) {
+        if (_pio_blank(load8(_pio_buf + _pio_at)) == 1) { break; }
+        _pio_at = _pio_at + 1;
+    }
+    store64(lenp, _pio_at - s);
+    return s;
+}
+
+# The first byte of the next token (a row's tag), or -1 at the end of the file.
+fn pio_tag(): i64 {
+    var lw[8];
+    var s = pio_token(&lw);
+    if (s < 0) { return 0 - 1; }
+    return load8(_pio_buf + s);
+}
+
+# The next token as a hex word (an f64's bits).
+fn pio_hex(): i64 {
+    var lw[8];
+    var s = pio_token(&lw);
+    var v = 0;
+    var k = 0;
+    while (k < load64(&lw)) {
+        var c = load8(_pio_buf + s + k);
+        var d = c - 48;
+        if (c >= 97) { d = c - 87; }
+        v = (v << 4) | d;
+        k = k + 1;
+    }
+    return v;
+}
+
+# The next token as an unsigned decimal integer.
+fn pio_int(): i64 {
+    var lw[8];
+    var s = pio_token(&lw);
+    var v = 0;
+    var k = 0;
+    while (k < load64(&lw)) {
+        v = (v * 10) + (load8(_pio_buf + s + k) - 48);
+        k = k + 1;
+    }
+    return v;
+}
+
+# Prints `label n` on one line.
+fn pio_say(label, n): i64 {
+    print(label, strlen(label));
+    fmt_int(n);
+    println("");
+    return 0;
+}
+
+# Prints `label 0x<bits>` on one line.
+fn pio_hexsay(label, bits): i64 {
+    print(label, strlen(label));
+    fmt_hex0x(bits);
+    println("");
+    return 0;
+}
+
+# Prints `label ok` or `label FAILED` on one line.
+fn pio_ok(label, ok): i64 {
+    print(label, strlen(label));
+    if (ok == 1) { println("ok"); } else { println("FAILED"); }
+    return 0;
+}

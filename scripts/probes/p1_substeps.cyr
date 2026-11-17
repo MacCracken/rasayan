@@ -1,0 +1,163 @@
+# Probe 1 (port plan §2.3, §4 step 9): the sub-step counts, f64 → integer conversion and ceil exactly as the
+# metabolic network (pathway.rs `tick_in`: `ceil(dt / 0.02)`, `(wanted as u32).max(1)` below the cap 5000), calcium
+# (`ceil(dt / 0.01).clamp(1.0, 1000.0) as u32`) and mapk (one step for dt <= 0.5, else `ceil(dt / 0.5).clamp(1.0,
+# 1000.0) as u32`) compute them, each behind `guard::valid_dt`. Rust's counts come from
+# scripts/oracle/src/bin/probe_substeps.rs (build/probe-substeps/substeps.txt: `model dt n raw`, n = the tick's
+# sub-steps, 0 for a refused dt; raw = the count expression without the guard). Every row is checked twice: with
+# the port's idiom (the §0.8 helpers `_ry_f64_to_u32` and `_ry_clamp`, the builtin `f64_ceil`) and, as a shadow
+# line, with the bare `f64_to` in place of `_ry_f64_to_u32`.
+#
+#   cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml --bin probe_substeps
+#   cyrius build scripts/probes/p1_substeps.cyr build/p1 && ./build/p1      # also --aarch64 (qemu), --win (wine)
+include "src/constants.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "tests/parity_math.cyr"
+include "scripts/probes/probe_io.cyr"
+
+# guard::valid_dt: a usable step is finite and > 0; a tick refuses anything else (zero flux, state untouched).
+#must_use
+fn p1_valid_dt(dt: f64): i64 {
+    if (_ry_is_finite(dt) == 0) { return 0; }
+    if (dt > 0.0) { return 1; }
+    return 0;
+}
+
+# Rust's `x as u32` (the port's idiom, `naive` = 0) or the bare `f64_to` (`naive` = 1, the shadow line).
+#must_use
+fn p1_to_u32(x: f64, naive): i64 {
+    if (naive == 1) { return f64_to(x); }
+    return _ry_f64_to_u32(x);
+}
+
+# pathway.rs tick_in, without the guard: `let wanted = (dt / NETWORK_MAX_SUBSTEP).ceil();` then
+# `if wanted < f64::from(NETWORK_MAX_SUBSTEPS) { (wanted as u32).max(1) } else { NETWORK_MAX_SUBSTEPS }`.
+#must_use
+fn p1_network_raw(dt: f64, naive): i64 {
+    var ratio: f64 = dt / RY_PATHWAY_NETWORK_MAX_SUBSTEP;
+    var wanted: f64 = f64_ceil(ratio);
+    var cap: f64 = f64_from(RY_PATHWAY_NETWORK_MAX_SUBSTEPS);
+    if (wanted < cap) {
+        var n = p1_to_u32(wanted, naive);
+        if (n < 1) { n = 1; }
+        return n;
+    }
+    return RY_PATHWAY_NETWORK_MAX_SUBSTEPS;
+}
+
+# calcium.rs tick and mapk.rs tick_with_raf_inhibition, without the guard:
+# `(dt / SUBSTEP_MAX_DT).ceil().clamp(1.0, f64::from(MAX_SUBSTEPS)) as u32`.
+#must_use
+fn p1_clamped_raw(dt: f64, h: f64, cap, naive): i64 {
+    var ratio: f64 = dt / h;
+    var up: f64 = f64_ceil(ratio);
+    var top: f64 = f64_from(cap);
+    var c: f64 = _ry_clamp(up, 1.0, top);
+    return p1_to_u32(c, naive);
+}
+
+# The sub-steps each tick takes; 0 when the guard refuses dt. `model`: 0 network, 1 calcium, 2 mapk.
+#must_use
+fn p1_count(model, dt: f64, naive): i64 {
+    if (p1_valid_dt(dt) == 0) { return 0; }
+    if (model == 0) { return p1_network_raw(dt, naive); }
+    if (model == 1) { return p1_clamped_raw(dt, RY_CALCIUM_SUBSTEP_MAX_DT, RY_CALCIUM_MAX_SUBSTEPS, naive); }
+    if (dt <= RY_MAPK_SUBSTEP_MAX_DT) { return 1; }
+    return p1_clamped_raw(dt, RY_MAPK_SUBSTEP_MAX_DT, RY_MAPK_MAX_SUBSTEPS, naive);
+}
+
+# The count expression alone (no guard, and for mapk no single-step branch).
+#must_use
+fn p1_raw(model, dt: f64, naive): i64 {
+    if (model == 0) { return p1_network_raw(dt, naive); }
+    if (model == 1) { return p1_clamped_raw(dt, RY_CALCIUM_SUBSTEP_MAX_DT, RY_CALCIUM_MAX_SUBSTEPS, naive); }
+    return p1_clamped_raw(dt, RY_MAPK_SUBSTEP_MAX_DT, RY_MAPK_MAX_SUBSTEPS, naive);
+}
+
+# Per model: rows, idiom mismatches (n, raw), shadow mismatches (n, raw).
+var _p1_rows: i64[3];
+var _p1_bad_n: i64[3];
+var _p1_bad_raw: i64[3];
+var _p1_naive_n: i64[3];
+var _p1_naive_raw: i64[3];
+
+# Prints one mismatching row.
+fn p1_report_bad(model, bits, want, got, what): i64 {
+    print("  MISMATCH ", 11);
+    print(what, strlen(what));
+    print(" model ", 7);
+    fmt_int(model);
+    print(" dt ", 4);
+    fmt_hex0x(bits);
+    print(" rust ", 6);
+    fmt_int(want);
+    print(" cyrius ", 8);
+    fmt_int(got);
+    println("");
+    return 0;
+}
+
+# Reads every row, checks it both ways, prints the counts; exits 1 on any idiom mismatch.
+fn main(): i64 {
+    alloc_init();
+    if (pio_open("build/probe-substeps/substeps.txt") != 1) {
+        println("probe 1: run the oracle's probe_substeps bin first (see this file's header)");
+        return 1;
+    }
+    var bad = 0;
+    while (1) {
+        var tag = pio_tag();
+        if (tag < 0) { break; }
+        var model = 2;
+        if (tag == 110) { model = 0; }
+        if (tag == 99) { model = 1; }
+        var bits = pio_hex();
+        var dt: f64 = 0.0;
+        store64(&dt, bits);
+        var want_n = pio_int();
+        var want_raw = pio_int();
+        _p1_rows[model] = _p1_rows[model] + 1;
+        var n = p1_count(model, dt, 0);
+        var raw = p1_raw(model, dt, 0);
+        if (n != want_n) {
+            _p1_bad_n[model] = _p1_bad_n[model] + 1;
+            if (bad < 10) { p1_report_bad(model, bits, want_n, n, "n"); }
+            bad = bad + 1;
+        }
+        if (raw != want_raw) {
+            _p1_bad_raw[model] = _p1_bad_raw[model] + 1;
+            if (bad < 10) { p1_report_bad(model, bits, want_raw, raw, "raw"); }
+            bad = bad + 1;
+        }
+        var nn = p1_count(model, dt, 1);
+        var nr = p1_raw(model, dt, 1);
+        if (nn != want_n) { _p1_naive_n[model] = _p1_naive_n[model] + 1; }
+        if (nr != want_raw) {
+            _p1_naive_raw[model] = _p1_naive_raw[model] + 1;
+            if (_p1_naive_raw[model] <= 3) { p1_report_bad(model, bits, want_raw, nr, "shadow-raw(f64_to)"); }
+        }
+    }
+    var m = 0;
+    while (m < 3) {
+        if (m == 0) { print("probe 1: network ", 17); }
+        if (m == 1) { print("probe 1: calcium ", 17); }
+        if (m == 2) { print("probe 1: mapk    ", 17); }
+        fmt_int(_p1_rows[m]);
+        print(" rows; idiom mismatches n ", 26);
+        fmt_int(_p1_bad_n[m]);
+        print(" raw ", 5);
+        fmt_int(_p1_bad_raw[m]);
+        print("; bare f64_to mismatches n ", 27);
+        fmt_int(_p1_naive_n[m]);
+        print(" raw ", 5);
+        fmt_int(_p1_naive_raw[m]);
+        println("");
+        m = m + 1;
+    }
+    pio_say("probe 1: idiom mismatches ", bad);
+    if (bad != 0) { return 1; }
+    return 0;
+}
+
+var r = main();
+sys_exit_group(r);

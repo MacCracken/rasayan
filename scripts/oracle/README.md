@@ -21,6 +21,8 @@ python3 -I -B scripts/oracle/mpfr_ref.py [--write . | --check .]                
 python3 -I -B scripts/oracle/mathx_tables.py [--check | --check-ushma]             # src/mathx_data.cyr (MPFR)
 python3 -I -B scripts/oracle/cr_verify.py --quick                                  # the primitives vs MPFR, ~11 s
 python3 -I -B scripts/oracle/cr_verify.py                                          # the full sweep, ELF/aarch64/PE
+cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml --bin probe_substeps  # M0 probe 1's Rust side
+cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml --bin probe_solver    # M0 probe 4's Rust side
 ```
 
 `--check` regenerates every output in memory and compares it byte for byte. It exits 1 on:
@@ -390,3 +392,20 @@ mismatch, on a declaration it cannot read, or on any compiler warning. `--all-ta
 builds for aarch64 (qemu) and PE (wine) and requires identical output. At part 2b: 2,470 values
 (156 consts, 2,314 cells of 39 arrays), identical on the three targets. A mismatch fails it, as
 checked when it was written.
+
+## The probe bins (M0 part 3a)
+
+Two bins in `src/bin/` write what M0's probes compare the Cyrius side with (`scripts/probes/run.sh` runs both; the
+write-ups are `docs/development/port-parity.md` §3). Their output goes to `build/` (gitignored), never into the
+corpus.
+
+- **`probe_substeps`** → `build/probe-substeps/substeps.txt`: the network's, calcium's and mapk's sub-step counts
+  (`model dt n raw`) on 44,266 dt values, from the three count expressions as `rust-old/src` writes them on the
+  oracle's public constants. Before writing, each copy is tied to the real tick through the public API: one tick of
+  dt must leave the state bit-identical to n ticks of dt / n and different from n + 1 ticks of dt / (n + 1).
+- **`probe_solver`** → `build/probe-solver/solver.txt`: `balanced_nad_ratio` and `end_of_step_nadh` (pathway.rs's
+  implicit NADH solves) on 10⁵ + 10⁵ seeded balances, with the solve's iteration count and exit. The functions are
+  private, so `probe_solver/copy.rs` holds them verbatim; the bin checks that each `// @verbatim <file>` block occurs
+  byte for byte in `rust-old/src/<file>` (both through `include_str!`), and that the instrumented copy of the solver
+  (a counter and an exit code added) gives the verbatim function's bits on every case. It also prints the verbatim
+  functions' time per solve, for the benchmark record.

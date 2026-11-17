@@ -1,0 +1,369 @@
+# Probe 3 (port plan §2.7, §4 step 9; ushma's probes 3 and 4): how rasayan's Vec-shaped results come back.
+# `scan_ptm_sites` → Vec<PtmSite>, `scan_domains` → Vec<DomainHit> (records with a motif / fragment), `chou_fasman` →
+# Vec<SecondaryStructure> (one label per residue), `composition` → Vec<(char, usize)> (at most 26 pairs). Each shape is
+# timed over 10^4 calls on a seeded 1,000-residue protein and checked for heap growth (alloc_used(); the global heap
+# never frees) and for the same results in every variant:
+# - sites (PtmSite-shaped: position, residue, kind and the motif as a byte range into the input, 40 bytes), from
+#   PROSITE PS00001 N-glycosylation, N-{P}-[ST]-{P}: a caller buffer + count (`Ok(count)`, `Err` when the buffer is
+#   too small), a caller-owned vec refilled after `vec_truncate(v, 0)` (five words per site), a fresh vec per call,
+#   and the Rust shape (a fresh vec of freshly allocated records);
+# - labels (one per residue): a caller byte buffer, a refilled vec, a fresh vec;
+# - composition (26 counts, then the non-zero (letter, count) pairs): a caller buffer of pairs, a refilled vec.
+#
+#   cyrius build scripts/probes/p3_wide_results.cyr build/p3 && ./build/p3
+include "lib/bench.cyr"
+include "scripts/probes/probe_io.cyr"
+
+# A PtmSite-shaped record: Rust's `motif: String` as a byte range into the caller's input (ADR 0002 row 4).
+struct P3Site { position; residue; kind; motif_start; motif_len; }
+
+var _p3_sink = 0;
+
+# An untyped word (an allocation) as a *P3Site: impetus's cast-helper idiom.
+#must_use
+fn p3_as_site(p): *P3Site { return p; }
+
+# 1 at an N-glycosylation site (N-{P}-[ST]-{P}; the {P} at +3 needs a residue there), as ptm.rs tests it.
+#must_use
+fn p3_nglyc(seq, n, i): i64 {
+    if (load8(seq + i) != 78) { return 0; }
+    if (i + 3 >= n) { return 0; }
+    if (load8(seq + i + 1) == 80) { return 0; }
+    var c = load8(seq + i + 2);
+    if (c != 83 && c != 84) { return 0; }
+    if (load8(seq + i + 3) == 80) { return 0; }
+    return 1;
+}
+
+# Fills out[0..] with the sites; Ok(count), or Err(1) when more than `cap` are found (nothing past cap is written).
+fn p3_sites_buf(seq, n, out: *P3Site, cap): Result {
+    var k = 0;
+    var i = 0;
+    while (i < n) {
+        if (p3_nglyc(seq, n, i) == 1) {
+            if (k >= cap) { return Err(1); }
+            var s: *P3Site = out + k;
+            s.position = i;
+            s.residue = 78;
+            s.kind = 0;
+            s.motif_start = i;
+            s.motif_len = 4;
+            k = k + 1;
+        }
+        i = i + 1;
+    }
+    return Ok(k);
+}
+
+# Refills the caller's vec with five words per site; the count.
+fn p3_sites_vec(seq, n, v): i64 {
+    vec_truncate(v, 0);
+    var k = 0;
+    var i = 0;
+    while (i < n) {
+        if (p3_nglyc(seq, n, i) == 1) {
+            vec_push(v, i);
+            vec_push(v, 78);
+            vec_push(v, 0);
+            vec_push(v, i);
+            vec_push(v, 4);
+            k = k + 1;
+        }
+        i = i + 1;
+    }
+    return k;
+}
+
+# The same into a fresh vec per call.
+fn p3_sites_fresh(seq, n): i64 {
+    var v = vec_new();
+    p3_sites_vec(seq, n, v);
+    return v;
+}
+
+# The Rust shape: a fresh vec of freshly allocated records.
+fn p3_sites_records(seq, n): i64 {
+    var v = vec_new();
+    var i = 0;
+    while (i < n) {
+        if (p3_nglyc(seq, n, i) == 1) {
+            var s: *P3Site = p3_as_site(alloc(sizeof(P3Site)));
+            s.position = i;
+            s.residue = 78;
+            s.kind = 0;
+            s.motif_start = i;
+            s.motif_len = 4;
+            vec_push(v, s);
+        }
+        i = i + 1;
+    }
+    return v;
+}
+
+# A label per residue (a stand-in for chou_fasman's rule pass: the residue class), into a caller byte buffer.
+fn p3_labels_buf(seq, n, out, cap): Result {
+    if (n > cap) { return Err(1); }
+    var i = 0;
+    while (i < n) {
+        store8(out + i, load8(seq + i) & 3);
+        i = i + 1;
+    }
+    return Ok(n);
+}
+
+# The same into the caller's vec, refilled.
+fn p3_labels_vec(seq, n, v): i64 {
+    vec_truncate(v, 0);
+    var i = 0;
+    while (i < n) {
+        vec_push(v, load8(seq + i) & 3);
+        i = i + 1;
+    }
+    return n;
+}
+
+# Counts A..Z (case-folded), then writes the non-zero (letter, count) pairs into out (two words each); the pair count.
+fn p3_composition_buf(seq, n, out: *i64): i64 {
+    var counts: i64[26];
+    var c = 0;
+    while (c < 26) { counts[c] = 0; c = c + 1; }
+    var i = 0;
+    while (i < n) {
+        var b = load8(seq + i);
+        if (b >= 97 && b <= 122) { b = b - 32; }
+        if (b >= 65 && b <= 90) { counts[b - 65] = counts[b - 65] + 1; }
+        i = i + 1;
+    }
+    var k = 0;
+    c = 0;
+    while (c < 26) {
+        if (counts[c] > 0) {
+            out[2 * k] = 65 + c;
+            out[(2 * k) + 1] = counts[c];
+            k = k + 1;
+        }
+        c = c + 1;
+    }
+    return k;
+}
+
+# The same pairs into the caller's vec, refilled.
+fn p3_composition_vec(seq, n, v): i64 {
+    var pairs: i64[52];
+    var k = p3_composition_buf(seq, n, &pairs);
+    vec_truncate(v, 0);
+    var j = 0;
+    while (j < 2 * k) {
+        vec_push(v, pairs[j]);
+        j = j + 1;
+    }
+    return k;
+}
+
+# Prints `label: n bytes per call`; returns the bytes the calls used in all.
+fn p3_heap(label, before, calls): i64 {
+    var grew = alloc_used() - before;
+    print(label, strlen(label));
+    print(": ", 2);
+    fmt_int(grew / calls);
+    print(" bytes of global heap per call (", 32);
+    fmt_int(grew);
+    println(" in all)");
+    return grew;
+}
+
+# Times every shape and reports the heap it used and whether the results agree.
+fn main(): i64 {
+    alloc_init();
+    var n = 1000;
+    var calls = 10000;
+    var grew = 0;
+    # A seeded protein over the 20 residues (an LCG), with N-x-S/T planted every 37 residues.
+    var aa = "ACDEFGHIKLMNPQRSTVWY";
+    var seq = alloc(n);
+    var x = 12345;
+    var i = 0;
+    while (i < n) {
+        x = ((x * 1103515245) + 12345) & 0x7FFFFFFF;
+        store8(seq + i, load8(aa + ((x >> 8) % 20)));
+        i = i + 1;
+    }
+    i = 5;
+    while (i + 3 < n) {
+        store8(seq + i, 78);
+        store8(seq + i + 1, 71);
+        store8(seq + i + 2, 83);
+        store8(seq + i + 3, 65);
+        i = i + 37;
+    }
+
+    var cap = 256;
+    var buf: *P3Site = p3_as_site(alloc(cap * sizeof(P3Site)));
+    var t0, k0 = p3_sites_buf(seq, n, buf, cap);
+    print("sites in the sequence: ", 23);
+    fmt_int(k0);
+    println("");
+
+    var b1 = bench_new("p3/sites: caller buffer + count");
+    var h0 = alloc_used();
+    bench_batch_start(b1);
+    var c = 0;
+    while (c < calls) {
+        var t1, k1 = p3_sites_buf(seq, n, buf, cap);
+        if (is_ok(t1) == 1) { _p3_sink = _p3_sink + k1; }
+        c = c + 1;
+    }
+    bench_batch_stop(b1, calls);
+    bench_report(b1);
+    grew = grew + p3_heap("sites, caller buffer", h0, calls);
+
+    var v = vec_new();
+    p3_sites_vec(seq, n, v);
+    var b2 = bench_new("p3/sites: caller vec, vec_truncate + push");
+    h0 = alloc_used();
+    bench_batch_start(b2);
+    c = 0;
+    while (c < calls) {
+        _p3_sink = _p3_sink + p3_sites_vec(seq, n, v);
+        c = c + 1;
+    }
+    bench_batch_stop(b2, calls);
+    bench_report(b2);
+    grew = grew + p3_heap("sites, caller vec refilled", h0, calls);
+
+    var b3 = bench_new("p3/sites: fresh vec per call");
+    h0 = alloc_used();
+    bench_batch_start(b3);
+    c = 0;
+    while (c < calls) {
+        var fv = p3_sites_fresh(seq, n);
+        _p3_sink = _p3_sink + vec_len(fv);
+        c = c + 1;
+    }
+    bench_batch_stop(b3, calls);
+    bench_report(b3);
+    p3_heap("sites, fresh vec", h0, calls);
+
+    var b4 = bench_new("p3/sites: fresh vec of fresh records (the Rust shape)");
+    h0 = alloc_used();
+    bench_batch_start(b4);
+    c = 0;
+    var rv = 0;
+    while (c < calls) {
+        rv = p3_sites_records(seq, n);
+        _p3_sink = _p3_sink + vec_len(rv);
+        c = c + 1;
+    }
+    bench_batch_stop(b4, calls);
+    bench_report(b4);
+    p3_heap("sites, fresh records", h0, calls);
+
+    # The four agree on every site.
+    var same = 1;
+    if (vec_len(v) != 5 * k0) { same = 0; }
+    if (vec_len(rv) != k0) { same = 0; }
+    var j = 0;
+    while (j < k0) {
+        var bs: *P3Site = buf + j;
+        var rs: *P3Site = p3_as_site(vec_get(rv, j));
+        if (vec_get(v, 5 * j) != bs.position || rs.position != bs.position) { same = 0; }
+        if (vec_get(v, (5 * j) + 3) != bs.motif_start || rs.motif_len != bs.motif_len) { same = 0; }
+        j = j + 1;
+    }
+    print("sites: the four shapes agree: ", 30);
+    fmt_int(same);
+    println("");
+
+    var lbuf = alloc(n);
+    var b5 = bench_new("p3/labels: caller byte buffer");
+    h0 = alloc_used();
+    bench_batch_start(b5);
+    c = 0;
+    while (c < calls) {
+        var t5, k5 = p3_labels_buf(seq, n, lbuf, n);
+        if (is_ok(t5) == 1) { _p3_sink = _p3_sink + k5; }
+        c = c + 1;
+    }
+    bench_batch_stop(b5, calls);
+    bench_report(b5);
+    grew = grew + p3_heap("labels, caller buffer", h0, calls);
+
+    var lv = vec_new();
+    p3_labels_vec(seq, n, lv);
+    var b6 = bench_new("p3/labels: caller vec, vec_truncate + push");
+    h0 = alloc_used();
+    bench_batch_start(b6);
+    c = 0;
+    while (c < calls) {
+        _p3_sink = _p3_sink + p3_labels_vec(seq, n, lv);
+        c = c + 1;
+    }
+    bench_batch_stop(b6, calls);
+    bench_report(b6);
+    grew = grew + p3_heap("labels, caller vec refilled", h0, calls);
+
+    var b7 = bench_new("p3/labels: fresh vec per call");
+    h0 = alloc_used();
+    bench_batch_start(b7);
+    c = 0;
+    while (c < calls) {
+        var fl = vec_new();
+        _p3_sink = _p3_sink + p3_labels_vec(seq, n, fl);
+        c = c + 1;
+    }
+    bench_batch_stop(b7, calls);
+    bench_report(b7);
+    p3_heap("labels, fresh vec", h0, calls);
+
+    var pairs: i64[52];
+    var b8 = bench_new("p3/composition: caller buffer of pairs");
+    h0 = alloc_used();
+    bench_batch_start(b8);
+    c = 0;
+    while (c < calls) {
+        _p3_sink = _p3_sink + p3_composition_buf(seq, n, &pairs);
+        c = c + 1;
+    }
+    bench_batch_stop(b8, calls);
+    bench_report(b8);
+    grew = grew + p3_heap("composition, caller buffer", h0, calls);
+
+    var cv = vec_new();
+    p3_composition_vec(seq, n, cv);
+    var b9 = bench_new("p3/composition: caller vec, vec_truncate + push");
+    h0 = alloc_used();
+    bench_batch_start(b9);
+    c = 0;
+    while (c < calls) {
+        _p3_sink = _p3_sink + p3_composition_vec(seq, n, cv);
+        c = c + 1;
+    }
+    bench_batch_stop(b9, calls);
+    bench_report(b9);
+    grew = grew + p3_heap("composition, caller vec refilled", h0, calls);
+
+    var lsame = 1;
+    j = 0;
+    while (j < n) {
+        if (load8(lbuf + j) != vec_get(lv, j)) { lsame = 0; }
+        j = j + 1;
+    }
+    var npairs = p3_composition_buf(seq, n, &pairs);
+    if (vec_len(cv) != 2 * npairs) { lsame = 0; }
+    print("labels and composition: the shapes agree: ", 42);
+    fmt_int(lsame);
+    print(" (", 2);
+    fmt_int(npairs);
+    println(" letters)");
+    fmt_int(_p3_sink);
+    println(" (the sink)");
+    # The probe's claims, as an exit status: the caller-owned shapes never allocate, and every shape agrees.
+    var ok = 1;
+    if (grew != 0 || same != 1 || lsame != 1) { ok = 0; }
+    pio_ok("probe 3: caller buffers and refilled vecs allocate nothing, every shape agrees: ", ok);
+    if (ok == 1) { return 0; }
+    return 1;
+}
+
+var r = main();
+sys_exit_group(r);

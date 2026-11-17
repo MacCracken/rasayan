@@ -1,0 +1,152 @@
+# Probe 8 (port plan §4 step 9; ushma's probe 8): what sakshi instrumentation costs around a ~2 ns function, Rust's
+# `enzyme::michaelis_menten`. Rust 1.2.0 emits `tracing::trace!` events (18 ticks; `debug!` in pathway's
+# run_to_steady_state and in ai) and opens no span anywhere; with no subscriber or the level filtered out, a
+# `trace!` is a load and a compare of tracing's global max level. sakshi's span calls never test the level (they read
+# the clock, push the span stack and emit every time); its log calls test it inside. Each variant wraps MM, 10^6 calls:
+# - plain MM;
+# - a raw sakshi span (enter + exit), the level at INFO (filtered out) and at TRACE (into the ring buffer);
+# - a level-gated span helper (ushma's `_us_span_enter` shape: `if (sakshi_get_level() >= SK_TRACE)` first), off/on;
+# - the same gate on a level the library caches in its own global (no call), off;
+# - a raw `sakshi_trace` event (sakshi tests the level inside), off;
+# - a level-gated event helper (the gate first, then sakshi_trace), off and on.
+# sakshi 2.5.10 is the pinned toolchain's (lib/sakshi.cyr; not yet vendored here: M1 adds sakshi and log to [deps]
+# with src/logging.cyr). Output goes to sakshi's ring buffer, its cheapest target.
+#
+#   cyrius build scripts/probes/p8_span_cost.cyr build/p8 && ./build/p8
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "lib/bench.cyr"
+include "lib/sakshi.cyr"
+
+var _p8_sink: f64 = 0.0;
+# The level a library could cache when it initialises logging (SK_INFO: TRACE filtered out).
+var _p8_level = 3;
+
+# guard.rs `conc`: NaN, ±inf and negatives become 0.
+#must_use
+fn p8_conc(x: f64): f64 {
+    if (_ry_is_finite(x) == 1) {
+        if (x > 0.0) { return x; }
+    }
+    return 0.0;
+}
+
+# enzyme.rs `michaelis_menten`: `vmax * s / (km + s)` on the sanitized substrate, 0 when the denominator is not > 0.
+#must_use
+fn p8_mm(substrate: f64, vmax: f64, km: f64): f64 {
+    var s: f64 = p8_conc(substrate);
+    var denom: f64 = km + s;
+    if (denom > 0.0) {
+        var v: f64 = (vmax * s) / denom;
+        return v;
+    }
+    return 0.0;
+}
+
+# A level-gated span enter: sakshi_span_enter only when TRACE is on (ushma's helper, at rasayan's level).
+fn p8_span_enter(name, len): i64 {
+    if (sakshi_get_level() >= SK_TRACE) { sakshi_span_enter(name, len); }
+    return 0;
+}
+
+# The matching exit.
+fn p8_span_exit(): i64 {
+    if (sakshi_get_level() >= SK_TRACE) { sakshi_span_exit(); }
+    return 0;
+}
+
+# A level-gated trace event: nothing past the gate when TRACE is off.
+fn p8_trace(msg, len): i64 {
+    if (sakshi_get_level() >= SK_TRACE) { sakshi_trace(msg, len); }
+    return 0;
+}
+
+# MM inside a raw sakshi span.
+fn p8_mm_span(s: f64, vmax: f64, km: f64): f64 {
+    sakshi_span_enter("michaelis_menten", 16);
+    var v: f64 = p8_mm(s, vmax, km);
+    sakshi_span_exit();
+    return v;
+}
+
+# MM inside a level-gated span (helper calls).
+fn p8_mm_gated_span(s: f64, vmax: f64, km: f64): f64 {
+    p8_span_enter("michaelis_menten", 16);
+    var v: f64 = p8_mm(s, vmax, km);
+    p8_span_exit();
+    return v;
+}
+
+# MM inside a span gated inline on the cached level.
+fn p8_mm_cached_span(s: f64, vmax: f64, km: f64): f64 {
+    if (_p8_level >= SK_TRACE) { sakshi_span_enter("michaelis_menten", 16); }
+    var v: f64 = p8_mm(s, vmax, km);
+    if (_p8_level >= SK_TRACE) { sakshi_span_exit(); }
+    return v;
+}
+
+# MM after a raw trace event.
+fn p8_mm_event(s: f64, vmax: f64, km: f64): f64 {
+    sakshi_trace("michaelis_menten", 16);
+    var v: f64 = p8_mm(s, vmax, km);
+    return v;
+}
+
+# MM after a level-gated trace event.
+fn p8_mm_gated_event(s: f64, vmax: f64, km: f64): f64 {
+    p8_trace("michaelis_menten", 16);
+    var v: f64 = p8_mm(s, vmax, km);
+    return v;
+}
+
+# Times variant `which` over n calls under label.
+fn p8_time(label, which, n): i64 {
+    var b = bench_new(label);
+    var vmax: f64 = 2.0;
+    var km: f64 = 0.5;
+    var s: f64 = 0.001;
+    bench_batch_start(b);
+    var i = 0;
+    while (i < n) {
+        var v: f64 = 0.0;
+        if (which == 0) { v = p8_mm(s, vmax, km); }
+        if (which == 1) { v = p8_mm_span(s, vmax, km); }
+        if (which == 2) { v = p8_mm_gated_span(s, vmax, km); }
+        if (which == 3) { v = p8_mm_cached_span(s, vmax, km); }
+        if (which == 4) { v = p8_mm_event(s, vmax, km); }
+        if (which == 5) { v = p8_mm_gated_event(s, vmax, km); }
+        _p8_sink = _p8_sink + v;
+        s = s + 0.000001;
+        i = i + 1;
+    }
+    bench_batch_stop(b, n);
+    bench_report(b);
+    return 0;
+}
+
+# Every variant, TRACE filtered out first, then on (ring buffer).
+fn main(): i64 {
+    alloc_init();
+    sakshi_output_buffer();
+    var n = 1000000;
+    sakshi_set_level(SK_INFO);
+    p8_time("p8/plain MM (the loop and the dispatch included)", 0, n);
+    p8_time("p8/raw span, TRACE off", 1, n);
+    p8_time("p8/gated span helper, TRACE off", 2, n);
+    p8_time("p8/span gated on a cached level, TRACE off", 3, n);
+    p8_time("p8/raw sakshi_trace event, TRACE off", 4, n);
+    p8_time("p8/gated event helper, TRACE off", 5, n);
+    sakshi_set_level(SK_TRACE);
+    p8_time("p8/raw span, TRACE on (ring buffer)", 1, n);
+    p8_time("p8/gated span helper, TRACE on (ring buffer)", 2, n);
+    p8_time("p8/gated event helper, TRACE on (ring buffer)", 5, n);
+    print("ring events written: ", 21);
+    fmt_int(sakshi_ring_event_count());
+    println("");
+    fmt_hex0x(load64(&_p8_sink));
+    println(" (the sink)");
+    return 0;
+}
+
+var r = main();
+sys_exit_group(r);

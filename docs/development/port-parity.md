@@ -346,10 +346,272 @@ So the four correctly rounded primitives rasayan calls are correctly rounded and
 argument tried, through both of their paths, which is what ADR 0003's 0-ulp class-C bound rests on. No finding
 amends ADR 0003.
 
-### 2f. Three targets
+### 2f. Three targets: `scripts/gates.sh` (M0 part 3a, 2026-11-16)
 
-*The full three-target baselines: pending (M0 part 3). `cr_verify.py` already runs on PE (§2e).*
+`bash scripts/gates.sh` runs every gate of port plan §6 that exists at this point, one step at a time, logs in
+`build/gates/` (gitignored; never `/tmp`), and names every failing step at the end (exit 1). It is ushma's script
+(ushma HEAD `bdbcc02`, kimiya's originally) adapted to rasayan: a step whose tooling arrives later is a named SKIP,
+never a silent pass.
 
-## 3. Probes 1–8 (M0 step 9)
+| # | Step | Checks | Time |
+|---|---|---|---|
+| 1 | `cargo test` on `rust-old/` (`--all-features --locked`) | the frozen oracle: 628 + 70 + 25 + 2 tests | 3.9 s |
+| | the generator `--check`; `cargo clippy --all-targets -D warnings` on `scripts/oracle/` (the probe bins included) | corpus and generated `.cyr` current; 123 `const`/`static` items covered | 0.4 s |
+| | `validate.py`, `mpfr_ref.py --check`, `mathx_tables.py --check-ushma` (`--check` without ushma's checkout) | 22,634 independent checks; `math.cr.tsv` and `src/mathx_data.cyr` current | 0.8 s |
+| | `probe_tables.py --all-targets` | 2,470 generated values compiled on ELF, aarch64, PE: identical | 5–39 s |
+| | `cr_verify.py --quick --targets elf,aarch64,pe` | 542,062 arguments against MPFR per target, 0 mismatches, identical | 50.3 s |
+| 2 | `cyrius build` (warning lines counted), `distlib --check` | `[lib]`; `dist/rasayan.cyr` current (read-only: `--all` would rewrite a committed file) | 0.3 s |
+| 3 | `cyrius test` on ELF, ELF `--bounds`, PE (`--win`, wine), aarch64 (`--aarch64`, qemu), one at a time | exit 0; the parity summary line with `0 failing`; the file summary `N passed, 0 failed`; 0 warning lines | 0.8 / 0.8 / 5.0 / 1.1 s |
+| | the targets against each other | one distinct parity summary line across the four; every log equal to ELF's but for the two ungated builtin shadow lines | — |
+| 4 | `cyrius bench`; `fuzz --poison --bounds`; `coverage --exec --min 80` | bench summary clean; coverage SKIP until M1 (no public `ry_` fn: nothing to measure, and the tool says so with exit 1) | 1.1 s |
+| | `fmt --check` and `lint` on `src/`, `tests/`, `scripts/probes/` (p12's lint excepted), `doc --check` on `src/` | 0 findings | 0.8 s |
+| | `vet`, `deps --locked`, `audit` (by its own exit status, never piped) | | 1.7 s |
+| 5 | `scripts/probes/run.sh --gate` | §3: the oracle's probe bins; every probe builds (p12: its 8 diagnostics); p1 and p4 agree with Rust on ELF, aarch64 and PE; p4's control is caught; p2 and p3 hold | 11.8 s |
+| 6 | `surface_parity.py`, `rust_test_ledger.py` | SKIP until M1 | — |
+| | the git index | must be empty: the maintainer does all git | — |
 
-*Pending (M0 part 3).*
+A full run takes **84–117 s** on this machine (2026-11-16, two runs, with another session's fuzzers loading it),
+most of it the wine legs of `cr_verify.py` and `probe_tables.py`, which vary with the load. All steps exit 0.
+
+**The three-target baseline (M0 step 8).** The corpus harness gives the same summary on every target:
+
+`=== parity summary: 8 modules, 0 failing | rows: 20067 ok, 0 failed, 0 measured, 0 pending, 96 accepted (ADR 3: 96), 0 glibc-matching (failed) ===`
+
+| Target | Parity summary | Other test files (assertions) | `cyrius test` |
+|---|---|---|---|
+| x86_64 ELF | the line above | constants 19, tables 77, smoke 2: all passed; 4 files, 0 failed | 0.8 s |
+| x86_64 ELF `--bounds` | identical | identical | 0.8 s |
+| x86_64 PE (wine) | identical | identical | 5.0 s |
+| aarch64 (qemu) | identical | identical | 1.1 s |
+
+The whole test log (every per-function line, histograms included) is byte-identical to ELF's on `--bounds` and PE.
+On aarch64 two lines differ, both ungated shadow lines: `f64_exp` (2,086 rows at 0 ulp and 206 at 1, against
+2,261 / 31 on x86_64) and `f64_ln` (2,050 / 58 against 2,108 / 0), because the builtins are the polyfills there
+(§2c). The other three-target checks agree as well: the generated tables (§1), the correctly rounded primitives
+(§2e), and probes 1 and 4 (§3).
+
+## 3. Probes (M0 step 9)
+
+Each probe is a program in `scripts/probes/`, run on Cyrius 6.7.18, x86_64 (and where noted aarch64 under qemu and
+PE under wine), on 2026-11-16. Times are the best of three runs on a machine another session was loading (its load
+average 5–12 of 16 cores), so they are upper bounds; speed is measured, not gated. `bash scripts/probes/run.sh`
+builds and runs them all; `--gate` is the gates.sh step (§2f). Part 3a holds probes 1, 2 (with probe 5's heap
+measurement), 3, 4, 8 and ushma's 12; probes 6 (bote) and 7 (hoosh) follow in part 3b with the upstream filings.
+
+### Probe 1: sub-step counts (`p1_substeps.cyr`; Rust side `scripts/oracle/src/bin/probe_substeps.rs`)
+
+The Rust bin holds the three count expressions as `rust-old/src` writes them, on the oracle's public constants
+(`NETWORK_MAX_SUBSTEP`/`S`, `calcium::` and `mapk::SUBSTEP_MAX_DT`/`MAX_SUBSTEPS`), and ties each to the real tick
+through the public API before it writes anything: on 18 cases (6 per model, perturbed states) one tick of `dt`
+leaves the state bit-identical to `n` ticks of `dt / n`, and different from `n + 1` ticks of `dt / (n + 1)`. It
+writes 44,266 cases (network 28,082, calcium 8,092, mapk 8,092): **every** exact multiple `k as f64 * h` for k = 1
+… cap + 2, and 1023, 1024, 2·cap and 10·cap, each with ±1 and ±2 ulps; cap·h ± 8 ulps; ratios at 2³¹ … 2¹⁰⁰;
+±0, ±the smallest subnormal, `MIN_POSITIVE`, ±MAX, ±∞, NaN, −NaN, a signalling NaN, negatives; and 3,000
+log-uniform dt in [2⁻³⁰, 2³⁰) per model. Each row has the tick's count `n` (0 when `guard::valid_dt` refuses dt)
+and the bare expression's `raw`.
+
+**Result: 0 mismatches of n or raw on all 44,266 rows, on x86_64 ELF, aarch64 and PE.**
+
+- **An exact multiple is often not k sub-steps, in Rust.** `dt = k as f64 * h` takes **k + 1** sub-steps for 342
+  of the network's k = 1 … 5000 (h = 0.02) and 82 of calcium's k = 1 … 1000 (h = 0.01): the product rounds up and
+  the quotient lands just above k (k = 7, 14, 28, 56, 57, 111 … ; 0.07 / 0.01 = 7.000000000000001, §0.7). One ulp
+  below a multiple always gives k; one ulp above gives k + 1 except for 474 (network) and 90 (calcium) values of k,
+  where the quotient still rounds to k. mapk's h = 0.5 is a power of two: every multiple is exact. Past the caps
+  the counts saturate (network 5000 from k = 5001, calcium and mapk 1000 from k = 1001).
+- **The algebra matters.** The reciprocal form `ceil(dt * 50.0)` gives a different count from Rust's `ceil(dt /
+  0.02)` on 150 of the network's 5,000 multiples (calcium's `dt * 100.0`: 33 of 1,000), so a port that "simplified"
+  the division would take the wrong number of sub-steps there.
+- **The bare expressions on refused dt** (the ticks never reach them; pinned so the cast is): the network's NaN
+  and +∞ give the cap 5000 (`NaN < 5000.0` is false), and −∞, negatives and ±0 give 1 (`as u32` → 0, then
+  `.max(1)`); calcium's and mapk's NaN give 0 (`clamp` passes NaN, `as u32` maps it to 0), +∞ the cap, and −∞,
+  negatives and ±0 give 1. Behind `valid_dt` every one of these is 0 sub-steps.
+- **The bare `f64_to`** in place of `_ry_f64_to_u32` matches every row too, on all three targets: the guard and the
+  clamps keep its argument in [1, cap] (or NaN, which `f64_to` maps to 0 everywhere). The port uses
+  `_ry_f64_to_u32` anyway, which is Rust's `as u32` by construction (§0.6), so nothing rests on that reasoning.
+
+**Conclusion: the idiom.** The count is transcribed with Rust's division, `ceil`, guard and cast, never an
+algebraic shortcut:
+
+```
+if (_ry_valid_dt(dt) == 0) { ... zero flux ... }              # guard::valid_dt: _ry_is_finite(dt) == 1 && dt > 0.0
+var ratio: f64 = dt / RY_PATHWAY_NETWORK_MAX_SUBSTEP;          # network
+var wanted: f64 = f64_ceil(ratio);
+var cap: f64 = f64_from(RY_PATHWAY_NETWORK_MAX_SUBSTEPS);
+var steps = RY_PATHWAY_NETWORK_MAX_SUBSTEPS;
+if (wanted < cap) { steps = _ry_f64_to_u32(wanted); if (steps < 1) { steps = 1; } }
+var q: f64 = dt / RY_CALCIUM_SUBSTEP_MAX_DT;                   # calcium (mapk: the same after `dt <= 0.5` → 1 step)
+var up: f64 = f64_ceil(q);
+var top: f64 = f64_from(RY_CALCIUM_MAX_SUBSTEPS);
+var c: f64 = _ry_clamp(up, 1.0, top);
+var n = _ry_f64_to_u32(c);
+```
+
+`_ry_clamp` and `_ry_f64_to_u32` move from `tests/parity_math.cyr` into `src/` at M1 as planned (§0.8). Golden rows
+at M5/M6 cover the same boundaries through the ticks.
+
+### Probe 2: the producer probe without the heap (`p2_memory.cyr`), and probe 5's measurement
+
+`MetabolicNetwork` is **33 f64, 264 bytes**: glycolysis 11, TCA 9, ETC 3, β-oxidation 2, amino acid catabolism 3,
+and the 5 shared pools (`atp`, `adp`, `nad_ratio`, `oxygen`, `malonyl_coa`). (The per-step result is the bigger
+record: `NetworkTick` is 67 f64, its `NetworkFlux` 62; Rust returns it by value each sub-step, and the port fills
+it through an out-pointer, probe 3. The probe also times a 65-f64 copy.) Rust clones the network every step to probe the producers.
+The probe declares the same nested structs and runs a stand-in for `produce` (it reads and writes fields across the
+sub-states) on the copy, 10⁶ steps per variant:
+
+| Per step | ns (x86_64) | Global heap over 10⁶ steps |
+|---|---|---|
+| the stand-in alone on a persistent struct (the floor, no copy) | 26 | 0 B |
+| **frame copy**, `var probe: P2Network = *net;` (Rust's `clone`) | 37 (+11) | **0 B** |
+| a by-value struct parameter (the copy made at the call) | 37 | 0 B |
+| a scratch slot the caller allocated once, `slot = *net` | 38 | 0 B |
+| an arena reset each step, `arena_alloc` a slot, copy into it | 59 (+33) | 0 B; arena capacity 1,056 B before and after |
+| a fresh `alloc` per step (the anti-pattern; 10⁴ steps) | 62 | **264 B per step** (2.64 MB over 10⁴), never freed |
+| a 65-f64 (520 B) frame copy and one field read | 44 | 0 B |
+
+Every copy is a real copy: after all the variants the original holds its 33 values, and a copy holds every field.
+(Rust's whole network step costs 1,016 ns, `network_tick` at `adadf54`, so the copy is about 1 % of a step.)
+
+**Conclusion.** The producer probe is a frame copy, `var probe: RyMetabolicNetwork = *net;`, in the step function:
+11 ns, no heap, nothing to reset. An arena buys nothing for a fixed-size copy (it costs 3× as much); it is for
+per-step scratch whose size depends on the data. `slot = *net` into a `*T` copies into the pointee (the 6.6.16
+assignment rule), which reads like a rebind; the declaration form says what it does, so the port uses that.
+CLAUDE.md's "no per-call allocation on repeated paths" and "never `alloc_reset`" rules stand as written.
+
+**Probe 5 (the 10⁶-step soak) moves to M5.** Each pattern above ran 10⁶ steps with **0 bytes** of global-heap
+growth (only the per-step `alloc` grows), which is probe 5's measurement on the patterns; the soak of the real
+network (10⁶ `tick_in` steps, heap growth must be zero) needs the network and runs at M5 (port plan §4 step 9, §6).
+
+### Probe 3: wide results (`p3_wide_results.cyr`; ushma's probes 3 and 4)
+
+rasayan's `Vec`-shaped results on a seeded 1,000-residue protein with 30 N-glycosylation sites (PROSITE PS00001, as
+`ptm.rs` tests it), 10⁴ calls per shape; the results are identical in every shape:
+
+| Result | Shape | µs per call | Global heap per call |
+|---|---|---|---|
+| sites (`PtmSite` / `DomainHit` shape: position, residue, kind, motif as a byte range; 5 words) | **caller buffer + count**, `Ok(count)` / `Err` when it is too small | **5.37** | **0** |
+| | caller-owned vec refilled (`vec_truncate(v, 0)`, 5 pushes per site) | 6.99 | 0 |
+| | a fresh vec per call | 7.65 | 3,992 B |
+| | a fresh vec of freshly allocated records (the Rust shape) | 6.19 | 1,608 B |
+| labels (`chou_fasman`: one per residue) | **caller byte buffer** | **1.95** | **0** |
+| | caller vec refilled | 12.19 | 0 |
+| | a fresh vec per call | 14.81 | 16,280 B |
+| composition (26 counts, the 20 non-zero (letter, count) pairs) | **caller buffer of pairs** | **5.08** | **0** |
+| | caller vec refilled | 5.61 | 0 |
+
+**Conclusion.** Every `Vec` result goes into a **caller buffer**, with the count returned as a value-form
+`Ok(count)` and a too-small buffer an `Err` (ADR 0002 row 3; the motif and fragment strings as byte ranges into the
+input, row 4). It is the fastest shape (6× a refilled vec for the per-residue labels) and never allocates. Each
+buffer has a bound the caller can size from the input: labels exactly one per residue, composition at most 26 pairs,
+sites and domain hits at most a fixed number per residue. A refilled vec also allocates nothing in the steady state,
+but `vec_push` **aborts the process** when an allocation fails or the capacity overflows (`_vec_abort`), which
+CLAUDE.md forbids in library code; `vec_push_a` returns −1 on a failed allocation but still aborts on a capacity
+overflow. A fresh vec or record per call leaks for the life of the process.
+
+### Probe 4: the implicit NAD+/NADH solves (`p4_solver.cyr`; Rust side `scripts/oracle/src/bin/probe_solver/`)
+
+`pathway.rs`'s `solve_decreasing` (Illinois-modified regula falsi), `balanced_nad_ratio` (the self-consistent ratio
+the producers run at), `end_of_step_nadh` (the NADH Complex I and LDH leave) and what they call (`nadh_oxidized`,
+`ratio_of`, `nad_factor`, `glycolysis::gapdh_nad_factor`, `guard::conc`), transcribed statement for statement onto
+`src/mathx.cyr`'s `_ry_min` and `_ry_is_finite` and the test-side `_ry_clamp`, and compared with the oracle.
+
+**The Rust side, and why it is a copy.** The functions are private, and a network step exposes neither their inputs
+(the producer probe's NADH output, Complex I's capacity × h) nor their output (the ratio feeds the producers;
+`nad_ratio` after a step has passed through the ETC), so `MetabolicNetwork::tick_in` single steps cannot isolate
+them: that comparison is M5's, over the whole step. So `probe_solver/copy.rs` and `guard.rs` hold them
+**verbatim**, and the bin proves it before writing anything: each of their three `// @verbatim <file>` blocks (138
+lines) must occur byte for byte in `rust-old/src/{guard,glycolysis,pathway}.rs` (both read with `include_str!`, so
+the check is of the text that was compiled; one changed literal makes the bin refuse, as checked). The same text through the same rustc gives the same bits (Rust neither contracts `a * b + c` into an
+FMA nor reassociates). The iteration count comes from an instrumented copy of `solve_decreasing` (a counter and an
+exit code added, nothing else), whose result equals the verbatim function's on every case.
+
+**The cases**, seeded: 10⁵ `balanced_nad_ratio` and 10⁵ `end_of_step_nadh` balances. 60 % physiological, formed as a
+network step forms them (the previous ratio log-uniform over 1–2000, h over 1–31 ms, the producers' NADH output,
+Complex I's capacity 1/16–16 mM/s and LDH's from pyruvate 10⁻³–16 mM, times h; `avail` clamped to [0, 1]); 30 %
+wide (log-uniform over 2⁻⁵⁰ … 2²⁰, one in ten exactly 0); 10 % with half the arguments replaced by ±0, subnormals,
+`MIN_POSITIVE`, 10⁻³⁰⁰, MAX, ±∞, NaN or negatives.
+
+**Result: bit-identical on all 200,000 solves, with identical iteration counts and exits, on x86_64 ELF, aarch64
+and PE** (the solved NADH, the ratio, the loop iterations and how the solve ended: 0 mismatches).
+
+| | Low end (`f_lo ≤ 0`) | High end (`f_hi ≥ 0`) | Exact root (`f_x == 0`) | Bracket / tolerance break | Iteration cap | No solve (`avail ≤ 0`) |
+|---|---|---|---|---|---|---|
+| `balanced_nad_ratio` | 29,043 | 6,982 | 27,104 | 36,871 | 0 | — |
+| `end_of_step_nadh` | 0 | 1,806 | 38,783 | 54,729 | 0 | 4,682 |
+
+At most 24 iterations (the cap is 100); on the physiological balances 7.99 on average for `balanced_nad_ratio` and
+8.17 for `end_of_step_nadh`, at most 17. A NaN excess takes Rust's paths because Cyrius compares f64 by IEEE (§0.2):
+a NaN `f_x` falls to the `else` and returns x, a NaN bracket fails `x > lo` and breaks to the midpoint.
+
+**The control.** Built with `-D P4_ALT`, the probe takes the secant step in its textbook form, `x = lo − f_lo·(hi −
+lo)/(f_hi − f_lo)`, algebraically equal to the oracle's `(lo·f_hi − hi·f_lo)/(f_hi − f_lo)`: **26,009 balanced and
+30,496 end-of-step rows then differ** in bits, iterations or exit (the first: NADH 3 ulps and the ratio 2 ulps off,
+9 iterations for 10). So the comparison sees a 1-ulp difference, and P9's operation-for-operation transcription is
+what makes the solves agree; `run.sh --gate` requires the control to fail.
+
+**Speed** (x86_64, the same inputs, measured not gated): Cyrius 582 ns per `balanced_nad_ratio` and 259 ns per
+`end_of_step_nadh`; Rust 155–187 ns and 98–119 ns (the verbatim functions, same machine). Two solves are about a
+quarter of Rust's 1,016 ns network step; in Cyrius they would be about 0.84 µs of one. M5's benches record the
+whole step against Rust's.
+
+**Conclusion: the idiom.** Rust's closure becomes a fn pointer called through `callptr` with a context struct
+(port plan §7.3): `fn _ry_nad_excess(c: *Ctx, n: f64): f64` (an f64 parameter of a named fn arrives typed; no
+rebinding needed), called as `var f: f64 = callptr(excess, ctx, x);` (an untyped word bound to an f64 local, no
+warning). `!(x > lo && x < hi)` becomes nested ifs; `f *= 0.5` becomes `f = f * 0.5`; the iteration count and the
+exit come back through an out-pointer for M5's golden rows (port plan §2.2). No difference to report.
+
+### Probe 8: span and event cost (`p8_span_cost.cyr`; ushma's probe 8)
+
+**What Rust instruments.** rasayan 1.2.0 opens **no span** (no `#[instrument]`, no `span!`). It emits 31 events:
+`tracing::trace!` in 25 places across 18 modules (every tick, and state changes such as `consume_atp` and
+`activate_gs`, with fields such as `dt`, `atp`, `erk`), `debug!` in 5 (pathway's
+`run_to_steady_state`, the `ai` client's 3, MCP registration) and `warn!` in 1 (an MCP registration failure). With
+no subscriber, or the level filtered out, a `trace!` costs tracing's max-level load and compare.
+
+Around Michaelis-Menten (Rust's `michaelis_menten`: 1.45 ns at `adadf54`), 10⁶ calls per variant, sakshi 2.5.10
+(the pinned toolchain's; it is not vendored before M1) writing to its ring buffer:
+
+| Variant | ns per call | Over plain |
+|---|---|---|
+| plain MM (the loop and the variant dispatch included) | 16 | — |
+| **raw `sakshi_span_enter` / `_exit`, TRACE off** | **220** | **+204** |
+| raw span, TRACE on | 220 | +204 |
+| span through a level-gated helper (`if (sakshi_get_level() >= SK_TRACE)` first; ushma's `_us_span_enter` shape), TRACE off | 27 | +11 |
+| span gated inline on a level the library caches, TRACE off | 23 | +7 |
+| gated span helper, TRACE on | 235 | +219 |
+| raw `sakshi_trace` event, TRACE off (sakshi tests the level inside) | 28 | +12 |
+| level-gated event helper, TRACE off | 27 | +11 |
+| level-gated event helper, TRACE on | 126 | +110 |
+
+ushma's finding holds at the pin: **sakshi's span calls never test the level** (they read the clock, push the span
+stack and emit: 204 ns even with TRACE filtered out). A raw `sakshi_trace` already tests the level, so its filtered
+cost is two calls (~12 ns).
+
+**Conclusion.** rasayan's modules port Rust's events, not spans: a level-gated event helper per level
+(`_ry_trace(...)`, `_ry_debug(...)`, M1's `src/logging.cyr`) that tests the level **before** building the event's
+fields (Rust's `trace!(dt, atp, …)` carries f64 fields, which a filtered event must never format), then emits one
+sakshi event. Filtered out, it costs about 11 ns on a 2 ns function, where a raw span would cost 204. No `sakshi_span_*`
+call is needed, because Rust has none; if one is ever added it goes through the same gate. Caching the level
+saves 4 ns per pair but is a second source of truth for the level; the helper reads `sakshi_get_level()`.
+
+### Probe 12: f64 hygiene on this toolchain (`p12_f64_hygiene.cyr`; ushma's probe 12)
+
+| Trap | Diagnosed at 6.7.18 | What it does |
+|---|---|---|
+| 1. `0 - x` | yes: *integer arithmetic with an f64 right operand* | an integer operation on x's bits |
+| 2. `2 * x` | yes, the same | |
+| 3. an integer literal for an f64 parameter, `f(3)` | yes: *an integer stored into an f64/f32 slot keeps its integer bits* | the callee gets `0x3`, a subnormal |
+| 4. a builtin's result bound untyped, then compared (`var r = f64_sqrt(u); r < 1.0`) | yes: *comparison mixes f64 and integer operands* | |
+| 5. an integer stored into an f64 local | yes, as 3 | |
+| 6. an f64 compared with an integer | yes, as 4 | |
+| 7. `if (x)` on an f64 | **no** | tests the bits: true for −0.0, which `== 0.0` |
+| 8. Rust's `-x` written `0.0 - x` | **no** (both are f64 operations) | `0.0 - (+0)` = **+0**; `-x` and `f64_neg(x)` give −0, as Rust's `-x` |
+| 9. a hex `const` | as an f64 operand, yes (*f64 arithmetic with a non-f64 right operand*, at 0x10 and at 0x3FF0000000000000); stored into an f64 slot, yes below 2⁵², **no** at or above it | `0x10` becomes the subnormal `0x10`; `0x3FF0000000000000` keeps its bits (1.0) by design (the guide: a hex bit pattern ≥ 2⁵² is exempt) |
+| 10. exponent notation (`1e-14`) | a **compile error** (`expected ';', got identifier 'e'`, after a spurious warning) | (`-D P12_EXPONENT`) |
+| 11. a builtin's result compared directly (`f64_neg(x) == x`, `f64_neg(a) < f64_neg(b)`) | no | an IEEE compare at 6.7.18 (1 and 0, as bound to f64 locals), although the guide's 6.6.10 note still calls it an integer compare of the bits |
+
+So the warning-free `cyrius test` gate catches traps 1–6 and the small-hex half of 9. CLAUDE.md's rules stand, and
+the unflagged traps are exactly the ones it already names: no truth test on an f64 (7); unary minus (or
+`f64_neg`) wherever Rust writes `-x`, `0.0 - x` only where Rust subtracts from zero (8, §0.7); no hex `const` (9);
+no exponent notation (10, now a compile error rather than a silent value). Trap 11 is harmless at the pin, but the
+documented rule (bind a builtin's result to a `: f64` local first) is still the safe form, and the guide's note is
+an upstream documentation item (part 3b).

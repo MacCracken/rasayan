@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Cyrius port, M0 part 1 ([port plan](docs/development/rasayan-port-plan.md) §4 steps 0–2),
 part 2a (steps 4–5, first part), part 2b (step 6), part 2c-1 (step 7 and the corrected oracle),
-part 2c-2 (the correctly rounded primitives) and part 2c-3 (their dense MPFR sweep).
+part 2c-2 (the correctly rounded primitives), part 2c-3 (their dense MPFR sweep) and part 3a (step 8's
+three-target baselines and `scripts/gates.sh`, step 9's probes 1–4, 8 and 12).
 
 ### Added
 
@@ -113,6 +114,40 @@ part 2c-2 (the correctly rounded primitives) and part 2c-3 (their dense MPFR swe
   result bit in the driver and must be reported (it is). On the special values glibc 2.44 misrounds
   `exp(2⁻⁵³)`, `expm1(1)` and two published hard pow cases, which the port gets right
   (`docs/development/port-parity.md` §2e)
+- **scripts/gates.sh** (M0 part 3a, port plan §4 step 8, §6) — every gate in one run, from ushma's script: the
+  frozen oracle's tests, the generator `--check` and its clippy, `validate.py`, `mpfr_ref.py --check`,
+  `mathx_tables.py --check(-ushma)`, `probe_tables.py --all-targets`, `cr_verify.py --quick` on three targets; the
+  build and `distlib --check`; `cyrius test` on x86_64 ELF, `--bounds`, PE (wine) and aarch64 (qemu) one at a time,
+  each log required to carry its parity and file summaries with 0 warning lines, one parity summary across the four
+  and every log equal to ELF's but for the ungated builtin shadow lines; `bench`, `fuzz --poison --bounds`,
+  per-file `fmt --check` / `lint` / `doc --check`, `vet`, `deps --locked`, `audit` (by its exit status) and the
+  probes; coverage, surface parity and the test ledger are named SKIPs until M1. Logs in `build/gates/`, never
+  `/tmp`; a staged file fails the run. 84–117 s, all green. The three-target baseline: `8 modules, 0 failing | rows:
+  20067 ok, 0 failed, 0 measured, 0 pending, 96 accepted (ADR 3: 96)` on every target
+  (`docs/development/port-parity.md` §2f)
+- **scripts/probes/** (M0 part 3a, port plan §4 step 9; write-ups in `docs/development/port-parity.md` §3), run by
+  `scripts/probes/run.sh` (`--gate` in gates.sh), with two oracle bins in `scripts/oracle/src/bin/`:
+  - `p1_substeps.cyr` + `probe_substeps.rs`: the network, calcium and mapk sub-step counts (`ceil`, the saturating
+    `as u32`, `.max(1)`, the guard) on 44,266 dt values (every exact multiple k·h up to the caps ± 1–2 ulps, the
+    specials, a seeded sweep), the Rust copies tied to the real ticks through the public API: 0 mismatches on x86_64
+    ELF, aarch64 and PE. In Rust an exact multiple takes k + 1 sub-steps for 342 of the network's 5,000 k, and
+    `dt * 50.0` for `dt / 0.02` would change 150 counts: the port transcribes the division;
+  - `p2_memory.cyr`: the network's producer probe (`self.clone()`, 33 f64, 264 bytes) as a frame copy costs 11 ns
+    with 0 bytes of heap over 10⁶ steps; an arena reset per step works too (+33 ns); a fresh `alloc` leaks 264 B
+    per step. Probe 5's soak of the real network moves to M5;
+  - `p3_wide_results.cyr`: `Vec`-shaped results (PTM sites, domain hits, Chou-Fasman labels, composition) into a
+    caller buffer + count: 0 heap and the fastest shape (labels 1.95 µs per 1,000 residues against 12.2 µs for a
+    refilled vec, whose `vec_push` also aborts on a failed allocation);
+  - `p4_solver.cyr` + `probe_solver/`: the network's implicit NAD+/NADH solves (Illinois regula falsi and both
+    balances) transcribed onto a fn pointer + context struct, against a verbatim copy of the private Rust functions
+    (each block text-checked against `rust-old/src`) on 10⁵ + 10⁵ seeded balances, physiological to non-finite:
+    bit-identical results with identical iteration counts and exits on x86_64 ELF, aarch64 and PE; the
+    algebraically equal textbook secant step differs on 56,505 of the 200,000 (the gate requires it to);
+  - `p8_span_cost.cyr`: Rust 1.2.0 emits 31 tracing events and no span; around Michaelis-Menten a raw sakshi span
+    costs 204 ns even filtered out, a level-gated event helper 11 ns;
+  - `p12_f64_hygiene.cyr`: CLAUDE.md's f64 rules confirmed at 6.7.18 (traps 1–6 and small hex consts diagnosed;
+    `if (x)`, `0.0 - x` for `-x` and a hex const ≥ 2⁵² silent; exponent notation a compile error);
+  - `probe_io.cyr`: the shared token reader
 - **dist/rasayan.cyr** — the `[lib]` bundle (`cyrius distlib --all`), from M0 part 2c-2: the
   constants, the correctly rounded primitives and the table data; CI checks it is current
   (`cyrius distlib --check`)
