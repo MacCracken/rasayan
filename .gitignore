@@ -1,33 +1,38 @@
-# Build
-/target/
-**/*.rs.bk
+# Build output
+/build/
 
-# Cargo
-Cargo.lock
+# Frozen Rust oracle (rust-old/): keep its sources AND its Cargo.lock (the oracle must rebuild
+# against its exact pins); ignore only what cargo builds inside it.
+/rust-old/target/
+/rust-old/**/__pycache__/
+/rust-old/coverage/
 
-# IDE
-.idea/
-.vscode/
+# Golden-value generator (scripts/oracle/, a cargo crate): its Cargo.lock is committed too
+/scripts/oracle/target/
+/scripts/**/__pycache__/
+
+# Editor / IDE
 *.swp
 *.swo
 *~
+.idea/
+.vscode/
+*.iml
 
-# OS
+# OS files
 .DS_Store
 Thumbs.db
 
-# Coverage / profiling
-/coverage/
+# Debugging
+*.pdb
+core
+core.*
+*.core
 *.profraw
 *.profdata
-lcov.info
-tarpaulin-report.*
 
 # Claude Code
 .claude/
-
-# Benchmarks (CSV history is tracked, raw criterion output is not)
-/target/criterion/
 
 # Environment / secrets
 .env

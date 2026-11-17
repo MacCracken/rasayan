@@ -6,71 +6,57 @@ Thank you for your interest in contributing to Rasayan.
 
 1. Fork and clone the repository
 2. Create a feature branch from `main`
-3. Make your changes
-4. Run `make check` to validate
+3. Make your changes (Cyrius sources in `src/`; the Rust oracle in `rust-old/` is frozen — never edit it)
+4. Run the cleanliness check below
 5. Open a pull request
 
 ## Prerequisites
 
-- Rust stable (MSRV 1.100)
-- Components: `rustfmt`, `clippy`
-- Optional: `cargo-audit`, `cargo-deny`, `cargo-llvm-cov`
+- Cyrius toolchain at the version pinned in `cyrius.cyml` (`[package].cyrius`)
+- Rust stable (1.100+) — only to build the frozen oracle in `rust-old/` and the golden generator in `scripts/oracle/`
 
-## Makefile Targets
+## Cleanliness check
 
-| Command | Description |
-|---------|-------------|
-| `make check` | fmt + clippy + test + audit |
-| `make fmt` | Check formatting |
-| `make clippy` | Lint with `-D warnings` |
-| `make test` | Run test suite |
-| `make audit` | Security audit |
-| `make deny` | Supply chain checks |
-| `make bench` | Run benchmarks with history tracking |
-| `make coverage` | Generate coverage report |
-| `make doc` | Build documentation |
+```sh
+cyrius deps --locked
+cyrius build src/main.cyr build/rasayan
+cyrius test                 # warning-free, not just passing
+cyrius test --bounds
+cyrius bench
+cyrius audit                # fmt, lint, docs, tests, bench — check its exit status, never pipe it through tail
+cargo test --manifest-path rust-old/Cargo.toml --all-features   # the oracle, read-only
+```
 
-## Adding a Module
+Every change to the port is checked against the oracle's golden rows (see the
+[port plan](docs/development/rasayan-port-plan.md), §5).
 
-1. Create `src/module_name.rs` with module doc comment
-2. Add `pub mod module_name;` to `src/lib.rs` (feature-gated if it brings in new deps)
-3. Re-export key types from `lib.rs`
-4. Add tests in the module
-5. Update README module table
+## Porting a Module
 
-If the module requires an external dependency, gate it behind a feature flag.
+Modules port in the order of the [port plan](docs/development/rasayan-port-plan.md) (§6), one
+milestone part at a time:
 
-## Adding an Enzyme
-
-1. Add a constructor or constant in `src/enzyme.rs` with standard kinetic parameters
-2. Include Vmax, Km, Hill coefficient, and kcat from published literature
-3. Cite the source in a doc comment (BRENDA, KEGG, or primary literature)
-4. Add unit tests verifying rate at Km (should be Vmax/2 for standard Michaelis-Menten)
-5. Add benchmarks for the new kinetic computation
-
-## Adding a Metabolic Pathway
-
-1. Define the pathway steps in `src/metabolism.rs` with stoichiometric ATP/NADH yields
-2. Document net ATP yield per glucose (or relevant substrate)
-3. Include regulatory signals (e.g., allosteric activators/inhibitors)
-4. Add tests verifying energy balance: inputs consumed = outputs produced
-5. Cross-reference with existing pathways (glycolysis feeds TCA, etc.)
+1. Create `src/<module>.cyr` and add it to the `[lib]` module list in `cyrius.cyml` in dependency
+   order (no `src/` file includes another). Optional stacks go in `[lib.mcp]` / `[lib.ai]`.
+2. Generated tables and constants come from `scripts/oracle/` — never type them by hand.
+3. Public names carry the `ry_` / `RY_` prefix, private helpers `_ry_` (ADR 0001).
+4. Add golden parity rows (`tests/golden/<module>.tsv`), single-step and trajectory rows for
+   stateful code, the module's Rust tests as `.tcyr` tests, and a `.bcyr` twin for every Rust
+   benchmark.
+5. Any deliberate difference from the oracle gets an ADR 0002 row.
 
 ## Code Style
 
-- `cargo fmt` — mandatory
-- `cargo clippy -- -D warnings` — zero warnings
-- Doc comments on all public items
-- `#[non_exhaustive]` on public enums
-- No `unsafe` code
-- No `println!` — use `tracing` for logging
+- `cyrius fmt` and `cyrius lint` clean; `cyrius doc --check` — every public fn documented
+- Append-only enums (`RY_` members); `#must_use` on pure functions
+- No aborts in library code (`+?`, `-?`, `*?`, `panic`, `unwrap`, `assert_fatal`)
+- Logging through sakshi spans and `log_*` events, never `println`
+- See `CLAUDE.md` for the f64 hygiene rules and toolchain workarounds
 
 ## Testing
 
-- Unit tests colocated in modules (`#[cfg(test)] mod tests`)
-- Integration tests in `tests/`
-- Feature-gated tests with `#[cfg(feature = "...")]`
-- Target: 80%+ line coverage
+- `.tcyr` tests in `tests/`, run by `cyrius test`, warning-free; `cyrius test --bounds`
+- Golden corpus replayed by the parity harness on x86_64 ELF, PE and aarch64
+- Target: 80%+ coverage (`cyrius coverage --exec`)
 
 ## Commits
 

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Cyrius port, M0 part 1 ([port plan](docs/development/rasayan-port-plan.md) §4 steps 0–2).
+
+### Changed
+
+- **port** — `cyrius port` (Cyrius 6.7.18): the Rust 1.2.0 crate moved to `rust-old/` as tagged
+  (sources byte-identical to tag `1.2.0`), with its scripts, workflows, README, architecture overview,
+  benchmark history and `Cargo.lock` (now tracked). The Rust bench baseline at the tag is recorded in
+  `rust-old/bench-history.csv` (commit `adadf54`, 48 benchmarks).
+- **repo** — Cyrius skeleton (`src/main.cyr`, `tests/rasayan.{tcyr,bcyr,fcyr}`, `cyrius.cyml` with
+  `version = "${file:VERSION}"`, `cyrius.lock`, vendored `lib/`); `CLAUDE.md` translated to the Cyrius
+  process and rules; CI runs `deps --locked`, `test`, `test --bounds`, `bench`, `audit` and the frozen
+  oracle's tests; README, CONTRIBUTING and SECURITY describe the port.
+- **docs** — ADRs 0001–0004 accepted (port with a frozen oracle; API divergences; correct rounding;
+  serde-compatible JSON); `docs/development/state.md`.
+
 ## [1.2.0] - 2026-11-16
 
 The final Rust release and the oracle for the Cyrius port

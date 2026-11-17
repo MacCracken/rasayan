@@ -1,0 +1,17 @@
+[package]
+name = "rasayan"
+version = "${file:VERSION}"
+description = "Rasayan — biochemistry engine: enzyme kinetics, metabolic pathways, signal transduction, protein structure, membrane transport, bioenergetics"
+license = "GPL-3.0-only"
+language = "cyrius"
+cyrius = "6.7.18"
+
+[build]
+entry = "src/main.cyr"
+output = "build/rasayan"
+
+[deps]
+stdlib = ["string", "fmt", "alloc", "vec", "str", "syscalls", "io", "args"]
+
+[test]
+stdlib = ["assert", "bench"]

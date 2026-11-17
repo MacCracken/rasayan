@@ -12,7 +12,7 @@
 > ▶ **Start on Cyrius 6.7.18**, after 1.2.0 is tagged (M0 step 0).
 >
 > 🟡 **Status:** planned 2026-11-16. The maintainer **accepted P1–P9** (§0.2) the same day; ADR 0001
-> records them. M0 starts once 1.2.0 is tagged (step 0).
+> records them. 1.2.0 is tagged (`adadf54`); M0 part 1 (steps 0–2) is done — see §10.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -387,7 +387,7 @@ signaling pathways).
 
 | Milestone | Status | Golden rows | Reference tests | Benches | Notes |
 |---|---|---|---|---|---|
-| M0 Prep + scaffold | ⏳ waiting for the 1.2.0 tag | — | — | Rust baseline | |
+| M0 Prep + scaffold | 🟡 part 1 done (steps 0–2; step 3 partial) | — | — | Rust baseline at `adadf54` (48) | steps 4–10 next |
 | M1 Foundation | — | | | | |
 | M2 Kinetics & cell physiology | — | | | | |
 | M3 Sequence analysis | — | | | | |

@@ -7,7 +7,8 @@
 
 ## Cyrius port (2.0.0)
 
-- [ ] M0 — freeze 1.2.0 (tag, bench baseline, glibc 2.44), `cyrius port`, oracle generator, parity harness, probes
+- [x] M0 part 1 — freeze 1.2.0 (tag `adadf54`, bench baseline, glibc 2.44), `cyrius port`, repairs, ADRs 0001–0004
+- [ ] M0 part 2 — math check, oracle generator, table generator, parity harness, baselines, probes
 - [ ] M1–M8 — module milestones (plan §6)
 - [ ] M9 — release 2.0.0
 
