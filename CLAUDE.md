@@ -28,11 +28,11 @@ consumes the Cyrius port yet. The current list is in `state.md`.
 ## Quick Start
 
 ```sh
-cyrius deps                                   # resolve dependencies (vendors lib/)
+cyrius deps --features mcp                    # resolve dependencies (vendors lib/; mcp: the optional bote, locked too)
 cyrius build src/main.cyr build/rasayan       # compile
 cyrius test                                   # run tests/*.tcyr (tests/parity.tcyr replays the golden corpus, from M0 step 7)
 cyrius bench                                  # run benchmarks
-cyrius distlib --all                          # dist/rasayan.cyr ([lib]); -mcp, -ai with their profiles (M8)
+cyrius distlib --all                          # dist/rasayan.cyr ([lib]), rasayan-mcp.cyr, rasayan-ai.cyr (no --features)
 cargo test --manifest-path rust-old/Cargo.toml --all-features   # the Rust oracle, read-only
 ```
 

@@ -9,8 +9,8 @@
 # - the same gate on a level the library caches in its own global (no call), off;
 # - a raw `sakshi_trace` event (sakshi tests the level inside), off;
 # - a level-gated event helper (the gate first, then sakshi_trace), off and on.
-# sakshi 2.5.10 is the pinned toolchain's (lib/sakshi.cyr; not yet vendored here: M1 adds sakshi and log to [deps]
-# with src/logging.cyr). Output goes to sakshi's ring buffer, its cheapest target.
+# sakshi 2.5.10 is lib/sakshi.cyr: the pinned toolchain's at part 3a, vendored and locked through [deps] stdlib since
+# part 3b (byte-identical). Output goes to sakshi's ring buffer, its cheapest target.
 #
 #   cyrius build scripts/probes/p8_span_cost.cyr build/p8 && ./build/p8
 include "src/mathx_data.cyr"

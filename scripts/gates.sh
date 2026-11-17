@@ -61,6 +61,11 @@ if [ -f ../ushma/src/mathx_data.cyr ]; then
 else
     PAT='STALE|DIFFERS|current' run python3 -I -B scripts/oracle/mathx_tables.py --check
 fi
+if [ -f ../impetus/src/fmtf.cyr ] && [ -f ../ushma/src/fmtf.cyr ]; then
+    PAT='stale|current|DIFFERS|identical|SKIP|pinned' run python3 -I -B scripts/vendor_fmtf.py --check-ushma
+else
+    PAT='stale|current|SKIP|pinned' run python3 -I -B scripts/vendor_fmtf.py --check
+fi
 PAT='FAIL|checked|identical|differ' run python3 -I -B scripts/oracle/probe_tables.py . --all-targets
 PAT='MISMATCH|DIFFER|cr_verify:|special values|arguments' TAILN=8 run python3 -I -B scripts/oracle/cr_verify.py --quick --targets elf,aarch64,pe
 
@@ -69,8 +74,9 @@ PAT='OK|error|warn|FAIL' run cyrius build src/main.cyr build/rasayan
 bw=$(grep -i warning "$OUT/step.out" | grep -viE "$KNOWN" | wc -l)
 echo "rasayan warning lines (build): $bw"
 [ "$bw" -eq 0 ] || FAILED+=("cyrius build ($bw warning lines)")
-# [lib] only until M8 adds [lib.mcp] / [lib.ai]; --check is read-only (dist/ is committed and must be current).
-PAT='.' run cyrius distlib --check
+# Every bundle: [lib], [lib.mcp] and [lib.ai] (part 3b; src/mcp.cyr and src/ai.cyr join them at M8). --check is
+# read-only (dist/ is committed and must be current).
+PAT='current|stale|differ|error|checked' TAILN=6 run cyrius distlib --check
 
 # ── 3. The parity corpus on every target, one at a time: ELF, ELF --bounds, PE (wine), aarch64 (qemu) ─────────────
 for t in '' --bounds --win --aarch64; do
@@ -118,7 +124,8 @@ fi
 echo "=== fmt/lint/doc per file"
 s=$(now)
 fails=0
-for f in src/*.cyr tests/*.tcyr tests/*.bcyr tests/*.fcyr tests/*.cyr scripts/probes/*.cyr scripts/probes/*.bcyr docs/examples/*.cyr; do
+for f in src/*.cyr tests/*.tcyr tests/*.bcyr tests/*.fcyr tests/*.cyr scripts/probes/*.cyr scripts/probes/*/*.cyr \
+    scripts/probes/*.bcyr docs/examples/*.cyr; do
     [ -f "$f" ] || continue
     cyrius fmt --check "$f" > /dev/null 2>&1 || { echo "fmt FAIL $f"; fails=$((fails + 1)); }
     # p12 holds the f64 traps on purpose: its diagnostics are what it measures.
@@ -138,7 +145,8 @@ PAT='.' TAILN=2 run cyrius deps --locked
 # Read by its own exit status: never piped (a pipe would report the last command's status).
 PAT='ok:|FAIL|error|passed|failed' TAILN=8 run cyrius audit
 
-# ── 5. The probes (M0 step 9): every one builds warning-free; the two compared with the oracle must agree ─────────
+# ── 5. The probes (M0 step 9): every one builds warning-free; those compared with the oracle must agree ──────────
+# (p1, p4, p6, p7, p11; p10 checks the manifest and its bundles' consumers; scripts/probes/run.sh says how)
 if [ -x scripts/probes/run.sh ]; then
     PAT='probe|FAIL|caught' TAILN=30 run bash scripts/probes/run.sh --gate
 else

@@ -1,0 +1,29 @@
+# Probe 10 (port plan P5, §4 step 9): the [lib.mcp] stand-in, in the probe's scratch copy only (src/mcp.cyr is M8's).
+# One read-only tool on bote's core surface (registry, dispatcher, codec), answered by a handler that calls the
+# science bundle (_ry_is_finite from src/mathx.cyr), as probe 6 settled it. It names bote functions and no bote
+# variable, so the bundle compiles where bote is not in scope (selah's rule for dist/selah-mcp.cyr).
+
+# The stand-in's handler: a bare record, as Rust's handlers return.
+fn _ry_p10_handler(args, claims): i64 {
+    var x: f64 = 2.5;
+    if (_ry_is_finite(x) == 1) { return "{\"function\":\"michaelis_menten\",\"rate\":5.0}"; }
+    return "{\"error\":\"rate is not finite\"}";
+}
+
+# Registers the tool on a fresh dispatcher and calls it once; returns 1 when bote answered with the record as one
+# text block (probe 6's shape), 0 otherwise.
+#must_use
+fn ry_p10_mcp(): i64 {
+    var d = dispatcher_new(tool_registry_new());
+    var def = tool_def_new("rasayan_kinetics", "Enzyme kinetics.", tool_schema_from_json("{\"type\":\"object\"}"));
+    tool_def_with_annotations(def, ann_read_only());
+    if (dispatcher_register_tool(d, def, &_ry_p10_handler) != 0) { return 0; }
+    var req = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"rasayan_kinetics\"}}";
+    var resp = codec_process_message(req, d, 0);
+    if (resp == 0) { return 0; }
+    var want = "\\\"rate\\\":5.0}\"}]}}";
+    var n = strlen(resp);
+    var m = strlen(want);
+    if (n < m) { return 0; }
+    return memeq(resp + n - m, want, m);
+}

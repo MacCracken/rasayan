@@ -366,12 +366,19 @@ never a silent pass.
 | 4 | `cyrius bench`; `fuzz --poison --bounds`; `coverage --exec --min 80` | bench summary clean; coverage SKIP until M1 (no public `ry_` fn: nothing to measure, and the tool says so with exit 1) | 1.1 s |
 | | `fmt --check` and `lint` on `src/`, `tests/`, `scripts/probes/` (p12's lint excepted), `doc --check` on `src/` | 0 findings | 0.8 s |
 | | `vet`, `deps --locked`, `audit` (by its own exit status, never piped) | | 1.7 s |
-| 5 | `scripts/probes/run.sh --gate` | §3: the oracle's probe bins; every probe builds (p12: its 8 diagnostics); p1 and p4 agree with Rust on ELF, aarch64 and PE; p4's control is caught; p2 and p3 hold | 11.8 s |
+| 5 | `scripts/probes/run.sh --gate` | §3: the oracle's probe bins; every probe builds (p12: its 8 diagnostics); p1 and p4 agree with Rust on ELF, aarch64 and PE; p4's control is caught; p2 and p3 hold (part 3b: below) | 11.8 s |
 | 6 | `surface_parity.py`, `rust_test_ledger.py` | SKIP until M1 | — |
 | | the git index | must be empty: the maintainer does all git | — |
 
 A full run takes **84–117 s** on this machine (2026-11-16, two runs, with another session's fuzzers loading it),
 most of it the wine legs of `cr_verify.py` and `probe_tables.py`, which vary with the load. All steps exit 0.
+
+**Part 3b** adds `scripts/vendor_fmtf.py --check-ushma` to step 1 (`src/fmtf.cyr` current and equal to ushma's copy
+renamed), `distlib --check` over the three bundles to step 2, `scripts/probes/*/` to the fmt/lint sweep, and probes 6,
+7, 10 and 11 to step 5 (p6 against the oracle on ELF, aarch64 and PE; p7 against the oracle's client on two loopback
+hoosh stubs; p10's manifest and consumer checks; p11 on ELF and PE with its control). `run.sh` re-runs a wine leg once
+when it exits 0 without its summary line (wine dropped buffered output under load once in p11's PE leg) and says so.
+Step 5 then takes 67.5 s and the whole run **144 s** (2026-11-16), every step exiting 0.
 
 **The three-target baseline (M0 step 8).** The corpus harness gives the same summary on every target:
 
@@ -396,7 +403,10 @@ Each probe is a program in `scripts/probes/`, run on Cyrius 6.7.18, x86_64 (and 
 PE under wine), on 2026-11-16. Times are the best of three runs on a machine another session was loading (its load
 average 5–12 of 16 cores), so they are upper bounds; speed is measured, not gated. `bash scripts/probes/run.sh`
 builds and runs them all; `--gate` is the gates.sh step (§2f). Part 3a holds probes 1, 2 (with probe 5's heap
-measurement), 3, 4, 8 and ushma's 12; probes 6 (bote) and 7 (hoosh) follow in part 3b with the upstream filings.
+measurement), 3, 4, 8 and ushma's 12. Part 3b holds probes 6 (bote), 7 (hoosh), 10 (the manifest and the bundles) and
+11 (JSON), with the upstream drafts (`docs/development/upstream/`). Their Rust halves are the oracle bins
+`probe_mcp`, `probe_ai` and `probe_json` (`scripts/oracle/src/bin/`), which drive the frozen 1.2.0 read-only through
+its own bote 0.92, hoosh 1.3 and serde_json 1.0.154.
 
 ### Probe 1: sub-step counts (`p1_substeps.cyr`; Rust side `scripts/oracle/src/bin/probe_substeps.rs`)
 
@@ -568,7 +578,7 @@ exit come back through an out-pointer for M5's golden rows (port plan §2.2). No
 no subscriber, or the level filtered out, a `trace!` costs tracing's max-level load and compare.
 
 Around Michaelis-Menten (Rust's `michaelis_menten`: 1.45 ns at `adadf54`), 10⁶ calls per variant, sakshi 2.5.10
-(the pinned toolchain's; it is not vendored before M1) writing to its ring buffer:
+(the pinned toolchain's at part 3a; vendored and locked since part 3b, byte-identical) writing to its ring buffer:
 
 | Variant | ns per call | Over plain |
 |---|---|---|
@@ -615,3 +625,169 @@ the unflagged traps are exactly the ones it already names: no truth test on an f
 no exponent notation (10, now a compile error rather than a silent value). Trap 11 is harmless at the pin, but the
 documented rule (bind a builtin's result to a `: f64` local first) is still the safe form, and the guide's note is
 an upstream documentation item (part 3b).
+
+### Probe 6: one rasayan tool on bote 3.8.15 (`p6_bote.cyr`, `p6_compare.py`; Rust side `scripts/oracle/src/bin/probe_mcp.rs`)
+
+**The setup.** The oracle bin sends 19 JSON-RPC requests to `rasayan::mcp::create_dispatcher()` (Rust bote 0.92) and
+writes each request with serde_json's text of the response: `tools/list`, and `tools/call` of `rasayan_kinetics` with
+`michaelis_menten` on valid arguments (short and long digits, integers, a negative Vmax giving −0.0, a −0.0 substrate,
+a subnormal, a rate of 6.0e23), a non-finite rate, missing arguments, an extra argument, an unknown function, no
+function, a string for a number, no `arguments`, and an unknown tool. The Cyrius probe registers the same tool as Rust
+does — `dispatcher_register_tool(dispatcher_new(tool_registry_new()), def, handler)`, Rust's description, its
+inputSchema written in serde_json's key order with one helper per Rust `prop_*`, and `ann_read_only()` (Rust's
+`ToolAnnotations::read_only()`) — on `lib/bote-core.cyr`, with a handler that is `kinetics_handler`'s
+`michaelis_menten` arm transcribed: the arguments from bayan's value tree (an integer read as an f64, as serde_json's
+`as_f64`), `guard::conc` on `_ry_is_finite`, the reply written as Rust's `json!` is printed (keys sorted, the rate by
+`src/fmtf.cyr`, the non-finite message by its Display form). Each request goes through `codec_process_message`, and
+`p6_compare.py` compares the two answers request by request.
+
+**Result: every payload and the schema byte-identical, on x86_64 ELF, aarch64 and PE** (the same comparison on each):
+
+| | Rust bote 0.92 | bote 3.8.15 | |
+|---|---|---|---|
+| `tools/call` payload (13 requests) | the handler's record is the `result` | one text block whose text is that record | text byte-identical 13 of 13 (`5.0`, `-0.0`, `1e-319`, `6.022140759999999e+23`, `0.05000000000000001`, the `{"error":…}` records) |
+| the tool's `inputSchema` | serde_json's text | as the port wrote it | byte-identical (1,343 bytes) |
+| the `tools/list` entry | `{"description","inputSchema","name"}` | `{"name","description","inputSchema","annotations"}` | equal as a value apart from `annotations`, which Rust never sent |
+| `annotations` | set on the definition, not serialized | `{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}` | Rust's `read_only()` values |
+| tool order | `HashMap` order: **64 distinct orders in 64 dispatchers** | registration order | |
+| a schema violation (4: unknown function, no function, no arguments, a string for a number) | JSON-RPC error `-32602`, `schema violation for tool 'rasayan_kinetics': …` | a tool error result (`isError: true`) with the same text; the enum message without its `[michaelis_menten, hill, …]` list | |
+| an unknown tool | `-32601`, `tool not found: rasayan_nope` | `-32602`, the same message | |
+
+`p6_compare.py` fails on any difference but these six kinds; a changed payload byte fails it (tried). They are ADR
+0002 rows 11–13: the port writes Rust's payloads and schemas byte for byte and lets bote 3.8.15 frame them as the MCP
+revision it serves asks.
+
+**bote-core, not the full bundle.** Rust's `mcp` gives a consumer `register_tools(&mut Dispatcher)`,
+`create_dispatcher()` and `tool_names()` — a dispatcher, no transport — and every call above is on bote's core
+profile (registry, dispatcher, codec, schema checks, content blocks; 743,280 bytes of source against the full
+bundle's 1,198,933, its sidecar `hashmap sys` against `hashmap bayan ws_server syscalls`). So `[deps.bote]` takes
+`dist/bote-core.cyr`, and `src/mcp.cyr` (M8) calls only that surface, which also exists in the full bundle: a consumer
+that serves the tools over stdio or HTTP declares the full bundle itself (never both: they define the same
+functions). `cyrius deps --features mcp` resolves bote 3.8.15 and its own graph — libro 2.11.3, majra 2.13.0, patra
+1.16.6, sigil 3.13.15, five commits locked — though bote-core uses none of it (probe 10).
+
+**Measured, not gated** (x86_64, 10⁴ calls): a `tools/call` round trip (parse, schema check, handler, reply) is
+14.8 µs and keeps **1,880 bytes of process heap per call** through `codec_process_message`; through
+`codec_process_message_a` with an arena reset per call it is 13.5 µs and 720 bytes per call, all of them the probe
+handler's own (its bayan tree and builders on the heap). A long-running server must not keep either: M8's handlers
+build on the request's allocator and the transport passes an arena. The probe builds in 0.67 s.
+
+### Probe 7: hoosh 2.12.3's API against the Rust client (`p7_hoosh.cyr`, `p7_hoosh_stub.py`, `p7_compare.py`; Rust side `scripts/oracle/src/bin/probe_ai.rs`)
+
+**What hoosh 2.12.3 serves** (its Cyrius source at tag 2.12.3): `http_route` (`src/main.cyr`) routes `GET /v1/health`
+(no auth; `health_body`: `{"status":"ok","version":…,"providers_configured":n}`, 503 when degraded), `GET /v1/models`
+(`models_list_json_a`: `{"object":"list","data":[{"id","object":"model","owned_by"}]}`) and `POST /v1/chat/completions`
+(`_chat_prep` / `_validate_chat`, `src/lib/handlers.cyr`: `model` required, 1–256 bytes, no control byte; `messages`
+1–256, or a `prompt`; `temperature` 0–2 and `top_p` 0–1 read as thousandths; `max_tokens` > 0; `"stream":true` the
+only stream switch). A chat answer is `_chat_completion_body_a`'s `chat.completion`: `id`, `object`, `created`, `model`,
+`choices[{index, message{role, content[, tool_calls]}, finish_reason}]`, `usage{prompt_tokens, completion_tokens,
+total_tokens, cost_micro_usd, provider}`. Every path but `/v1/health` and `/metrics` checks a bearer token when tokens
+are configured (`auth_check`).
+
+**The comparison.** `p7_hoosh_stub.py` answers as that source does and records every raw request. The oracle bin makes
+each call `BiochemClient` has once (`query`, a three-turn `chat`, `enzyme_query`, `pathway_query`, `protein_query`, a
+`query` under a system prompt with a quote, a tab and a backslash, `health`, `list_models`) against one stub; the
+Cyrius probe makes the same eight against another, on sandhi, writing each body as the hoosh 1.3 crate's
+`to_chat_body` hands it to serde_json (keys sorted, serde_json's escapes, the temperature by `src/fmtf.cyr`) and
+reading each answer with bayan's tree as the 1.3 client reads it.
+
+| | Rust 1.2.0 (hoosh 1.3, reqwest) | Cyrius (sandhi 1.13.7, bayan) |
+|---|---|---|
+| request lines | `POST /v1/chat/completions` ×6, `GET /v1/health`, `GET /v1/models` | the same |
+| bodies | `{"max_tokens":2048,"messages":[{"content":…,"role":"system"},…],"model":"llama3","stream":false,"temperature":0.3}` | **byte-identical, 6 of 6** |
+| `Content-Type`, `Accept` | `application/json` on a POST; `*/*` | the same |
+| other headers | `host`, `content-length` (lowercase names) | `Host`, `Content-Length`, and `User-Agent: sandhi/1.13.7`, `Accept-Encoding: identity`, `TE: trailers`, `Connection: close` |
+| what each call returns (text, model, usage, provider, latency, tool calls; health; each model's id, name, provider, parameters, context length, available) | 8 outcome lines | **identical, 8 of 8** |
+
+So **hoosh 2.12.3 serves the 1.3 client's API unchanged** for every call rasayan makes: no path or field needs a
+mapping (ADR 0002 row 6). 2.12.3's additions (`usage.cost_micro_usd`, `usage.provider`, `finish_reason`) are read by
+neither client. Two things are the port's to decide at M8, both in ADR 0002 rows 5–6: the request deadlines (Rust's
+client has a 10 s connect timeout and none on the request; sandhi needs `read_ms` beside `total_ms`, ushma's open
+sandhi issue), and whether to send a bearer token, which 2.12.3 asks for when configured and the Rust client never
+sent. The probe compiles sandhi and its TLS stack from the pinned toolchain: sandhi is not in `[deps] stdlib`
+(probe 10), and nothing says so (drafted upstream, cyrius). x86_64 ELF; ushma's probe 7 ran sandhi's requests on PE and aarch64.
+
+### Probe 10: the manifest and the three bundles (`p10_manifest.sh`, `p10_manifest/`)
+
+**The tracked manifest** (`cyrius.cyml`, part 3b): sakshi and log in `[deps] stdlib` (part 3a found sakshi resolving
+from the toolchain unvendored); `[deps.bote]` git + tag 3.8.15 + `modules = ["dist/bote-core.cyr"]` + `optional =
+true` with `[features] mcp = ["bote"]` (selah's pattern); `[lib.mcp]` (`[lib]`'s list until `src/mcp.cyr`, M8) and
+`[lib.ai]` (`[lib]` + `src/ai_data.cyr`, then `src/ai.cyr` at M8). `cyrius deps --features mcp` vendored and locked
+bote with its graph (66 lock rows, 5 commits); a plain `cyrius deps` or build keeps them, with a note that 34 files are
+outside its footprint; `cyrius deps --locked` is clean with or without `--features mcp`. `src/fmtf.cyr` joined
+`[lib]` (probe 11), so `dist/rasayan.cyr` now opens with a requires block, `include "lib/str.cyr"`, and has a sidecar,
+`dist/rasayan.deps` (`str`).
+
+**The scratch copy** (`build/p10/`) adds a stand-in to each profile: `[lib.mcp]` one tool on bote-core (probe 6's
+shape), `[lib.ai]` a `GET /v1/health` on sandhi (probe 7's). `cyrius distlib --all` then writes:
+
+| Bundle | Size | Sidecar | Notes |
+|---|---|---|---|
+| `dist/rasayan.cyr` | 212,827 B | `str` | names nothing of bote or sandhi |
+| `dist/rasayan-mcp.cyr` | 214,445 B | `str` | distlib warns that 8 bote names stay undefined, "a consumer must supply them": the bundle's contract |
+| `dist/rasayan-ai.cyr` | 216,314 B | `str sandhi` | the verify compiled sandhi from the toolchain (`lib/sandhi.cyr` is not vendored here) |
+
+`distlib --check` reads all three as current. `cyrius distlib --all --features mcp` brings bote's graph into the
+verify, and the base bundle's PE verify then fails on majra (below), so the profiles are built without features.
+
+**Consumers**, each a path dep on the scratch copy with its bundle's sidecar leaves as stdlib, DCE on, built for x86_64
+ELF, PE and aarch64 and run:
+
+| Consumer | `cyrius deps` vendors | ELF | PE | aarch64 | Answers |
+|---|---|---|---|---|---|
+| `dist/rasayan.cyr` | the bundle only; no commit locked | 70,432 B | 221,184 B | 238,144 B | `e¹` = `0x4005bf0a8b145769` on all three |
+| `dist/rasayan-mcp.cyr` + its own `[deps.bote]` (bote-core) | bote-core, libro, majra, patra, sigil | 1,029,168 B | **fails** | 2,704,064 B | the tool's record as a text block |
+| `dist/rasayan-ai.cyr` | sandhi, its TLS stack and sigil | 1,300,376 B | 3,007,488 B | 3,040,720 B | 200 from the stub on all three |
+
+- **A core consumer pulls neither bote nor sandhi**: rasayan's optional `[deps.bote]` is not walked for it, and its
+  sidecar names only `str`.
+- **The mcp consumer cannot build for PE**: bote's graph is prepended though bote-core needs none of it, and
+  `lib/majra.cyr` has no `SYS_FUTEX` there. rasayan's own probe 6, which includes `lib/bote-core.cyr` alone, builds and
+  answers on PE. A recorded constraint of the `-mcp` bundle (no bote issue); the probe records it as an expected
+  failure and says when it passes.
+- **Warnings**: none of rasayan's. The ai consumer carries sigil's large static data (prakash's record) and, on PE,
+  `lib/dynlib.cyr` / `lib/fdlopen.cyr`'s unrouted syscalls (ushma's filing).
+
+The script runs in 18 s and is part of `run.sh --gate`.
+
+### Probe 11: JSON byte for byte (`p11_json.cyr`; Rust side `scripts/oracle/src/bin/probe_json.rs`)
+
+**The documents.** The oracle bin writes 1,234 serde_json 1.0.154 documents for nine types — `EnzymeParams`,
+`GlycolysisState`, `NetworkEnvironment`, `MetabolicNetwork` (five nested states), `GlycolysisFlux` (`[f64; 10]`),
+`AminoAcid` (a `char`, two `&'static str`, an `Option<f64>`), `PtmSite` (a `usize`, a `char`, an enum, a `String`),
+`PkaSet` and `SecondaryStructure` (unit enums) — as defaults, real values (network ticks, every amino acid, a PTM
+scan), every special f64 in every field (±0, NaN, ±∞, subnormals, `MIN_POSITIVE`, `MAX`, the form thresholds, 2⁵³ ± …),
+200 seeded variants per all-f64 type, and strings carrying every escape serde_json writes, UTF-8 and a NUL char. With
+each it writes the value's leaf stream, recorded by a `serde::Serializer` that serde's derive drives, so the field order
+and representation are serde's, not a transcription. And 330,628 doubles (every f64 of the documents, every power of
+two, the powers of ten with their neighbours, the integers to 1,000, 100,000 random bit patterns, 50,000 short
+decimals, both signs) with serde_json's and Rust's `{}` text.
+
+**The Cyrius side** writes each document again from its leaves with a hand-written writer per type (field names in
+declaration order, f64s through `src/fmtf.cyr`, serde_json's string escapes) and compares bytes, then parses serde's
+text with bayan 1.11.1's `bayan_json_v_parse_buf` and walks the tree against the leaves.
+
+| Check | Result |
+|---|---|
+| hand-written writers against serde_json | **byte-identical on 1,234 of 1,234** |
+| documents holding `null` for a non-finite f64 (serde_json's form; `fmtf` writes the same) | 340 |
+| bayan's tree holds every leaf (f64 bits, strings, chars, integers, nulls, enum names) | 1,232 of 1,234 |
+| bayan refuses | 2: a `PtmSite.position` of 2⁶³ and of `usize::MAX` (`integer is out of range for i64`; i64::MAX reads); an open bayan issue, addendum drafted |
+| `fmtf` serde_json form / Display form against serde_json / Rust (330,628 doubles) | 0 / 0 differ |
+| `bayan_f64_parse` of serde_json's text against the bits | 0 misreads of 330,518 finite |
+| bayan's own printer (`bayan_f64_to_json`) against serde_json | 18,350 differ, 16,138 of them longer (measured; addendum drafted) |
+| the control build (`-D P11_ALT`: bayan's printer in the writers) | 603 of 1,234 documents differ: caught |
+
+The results are identical on x86_64 ELF (7.7 s), PE (9 s) and aarch64 (55 s under qemu); `--gate` runs ELF and PE
+and the control.
+
+**And Rust's own reader**: serde_json as rasayan 1.2.0 builds it (no `float_roundtrip`) reads its documents of the six
+`Deserialize` types back bit for bit in 260 of 1,171, misreads 1,473 f64s in 571 by 1–2 ulp, and refuses 340 (a
+`null` for an f64 it wrote itself, a non-finite value). bayan's correctly rounded parse misreads none.
+
+**Conclusion.** P7 and ADR 0004 stand, with the details the ADR's amendment records: `src/fmtf.cyr` vendored (impetus's
+by ushma's rule, `scripts/vendor_fmtf.py --check-ushma`), a writer per type in declaration order, `null` for a
+non-finite f64 and a refusal of it on read (as serde_json), read rows compared with the written bits rather than
+Rust's 1–2 ulp misreads, usize ≥ 2⁶³ refused until bayan's fix (M3 decides with its types), and writers that never
+grow a builder through an aborting put. `#derive(Serialize)` was not re-measured: ushma's probe 11 holds for the same
+toolchain (it writes bayan's printer's text and enum constant names, and accepts what serde refuses).

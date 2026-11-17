@@ -9,8 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Cyrius port, M0 part 1 ([port plan](docs/development/rasayan-port-plan.md) §4 steps 0–2),
 part 2a (steps 4–5, first part), part 2b (step 6), part 2c-1 (step 7 and the corrected oracle),
-part 2c-2 (the correctly rounded primitives), part 2c-3 (their dense MPFR sweep) and part 3a (step 8's
-three-target baselines and `scripts/gates.sh`, step 9's probes 1–4, 8 and 12).
+part 2c-2 (the correctly rounded primitives), part 2c-3 (their dense MPFR sweep), part 3a (step 8's
+three-target baselines and `scripts/gates.sh`, step 9's probes 1–4, 8 and 12) and part 3b (probes 6, 7, 10 and 11,
+the profiles, and step 10's upstream drafts). M0 is complete.
 
 ### Added
 
@@ -151,12 +152,56 @@ three-target baselines and `scripts/gates.sh`, step 9's probes 1–4, 8 and 12).
 - **dist/rasayan.cyr** — the `[lib]` bundle (`cyrius distlib --all`), from M0 part 2c-2: the
   constants, the correctly rounded primitives and the table data; CI checks it is current
   (`cyrius distlib --check`)
+- **src/fmtf.cyr** (M0 part 3b; [ADR 0004](docs/adr/0004-serde-compatible-json.md) amendment) — the shortest-digit
+  f64 printer in serde_json's and Rust's Display forms, vendored from impetus (commit `809ea0f`) by ushma's mechanical
+  rule with `_ry_` names; `scripts/vendor_fmtf.py` writes it and `--check-ushma` proves it is ushma's copy renamed
+  (a gates.sh step). In `[lib]` after `src/mathx.cyr`, so `dist/rasayan.cyr` gains a requires block
+  (`include "lib/str.cyr"`) and a sidecar, `dist/rasayan.deps`
+- **dist/rasayan-mcp.cyr, dist/rasayan-ai.cyr** (M0 part 3b) — the `[lib.mcp]` and `[lib.ai]` bundles and their
+  sidecars: `[lib]`'s modules (and `src/ai_data.cyr` in `[lib.ai]`) until `src/mcp.cyr` and `src/ai.cyr` join at M8
+- **scripts/probes** (M0 part 3b; `docs/development/port-parity.md` §3):
+  - `p6_bote.cyr` + `p6_compare.py` + the oracle bin `probe_mcp`: `rasayan_kinetics` registered on bote 3.8.15's core
+    profile as Rust registers it, its `michaelis_menten` handler transcribed; against Rust's `create_dispatcher()` on
+    19 requests, every `tools/call` payload (13) and the 1,343-byte inputSchema byte-identical on x86_64 ELF,
+    aarch64 and PE; Rust bote 0.92 lists its tools in a random order (64 orders in 64 dispatchers); a round trip
+    14.8 µs and 1,880 B of process heap (measured);
+  - `p7_hoosh.cyr` + `p7_hoosh_stub.py` + `p7_compare.py` + the oracle bin `probe_ai`: hoosh 2.12.3 (read from its
+    source) serves the hoosh 1.3 client's three paths and fields unchanged; the Cyrius requests on sandhi reproduce
+    the Rust bodies byte for byte (6 of 6) with the same Content-Type and Accept, and the answers map identically (8
+    of 8), against loopback stubs only;
+  - `p10_manifest.sh` + `p10_manifest/`: the manifest, the three bundles and a consumer of each on three targets —
+    a core consumer pulls neither bote nor sandhi; a bote-core consumer cannot build for PE (bote's graph brings
+    `lib/majra.cyr`, which has no PE futex — a recorded constraint of the `-mcp` bundle);
+  - `p11_json.cyr` + the oracle bin `probe_json`: 1,234 serde_json documents of nine rasayan types rewritten byte for
+    byte by hand-written writers on `src/fmtf.cyr` and read back by bayan (all but 2, a usize ≥ 2⁶³); fmtf matches
+    serde_json and Display on all 330,628 doubles of the sweep, bayan's printer differs on 18,350; a control build
+    must fail. `run.sh --gate` runs all four (p6 on three targets, p11 on ELF and PE)
+- **docs/development/upstream/** (M0 step 10) — filed 2026-11-16 into each owning repository (folded stdlib modules to their own repos, not cyrius; uncommitted there), in each target's issue format:
+  4 new issues (cyrius: an unlisted stdlib include compiles the toolchain's copy unvendored and unlocked; `if (x)` on
+  an f64 is not diagnosed; the exponent literal's diagnostics never say "exponent"; the guide's 6.6.10 compare note
+  is stale), each with a repro that exits 1 at 6.7.18; 7
+  addenda to open issues (cyrius f64 min/max and `vec_push` / `str_builder` aborts, ganita's correctly rounded tier,
+  sakshi's span level, bayan's i64 range and printer, hoosh's client bundle)
 - **tests/rasayan.bcyr** — benchmarks of the four primitives beside the stdlib functions they replace
   (x86_64, per call: `_ry_cr_exp` 46 ns vs the x87 `f64_exp` 17, `_ry_cr_ln` 56 vs `f64_ln` 38,
   `_ry_cr_expm1` 54 vs `_gn_expm1` 85, `_ry_cr_pow` 149 vs `ganita_f64_pow` 209; measured, not gated)
 
 ### Changed
 
+- **cyrius.cyml** (M0 part 3b) — `sakshi` and `log` in `[deps] stdlib` (vendored and locked; part 3a's probe 8 had
+  compiled the toolchain's sakshi unvendored); the optional `[deps.bote]` (tag 3.8.15, `dist/bote-core.cyr`) behind
+  `[features] mcp = ["bote"]`, which `cyrius deps --features mcp` vendors and locks with bote's libro, majra, patra
+  and sigil (`cyrius.lock` 66 rows, 5 commits); `[lib.mcp]` and `[lib.ai]`. `deps --locked` is clean.
+- **ADR 0002** (M0 part 3b) — rows 5 and 6 filled from probe 7 (a synchronous sandhi client with explicit deadlines;
+  no hoosh API mapping needed), rows 11–13 from probe 6 (bote 3.8.15's `tools/list`, `tools/call` and error framing
+  against Rust bote 0.92's); **ADR 0004** amended from probe 11 (the vendored printer, `null` for non-finite f64s,
+  exact reads, usize ≥ 2⁶³, non-aborting writers).
+- **scripts/oracle** (M0 part 3b) — the probe bins `probe_mcp`, `probe_ai` and `probe_json`; bote 0.92, hoosh 1.3,
+  serde, serde_json and tokio named as direct dependencies at exactly the versions and features the oracle already
+  resolves (the lockfile gains only the edges; the oracle's build is unchanged).
+- **scripts/gates.sh, scripts/probes/run.sh** (M0 part 3b) — `vendor_fmtf.py --check-ushma`, `distlib --check` over
+  the three bundles, fmt/lint over `scripts/probes/*/`, probes 6, 7, 10 and 11 in the gate (a truncated wine run is
+  re-run once, and says so). The whole gate: 144 s, all green.
 - **CLAUDE.md / ADR 0002** — rules from the M0 part 3a probes: level-gated event helpers instead of
   spans (row 7), `Vec` results into caller buffers with `Ok(count)` and no `vec_push` (row 3), the
   producer probe as a frame copy, algebraically equal rewrites are not transcriptions, `gates.sh` as

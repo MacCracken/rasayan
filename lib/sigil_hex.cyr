@@ -1,0 +1,107 @@
+# hex.cyr — hex encoding and decoding
+
+# ================================================================
+# Hex encode: bytes -> lowercase hex C-string
+# ================================================================
+
+# Encodes `len` raw bytes as a freshly-allocated, NUL-terminated
+# lowercase hex C-string (2*len + 1 bytes). Returns the string pointer.
+fn hex_encode(bytes, len): i64 {
+    var out = alloc(len * 2 + 1);
+    var i = 0;
+    while (i < len) {
+        var b = load8(bytes + i) & 0xFF;
+        var hi = (b >> 4) & 0xF;
+        var lo = b & 0xF;
+        if (hi < 10) { store8(out + i * 2, 48 + hi); }
+        else { store8(out + i * 2, 87 + hi); }
+        if (lo < 10) { store8(out + i * 2 + 1, 48 + lo); }
+        else { store8(out + i * 2 + 1, 87 + lo); }
+        i = i + 1;
+    }
+    store8(out + len * 2, 0);
+    return out;
+}
+
+# ================================================================
+# Hex decode: hex C-string + length -> raw bytes
+# ================================================================
+
+fn _hex_nibble(c): i64 {
+    if (c >= 48) { if (c <= 57) { return c - 48; } }
+    if (c >= 97) { if (c <= 102) { return c - 87; } }
+    if (c >= 65) { if (c <= 70) { return c - 55; } }
+    return (0 - 1);
+}
+
+fn _hex_is_valid_char(c): i64 {
+    if (c >= 48) { if (c <= 57) { return 1; } }
+    if (c >= 97) { if (c <= 102) { return 1; } }
+    if (c >= 65) { if (c <= 70) { return 1; } }
+    return 0;
+}
+
+# Returns 1 if hex_str is a valid even-length hex C-string of hex_len chars.
+fn hex_is_valid(hex_str, hex_len): i64 {
+    if (hex_len == 0) { return 0; }
+    if ((hex_len & 1) == 1) { return 0; }
+    var i = 0;
+    while (i < hex_len) {
+        if (_hex_is_valid_char(load8(hex_str + i) & 0xFF) == 0) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# Decode hex to bytes. Returns 0 (null) on invalid input
+# (odd length, non-hex char). Caller MUST null-check.
+fn hex_decode(hex_str, hex_len): i64 {
+    if ((hex_len & 1) == 1) { return 0; }
+    var blen = hex_len / 2;
+    if (blen == 0) { return 0; }
+    var out = alloc(blen);
+    if (hex_decode_into(hex_str, hex_len, out) == 0) { return 0; }
+    return out;
+}
+
+# Alloc-free variant of hex_decode (3.2.0). Writes `hex_len/2`
+# bytes into `out` and returns 1 on success, 0 if `hex_len` is
+# odd, zero, or any character is not a valid hex nibble. Caller
+# MUST size `out` to at least `hex_len / 2` bytes.
+#
+# Same input validation surface as hex_decode but no allocation —
+# safe to call from a parallel-batch worker body where the
+# bump-pointer allocator can't be touched (CLAUDE.md quirk #7).
+fn hex_decode_into(hex_str, hex_len, out): i64 {
+    if ((hex_len & 1) == 1) { return 0; }
+    var blen = hex_len / 2;
+    if (blen == 0) { return 0; }
+    var i = 0;
+    while (i < blen) {
+        var hi = _hex_nibble(load8(hex_str + i * 2) & 0xFF);
+        var lo = _hex_nibble(load8(hex_str + i * 2 + 1) & 0xFF);
+        if (hi < 0) { return 0; }
+        if (lo < 0) { return 0; }
+        store8(out + i, (hi << 4) | lo);
+        i = i + 1;
+    }
+    return 1;
+}
+
+# ================================================================
+# Convenience: hash bytes to hex string
+# ================================================================
+
+# SHA-256 of `len` bytes, returned as a 64-char lowercase hex C-string.
+fn sha256_hex(data, len): i64 {
+    var digest[32];
+    sha256(data, len, &digest);
+    return hex_encode(&digest, 32);
+}
+
+# SHA-512 of `len` bytes, returned as a 128-char lowercase hex C-string.
+fn sha512_hex(data, len): i64 {
+    var digest[64];
+    sha512(data, len, &digest);
+    return hex_encode(&digest, 64);
+}

@@ -1,0 +1,424 @@
+# sha256.cyr — FIPS 180-4 SHA-256 implementation
+# All arithmetic masked to 32 bits. Working state is per-call
+# (function-local) so concurrent workers don't race; the round
+# constants K[0..63] are read-only after init and remain shared.
+#
+# Historical note: 2.x and 3.0–3.2 lifted the round state into
+# module globals as a cycc 3 local-clobbering workaround
+# (CLAUDE.md quirk #1). 3.3's empirical probe
+# (tests/tcyr/sha256_locals_probe.tcyr) confirmed cycc 6.0.1
+# preserves locals across the helper calls, unblocking the
+# refactor and the mutex-drop on the parallel-verify path.
+#
+# `sha256_transform` dispatches to the SHA-NI hardware path via
+# `sha_ni_available()` / `sha256_transform_ni()`; pull the dispatch
+# infrastructure in so single-file consumers (test harnesses that
+# include only `src/sha256.cyr`) link cleanly.
+
+#ifndef _SIGIL_SHA_NI_INCLUDED
+include "src/sha_ni.cyr"
+#endif
+
+var MASK32 = 0xFFFFFFFF;
+
+# ================================================================
+# Bitwise helpers (32-bit)
+# ================================================================
+
+# 32-bit circular right rotation of `x` by `n` bits (result masked
+# to 32 bits). FIPS 180-4 §3.2 ROTR^n.
+fn rotr32(x, n): i64 {
+    return ((x >> n) | ((x << (32 - n)) & MASK32)) & MASK32;
+}
+
+# 32-bit logical right shift of `x` by `n` bits. FIPS 180-4 §3.2 SHR^n.
+fn shr32(x, n): i64 {
+    return (x >> n) & MASK32;
+}
+
+# ================================================================
+# SHA-256 sub-functions
+# ================================================================
+
+# SHA-256 Ch(x,y,z) choice function (FIPS 180-4 §4.1.2).
+fn sha256_ch(x, y, z): i64 {
+    return ((x & y) ^ ((x ^ MASK32) & z)) & MASK32;
+}
+
+# SHA-256 Maj(x,y,z) majority function (FIPS 180-4 §4.1.2).
+fn sha256_maj(x, y, z): i64 {
+    return ((x & y) ^ (x & z) ^ (y & z)) & MASK32;
+}
+
+# SHA-256 big-sigma-0 (Σ0) of `x` (FIPS 180-4 §4.1.2).
+fn sha256_bsig0(x): i64 {
+    return (rotr32(x, 2) ^ rotr32(x, 13) ^ rotr32(x, 22)) & MASK32;
+}
+
+# SHA-256 big-sigma-1 (Σ1) of `x` (FIPS 180-4 §4.1.2).
+fn sha256_bsig1(x): i64 {
+    return (rotr32(x, 6) ^ rotr32(x, 11) ^ rotr32(x, 25)) & MASK32;
+}
+
+# SHA-256 small-sigma-0 (σ0) of `x` (FIPS 180-4 §4.1.2).
+fn sha256_ssig0(x): i64 {
+    return (rotr32(x, 7) ^ rotr32(x, 18) ^ shr32(x, 3)) & MASK32;
+}
+
+# SHA-256 small-sigma-1 (σ1) of `x` (FIPS 180-4 §4.1.2).
+fn sha256_ssig1(x): i64 {
+    return (rotr32(x, 17) ^ rotr32(x, 19) ^ shr32(x, 10)) & MASK32;
+}
+
+# ================================================================
+# Round constants K[0..63] and initialization
+# ================================================================
+
+var _sha256_K = 0;
+var _sha256_inited = 0;   # 0 / 1 building / 2 published (_sigil_once_*)
+
+# Lazily allocates and fills the 64-entry SHA-256 round-constant table
+# K[0..63] (FIPS 180-4 §4.2.2). Idempotent — runs the fill once per
+# process; subsequent calls return immediately. Thread-safe since 3.13.6:
+# concurrent first callers wait for one fill. Returns 0.
+fn sha256_global_init(): i64 {
+    if (atomic_load(&_sha256_inited) == 2) { return _sigil_once_acquired(); }
+    if (_sigil_once_claim(&_sha256_inited) == 0) { return 0; }
+
+    _sha256_K = alloc(512);
+    store64(_sha256_K + 0, 0x428a2f98);
+    store64(_sha256_K + 8, 0x71374491);
+    store64(_sha256_K + 16, 0xb5c0fbcf);
+    store64(_sha256_K + 24, 0xe9b5dba5);
+    store64(_sha256_K + 32, 0x3956c25b);
+    store64(_sha256_K + 40, 0x59f111f1);
+    store64(_sha256_K + 48, 0x923f82a4);
+    store64(_sha256_K + 56, 0xab1c5ed5);
+    store64(_sha256_K + 64, 0xd807aa98);
+    store64(_sha256_K + 72, 0x12835b01);
+    store64(_sha256_K + 80, 0x243185be);
+    store64(_sha256_K + 88, 0x550c7dc3);
+    store64(_sha256_K + 96, 0x72be5d74);
+    store64(_sha256_K + 104, 0x80deb1fe);
+    store64(_sha256_K + 112, 0x9bdc06a7);
+    store64(_sha256_K + 120, 0xc19bf174);
+    store64(_sha256_K + 128, 0xe49b69c1);
+    store64(_sha256_K + 136, 0xefbe4786);
+    store64(_sha256_K + 144, 0x0fc19dc6);
+    store64(_sha256_K + 152, 0x240ca1cc);
+    store64(_sha256_K + 160, 0x2de92c6f);
+    store64(_sha256_K + 168, 0x4a7484aa);
+    store64(_sha256_K + 176, 0x5cb0a9dc);
+    store64(_sha256_K + 184, 0x76f988da);
+    store64(_sha256_K + 192, 0x983e5152);
+    store64(_sha256_K + 200, 0xa831c66d);
+    store64(_sha256_K + 208, 0xb00327c8);
+    store64(_sha256_K + 216, 0xbf597fc7);
+    store64(_sha256_K + 224, 0xc6e00bf3);
+    store64(_sha256_K + 232, 0xd5a79147);
+    store64(_sha256_K + 240, 0x06ca6351);
+    store64(_sha256_K + 248, 0x14292967);
+    store64(_sha256_K + 256, 0x27b70a85);
+    store64(_sha256_K + 264, 0x2e1b2138);
+    store64(_sha256_K + 272, 0x4d2c6dfc);
+    store64(_sha256_K + 280, 0x53380d13);
+    store64(_sha256_K + 288, 0x650a7354);
+    store64(_sha256_K + 296, 0x766a0abb);
+    store64(_sha256_K + 304, 0x81c2c92e);
+    store64(_sha256_K + 312, 0x92722c85);
+    store64(_sha256_K + 320, 0xa2bfe8a1);
+    store64(_sha256_K + 328, 0xa81a664b);
+    store64(_sha256_K + 336, 0xc24b8b70);
+    store64(_sha256_K + 344, 0xc76c51a3);
+    store64(_sha256_K + 352, 0xd192e819);
+    store64(_sha256_K + 360, 0xd6990624);
+    store64(_sha256_K + 368, 0xf40e3585);
+    store64(_sha256_K + 376, 0x106aa070);
+    store64(_sha256_K + 384, 0x19a4c116);
+    store64(_sha256_K + 392, 0x1e376c08);
+    store64(_sha256_K + 400, 0x2748774c);
+    store64(_sha256_K + 408, 0x34b0bcb5);
+    store64(_sha256_K + 416, 0x391c0cb3);
+    store64(_sha256_K + 424, 0x4ed8aa4a);
+    store64(_sha256_K + 432, 0x5b9cca4f);
+    store64(_sha256_K + 440, 0x682e6ff3);
+    store64(_sha256_K + 448, 0x748f82ee);
+    store64(_sha256_K + 456, 0x78a5636f);
+    store64(_sha256_K + 464, 0x84c87814);
+    store64(_sha256_K + 472, 0x8cc70208);
+    store64(_sha256_K + 480, 0x90befffa);
+    store64(_sha256_K + 488, 0xa4506ceb);
+    store64(_sha256_K + 496, 0xbef9a3f7);
+    store64(_sha256_K + 504, 0xc67178f2);
+
+    _sigil_once_publish(&_sha256_inited);
+    return 0;
+}
+
+# ================================================================
+# SHA-256 context
+# ================================================================
+# Layout (144 bytes):
+#   +0   h0..h7   (8 x 8 = 64 bytes) hash state words
+#   +64  buf      (64 bytes) partial block buffer
+#   +128 buf_len  (8 bytes)
+#   +136 total_len (8 bytes)
+
+# Allocates a 144-byte SHA-256 context from the freelist and seeds it
+# with the FIPS 180-4 initial hash values. Returns the context pointer;
+# free with fl_free after sha256_finalize.
+fn sha256_init(): i64 {
+    var ctx = fl_alloc(144);
+    return sha256_init_into(ctx);
+}
+
+# Alloc-free variant of sha256_init (3.2.0). Initialises an
+# existing 144-byte context buffer with the FIPS 180-4 §5.3.3
+# initial hash values and zeroes the block buffer + counters.
+# Caller MUST size `ctx` to at least 144 bytes.
+#
+# Used by `hash_file_into` and the parallel-batch worker scratch
+# so a SHA-256 streaming hash can run without touching the
+# freelist allocator — `fl_alloc` mutates shared state and is
+# unsafe under concurrent fan-out (CLAUDE.md quirk #7).
+fn sha256_init_into(ctx): i64 {
+    sha256_global_init();
+    store64(ctx, 0x6a09e667);
+    store64(ctx + 8, 0xbb67ae85);
+    store64(ctx + 16, 0x3c6ef372);
+    store64(ctx + 24, 0xa54ff53a);
+    store64(ctx + 32, 0x510e527f);
+    store64(ctx + 40, 0x9b05688c);
+    store64(ctx + 48, 0x1f83d9ab);
+    store64(ctx + 56, 0x5be0cd19);
+    memset(ctx + 64, 0, 64);
+    store64(ctx + 128, 0);
+    store64(ctx + 136, 0);
+    return ctx;
+}
+
+# ================================================================
+# Compression function — per-call working state (3.3 refactor)
+# ================================================================
+# All working state (a..hv, t1, t2, i, W) lives in function-local
+# variables. The pre-3.3 module-global pattern was a cycc 3
+# local-clobbering workaround that the cycc 6.0.1 codegen no
+# longer needs; verified by tests/tcyr/sha256_locals_probe.tcyr
+# against published FIPS 180-2 vectors and multi-block cross-
+# check against the reference path.
+#
+# Concurrency consequence: this function is now race-free across
+# threads, which unblocks dropping the _sigil_batch_mutex on the
+# parallel-verify hot path. Read-only globals (_sha256_K) remain
+# shared and safe under concurrent read.
+
+# Compresses one 64-byte message block held in `ctx`'s block buffer
+# into the running hash state (FIPS 180-4 §6.2.2). Dispatches to the
+# SHA-NI hardware path when available, else the software round loop.
+# Returns 0.
+fn sha256_transform(ctx): i64 {
+    # SHA-NI dispatch wire-point (2.9.2 foundation).
+    # When sha256_transform_ni returns 0 it has fully transformed
+    # the block and we return early. The 2.9.2 stub returns -1 so
+    # this falls through to the software path on every host; 2.9.3
+    # replaces the stub body with a byte-encoded SHA-NI compress.
+    if (sha_ni_available() == 1) {
+        if (sha256_transform_ni(ctx) == 0) { return 0; }
+    }
+
+    # Message schedule, banked per thread (3.6): `var W[N]` is a
+    # static function-scope global (CLAUDE.md quirk #1), so concurrent
+    # batch workers must each use their own lane to avoid stomping the
+    # schedule mid-compress. `Wb` is this thread's 512-byte lane.
+    var W[32768];          # 64 words × 8 bytes × SIGIL_CRYPTO_BANKS
+    var Wb = &W + cbank() * 512;
+    var buf = ctx + 64;
+
+    # Prepare message schedule W[0..15] from block (big-endian).
+    var i = 0;
+    while (i < 16) {
+        var off = i * 4;
+        var w = ((load8(buf + off) & 0xFF) << 24)
+        | ((load8(buf + off + 1) & 0xFF) << 16)
+        | ((load8(buf + off + 2) & 0xFF) << 8)
+        | (load8(buf + off + 3) & 0xFF);
+        store64(Wb + i * 8, w & MASK32);
+        i = i + 1;
+    }
+
+    # Extend W[16..63].
+    i = 16;
+    while (i < 64) {
+        var w16 = load64(Wb + (i - 16) * 8);
+        var w15 = load64(Wb + (i - 15) * 8);
+        var w7 = load64(Wb + (i - 7) * 8);
+        var w2 = load64(Wb + (i - 2) * 8);
+        var s0 = sha256_ssig0(w15);
+        var s1 = sha256_ssig1(w2);
+        store64(Wb + i * 8, (w16 + s0 + w7 + s1) & MASK32);
+        i = i + 1;
+    }
+
+    # Initialize working variables.
+    var a = load64(ctx);
+    var b = load64(ctx + 8);
+    var c = load64(ctx + 16);
+    var d = load64(ctx + 24);
+    var e = load64(ctx + 32);
+    var f = load64(ctx + 40);
+    var g = load64(ctx + 48);
+    var hv = load64(ctx + 56);
+
+    # 64 rounds.
+    i = 0;
+    while (i < 64) {
+        var t1 = hv;
+        t1 = (t1 + sha256_bsig1(e)) & MASK32;
+        t1 = (t1 + sha256_ch(e, f, g)) & MASK32;
+        t1 = (t1 + load64(_sha256_K + i * 8)) & MASK32;
+        t1 = (t1 + load64(Wb + i * 8)) & MASK32;
+
+        var t2 = sha256_bsig0(a);
+        t2 = (t2 + sha256_maj(a, b, c)) & MASK32;
+
+        hv = g;
+        g = f;
+        f = e;
+        e = (d + t1) & MASK32;
+        d = c;
+        c = b;
+        b = a;
+        a = (t1 + t2) & MASK32;
+        i = i + 1;
+    }
+
+    # Add compressed chunk to current hash value.
+    store64(ctx, (load64(ctx) + a) & MASK32);
+    store64(ctx + 8, (load64(ctx + 8) + b) & MASK32);
+    store64(ctx + 16, (load64(ctx + 16) + c) & MASK32);
+    store64(ctx + 24, (load64(ctx + 24) + d) & MASK32);
+    store64(ctx + 32, (load64(ctx + 32) + e) & MASK32);
+    store64(ctx + 40, (load64(ctx + 40) + f) & MASK32);
+    store64(ctx + 48, (load64(ctx + 48) + g) & MASK32);
+    store64(ctx + 56, (load64(ctx + 56) + hv) & MASK32);
+    return 0;
+}
+
+# ================================================================
+# Update — feed data into the hash context
+# ================================================================
+
+# Feeds `len` bytes at `data` into the streaming hash context `ctx`,
+# buffering any partial trailing block and compressing full 64-byte
+# blocks as they accumulate. May be called repeatedly. Returns 0.
+fn sha256_update(ctx, data, len): i64 {
+    var buf_len = load64(ctx + 128);
+    var total = load64(ctx + 136);
+    total = total + len;
+    store64(ctx + 136, total);
+
+    var pos = 0;
+
+    # Fill partial buffer first
+    if (buf_len > 0) {
+        var need = 64 - buf_len;
+        if (len < need) {
+            memcpy(ctx + 64 + buf_len, data, len);
+            store64(ctx + 128, buf_len + len);
+            return 0;
+        }
+        memcpy(ctx + 64 + buf_len, data, need);
+        sha256_transform(ctx);
+        pos = need;
+        buf_len = 0;
+    }
+
+    # Process full 64-byte blocks
+    while (pos + 64 <= len) {
+        memcpy(ctx + 64, data + pos, 64);
+        sha256_transform(ctx);
+        pos = pos + 64;
+    }
+
+    # Buffer remaining bytes
+    var remaining = len - pos;
+    if (remaining > 0) {
+        memcpy(ctx + 64, data + pos, remaining);
+    }
+    store64(ctx + 128, remaining);
+    return 0;
+}
+
+# ================================================================
+# Finalize — pad and produce 32-byte digest
+# ================================================================
+
+# Applies FIPS 180-4 §5.1.1 padding (0x80, zero fill, 64-bit big-endian
+# length), runs the final compression, and writes the 32-byte digest to
+# `out` in big-endian order. Consumes `ctx` (caller frees it). Returns 0.
+fn sha256_finalize(ctx, out): i64 {
+    var buf_len = load64(ctx + 128);
+    var total_bits = load64(ctx + 136) * 8;
+
+    # Append 0x80 byte
+    store8(ctx + 64 + buf_len, 0x80);
+    buf_len = buf_len + 1;
+
+    # If buffer > 56 bytes, pad and process extra block
+    if (buf_len > 56) {
+        memset(ctx + 64 + buf_len, 0, 64 - buf_len);
+        sha256_transform(ctx);
+        buf_len = 0;
+    }
+    memset(ctx + 64 + buf_len, 0, 56 - buf_len);
+
+    # Append total length as 64-bit big-endian at bytes 56-63
+    store8(ctx + 64 + 56, (total_bits >> 56) & 0xFF);
+    store8(ctx + 64 + 57, (total_bits >> 48) & 0xFF);
+    store8(ctx + 64 + 58, (total_bits >> 40) & 0xFF);
+    store8(ctx + 64 + 59, (total_bits >> 32) & 0xFF);
+    store8(ctx + 64 + 60, (total_bits >> 24) & 0xFF);
+    store8(ctx + 64 + 61, (total_bits >> 16) & 0xFF);
+    store8(ctx + 64 + 62, (total_bits >> 8) & 0xFF);
+    store8(ctx + 64 + 63, total_bits & 0xFF);
+
+    sha256_transform(ctx);
+
+    # Write 32-byte digest in big-endian from h0-h7
+    var di = 0;
+    while (di < 8) {
+        var word = load64(ctx + di * 8);
+        store8(out + di * 4, (word >> 24) & 0xFF);
+        store8(out + di * 4 + 1, (word >> 16) & 0xFF);
+        store8(out + di * 4 + 2, (word >> 8) & 0xFF);
+        store8(out + di * 4 + 3, word & 0xFF);
+        di = di + 1;
+    }
+    return 0;
+}
+
+# ================================================================
+# Convenience — hash data in one shot
+# ================================================================
+
+# One-shot SHA-256: hashes `len` bytes at `data` and writes the 32-byte
+# digest to `out`. Runs on a banked per-cbank()-lane context — no allocator
+# call — and zeroes it before returning (3.13.11), as sha512() has since
+# 3.13.1. Returns 0.
+fn sha256(data, len, out): i64 {
+    # Banked one-shot (3.9.6): the ctx was `fl_alloc`'d, but `fl_alloc`
+    # is NOT thread-safe (quirk #7), so concurrent one-shot hashes (TLS
+    # transcript / HKDF / HMAC long-key) raced the freelist — a
+    # concurrent-TLS-handshake crash site. Use a per-worker banked
+    # static ctx + the `_into` variant; no allocator touched.
+    # The ctx is wiped (3.13.11): its final state IS the digest and its block
+    # buffer the message tail, so a secret input — an HMAC key longer than the
+    # block, hashed down here — stayed in this dead frame.
+    var bk = cbank();
+    var ctx[9216];   var ctxb = &ctx + bk * 144;   # 144 * SIGIL_CRYPTO_BANKS
+    sha256_init_into(ctxb);
+    sha256_update(ctxb, data, len);
+    sha256_finalize(ctxb, out);
+    _sigil_wipe64(ctxb, 144);
+    return 0;
+}

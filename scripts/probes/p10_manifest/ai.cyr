@@ -1,0 +1,18 @@
+# Probe 10 (port plan P5, P8, §4 step 9): the [lib.ai] stand-in, in the probe's scratch copy only (src/ai.cyr is
+# M8's). A GET of hoosh's /v1/health on sandhi, as probe 7 settled it (Accept: */*, connect, total and read
+# deadlines), returning the HTTP status (0 with no response).
+
+#must_use
+fn ry_p10_ai(base): i64 {
+    var ub = str_builder_new();
+    str_builder_add_cstr(ub, base);
+    str_builder_add_cstr(ub, "/v1/health");
+    var h = sandhi_headers_new();
+    sandhi_headers_set(h, "Accept", "*/*");
+    var o = sandhi_http_options_new();
+    sandhi_http_options_connect_ms(o, 10000);
+    sandhi_http_options_total_ms(o, 30000);
+    sandhi_http_options_read_ms(o, 30000);
+    var r = sandhi_http_get_opts(str_data(str_builder_build(ub)), h, o);
+    return sandhi_http_status(r);
+}

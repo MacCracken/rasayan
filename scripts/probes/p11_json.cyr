@@ -1,0 +1,738 @@
+# Probe 11 (port plan P7, ADR 0004, §4 step 9): serde_json's documents for a sample of rasayan's serde types,
+# written again byte for byte in Cyrius and read back with bayan's value tree. The documents and their values come
+# from the oracle bin probe_json (scripts/oracle/src/bin/probe_json.rs -> build/probe-json/):
+#
+# - docs.tsv, `type case leaves json`: for each document, a hand-written writer per type (the field names in Rust's
+#   declaration order, as M1+'s codecs will write them) turns the leaf stream (serde's own walk of the value: f64
+#   bits, integers, chars, strings, None, enum indices, struct and array marks) into JSON text, f64s through
+#   src/fmtf.cyr's serde_json form (`null` for NaN and ±inf, as serde_json writes them) and strings escaped as
+#   serde_json escapes; the text must equal serde_json's byte for byte. Then bayan 1.11.1's `bayan_json_v_parse_buf`
+#   reads serde_json's text, and the tree must hold the leaves: every f64 bit for bit (a non-finite one as null),
+#   strings and chars decoded byte for byte, integers, nulls, enum names.
+# - floats.tsv, `bits json display`: src/fmtf.cyr's serde_json form and Display form against serde_json's and Rust's
+#   text; `bayan_f64_parse` of serde_json's text against the bits; bayan's own printer (`bayan_f64_to_json`) against
+#   serde_json's text, measured.
+#
+# Prints a summary line per check; exits 1 when a writer or the float forms differ, or bayan misreads a document it
+# accepts (a document it refuses is counted and listed: port-parity.md §3, probe 11). The control build (-D P11_ALT)
+# writes each f64 member with bayan's own printer, and must fail.
+#
+# lib/bayan.cyr is vendored and locked through bote's graph (`cyrius deps --features mcp`) until M1's src/json.cyr adds
+# bayan to [deps] stdlib.
+#
+#   cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml --bin probe_json
+#   cyrius build scripts/probes/p11_json.cyr build/probes/p11_json && ./build/probes/p11_json
+
+include "lib/bayan.cyr"
+include "src/fmtf.cyr"
+include "scripts/probes/probe_io.cyr"
+
+# ── the line cursor ─────────────────────────────────────────────────────────────────────────────────────────────
+
+# The current leaf stream (the third field of a docs.tsv line): [_lv_at, _lv_end).
+var _lv_at = 0;
+var _lv_end = 0;
+# The writer's verdict on the current document: 0 while the leaves fit the type's shape.
+var _lv_bad = 0;
+
+# The next tab- or newline-terminated field of the file: its start, its length in *lenp; -1 at the end.
+fn _p11_field(lenp): i64 {
+    if (_pio_at >= _pio_len) { return 0 - 1; }
+    var s = _pio_at;
+    while (_pio_at < _pio_len) {
+        var c = load8(_pio_buf + _pio_at);
+        if (c == 9 || c == 10) { break; }
+        _pio_at = _pio_at + 1;
+    }
+    store64(lenp, _pio_at - s);
+    if (_pio_at < _pio_len) { _pio_at = _pio_at + 1; }
+    return s;
+}
+
+# The next leaf token: its start (in the file buffer), its length in *lenp; -1 when the stream is exhausted.
+fn _lv_tok(lenp): i64 {
+    while (_lv_at < _lv_end && load8(_pio_buf + _lv_at) == 32) { _lv_at = _lv_at + 1; }
+    if (_lv_at >= _lv_end) {
+        store64(lenp, 0);
+        return 0 - 1;
+    }
+    var s = _lv_at;
+    while (_lv_at < _lv_end && load8(_pio_buf + _lv_at) != 32) { _lv_at = _lv_at + 1; }
+    store64(lenp, _lv_at - s);
+    return s;
+}
+
+# The hex digit c's value.
+#must_use
+fn _p11_hexd(c): i64 {
+    if (c >= 97) { return c - 87; }
+    return c - 48;
+}
+
+# The next token, which must start with `tag` (one byte) then `:`; returns the payload's start and its length in
+# *lenp, or -1 (and marks the document bad).
+fn _lv_take(tag, lenp): i64 {
+    var tl[8];
+    var p = _lv_tok(&tl);
+    var n = load64(&tl);
+    if (p < 0 || n < 2 || load8(_pio_buf + p) != tag || load8(_pio_buf + p + 1) != 58) {
+        _lv_bad = 1;
+        store64(lenp, 0);
+        return 0 - 1;
+    }
+    store64(lenp, n - 2);
+    return p + 2;
+}
+
+# The next token must be the one-byte mark c (`{`, `}`, `[`, `]`).
+fn _lv_mark(c): i64 {
+    var tl[8];
+    var p = _lv_tok(&tl);
+    if (p < 0 || load64(&tl) != 1 || load8(_pio_buf + p) != c) { _lv_bad = 1; }
+    return 0;
+}
+
+# ── the writers (what M1+'s JSON codecs do, on the leaf stream) ─────────────────────────────────────────────────
+
+# Appends `,"name":` (`"name":` for the first member).
+fn _w_key(sb, name, first): i64 {
+    if (first == 0) { str_builder_putc(sb, 44); }
+    str_builder_putc(sb, 34);
+    str_builder_add_cstr(sb, name);
+    str_builder_add_cstr(sb, "\":");
+    return 0;
+}
+
+# The next leaf as an f64 (its bits), or 0 with the document marked bad.
+#must_use
+fn _lv_f64(): i64 {
+    var pl[8];
+    var p = _lv_take(102, &pl);
+    if (p < 0 || load64(&pl) != 16) {
+        _lv_bad = 1;
+        return 0;
+    }
+    var v = 0;
+    var k = 0;
+    while (k < 16) {
+        v = (v << 4) | _p11_hexd(load8(_pio_buf + p + k));
+        k = k + 1;
+    }
+    return v;
+}
+
+# Appends the n bytes at p to the builder.
+fn _p11_put(sb, p, n): i64 {
+    var k = 0;
+    while (k < n) {
+        str_builder_putc(sb, load8(p + k));
+        k = k + 1;
+    }
+    return 0;
+}
+
+# The f64 with these bits.
+#must_use
+fn _p11_f(bits): f64 {
+    var x: f64 = 0.0;
+    store64(&x, bits);
+    return x;
+}
+
+# Appends an f64 member: serde_json's form, `null` for NaN and ±inf. The control build (-D P11_ALT) writes the
+# member with bayan's own printer instead, which the comparison must catch.
+fn _w_f64(sb, name, first): i64 {
+    _w_key(sb, name, first);
+    #ifdef P11_ALT
+    var buf[40];
+    var bn = bayan_f64_to_json(_lv_f64(), &buf);
+    _p11_put(sb, &buf, bn);
+    #else
+    var x: f64 = _p11_f(_lv_f64());
+    _ry_fmt_f64_json(sb, x);
+    #endif
+    return 0;
+}
+
+# Appends the hex-encoded UTF-8 bytes at p (2n hex digits) as a JSON string, escaped as serde_json escapes: `"` and
+# `\`, `\n` `\r` `\t` `\b` `\f`, other bytes below 0x20 as `\u00xx`; everything else (DEL and UTF-8 included) raw.
+fn _w_hexstr(sb, p, n2): i64 {
+    str_builder_putc(sb, 34);
+    var k = 0;
+    while (k + 1 < n2) {
+        var c = (_p11_hexd(load8(_pio_buf + p + k)) << 4) | _p11_hexd(load8(_pio_buf + p + k + 1));
+        if (c == 34) {
+            str_builder_add_cstr(sb, "\\\"");
+        } elif (c == 92) {
+            str_builder_add_cstr(sb, "\\\\");
+        } elif (c == 10) {
+            str_builder_add_cstr(sb, "\\n");
+        } elif (c == 13) {
+            str_builder_add_cstr(sb, "\\r");
+        } elif (c == 9) {
+            str_builder_add_cstr(sb, "\\t");
+        } elif (c == 8) {
+            str_builder_add_cstr(sb, "\\b");
+        } elif (c == 12) {
+            str_builder_add_cstr(sb, "\\f");
+        } elif (c < 32) {
+            var hx = "0123456789abcdef";
+            str_builder_add_cstr(sb, "\\u00");
+            str_builder_putc(sb, load8(hx + (c >> 4)));
+            str_builder_putc(sb, load8(hx + (c & 15)));
+        } else {
+            str_builder_putc(sb, c);
+        }
+        k = k + 2;
+    }
+    str_builder_putc(sb, 34);
+    return 0;
+}
+
+# Appends a string member (`s:`) or a char member (`c:`, a one-char string in serde_json).
+fn _w_str(sb, name, first, tag): i64 {
+    _w_key(sb, name, first);
+    var pl[8];
+    var p = _lv_take(tag, &pl);
+    if (p < 0) { return 0; }
+    _w_hexstr(sb, p, load64(&pl));
+    return 0;
+}
+
+# Appends an unsigned integer member (`u:`), digits as written.
+fn _w_uint(sb, name, first): i64 {
+    _w_key(sb, name, first);
+    var pl[8];
+    var p = _lv_take(117, &pl);
+    if (p < 0) { return 0; }
+    _p11_put(sb, _pio_buf + p, load64(&pl));
+    return 0;
+}
+
+# Appends an Option<f64> member: `null` for None (`n`), else the f64.
+fn _w_opt_f64(sb, name, first): i64 {
+    _w_key(sb, name, first);
+    if (_lv_at < _lv_end) {
+        var save = _lv_at;
+        var tl[8];
+        var p = _lv_tok(&tl);
+        if (p >= 0 && load64(&tl) == 1 && load8(_pio_buf + p) == 110) {
+            str_builder_add_cstr(sb, "null");
+            return 0;
+        }
+        _lv_at = save;
+    }
+    var x: f64 = _p11_f(_lv_f64());
+    _ry_fmt_f64_json(sb, x);
+    return 0;
+}
+
+# A unit enum's variant names, by type: PkaSet, SecondaryStructure, PtmType (declaration order).
+#must_use
+fn _p11_variant(kind, i): i64 {
+    if (kind == 0) {
+        if (i == 0) { return "Lehninger"; }
+        if (i == 1) { return "Bjellqvist"; }
+        if (i == 2) { return "Emboss"; }
+        if (i == 3) { return "Ipc"; }
+        return 0;
+    }
+    if (kind == 1) {
+        if (i == 0) { return "Helix"; }
+        if (i == 1) { return "Sheet"; }
+        if (i == 2) { return "Turn"; }
+        if (i == 3) { return "Coil"; }
+        return 0;
+    }
+    if (i == 0) { return "NGlycosylation"; }
+    if (i == 1) { return "PhosphoSer"; }
+    if (i == 2) { return "PhosphoThr"; }
+    if (i == 3) { return "PhosphoTyr"; }
+    if (i == 4) { return "DisulfideBond"; }
+    if (i == 5) { return "PkaSite"; }
+    if (i == 6) { return "Ck2Site"; }
+    if (i == 7) { return "Myristoylation"; }
+    return 0;
+}
+
+# Appends a unit variant (`e:<index>`) as serde writes it, `"Name"`.
+fn _w_enum(sb, kind): i64 {
+    var pl[8];
+    var p = _lv_take(101, &pl);
+    if (p < 0) { return 0; }
+    var i = 0;
+    var k = 0;
+    while (k < load64(&pl)) {
+        i = (i * 10) + (load8(_pio_buf + p + k) - 48);
+        k = k + 1;
+    }
+    var name = _p11_variant(kind, i);
+    if (name == 0) {
+        _lv_bad = 1;
+        return 0;
+    }
+    str_builder_putc(sb, 34);
+    str_builder_add_cstr(sb, name);
+    str_builder_putc(sb, 34);
+    return 0;
+}
+
+fn _w_enzyme_params(sb): i64 {
+    _lv_mark(123);
+    str_builder_putc(sb, 123);
+    _w_f64(sb, "vmax", 1);
+    _w_f64(sb, "km", 0);
+    _w_f64(sb, "hill_n", 0);
+    _w_f64(sb, "kcat", 0);
+    _lv_mark(125);
+    str_builder_putc(sb, 125);
+    return 0;
+}
+
+fn _w_glycolysis_state(sb): i64 {
+    _lv_mark(123);
+    str_builder_putc(sb, 123);
+    _w_f64(sb, "glucose", 1);
+    _w_f64(sb, "g6p", 0);
+    _w_f64(sb, "f6p", 0);
+    _w_f64(sb, "f16bp", 0);
+    _w_f64(sb, "dhap", 0);
+    _w_f64(sb, "g3p", 0);
+    _w_f64(sb, "bpg13", 0);
+    _w_f64(sb, "pg3", 0);
+    _w_f64(sb, "pg2", 0);
+    _w_f64(sb, "pep", 0);
+    _w_f64(sb, "pyruvate", 0);
+    _lv_mark(125);
+    str_builder_putc(sb, 125);
+    return 0;
+}
+
+fn _w_tca_state(sb): i64 {
+    _lv_mark(123);
+    str_builder_putc(sb, 123);
+    _w_f64(sb, "acetyl_coa", 1);
+    _w_f64(sb, "citrate", 0);
+    _w_f64(sb, "isocitrate", 0);
+    _w_f64(sb, "alpha_kg", 0);
+    _w_f64(sb, "succinyl_coa", 0);
+    _w_f64(sb, "succinate", 0);
+    _w_f64(sb, "fumarate", 0);
+    _w_f64(sb, "malate", 0);
+    _w_f64(sb, "oxaloacetate", 0);
+    _lv_mark(125);
+    str_builder_putc(sb, 125);
+    return 0;
+}
+
+fn _w_network(sb): i64 {
+    _lv_mark(123);
+    str_builder_putc(sb, 123);
+    _w_key(sb, "glycolysis", 1);
+    _w_glycolysis_state(sb);
+    _w_key(sb, "tca", 0);
+    _w_tca_state(sb);
+    _w_key(sb, "etc", 0);
+    _lv_mark(123);
+    str_builder_putc(sb, 123);
+    _w_f64(sb, "pmf", 1);
+    _w_f64(sb, "qh2_fraction", 0);
+    _w_f64(sb, "cytc_reduced", 0);
+    _lv_mark(125);
+    str_builder_putc(sb, 125);
+    _w_key(sb, "beta_ox", 0);
+    _lv_mark(123);
+    str_builder_putc(sb, 123);
+    _w_f64(sb, "acyl_coa", 1);
+    _w_f64(sb, "free_fatty_acid", 0);
+    _lv_mark(125);
+    str_builder_putc(sb, 125);
+    _w_key(sb, "amino_catab", 0);
+    _lv_mark(123);
+    str_builder_putc(sb, 123);
+    _w_f64(sb, "amino_acid_pool", 1);
+    _w_f64(sb, "glutamate", 0);
+    _w_f64(sb, "ammonium", 0);
+    _lv_mark(125);
+    str_builder_putc(sb, 125);
+    _w_f64(sb, "atp", 0);
+    _w_f64(sb, "adp", 0);
+    _w_f64(sb, "nad_ratio", 0);
+    _w_f64(sb, "oxygen", 0);
+    _w_f64(sb, "malonyl_coa", 0);
+    _lv_mark(125);
+    str_builder_putc(sb, 125);
+    return 0;
+}
+
+fn _w_environment(sb): i64 {
+    _lv_mark(123);
+    str_builder_putc(sb, 123);
+    _w_f64(sb, "atp_demand", 1);
+    _w_f64(sb, "plasma_glucose", 0);
+    _w_f64(sb, "plasma_fatty_acids", 0);
+    _w_f64(sb, "plasma_amino_acids", 0);
+    _lv_mark(125);
+    str_builder_putc(sb, 125);
+    return 0;
+}
+
+fn _w_glycolysis_flux(sb): i64 {
+    _lv_mark(123);
+    str_builder_putc(sb, 123);
+    _w_f64(sb, "atp_consumed", 1);
+    _w_f64(sb, "atp_produced", 0);
+    _w_f64(sb, "net_atp", 0);
+    _w_f64(sb, "nadh_produced", 0);
+    _w_f64(sb, "pyruvate_produced", 0);
+    _w_key(sb, "step_rates", 0);
+    _lv_mark(91);
+    str_builder_putc(sb, 91);
+    var i = 0;
+    while (i < 10) {
+        if (i > 0) { str_builder_putc(sb, 44); }
+        var x: f64 = _p11_f(_lv_f64());
+        _ry_fmt_f64_json(sb, x);
+        i = i + 1;
+    }
+    _lv_mark(93);
+    str_builder_putc(sb, 93);
+    _lv_mark(125);
+    str_builder_putc(sb, 125);
+    return 0;
+}
+
+fn _w_amino_acid(sb): i64 {
+    _lv_mark(123);
+    str_builder_putc(sb, 123);
+    _w_str(sb, "code", 1, 99);
+    _w_str(sb, "abbr", 0, 115);
+    _w_str(sb, "name", 0, 115);
+    _w_f64(sb, "mw", 0);
+    _w_f64(sb, "hydrophobicity", 0);
+    _w_opt_f64(sb, "side_chain_pka", 0);
+    _lv_mark(125);
+    str_builder_putc(sb, 125);
+    return 0;
+}
+
+fn _w_ptm_site(sb): i64 {
+    _lv_mark(123);
+    str_builder_putc(sb, 123);
+    _w_uint(sb, "position", 1);
+    _w_str(sb, "residue", 0, 99);
+    _w_key(sb, "ptm_type", 0);
+    _w_enum(sb, 2);
+    _w_str(sb, "motif", 0, 115);
+    _lv_mark(125);
+    str_builder_putc(sb, 125);
+    return 0;
+}
+
+# The writer for type name (p, n); 0 for an unknown type.
+fn _p11_write(sb, p, n): i64 {
+    if (n == 12 && memeq(p, "EnzymeParams", 12) == 1) { return _w_enzyme_params(sb) + 1; }
+    if (n == 15 && memeq(p, "GlycolysisState", 15) == 1) { return _w_glycolysis_state(sb) + 1; }
+    if (n == 18 && memeq(p, "NetworkEnvironment", 18) == 1) { return _w_environment(sb) + 1; }
+    if (n == 16 && memeq(p, "MetabolicNetwork", 16) == 1) { return _w_network(sb) + 1; }
+    if (n == 14 && memeq(p, "GlycolysisFlux", 14) == 1) { return _w_glycolysis_flux(sb) + 1; }
+    if (n == 9 && memeq(p, "AminoAcid", 9) == 1) { return _w_amino_acid(sb) + 1; }
+    if (n == 7 && memeq(p, "PtmSite", 7) == 1) { return _w_ptm_site(sb) + 1; }
+    if (n == 6 && memeq(p, "PkaSet", 6) == 1) { return _w_enum(sb, 0) + 1; }
+    if (n == 18 && memeq(p, "SecondaryStructure", 18) == 1) { return _w_enum(sb, 1) + 1; }
+    return 0;
+}
+
+# ── the reader (bayan's tree against the leaves) ────────────────────────────────────────────────────────────────
+
+# 1 when string value v holds exactly the bytes hex-encoded at p (n2 hex digits).
+#must_use
+fn _r_hexeq(v, p, n2): i64 {
+    if (bayan_json_v_tag(v) != JTAG_STR) { return 0; }
+    var s = bayan_json_v_str(v);
+    if (str_len(s) * 2 != n2) { return 0; }
+    var k = 0;
+    while (k < str_len(s)) {
+        var c = (_p11_hexd(load8(_pio_buf + p + (2 * k))) << 4) | _p11_hexd(load8(_pio_buf + p + (2 * k) + 1));
+        if (load8(str_data(s) + k) != c) { return 0; }
+        k = k + 1;
+    }
+    return 1;
+}
+
+# Walks bayan value v against the leaf stream from the current cursor (objects by member order, arrays by index;
+# `kind` names the enum of a bare enum document: 0 PkaSet, 1 SecondaryStructure, 2 PtmType inside a PtmSite).
+# Returns 1 when the tree holds every leaf.
+fn _r_walk(v, kind): i64 {
+    var tl[8];
+    var p = _lv_tok(&tl);
+    var n = load64(&tl);
+    if (p < 0) { return 0; }
+    var c = load8(_pio_buf + p);
+    var t = bayan_json_v_tag(v);
+    if (n == 1 && c == 123) {
+        if (t != JTAG_OBJ) { return 0; }
+        var i = 0;
+        while (i < bayan_json_v_obj_len(v)) {
+            # PtmSite's third member is its enum.
+            var k2 = kind;
+            if (kind == 2 && i != 2) { k2 = 9; }
+            if (_r_walk(bayan_json_v_obj_val(v, i), k2) == 0) { return 0; }
+            i = i + 1;
+        }
+        var ep = _lv_tok(&tl);
+        if (ep < 0 || load64(&tl) != 1 || load8(_pio_buf + ep) != 125) { return 0; }
+        return 1;
+    }
+    if (n == 1 && c == 91) {
+        if (t != JTAG_ARR) { return 0; }
+        var j = 0;
+        while (j < bayan_json_v_arr_len(v)) {
+            if (_r_walk(bayan_json_v_arr_get(v, j), kind) == 0) { return 0; }
+            j = j + 1;
+        }
+        var ap = _lv_tok(&tl);
+        if (ap < 0 || load64(&tl) != 1 || load8(_pio_buf + ap) != 93) { return 0; }
+        return 1;
+    }
+    if (n == 1 && c == 110) {
+        if (t == JTAG_NULL) { return 1; }
+        return 0;
+    }
+    if (c == 102) {
+        var bits = 0;
+        var k = 2;
+        while (k < 18) {
+            bits = (bits << 4) | _p11_hexd(load8(_pio_buf + p + k));
+            k = k + 1;
+        }
+        var mag = bits & 0x7FFFFFFFFFFFFFFF;
+        if (mag >= 0x7FF0000000000000) {
+            if (t == JTAG_NULL) { return 1; }
+            return 0;
+        }
+        if (t != JTAG_FLOAT) { return 0; }
+        if (bayan_json_v_float(v) != bits) { return 0; }
+        return 1;
+    }
+    if (c == 117) {
+        if (t != JTAG_INT) { return 0; }
+        var u = 0;
+        var d = 2;
+        while (d < n) {
+            u = (u * 10) + (load8(_pio_buf + p + d) - 48);
+            d = d + 1;
+        }
+        if (bayan_json_v_int(v) != u) { return 0; }
+        return 1;
+    }
+    if (c == 115 || c == 99) { return _r_hexeq(v, p + 2, n - 2); }
+    if (c == 101) {
+        var e = 0;
+        var q = 2;
+        while (q < n) {
+            e = (e * 10) + (load8(_pio_buf + p + q) - 48);
+            q = q + 1;
+        }
+        var name = _p11_variant(kind, e);
+        if (name == 0 || t != JTAG_STR) { return 0; }
+        var s = bayan_json_v_str(v);
+        if (str_len(s) != strlen(name) || memeq(str_data(s), name, strlen(name)) == 0) { return 0; }
+        return 1;
+    }
+    return 0;
+}
+
+# The enum kind of a document's type for the reader: 0 PkaSet, 1 SecondaryStructure, 2 PtmSite, 9 none.
+#must_use
+fn _p11_kind(p, n): i64 {
+    if (n == 6 && memeq(p, "PkaSet", 6) == 1) { return 0; }
+    if (n == 18 && memeq(p, "SecondaryStructure", 18) == 1) { return 1; }
+    if (n == 7 && memeq(p, "PtmSite", 7) == 1) { return 2; }
+    return 9;
+}
+
+# ── the documents ───────────────────────────────────────────────────────────────────────────────────────────────
+
+fn p11_docs(): i64 {
+    if (pio_open("build/probe-json/docs.tsv") == 0) {
+        println("probe 11: no build/probe-json/docs.tsv (run the oracle bin probe_json)");
+        return 1;
+    }
+    var docs = 0;
+    var same = 0;
+    var differ = 0;
+    var read_ok = 0;
+    var read_wrong = 0;
+    var refused = 0;
+    var nulls = 0;
+    var tyl[8];
+    var cal[8];
+    var lvl[8];
+    var jsl[8];
+    var sb = str_builder_new();
+    while (1 == 1) {
+        var tp = _p11_field(&tyl);
+        if (tp < 0) { break; }
+        var cp = _p11_field(&cal);
+        var lp = _p11_field(&lvl);
+        var jp = _p11_field(&jsl);
+        if (cp < 0 || lp < 0 || jp < 0) { break; }
+        docs = docs + 1;
+        var jn = load64(&jsl);
+        store64(sb + 8, 0);
+        _lv_at = lp;
+        _lv_end = lp + load64(&lvl);
+        _lv_bad = 0;
+        _ry_json_nonfinite = 0;
+        var known = _p11_write(sb, _pio_buf + tp, load64(&tyl));
+        if (known == 0 || _lv_bad != 0 || _lv_at < _lv_end) { _lv_bad = 1; }
+        var eq = 0;
+        if (_lv_bad == 0 && load64(sb + 8) == jn && memeq(load64(sb), _pio_buf + jp, jn) == 1) { eq = 1; }
+        if (eq == 1) {
+            same = same + 1;
+        } else {
+            differ = differ + 1;
+            if (differ <= 8) {
+                print("  writer differs: ", 18);
+                print(_pio_buf + tp, load64(&tyl));
+                print(" ", 1);
+                print(_pio_buf + cp, load64(&cal));
+                print("\n    serde  ", 11);
+                print(_pio_buf + jp, jn);
+                print("\n    cyrius ", 11);
+                print(load64(sb), load64(sb + 8));
+                println("");
+            }
+        }
+        # A document with a non-finite f64 holds `null` there, as serde_json writes it (fmtf counts each).
+        if (_ry_json_nonfinite > 0) { nulls = nulls + 1; }
+        var v = bayan_json_v_parse_buf(_pio_buf + jp, jn);
+        if (v == 0) {
+            refused = refused + 1;
+            print("  bayan refuses: ", 17);
+            print(_pio_buf + tp, load64(&tyl));
+            print(" ", 1);
+            print(_pio_buf + cp, load64(&cal));
+            println("");
+            continue;
+        }
+        _lv_at = lp;
+        _lv_end = lp + load64(&lvl);
+        var ok = _r_walk(v, _p11_kind(_pio_buf + tp, load64(&tyl)));
+        if (ok == 1 && _lv_at >= _lv_end) {
+            read_ok = read_ok + 1;
+        } else {
+            read_wrong = read_wrong + 1;
+            if (read_wrong <= 8) {
+                print("  bayan reads differently: ", 27);
+                print(_pio_buf + tp, load64(&tyl));
+                print(" ", 1);
+                print(_pio_buf + cp, load64(&cal));
+                println("");
+            }
+        }
+    }
+    pio_say("probe 11: documents ", docs);
+    pio_say("probe 11: writer byte-identical ", same);
+    pio_say("probe 11: writer differs ", differ);
+    pio_say("probe 11: documents holding null for a non-finite f64 ", nulls);
+    pio_say("probe 11: bayan reads every leaf back exactly ", read_ok);
+    pio_say("probe 11: bayan reads a leaf differently ", read_wrong);
+    pio_say("probe 11: bayan refuses ", refused);
+    if (differ != 0 || read_wrong != 0) { return 1; }
+    return 0;
+}
+
+# ── the float forms ─────────────────────────────────────────────────────────────────────────────────────────────
+
+fn p11_floats(): i64 {
+    if (pio_open("build/probe-json/floats.tsv") == 0) {
+        println("probe 11: no build/probe-json/floats.tsv");
+        return 1;
+    }
+    var n = 0;
+    var json_ne = 0;
+    var disp_ne = 0;
+    var parse_ne = 0;
+    var parsed = 0;
+    var bayan_ne = 0;
+    var bayan_longer = 0;
+    var bl8[8];
+    var jl[8];
+    var dl[8];
+    var sb = str_builder_new();
+    var bb = alloc(64);
+    while (1 == 1) {
+        var bp = _p11_field(&bl8);
+        if (bp < 0) { break; }
+        var jp = _p11_field(&jl);
+        var dp = _p11_field(&dl);
+        if (jp < 0 || dp < 0) { break; }
+        n = n + 1;
+        var bits = 0;
+        var k = 0;
+        while (k < 16) {
+            bits = (bits << 4) | _p11_hexd(load8(_pio_buf + bp + k));
+            k = k + 1;
+        }
+        var x: f64 = _p11_f(bits);
+        var jn = load64(&jl);
+        var dn = load64(&dl);
+        store64(sb + 8, 0);
+        _ry_fmt_f64_json(sb, x);
+        if (load64(sb + 8) != jn || memeq(load64(sb), _pio_buf + jp, jn) == 0) {
+            json_ne = json_ne + 1;
+            if (json_ne <= 5) {
+                print("  fmtf json ", 12);
+                print(load64(sb), load64(sb + 8));
+                print(" serde_json ", 12);
+                print(_pio_buf + jp, jn);
+                println("");
+            }
+        }
+        store64(sb + 8, 0);
+        _ry_fmt_f64_display(sb, x);
+        if (load64(sb + 8) != dn || memeq(load64(sb), _pio_buf + dp, dn) == 0) {
+            disp_ne = disp_ne + 1;
+            if (disp_ne <= 5) {
+                print("  fmtf display ", 15);
+                print(load64(sb), load64(sb + 8));
+                print(" rust ", 6);
+                print(_pio_buf + dp, dn);
+                println("");
+            }
+        }
+        var bln = bayan_f64_to_json(bits, bb);
+        if (bln != jn || memeq(bb, _pio_buf + jp, jn) == 0) {
+            bayan_ne = bayan_ne + 1;
+            if (bln > jn) { bayan_longer = bayan_longer + 1; }
+        }
+        if (load8(_pio_buf + jp) != 110) {
+            parsed = parsed + 1;
+            if (bayan_f64_parse(_pio_buf + jp, jn) != bits) { parse_ne = parse_ne + 1; }
+        }
+    }
+    pio_say("probe 11: doubles ", n);
+    pio_say("probe 11: fmtf serde_json form differs ", json_ne);
+    pio_say("probe 11: fmtf Display form differs ", disp_ne);
+    pio_say("probe 11: bayan_f64_parse of serde_json's text misreads (of the finite ones) ", parse_ne);
+    pio_say("probe 11: finite doubles parsed ", parsed);
+    pio_say("probe 11: bayan_f64_to_json differs from serde_json (measured) ", bayan_ne);
+    pio_say("probe 11:   of which longer than serde_json's ", bayan_longer);
+    if (json_ne != 0 || disp_ne != 0 || parse_ne != 0) { return 1; }
+    return 0;
+}
+
+fn main(): i64 {
+    alloc_init();
+    var a = p11_docs();
+    var b = p11_floats();
+    var bad = a + b;
+    pio_say("probe 11: failed checks ", bad);
+    if (bad != 0) { return 1; }
+    return 0;
+}
+
+var r = main();
+sys_exit_group(r);

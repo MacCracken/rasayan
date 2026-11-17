@@ -8,7 +8,9 @@
 ## Cyrius port (2.0.0)
 
 - [x] M0 part 1 — freeze 1.2.0 (tag `adadf54`, bench baseline, glibc 2.44), `cyrius port`, repairs, ADRs 0001–0004
-- [ ] M0 part 2 — math check, oracle generator, table generator, parity harness, baselines, probes
+- [x] M0 parts 2–3 — math check, oracle generator, table generator, parity harness, correctly rounded primitives,
+  three-target baselines and `scripts/gates.sh`, probes 1–4, 6–8, 10–12 (bote-core, hoosh 2.12.3, the profiles,
+  JSON), upstream drafts (`docs/development/upstream/`)
 - [ ] M1–M8 — module milestones (plan §6)
 - [ ] M9 — release 2.0.0
 

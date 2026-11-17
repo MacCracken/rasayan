@@ -1,0 +1,31 @@
+# Probe 10 (port plan P5, §4 step 9): a consumer of one rasayan bundle. It includes nothing itself: its cyrius.cyml
+# declares [deps.rasayan] (a path dep on the probe's scratch copy) with the bundle as its module, the bundle's .deps
+# leaves as its stdlib, and for the mcp bundle [deps.bote] (bote-core), as rasayan's [lib.mcp] consumers must
+# (scripts/probes/p10_manifest.sh). -D P10_MCP calls the [lib.mcp] stand-in, -D P10_AI the [lib.ai] one (GET
+# /v1/health from the probe-7 stub on 127.0.0.1:18743).
+
+# Prints `core <bits of e^1>` (the science bundle's correctly rounded exp, 0x4005bf0a8b145769) and the mcp or ai
+# result.
+fn main() {
+    alloc_init();
+    var e: f64 = _ry_cr_exp(1.0);
+    var bits = 0;
+    store64(&bits, e);
+    print("core ", 5);
+    fmt_int(bits);
+    println("");
+    #ifdef P10_MCP
+    print("mcp ", 4);
+    fmt_int(ry_p10_mcp());
+    println("");
+    #endif
+    #ifdef P10_AI
+    print("ai ", 3);
+    fmt_int(ry_p10_ai("http://127.0.0.1:18743"));
+    println("");
+    #endif
+    return 0;
+}
+
+var r = main();
+sys_exit_group(r);

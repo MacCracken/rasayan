@@ -12,7 +12,8 @@
 > ▶ **Start on Cyrius 6.7.18**, after 1.2.0 is tagged (M0 step 0).
 >
 > 🟡 **Status:** planned 2026-11-16. The maintainer **accepted P1–P9** (§0.2) the same day; ADR 0001
-> records them. 1.2.0 is tagged (`adadf54`); M0 parts 1–3a are done (steps 0–9 but probes 6, 7) — see §10.
+> records them. 1.2.0 is tagged (`adadf54`); **M0 is done** (parts 1–3b: steps 0–10, `scripts/gates.sh` green); M1
+> is next — see §10.
 
 | Thing | Value | Source |
 |---|---|---|
@@ -198,8 +199,9 @@ module wiring) becomes the `[lib]` / `[lib.mcp]` / `[lib.ai]` module lists. Each
 | 2 | `Option<T>` returns (sequence functions, fits, lookups) | one-word Option / sentinel per family, as ushma §7.3 | presence class A, value per its class |
 | 3 | `Vec<…>` results (PTM sites, domains, Chou-Fasman, composition) | caller buffer + count, or handle | element-wise, class A |
 | 4 | `PtmSite.motif` / `DomainHit.fragment` own `String`s | byte ranges into the input (or interned copies) | the bytes, class A |
-| 5 | `BiochemClient` is `async` (tokio + reqwest via hoosh 1.3) | synchronous sandhi request to hoosh 2.12.3 with explicit timeouts | request bytes class A against captured oracle requests; path/fields mapped by row 6 if probe 9 finds differences |
-| 6 | (reserved for the hoosh API mapping, P8) | | |
+| 5 | `BiochemClient` is `async` (tokio + reqwest via hoosh 1.3; 10 s connect timeout, no request deadline) | synchronous sandhi request to hoosh 2.12.3: 10 s connect, explicit total and read deadlines (values at M8) | method, path, body bytes, Content-Type and Accept class A against the oracle's captured requests (probe 7: 6 of 6 bodies identical) |
+| 6 | the hoosh 1.3 client's paths, body fields and response mapping | none needed: hoosh 2.12.3 serves the same three paths and fields (probe 7); a bearer token, which 2.12.3 checks when configured and Rust never sent, is M8's decision | every response field class A from scripted 2.12.3 answers (probe 7: 8 of 8) |
+| 11–13 | Rust bote 0.92's `tools/list` (no annotations, random order), bare-record `tools/call` results, schema violations as JSON-RPC errors | bote 3.8.15's MCP 2025-11-25 framing: annotations, registration order, a text block, schema violations as tool errors | payloads and inputSchemas byte for byte, entries as values (probe 6) |
 | 7 | `tracing` events/spans | sakshi events/spans with the Rust target names, level-gated | not compared (log format is sakshi's) |
 | 8 | `EnvFilter` directives in `RASAYAN_LOG` | level names and `rasayan=<level>`; other syntax refused with a warning | parsing rows, class A |
 | — | the rustls crypto-provider shim in `ai` (Rust mechanics) | not carried | — |
@@ -263,11 +265,16 @@ installation. Nothing observable is dropped.
    (5) a 10⁶-step soak of the network for heap growth (must be zero); (6) bote 3.8.15 tool
    registration and dispatch round-trip of one rasayan tool; (7) hoosh 2.12.3's inference API vs
    the Rust client's request (P8); (8) sakshi span cost on a 2 ns function (MM kinetics); and
-   ushma's (12), f64 hygiene on this toolchain. Part 3a ran 1–4, 8 and 12 (`scripts/probes/run.sh`).
+   ushma's (12), f64 hygiene on this toolchain; and, as ushma's batch 3b did, (10) the manifest, the three profiles
+   and their consumers, and (11) JSON byte-identity with serde_json (P7). Part 3a ran 1–4, 8 and 12
+   (`scripts/probes/run.sh`); part 3b ran 6, 7, 10 and 11 (`port-parity.md` §3).
    **Probe 5 moves to M5**: the network does not exist before M5, so part 3a measures the heap over
    10⁶ steps of each copy pattern probe 2 compares (0 bytes in every one but a fresh `alloc` per
-   step), and the soak of the real `ry_` network runs at M5 (§6). Probes 6 and 7 are part 3b.
-10. **File gaps upstream** found by the probes (§8).
+   step), and the soak of the real `ry_` network runs at M5 (§6). Probes 6 and 7 are part 3b: bote-core is the `[deps.bote]`
+   module (rasayan registers tools on a dispatcher and runs no transport), and hoosh 2.12.3 needs no API mapping (ADR
+   0002 rows 5–6, 11–13).
+10. **File gaps upstream** found by the probes (§8): drafted in `docs/development/upstream/` (part 3b: 4 new issues
+    with repros that exit 1 at 6.7.18, 7 addenda to open issues), for the maintainer to file.
 
 M0 gate: `cyrius build` (all profiles) and `cyrius bench` run, the harness runs on 0 modules with no
 warnings, `lint`/`fmt --check`/`audit` clean.
@@ -351,7 +358,7 @@ sub-parts per CLAUDE.md task sizing.
 | `serde` + `serde_json` | hand-written codecs: bayan value tree (read), `str_builder` + vendored shortest-digit printer (write) — P7 |
 | `thiserror` | `RY_ERR_*` codes, `ry_error_name`/`_message` (ADR 0002 #1) |
 | `tracing` / `tracing-subscriber` | sakshi spans/events + `lib/log.cyr`, `RASAYAN_LOG` via `getenv` |
-| `bote` 0.92 (Rust) | bote **3.8.15** (Cyrius), `[deps.bote]` optional, `dist/bote.cyr` (or `bote-core.cyr` if the registry suffices — probe 6) |
+| `bote` 0.92 (Rust) | bote **3.8.15** (Cyrius), `[deps.bote]` optional, `dist/bote-core.cyr` (probe 6: the registry, dispatcher and codec suffice; a serving consumer takes the full bundle itself) |
 | `hoosh` 1.3 (Rust client) + `tokio` + `rustls` | sandhi 1.13.7 HTTP client + bayan, to the hoosh 2.12.3 service (P8) |
 | `criterion` | `cyrius bench` (`*.bcyr`), every Rust benchmark twinned |
 
@@ -380,6 +387,13 @@ copy (impetus, kimiya, ushma); public `f64_expm1`, `f64_is_finite`, `f64_is_nan`
 constants; Rust-compatible `min`/`max` NaN semantics or a documented alternative; scalar FMA (not
 needed by rasayan: no `mul_add`); f64 exponent literals.
 
+**M0 part 3b** drafted them in [`upstream/`](upstream/README.md): new — cyrius's unlisted stdlib include resolving
+from the toolchain, the undiagnosed f64 truth test, the exponent literal's diagnostics, the stale 6.6.10 guide note;
+addenda — f64 min/max and the f64 surface, `vec_push` and
+`str_builder` aborts, ganita's correctly rounded tier (with expm1), sakshi's span level, bayan's i64 range and its
+printer, hoosh's client bundle. The cyrius-lsp false positive seen in part 3a did not reproduce at 6.7.18 (not
+drafted).
+
 ---
 
 ## 9. After 2.0.0
@@ -396,7 +410,7 @@ signaling pathways).
 
 | Milestone | Status | Golden rows | Reference tests | Benches | Notes |
 |---|---|---|---|---|---|
-| M0 Prep + scaffold | 🟡 part 1 done (steps 0–2; step 3 partial); part 2a done (step 4 math check, step 5 generator: constants + math sweep, `validate.py`); part 2b done (step 6: table data and private constants, completeness proof over all 123 `const`/`static` items, `probe_tables.py`, `tests/tables.tcyr`); part 2c-1 done (step 7 harness: 9,069 ok, 0 failed, 11,094 class C measured, 0 pending; step 5's `mpfr_ref.py` corrected oracle: glibc misrounds 96 class-C rows); part 2c-2 done (`src/mathx.cyr` vendored from ushma with `src/mathx_data.cyr` from `mathx_tables.py`: class C gated at 0 ulp, 20,067 ok + 96 accepted (ADR 3), 0 measured, on x86_64 ELF, `--bounds` and aarch64; `[lib]` and `dist/rasayan.cyr`); part 2c-3 done (`scripts/oracle/cr_verify.py`, the dense MPFR sweep: 5,314,811 arguments per target, the accurate path forced on 411,760, 0 mismatches, identical on x86_64 ELF, aarch64 and PE; `--quick` for routine use; port-parity §2e); part 3a done (step 8: `scripts/gates.sh`, every gate one target at a time, 84–117 s; the three-target baseline, the same parity summary on x86_64 ELF, `--bounds`, PE and aarch64, 0 failing; step 9: probes 1 (sub-step counts, 44,266 rows: 0 mismatches on three targets), 2 (the producer probe as a 264-byte frame copy, 11 ns, 0 heap over 10⁶ steps), 3 (caller buffers for `Vec` results), 4 (the implicit NADH solves transcribed: 200,000 solves bit-identical with identical iteration counts on three targets), 8 (level-gated events; raw spans 204 ns) and 12 (f64 hygiene); port-parity §2f, §3) | 20,163 (constants 67, math 18,826, table data 1,270: protein 184, alignment 1,008, enzyme 60, constants_private 16, membrane 1, ai 1) + 96 corrections (`math.cr.tsv`) | — | Rust baseline at `adadf54` (48); Cyrius: the four primitives and their stdlib counterparts (8, part 2c-2) | next: part 3b (probes 6 bote and 7 hoosh, step 10's upstream filings). 3a: probe 5's soak moves to M5 (§4 step 9); probe bins `probe_substeps` and `probe_solver` in `scripts/oracle/src/bin/`; sakshi not yet vendored (p8 uses the pinned toolchain's). 2c-3: ushma's `cr_verify.py` cut to the four primitives, with rasayan's call sites and the class-C corpus arguments added; no ADR amendment. 2b added `src/constants_private.cyr`, `src/membrane_data.cyr` and `src/ai_data.cyr` ([lib.ai] only) beside the planned data files; ADR 0002 row 10. 2c-1: the §0.8 helpers test-side (`tests/parity_math.cyr`); `ganita` and `overflow` in `[test] stdlib`. 2c-2: five of them moved into `src/mathx.cyr` (ushma's mathx has equivalents), `_ry_clamp` and `_ry_f64_to_u32` test-side until M1; the stdlib counterparts stay as ungated shadow lines |
+| M0 Prep + scaffold | ✅ done 2026-11-16 (steps 0–10, `scripts/gates.sh` green, 144 s). part 1 done (steps 0–2; step 3 partial); part 2a done (step 4 math check, step 5 generator: constants + math sweep, `validate.py`); part 2b done (step 6: table data and private constants, completeness proof over all 123 `const`/`static` items, `probe_tables.py`, `tests/tables.tcyr`); part 2c-1 done (step 7 harness: 9,069 ok, 0 failed, 11,094 class C measured, 0 pending; step 5's `mpfr_ref.py` corrected oracle: glibc misrounds 96 class-C rows); part 2c-2 done (`src/mathx.cyr` vendored from ushma with `src/mathx_data.cyr` from `mathx_tables.py`: class C gated at 0 ulp, 20,067 ok + 96 accepted (ADR 3), 0 measured, on x86_64 ELF, `--bounds` and aarch64; `[lib]` and `dist/rasayan.cyr`); part 2c-3 done (`scripts/oracle/cr_verify.py`, the dense MPFR sweep: 5,314,811 arguments per target, the accurate path forced on 411,760, 0 mismatches, identical on x86_64 ELF, aarch64 and PE; `--quick` for routine use; port-parity §2e); part 3a done (step 8: `scripts/gates.sh`, every gate one target at a time, 84–117 s; the three-target baseline, the same parity summary on x86_64 ELF, `--bounds`, PE and aarch64, 0 failing; step 9: probes 1 (sub-step counts, 44,266 rows: 0 mismatches on three targets), 2 (the producer probe as a 264-byte frame copy, 11 ns, 0 heap over 10⁶ steps), 3 (caller buffers for `Vec` results), 4 (the implicit NADH solves transcribed: 200,000 solves bit-identical with identical iteration counts on three targets), 8 (level-gated events; raw spans 204 ns) and 12 (f64 hygiene); port-parity §2f, §3); part 3b done (probes 6 bote-core: 13 of 13 payloads and the inputSchema byte-identical on three targets, ADR 0002 rows 11–13; 7 hoosh 2.12.3 serves the 1.3 client unchanged, bodies 6 of 6 and outcomes 8 of 8, ADR 0002 rows 5–6; 10 sakshi/log/bote vendored and locked, three bundles and their consumers on three targets; 11 JSON: 1,234 serde_json documents reproduced byte for byte with the vendored `src/fmtf.cyr`, ADR 0004 amended; step 10: `docs/development/upstream/`, 4 new drafts (cyrius) + 7 addenda) | 20,163 (constants 67, math 18,826, table data 1,270: protein 184, alignment 1,008, enzyme 60, constants_private 16, membrane 1, ai 1) + 96 corrections (`math.cr.tsv`) | — | Rust baseline at `adadf54` (48); Cyrius: the four primitives and their stdlib counterparts (8, part 2c-2) | next: M1. 3b: oracle bins `probe_mcp`, `probe_ai`, `probe_json` (bote, hoosh, serde_json as the oracle resolves them, no feature changed); sandhi not vendored (M8 decides `[lib.ai]`'s test setup); for the maintainer: the client's deadlines and bearer token, `isError` on a handler's error record, usize ≥ 2⁶³ in bayan, filing the drafts. 3a: probe 5's soak moves to M5 (§4 step 9); probe bins `probe_substeps` and `probe_solver` in `scripts/oracle/src/bin/`; sakshi not yet vendored (p8 used the pinned toolchain's; vendored at 3b). 2c-3: ushma's `cr_verify.py` cut to the four primitives, with rasayan's call sites and the class-C corpus arguments added; no ADR amendment. 2b added `src/constants_private.cyr`, `src/membrane_data.cyr` and `src/ai_data.cyr` ([lib.ai] only) beside the planned data files; ADR 0002 row 10. 2c-1: the §0.8 helpers test-side (`tests/parity_math.cyr`); `ganita` and `overflow` in `[test] stdlib`. 2c-2: five of them moved into `src/mathx.cyr` (ushma's mathx has equivalents), `_ry_clamp` and `_ry_f64_to_u32` test-side until M1; the stdlib counterparts stay as ungated shadow lines |
 | M1 Foundation | — | | | | |
 | M2 Kinetics & cell physiology | — | | | | |
 | M3 Sequence analysis | — | | | | |

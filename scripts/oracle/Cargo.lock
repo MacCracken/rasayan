@@ -1261,7 +1261,12 @@ dependencies = [
 name = "rasayan-oracle"
 version = "0.0.0"
 dependencies = [
+ "bote",
+ "hoosh",
  "rasayan",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

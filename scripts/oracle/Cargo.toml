@@ -15,6 +15,18 @@ default-run = "oracle"
 # ports (ADR 0001), so the corpus can reach every module — `logging`, `mcp` and `ai` included.
 [dependencies]
 rasayan = { path = "../../rust-old", features = ["full"] }
+# The M0 probe binaries (src/bin/probe_mcp.rs, probe_ai.rs, probe_json.rs) name types of the oracle's own
+# dependencies, at exactly the versions and features the oracle resolves them with, so nothing here changes the
+# oracle's build: bote 0.92 (JsonRpcRequest/Response, probe 6) and hoosh 1.3 (Message, Role: probe 7) without default
+# features, as rust-old/Cargo.toml takes them; serde (its `Serializer` trait: probe 11's leaf recorder; `std`, which
+# the oracle's `std` feature already turns on) and serde_json with their defaults (probes 6, 7, 11; no
+# `float_roundtrip`, which would unify into the oracle's MCP argument parsing); tokio's `rt` (a current-thread runtime
+# drives the async `ai` client in probe 7). All six are already in the lockfile through the oracle.
+bote = { version = "=0.92.0", default-features = false }
+hoosh = { version = "=1.3.0", default-features = false }
+serde = "=1.0.229"
+serde_json = "=1.0.154"
+tokio = { version = "=1.54.1", features = ["rt"] }
 
 [[bin]]
 name = "oracle"

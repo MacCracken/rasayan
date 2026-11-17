@@ -1,0 +1,315 @@
+# Probe 6 (port plan §2.8, §4 step 9): one rasayan tool on bote 3.8.15, registered and dispatched as Rust's
+# `rasayan::mcp::create_dispatcher()` does it on Rust bote 0.92, and compared with the oracle's JSON.
+#
+# - `rasayan_kinetics` with Rust's description and inputSchema, written in serde_json's key order the way M8's
+#   src/mcp.cyr will write every schema (one property helper per Rust `prop_*`), and Rust's read-only annotations
+#   (`ToolAnnotations::read_only()` = bote's `ann_read_only()`), registered as Rust registers it:
+#   `dispatcher_register_tool(dispatcher_new(tool_registry_new()), def, handler)`.
+# - The handler answers `michaelis_menten` as rust-old/src/mcp.rs's kinetics_handler does: the arguments read from
+#   bayan's value tree (an integer is read as an f64, as serde_json's `as_f64`), `enzyme::michaelis_menten` with
+#   `guard::conc` on src/mathx.cyr's `_ry_is_finite` (class B arithmetic), `finite("rate", …)`, and the reply
+#   written as serde_json writes Rust's `json!` (keys sorted; the f64 by src/fmtf.cyr's serde_json form; the
+#   non-finite message by its Display form).
+# - Every request of build/probe-mcp/rust.tsv (scripts/oracle/src/bin/probe_mcp.rs) goes through bote's
+#   `codec_process_message`, and the probe prints `label <TAB> response` for scripts/probes/p6_compare.py, which
+#   compares the two sides (port-parity.md §3, probe 6).
+# - Measured, not gated: the time and the global heap per tools/call round trip, through the process heap
+#   (`codec_process_message`) and through an arena reset per call (`codec_process_message_a`).
+#
+#   cyrius deps --features mcp                     # vendors lib/bote-core.cyr (and bayan, through bote's graph)
+#   cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml --bin probe_mcp
+#   cyrius build scripts/probes/p6_bote.cyr build/probes/p6_bote && ./build/probes/p6_bote > build/probes/p6.tsv
+#   python3 -I -B scripts/probes/p6_compare.py build/probe-mcp/rust.tsv build/probes/p6.tsv
+
+include "lib/bote-core.cyr"
+include "lib/bayan.cyr"
+include "lib/bench.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "scripts/probes/probe_io.cyr"
+
+# ── the tool definition ─────────────────────────────────────────────────────────────
+
+# Appends `"name":{"description":"desc","type":"number"}` (Rust's prop_f64, keys as serde_json orders them).
+fn _p6_prop_f64(sb, name, desc): i64 {
+    str_builder_add_cstr(sb, "\"");
+    str_builder_add_cstr(sb, name);
+    str_builder_add_cstr(sb, "\":{\"description\":\"");
+    str_builder_add_cstr(sb, desc);
+    str_builder_add_cstr(sb, "\",\"type\":\"number\"}");
+    return 0;
+}
+
+# rasayan_kinetics's inputSchema: Rust's kinetics_def() as serde_json writes it (properties sorted by name, each
+# property's keys sorted, then "required" and "type").
+#must_use
+fn _p6_schema(): i64 {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "{\"properties\":{");
+    _p6_prop_f64(sb, "a", "Pre-exponential factor (arrhenius)");
+    str_builder_add_cstr(sb, ",");
+    _p6_prop_f64(sb, "ea", "Activation energy J/mol (arrhenius)");
+    str_builder_add_cstr(sb, ",\"function\":{\"description\":\"Kinetics function to compute\",\"enum\":[");
+    str_builder_add_cstr(sb, "\"michaelis_menten\",\"hill\",\"competitive_inhibition\",\"mixed_inhibition\",");
+    str_builder_add_cstr(sb, "\"substrate_inhibition\",\"arrhenius\",\"q10\",\"ping_pong\",\"sequential\"],");
+    str_builder_add_cstr(sb, "\"type\":\"string\"},");
+    _p6_prop_f64(sb, "inhibitor", "Inhibitor concentration [I]");
+    str_builder_add_cstr(sb, ",");
+    _p6_prop_f64(sb, "ki", "Inhibition constant Ki");
+    str_builder_add_cstr(sb, ",");
+    _p6_prop_f64(sb, "ki_prime", "Ki' for mixed inhibition");
+    str_builder_add_cstr(sb, ",");
+    _p6_prop_f64(sb, "km", "Michaelis constant Km");
+    str_builder_add_cstr(sb, ",");
+    _p6_prop_f64(sb, "km_b", "Km for substrate B");
+    str_builder_add_cstr(sb, ",");
+    _p6_prop_f64(sb, "ksi", "Substrate inhibition constant Ksi");
+    str_builder_add_cstr(sb, ",");
+    _p6_prop_f64(sb, "n", "Hill coefficient (for hill)");
+    str_builder_add_cstr(sb, ",");
+    _p6_prop_f64(sb, "q10_value", "Q10 coefficient");
+    str_builder_add_cstr(sb, ",");
+    _p6_prop_f64(sb, "substrate", "Substrate concentration [S]");
+    str_builder_add_cstr(sb, ",");
+    _p6_prop_f64(sb, "substrate_b", "Second substrate [B] (ping_pong/sequential)");
+    str_builder_add_cstr(sb, ",");
+    _p6_prop_f64(sb, "temp", "Temperature in Kelvin");
+    str_builder_add_cstr(sb, ",");
+    _p6_prop_f64(sb, "temp_ref", "Reference temperature in Kelvin for q10 (default 310)");
+    str_builder_add_cstr(sb, ",");
+    _p6_prop_f64(sb, "vmax", "Maximum velocity Vmax");
+    str_builder_add_cstr(sb, "},\"required\":[\"function\"],\"type\":\"object\"}");
+    return str_data(str_builder_build(sb));
+}
+
+# The tool's description (Rust's, one string).
+#must_use
+fn _p6_description(): i64 {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "Compute enzyme kinetics: Michaelis-Menten, Hill equation, competitive/mixed/substrate ");
+    str_builder_add_cstr(sb, "inhibition, Arrhenius temperature dependence, Q10, ping-pong, sequential bi-substrate.");
+    return str_data(str_builder_build(sb));
+}
+
+# ── the handler ─────────────────────────────────────────────────────────────────────
+
+# guard::conc: x when finite and > 0, else +0.
+#must_use
+fn _p6_conc(x: f64): f64 {
+    if (_ry_is_finite(x) == 1) {
+        if (x > 0.0) { return x; }
+    }
+    return 0.0;
+}
+
+# enzyme::michaelis_menten, transcribed (rust-old/src/enzyme.rs).
+#must_use
+fn _p6_mm(substrate: f64, vmax: f64, km: f64): f64 {
+    var s: f64 = _p6_conc(substrate);
+    var denom: f64 = km + s;
+    if (denom > 0.0) { return vmax * s / denom; }
+    return 0.0;
+}
+
+# Reads number `key` of the arguments object `v` (a bayan value) as serde_json's `as_f64` does: a float, or an
+# integer converted. Returns (1, the f64) or (0, 0) when it is absent or not a number.
+fn _p6_num(v, key): (i64, f64) {
+    if (v == 0) { return (0, 0.0); }
+    var x = bayan_json_v_obj_get_by_cstr(v, key);
+    if (x == 0) { return (0, 0.0); }
+    var t = bayan_json_v_tag(x);
+    if (t == JTAG_FLOAT) {
+        var f: f64 = bayan_json_v_float(x);
+        return (1, f);
+    }
+    if (t == JTAG_INT) {
+        var g: f64 = f64_from(bayan_json_v_int(x));
+        return (1, g);
+    }
+    return (0, 0.0);
+}
+
+# Appends the n bytes at p as a JSON string's inside, escaped as serde_json escapes (", \, and control bytes; other
+# bytes, UTF-8 included, as they are).
+fn _p6_esc(sb, p, n): i64 {
+    var k = 0;
+    while (k < n) {
+        var c = load8(p + k);
+        if (c == 34) {
+            str_builder_add_cstr(sb, "\\\"");
+        } elif (c == 92) {
+            str_builder_add_cstr(sb, "\\\\");
+        } elif (c == 10) {
+            str_builder_add_cstr(sb, "\\n");
+        } elif (c == 13) {
+            str_builder_add_cstr(sb, "\\r");
+        } elif (c == 9) {
+            str_builder_add_cstr(sb, "\\t");
+        } elif (c == 8) {
+            str_builder_add_cstr(sb, "\\b");
+        } elif (c == 12) {
+            str_builder_add_cstr(sb, "\\f");
+        } elif (c < 32) {
+            str_builder_add_cstr(sb, "\\u00");
+            var hx = "0123456789abcdef";
+            str_builder_putc(sb, load8(hx + (c >> 4)));
+            str_builder_putc(sb, load8(hx + (c & 15)));
+        } else {
+            str_builder_putc(sb, c);
+        }
+        k = k + 1;
+    }
+    return 0;
+}
+
+# mcp.rs's err(msg): `{"error":"msg"}`.
+#must_use
+fn _p6_err(msg): i64 {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "{\"error\":\"");
+    _p6_esc(sb, msg, strlen(msg));
+    str_builder_add_cstr(sb, "\"}");
+    return str_data(str_builder_build(sb));
+}
+
+# kinetics_handler's michaelis_menten arm, and its unknown-function fallback. bote's handler ABI: the arguments as
+# JSON text, the claims (0); returns the result as JSON text (a bare record, as Rust's handler returns a bare Value:
+# bote 3.8.15 sends it as one text block, port-parity.md §3 probe 6).
+fn _p6_kinetics(args, claims): i64 {
+    var v = 0;
+    if (args != 0) { v = bayan_json_v_parse_buf(args, strlen(args)); }
+    var fv = 0;
+    if (v != 0) { fv = bayan_json_v_obj_get_by_cstr(v, "function"); }
+    if (fv == 0 || bayan_json_v_tag(fv) != JTAG_STR) { return _p6_err("missing 'function' parameter"); }
+    var fs = bayan_json_v_str(fv);
+    var fname = str_data(fs);
+    var flen = str_len(fs);
+    if (flen == 16 && memeq(fname, "michaelis_menten", 16) == 1) {
+        var hs, s = _p6_num(v, "substrate");
+        var hv, vmax = _p6_num(v, "vmax");
+        var hk, km = _p6_num(v, "km");
+        if (hs == 0 || hv == 0 || hk == 0) { return _p6_err("michaelis_menten requires: substrate, vmax, km"); }
+        var rate: f64 = _p6_mm(s, vmax, km);
+        var sb = str_builder_new();
+        if (_ry_is_finite(rate) == 0) {
+            # finite("rate", value): Rust formats the value with Display.
+            str_builder_add_cstr(sb, "{\"error\":\"rate is not finite (");
+            _ry_fmt_f64_display(sb, rate);
+            str_builder_add_cstr(sb, ") — check inputs for zero/negative constants\"}");
+            return str_data(str_builder_build(sb));
+        }
+        str_builder_add_cstr(sb, "{\"function\":\"michaelis_menten\",\"rate\":");
+        _ry_fmt_f64_json(sb, rate);
+        str_builder_add_cstr(sb, "}");
+        return str_data(str_builder_build(sb));
+    }
+    var eb = str_builder_new();
+    str_builder_add_cstr(eb, "{\"error\":\"unknown kinetics function: ");
+    _p6_esc(eb, fname, flen);
+    str_builder_add_cstr(eb, "\"}");
+    return str_data(str_builder_build(eb));
+}
+
+# ── the requests ────────────────────────────────────────────────────────────────────
+
+# The bytes of the current line's next tab-separated field: its start, its length in *lenp; -1 at the end of the
+# file. Consumes the tab or newline after it.
+fn _p6_field(lenp): i64 {
+    if (_pio_at >= _pio_len) { return 0 - 1; }
+    var s = _pio_at;
+    while (_pio_at < _pio_len) {
+        var c = load8(_pio_buf + _pio_at);
+        if (c == 9 || c == 10) { break; }
+        _pio_at = _pio_at + 1;
+    }
+    store64(lenp, _pio_at - s);
+    if (_pio_at < _pio_len) { _pio_at = _pio_at + 1; }
+    return s;
+}
+
+# A NUL-terminated copy of the n bytes at p.
+fn _p6_cstr(p, n): i64 {
+    var out = alloc(n + 1);
+    memcpy(out, p, n);
+    store8(out + n, 0);
+    return out;
+}
+
+fn main() {
+    alloc_init();
+    var d = dispatcher_new(tool_registry_new());
+    var def = tool_def_new("rasayan_kinetics", _p6_description(), tool_schema_from_json(_p6_schema()));
+    tool_def_with_annotations(def, ann_read_only());
+    var rerr = dispatcher_register_tool(d, def, &_p6_kinetics);
+    if (rerr != 0) {
+        println("probe 6: bote refused the tool definition");
+        return 1;
+    }
+    if (pio_open("build/probe-mcp/rust.tsv") == 0) {
+        println("probe 6: no build/probe-mcp/rust.tsv (run the oracle bin probe_mcp)");
+        return 1;
+    }
+    var n = 0;
+    var mm = 0;
+    var ln[8];
+    var tl[8];
+    var rl[8];
+    while (1 == 1) {
+        var lp = _p6_field(&ln);
+        if (lp < 0) { break; }
+        var tp = _p6_field(&tl);
+        var rp = _p6_field(&rl);
+        if (tp < 0 || rp < 0) { break; }
+        if (load64(&tl) == 1 && load8(_pio_buf + tp) == 45) { continue; }
+        var req = _p6_cstr(_pio_buf + tp, load64(&tl));
+        var resp = codec_process_message(req, d, 0);
+        print(_pio_buf + lp, load64(&ln));
+        print("\t", 1);
+        if (resp == 0) { print("(none)", 6); } else { print(resp, strlen(resp)); }
+        println("");
+        n = n + 1;
+        if (load64(&ln) == 8 && memeq(_pio_buf + lp, "mm_basic", 8) == 1) { mm = req; }
+    }
+    if (mm == 0) {
+        println("probe 6: no mm_basic request");
+        return 1;
+    }
+    # Measured, not gated: one tools/call round trip (parse, schema check, handler, reply), 10^4 times.
+    var k = 10000;
+    var b0 = bench_new("p6/tools/call michaelis_menten, process heap");
+    var h0 = alloc_used();
+    bench_batch_start(b0);
+    var i = 0;
+    while (i < k) {
+        codec_process_message(mm, d, 0);
+        i = i + 1;
+    }
+    bench_batch_stop(b0, k);
+    var grew = alloc_used() - h0;
+    bench_report(b0);
+    print("probe 6 heap: process heap, bytes per call ", 43);
+    fmt_int(grew / k);
+    println("");
+    var ar = arena_allocator_growable(65536);
+    var b1 = bench_new("p6/tools/call michaelis_menten, arena reset per call");
+    h0 = alloc_used();
+    bench_batch_start(b1);
+    i = 0;
+    while (i < k) {
+        reset_via(ar);
+        codec_process_message_a(ar, mm, d, 0);
+        i = i + 1;
+    }
+    bench_batch_stop(b1, k);
+    grew = alloc_used() - h0;
+    bench_report(b1);
+    print("probe 6 heap: arena per call, global bytes per call (the handler's own builders) ", 81);
+    fmt_int(grew / k);
+    println("");
+    pio_say("probe 6: requests answered ", n);
+    return 0;
+}
+
+var r = main();
+sys_exit_group(r);
