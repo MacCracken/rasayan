@@ -1,7 +1,7 @@
 # 0001 — Port everything to Cyrius, with Rust 1.2.0 frozen as the parity oracle
 
-**Status**: Proposed
-**Date**: 2026-11-16
+**Status**: Accepted
+**Date**: 2026-11-16 (maintainer accepted the port plan's decisions P1–P9: "Accept all")
 
 ## Context
 

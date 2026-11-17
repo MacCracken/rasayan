@@ -101,7 +101,7 @@ Bridge functions used by mastishk and sharira return values identical to 1.1.0.
 
 ### Added
 
-- `docs/development/rasayan-port-plan.md`, `docs/adr/` (ADR 0001 proposed).
+- `docs/development/rasayan-port-plan.md` and `docs/adr/` (ADR 0001 accepted: decisions P1–P9).
 - Benchmarks `network_tick_1s`, `isoelectric_point_bjellqvist`.
 - Tests: 625 → 689 with default features (593 unit, 70 integration, 25 validation, 1 doc; 725 with
   `--all-features`) — network dt-invariance, sub-steps bit-identical to manual steps, carbon balance

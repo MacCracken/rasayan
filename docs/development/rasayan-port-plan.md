@@ -11,8 +11,8 @@
 >
 > ▶ **Start on Cyrius 6.7.18**, after 1.2.0 is tagged (M0 step 0).
 >
-> 🟡 **Status:** proposed 2026-11-16. The decisions in §0.2 await the maintainer; ADR 0001 records
-> them (status *Proposed*) and is accepted at M0 step 2.
+> 🟡 **Status:** planned 2026-11-16. The maintainer **accepted P1–P9** (§0.2) the same day; ADR 0001
+> records them. M0 starts once 1.2.0 is tagged (step 0).
 
 | Thing | Value | Source |
 |---|---|---|
@@ -38,7 +38,7 @@
 - **The maintainer does all git.** Each verified milestone part ends with a summary and a request to
   commit before the next part starts.
 
-### 0.2 Proposed (for the maintainer; ADR 0001 records the accepted set at M0 step 2)
+### 0.2 Accepted 2026-11-16 (maintainer: "Accept all"; ADR 0001, with 0002–0004 written at M0 step 2)
 
 | # | Decision | Why | Alternative |
 |---|---|---|---|
@@ -230,8 +230,9 @@ installation. Nothing observable is dropped.
    the oracle must rebuild against exactly its pins).
 2. **Repair what the scaffold overwrites** (open issue at 6.7.18): restore `CLAUDE.md` (merge the
    Rust process with the Cyrius rule translations, as ushma's), the roadmap, `state.md`, workflows,
-   `.gitignore`; set `VERSION` back to 1.2.0 until the release milestone; accept ADRs 0001
-   (port) and 0002 (divergences, §3.3), and add 0003 (correct rounding, P4) and 0004 (JSON, P7).
+   `.gitignore`; set `VERSION` back to 1.2.0 until the release milestone; write ADRs 0002
+   (divergences, §3.3), 0003 (correct rounding, P4) and 0004 (JSON, P7) — ADR 0001 is already
+   accepted.
 3. **`cyrius.cyml`**: `version = "${file:VERSION}"`, `cyrius = "6.7.18"`; `[deps] stdlib = [...]`
    (every module the code calls); `[deps.bote]` git + tag 3.8.15 + `optional = true` and
    `[features] mcp = ["bote"]`; `[lib]` module list in dependency order (no `src/` file includes
