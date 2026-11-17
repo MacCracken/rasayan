@@ -40,6 +40,7 @@ mod m_math;
 mod m_membrane;
 mod m_metabolism;
 mod m_protein;
+mod m_ptm;
 mod m_signal;
 mod rustsrc;
 mod t_ai;
@@ -84,6 +85,7 @@ fn golden_modules(root: &Path) -> Result<Vec<tsv::Module>, String> {
         m_json::emit(),
         m_logging::emit(),
         m_math::emit(),
+        m_ptm::emit(),
         t_private::golden(root)?,
         t_protein::golden(&read("protein")?)?,
         t_alignment::golden(&read("alignment")?, &amino_codes())?,

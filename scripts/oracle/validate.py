@@ -3769,6 +3769,126 @@ def check_alignment(root, rows, extra, rep):
     return per
 
 
+# ── ptm (M3 part 3): scan_ptm_sites, disulfide_bond_count, the serde documents ──
+#
+# scan_ptm_sites transcribed from ptm.rs (the lines it stands for are pinned below): Python's str is Rust's chars()
+# (positions are character indices), str.upper restricted to ASCII is to_ascii_uppercase, and list.sort is stable, as
+# sort_by_key is. The documents are serde's derive (field order, a char as a one-character string).
+
+PTM_TEXT = (
+    "    if sequence.is_empty() {\n        return None;\n    }",
+    "    let chars: Vec<char> = sequence.chars().map(|c| c.to_ascii_uppercase()).collect();",
+    "        if chars[i] == 'N'\n            && i + 3 < n\n            && chars[i + 1] != 'P'\n"
+    "            && (chars[i + 2] == 'S' || chars[i + 2] == 'T')\n            && chars[i + 3] != 'P'",
+    "                ptm_type: PtmType::NGlycosylation,\n                motif: chars[i..=i + 3].iter().collect(),",
+    "        if chars[i] == 'Y' {",
+    "        if i + 3 < n\n            && (chars[i] == 'R' || chars[i] == 'K')\n"
+    "            && (chars[i + 1] == 'R' || chars[i + 1] == 'K')\n            && (chars[i + 3] == 'S' || chars[i + 3] == 'T')",
+    "                position: i + 3,\n                residue: target,\n                ptm_type: PtmType::PkaSite,",
+    "        if i + 3 < n\n            && (chars[i] == 'S' || chars[i] == 'T')\n"
+    "            && (chars[i + 3] == 'D' || chars[i + 3] == 'E')",
+    "        if chars[i] == 'S' {",
+    "        if chars[i] == 'T' {",
+    "        if chars[i] == 'C' {",
+    "    let gly = if chars.first() == Some(&'M') { 1 } else { 0 };\n"
+    "    if let Some(window) = chars.get(gly..gly + MYRISTOYL_LEN)\n        && is_myristoylation_motif(window)",
+    "    sites.sort_by_key(|s| s.position);\n    Some(sites)",
+    "const MYRISTOYL_LEN: usize = 6;",
+    "        ['G', b, _, _, e, f]\n            if !matches!(b, 'E' | 'D' | 'R' | 'K' | 'H' | 'P' | 'F' | 'Y' | 'W')\n"
+    "                && matches!(e, 'S' | 'T' | 'A' | 'G' | 'C' | 'N')\n                && *f != 'P'",
+    "        .filter(|c| c.eq_ignore_ascii_case(&'C'))\n        .count();\n    cys_count / 2",
+)
+PTM_TYPES = ("NGlycosylation", "PhosphoSer", "PhosphoThr", "PhosphoTyr", "DisulfideBond", "PkaSite", "Ck2Site",
+             "Myristoylation")
+
+
+def ptm_scan(seq):
+    """ptm::scan_ptm_sites: None, or [(position, residue, type, motif)] in Rust's order."""
+    if not seq:
+        return None
+    ch = [pr_up(c) for c in seq]
+    n = len(ch)
+    sites = []
+    for k in range(n):
+        if ch[k] == "N" and k + 3 < n and ch[k + 1] != "P" and ch[k + 2] in ("S", "T") and ch[k + 3] != "P":
+            sites.append((k, "N", "NGlycosylation", "".join(ch[k:k + 4])))
+        if ch[k] == "Y":
+            sites.append((k, "Y", "PhosphoTyr", "Y"))
+        if k + 3 < n and ch[k] in ("R", "K") and ch[k + 1] in ("R", "K") and ch[k + 3] in ("S", "T"):
+            sites.append((k + 3, ch[k + 3], "PkaSite", "".join(ch[k:k + 4])))
+        if k + 3 < n and ch[k] in ("S", "T") and ch[k + 3] in ("D", "E"):
+            sites.append((k, ch[k], "Ck2Site", "".join(ch[k:k + 4])))
+        if ch[k] == "S":
+            sites.append((k, "S", "PhosphoSer", "S"))
+        if ch[k] == "T":
+            sites.append((k, "T", "PhosphoThr", "T"))
+        if ch[k] == "C":
+            sites.append((k, "C", "DisulfideBond", "C"))
+    gly = 1 if ch[0] == "M" else 0
+    w = ch[gly:gly + 6]
+    if (len(w) == 6 and w[0] == "G" and w[1] not in ("E", "D", "R", "K", "H", "P", "F", "Y", "W")
+            and w[4] in ("S", "T", "A", "G", "C", "N") and w[5] != "P"):
+        sites.append((gly, "G", "Myristoylation", "".join(w)))
+    sites.sort(key=lambda x: x[0])
+    return sites
+
+
+def ptm_site_toks(x):
+    return [f"i:{x[0]}", s_tok(x[1]), f"e:PtmType.{x[2]}", s_tok(x[3])]
+
+
+def check_ptm(root, rows, rep):
+    """Every row of ptm.tsv against the model; rows per function."""
+    text = (root / "rust-old/src/ptm.rs").read_text()
+    for line in PTM_TEXT:
+        if line not in text:
+            rep.fail("rust-old/src/ptm.rs", f"no longer holds the modelled text {line[:60]!r}")
+            return {}
+    decl = re.search(r"pub enum PtmType \{(.*?)\n\}", text, re.S)
+    if decl is None or tuple(re.findall(r"^    (\w+),$", decl.group(1), re.M)) != PTM_TYPES:
+        rep.fail("rust-old/src/ptm.rs", f"PtmType's variants are not {PTM_TYPES}")
+        return {}
+    per = {}
+    for n, fn, cls, ins, outs in rows:
+        where = f"ptm.tsv:{n}"
+        try:
+            if fn == "ptm::scan_ptm_sites":
+                sites = ptm_scan(tok_bytes(ins[0]).decode("utf-8"))
+                want = ["n:"] if sites is None else [f"v:{len(sites)}"] + [t for x in sites for t in ptm_site_toks(x)]
+            elif fn == "ptm::disulfide_bond_count":
+                q = tok_bytes(ins[0]).decode("utf-8")
+                want = [f"i:{sum(1 for c in q if c in ('c', 'C')) // 2}"]
+            elif fn == "serde_json::to_string<PtmType>":
+                v = ins[0].split(".", 1)[1]
+                if v not in PTM_TYPES:
+                    raise ValueError(f"no PtmType::{v}")
+                want = [s_tok(json.dumps(v))]
+            elif fn == "serde_json::to_string<PtmSite>":
+                pos = int(ins[0][2:])
+                res = tok_bytes(ins[1]).decode("utf-8")
+                typ = ins[2].split(".", 1)[1]
+                motif = tok_bytes(ins[3]).decode("utf-8")
+                if typ not in PTM_TYPES or len(res) != 1:
+                    raise ValueError("not a PtmSite")
+                want = [s_tok(f'{{"position":{pos},"residue":{json.dumps(res, ensure_ascii=False)},'
+                              f'"ptm_type":"{typ}","motif":{json.dumps(motif, ensure_ascii=False)}}}')]
+            else:
+                rep.fail(where, f"{fn}: no model")
+                continue
+        except (ValueError, IndexError, KeyError, UnicodeDecodeError) as e:
+            rep.fail(where, f"{fn}{tuple(x[:40] for x in ins)}: {e}")
+            continue
+        if cls != "A":
+            rep.fail(where, f"{fn}: class {cls}, every ptm row is class A")
+            continue
+        per[fn] = per.get(fn, 0) + 1
+        if same_toks(outs, want):
+            rep.ok()
+        else:
+            rep.fail(where, f"{fn}{tuple(x[:40] for x in ins)}: golden {outs[:12]}, model {want[:12]}")
+    return per
+
+
 def main():
     root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
     rep = Report()
@@ -3812,6 +3932,7 @@ def main():
     pr_per = check_protein(root, pr_rows, extras.get("protein", {}), rep)
     al_rows = [r for r in tables.get("alignment.tsv", []) if r[1] != "alignment::substitution_score"]
     al_per = check_alignment(root, al_rows, extras.get("alignment", {}), rep)
+    ptm_per = check_ptm(root, tables.get("ptm.tsv", []), rep)
     total = sum(len(v) for v in tables.values())
     n_items, n_excused = extras.get("_counts", (0, 0))
     print(f"files: {len(files)}; rows: {total}; math classes: {dict(sorted(counts.items()))}")
@@ -3840,10 +3961,11 @@ def main():
           f"{dict(sorted(en_per.items()))}")
     print(f"protein: {sum(pr_per.values())} function and serde rows {dict(sorted(pr_per.items()))}")
     print(f"alignment: {sum(al_per.values())} score, Needleman-Wunsch and serde rows {dict(sorted(al_per.items()))}")
+    print(f"ptm: {sum(ptm_per.values())} scan, count and serde rows {dict(sorted(ptm_per.items()))}")
     print(
         f"independently checked: {rep.checked} (constants, src/constants.cyr, math classes A and B, the table rows, "
         f"every cell of the generated data files, every class-C math row against MPFR, guard, integrate and its "
-        f"corrections, logging, json, enzyme, membrane, signal, metabolism, energy, protein, alignment)"
+        f"corrections, logging, json, enzyme, membrane, signal, metabolism, energy, protein, alignment, ptm)"
     )
     print(f"FAILURES: {rep.failures}")
     return 1 if rep.failures else 0

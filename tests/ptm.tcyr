@@ -1,0 +1,276 @@
+# rasayan — src/ptm.cyr: Rust 1.2.0's ptm tests, ported
+# Stdlib auto-included via cyrius.cyml
+#
+# The 16 unit tests of `ptm.rs`, as they are written, and the Cyrius forms (the caller buffer, the motif range, the
+# documents); tests/golden/ptm.tsv checks every function on its corpus besides. A sequence is a C string (its bytes
+# are the UTF-8 Rust's &str holds), or a byte buffer where it holds a NUL.
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
+include "src/ptm.cyr"
+
+# The sites of the last scan, and how many (-1 for None).
+var _T_SITES = 0;
+var _T_COUNT = 0;
+var _T_SEQ = 0;
+
+# A word as a *RyPtmSite (the cast-helper idiom).
+#must_use
+fn as_sites(p): *RyPtmSite { return p; }
+
+# Scans the n bytes at seq into the shared buffer: the count, or -1 for None.
+fn scan_n(seq, n) {
+    if (_T_SITES == 0) { _T_SITES = alloc(40 * 3 * 64); }
+    var sites: *RyPtmSite = as_sites(_T_SITES);
+    var t, v = ry_scan_ptm_sites(seq, n, sites, 3 * 64);
+    if (is_err_result(t) == 1) { assert(0 == 1, "the scan fits the buffer"); }
+    _T_COUNT = v;
+    _T_SEQ = seq;
+    return v;
+}
+
+# scan_n on a C string.
+fn scan(seq) { return scan_n(seq, strlen(seq)); }
+
+# Site k of the last scan.
+#must_use
+fn site(k): *RyPtmSite {
+    var sites: *RyPtmSite = as_sites(_T_SITES);
+    return sites + k;
+}
+
+# The index of the j-th site of type t in the last scan, or -1.
+fn nth_of(t, j) {
+    var k = 0;
+    var seen = 0;
+    while (k < _T_COUNT) {
+        var s: *RyPtmSite = site(k);
+        if (s.ptm_type == t) {
+            if (seen == j) { return k; }
+            seen = seen + 1;
+        }
+        k = k + 1;
+    }
+    return 0 - 1;
+}
+
+# How many sites of type t the last scan found.
+fn of_type(t) {
+    var k = 0;
+    var c = 0;
+    while (k < _T_COUNT) {
+        var s: *RyPtmSite = site(k);
+        if (s.ptm_type == t) { c = c + 1; }
+        k = k + 1;
+    }
+    return c;
+}
+
+# 1 when site k's motif is the C string want.
+fn motif_is(k, want) {
+    var m[32];
+    var t, len = ry_ptm_site_motif(_T_SEQ, site(k), &m, 24);
+    if (is_err_result(t) == 1) { return 0; }
+    return len == strlen(want) && memeq(&m, want, len) == 1;
+}
+
+# The number of characters (UTF-8 lead bytes) in the n bytes at p.
+fn char_count(p, n) {
+    var c = 0;
+    var k = 0;
+    while (k < n) {
+        if ((load8(p + k) & 192) != 128) { c = c + 1; }
+        k = k + 1;
+    }
+    return c;
+}
+
+# rust src/ptm.rs: test_n_glycosylation, test_n_glycosylation_proline_after_acceptor_excluded
+# rust src/ptm.rs: test_n_glycosylation_proline_excluded, test_no_false_glycosylation
+fn glycosylation() {
+    test_group("ptm: N-glycosylation (PS00001)");
+    var G = RY_PTM_TYPE_N_GLYCOSYLATION;
+    scan("ANSTA");
+    var k = nth_of(G, 0);
+    assert(of_type(G) == 1 && site(k).position == 1 && motif_is(k, "NSTA") == 1, "ANSTA: NSTA at 1");
+    scan("ANSPA");
+    assert(of_type(G) == 0, "N-X-[ST]-P is no sequon");
+    scan("NATP");
+    assert(of_type(G) == 0, "NATP: P at +3");
+    scan("ANPS");
+    assert(of_type(G) == 0, "N-P-S: P at +1");
+    scan("NAS");
+    assert(of_type(G) == 0, "a C-terminal NAS: no residue at +3");
+    scan("NASA");
+    assert(of_type(G) == 1, "NASA matches");
+    scan("NAPA");
+    assert(of_type(G) == 0, "NAP never did");
+    return 0;
+}
+
+# rust src/ptm.rs: test_phospho_tyr, test_pka_site, test_ck2_site, test_disulfide_bond, test_disulfide_bond_count
+fn kinases_and_cys() {
+    test_group("ptm: phosphorylation, kinase motifs, Cys");
+    scan("AYA");
+    var y = nth_of(RY_PTM_TYPE_PHOSPHO_TYR, 0);
+    assert(of_type(RY_PTM_TYPE_PHOSPHO_TYR) == 1 && site(y).position == 1, "AYA: Tyr at 1");
+    scan("RRAST");
+    var p = nth_of(RY_PTM_TYPE_PKA_SITE, 0);
+    assert(of_type(RY_PTM_TYPE_PKA_SITE) == 1 && site(p).position == 3, "RRAST: PKA at the acceptor, 3");
+    assert(motif_is(p, "RRAS") == 1, "its motif RRAS");
+    scan("SAAE");
+    var c = nth_of(RY_PTM_TYPE_CK2_SITE, 0);
+    assert(of_type(RY_PTM_TYPE_CK2_SITE) == 1 && motif_is(c, "SAAE") == 1, "SAAE: CK2");
+    scan("ACAC");
+    assert(of_type(RY_PTM_TYPE_DISULFIDE_BOND) == 2, "ACAC: two Cys");
+    assert(ry_disulfide_bond_count("CCCC", 4) == 2, "CCCC: 2 bonds");
+    assert(ry_disulfide_bond_count("CCC", 3) == 1, "CCC: 1");
+    assert(ry_disulfide_bond_count("AAA", 3) == 0, "AAA: 0");
+    return 0;
+}
+
+# rust src/ptm.rs: test_myristoylation, test_myristoylation_after_initiator_met, test_myristoylation_full_pattern
+fn myristoylation() {
+    test_group("ptm: N-myristoylation (PS00008)");
+    var M = RY_PTM_TYPE_MYRISTOYLATION;
+    scan("GAAASA");
+    var k = nth_of(M, 0);
+    assert(of_type(M) == 1 && site(k).position == 0 && motif_is(k, "GAAASA") == 1, "GAAASA at 0");
+    scan("GAAAS");
+    assert(of_type(M) == 0, "too short for the pattern");
+    scan("MGSNKSKPKD");
+    k = nth_of(M, 0);
+    assert(of_type(M) == 1 && site(k).position == 1 && site(k).residue == 71, "c-Src: Gly2 after the Met");
+    assert(motif_is(k, "GSNKSK") == 1, "its motif GSNKSK");
+    var yes = 1;
+    if (scan("GAAAAA") < 0 || of_type(M) != 1) { yes = 0; }
+    if (scan("GAAAGA") < 0 || of_type(M) != 1) { yes = 0; }
+    if (scan("GAAACA") < 0 || of_type(M) != 1) { yes = 0; }
+    if (scan("GAAANA") < 0 || of_type(M) != 1) { yes = 0; }
+    if (scan("GAAATA") < 0 || of_type(M) != 1) { yes = 0; }
+    assert(yes == 1, "[STAGCN] at +4 takes A, G, C, N, T");
+    var no = 1;
+    if (scan("GKAASA") < 0 || of_type(M) != 0) { no = 0; }
+    if (scan("GPAASA") < 0 || of_type(M) != 0) { no = 0; }
+    if (scan("GWAASA") < 0 || of_type(M) != 0) { no = 0; }
+    if (scan("GAAALA") < 0 || of_type(M) != 0) { no = 0; }
+    if (scan("GAAASP") < 0 || of_type(M) != 0) { no = 0; }
+    assert(no == 1, "an excluded +1, a wrong +4, Pro at +5");
+    var nterm = 1;
+    if (scan("MAGAAASA") < 0 || of_type(M) != 0) { nterm = 0; }
+    if (scan("AGAAASA") < 0 || of_type(M) != 0) { nterm = 0; }
+    assert(nterm == 1, "only at the N-terminus (index 0, or 1 after Met)");
+    return 0;
+}
+
+# rust src/ptm.rs: test_sorted_by_position, test_whitespace_and_non_ascii_do_not_panic, test_empty, test_lowercase
+fn order_and_edges() {
+    test_group("ptm: order, edges, non-ASCII");
+    var sorted = 1;
+    var q = 0;
+    while (q < 3) {
+        var seq = "RRSS";
+        if (q == 1) { seq = "MGSNKSKPKD"; }
+        if (q == 2) { seq = "KRASNSTAYCSAAE"; }
+        scan(seq);
+        var k = 1;
+        while (k < _T_COUNT) {
+            if (site(k - 1).position > site(k).position) { sorted = 0; }
+            k = k + 1;
+        }
+        q = q + 1;
+    }
+    assert(sorted == 1, "sites by position");
+    scan("RRSS");
+    var p = nth_of(RY_PTM_TYPE_PKA_SITE, 0);
+    assert(of_type(RY_PTM_TYPE_PKA_SITE) == 1 && site(p).position == 3, "RRSS: PKA at 3");
+    var nul[8];
+    store8(&nul, 0);
+    var inside = 1;
+    var e = 0;
+    while (e < 6) {
+        var s = "ACD\nEFG";
+        if (e == 1) { s = "ACDÉFG"; }
+        if (e == 2) { s = "N🧬SA"; }
+        if (e == 3) { s = "MÉ"; }
+        if (e == 4) { s = "M"; }
+        var n = strlen(s);
+        if (e == 5) {
+            s = &nul;
+            n = 1;
+        }
+        if (scan_n(s, n) < 0) { inside = 0; }
+        var j = 0;
+        while (j < _T_COUNT) {
+            if (site(j).position >= char_count(s, n)) { inside = 0; }
+            j = j + 1;
+        }
+        e = e + 1;
+    }
+    assert(inside == 1, "whitespace, non-ASCII and NUL: every position inside the sequence");
+    scan("ÉNASA");
+    var g = nth_of(RY_PTM_TYPE_N_GLYCOSYLATION, 0);
+    assert(of_type(RY_PTM_TYPE_N_GLYCOSYLATION) == 1 && site(g).position == 1, "positions are character indices");
+    scan("NA SA");
+    assert(of_type(RY_PTM_TYPE_N_GLYCOSYLATION) == 0, "whitespace never fills [ST]");
+    assert(ry_disulfide_bond_count("CÉC\n", strlen("CÉC\n")) == 1, "CÉC: one bond");
+    assert(scan("") == 0 - 1, "empty: None");
+    var upper = scan("ANST");
+    assert(upper >= 0 && scan("anst") == upper, "lowercase finds as many");
+    return 0;
+}
+
+# The Cyrius forms: the caller buffer (ADR 0002 row 3), the motif range (row 4), the documents.
+fn forms() {
+    test_group("ptm: the Cyrius forms");
+    var seq = "KRASNSTAYCSAAE";
+    var n = strlen(seq);
+    var count = scan(seq);
+    var small: *RyPtmSite = as_sites(alloc(40 * count));
+    store64(small, 77);
+    var t, v = ry_scan_ptm_sites(seq, n, small, count - 1);
+    var refused = is_err_result(t) == 1 && v == RY_ERR_BUFFER_TOO_SMALL;
+    assert(refused && load64(small) == 77, "one site short: refused, and nothing written");
+    var t2, v2 = ry_scan_ptm_sites(seq, n, small, count);
+    assert(is_err_result(t2) == 0 && v2 == count && memeq(small, _T_SITES, 40 * count) == 1, "exactly enough");
+    scan("rrasa");
+    var k = nth_of(RY_PTM_TYPE_PKA_SITE, 0);
+    if (k < 0) { k = 0; }
+    assert(_T_COUNT > 0 && site(k).residue == 83 && motif_is(k, "RRAS") == 1, "a lowercase motif reads uppercased");
+    var m[8];
+    var t3, v3 = ry_ptm_site_motif(_T_SEQ, site(k), &m, 3);
+    assert(is_err_result(t3) == 1 && v3 == RY_ERR_BUFFER_TOO_SMALL, "a motif buffer too small: refused");
+    var sb = str_builder_new();
+    var t4, v4 = ry_ptm_site_to_json(sb, _T_SEQ, site(k));
+    var want = "{\"position\":3,\"residue\":\"S\",\"ptm_type\":\"PkaSite\",\"motif\":\"RRAS\"}";
+    assert(load64(sb + 8) == strlen(want) && memeq(load64(sb), want, strlen(want)) == 1, "a site's document");
+    store64(sb + 8, 0);
+    var t5, v5 = ry_ptm_type_to_json(sb, RY_PTM_TYPE_CK2_SITE);
+    assert(load64(sb + 8) == 9 && memeq(load64(sb), "\"Ck2Site\"", 9) == 1, "a type by name");
+    var t6, v6 = ry_ptm_type_to_json(sb, RY_PTM_TYPE_COUNT);
+    assert(is_err_result(t6) == 1, "a value that is no type is refused");
+    return 0;
+}
+
+# Runs the ptm suite.
+fn main() {
+    alloc_init();
+    glycosylation();
+    kinases_and_cys();
+    myristoylation();
+    order_and_edges();
+    forms();
+    return assert_summary();
+}
+
+var exit_code = main();
+# assert_summary() returns the failure count; a wait status is 8 bits, so any failure exits 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

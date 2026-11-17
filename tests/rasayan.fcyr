@@ -32,6 +32,7 @@ include "src/protein_data.cyr"
 include "src/protein.cyr"
 include "src/alignment_data.cyr"
 include "src/alignment.cyr"
+include "src/ptm.cyr"
 
 var _fz_state = 0x2545F4914F6CDD1D;
 var _fz_bad = 0;
@@ -43,6 +44,7 @@ var _fz_codec_read = 0;
 var _fz_sb = 0;
 var _fz_protein = 0;
 var _fz_aligned = 0;
+var _fz_ptm = 0;
 
 # xorshift64*: the next pseudo-random word.
 fn fz_next(): i64 {
@@ -290,6 +292,58 @@ fn fuzz_alignment(data, len) {
     return 0;
 }
 
+# A word as a *RyPtmSite (the cast-helper idiom).
+#must_use
+fn _fz_as_sites(p): *RyPtmSite { return p; }
+
+# ptm: the scan on every input: Ok(-1) for an empty one, else at most three sites per byte, sorted, each inside the
+# sequence with a residue its pattern names and a motif range inside the input; the disulfide count is half the Cys
+# sites.
+fn fuzz_ptm(data, len) {
+    reset_via(_fz_arena);
+    var cap = RY_PTM_MAX_SITES_PER_RESIDUE * len;
+    var sites: *RyPtmSite = _fz_as_sites(alloc_via(_fz_arena, 40 * cap + 40));
+    var t, count = ry_scan_ptm_sites(data, len, sites, cap);
+    if (is_ok(t) == 0) {
+        _fz_bad = _fz_bad + 1;
+        return 0;
+    }
+    if (len == 0 || count < 0 || count > cap) {
+        if (len != 0 || count != 0 - 1) { _fz_bad = _fz_bad + 1; }
+        return 0;
+    }
+    # The characters as src/ptm.cyr reads them: an ASCII byte, or any other byte and the continuation bytes after it.
+    var chars = 0;
+    var b = 0;
+    while (b < len) {
+        var lead = load8(data + b);
+        b = b + 1;
+        if (lead >= 128) {
+            while (b < len && (load8(data + b) & 192) == 128) { b = b + 1; }
+        }
+        chars = chars + 1;
+    }
+    var cys = 0;
+    var last = 0;
+    var k = 0;
+    while (k < count) {
+        var s: *RyPtmSite = sites + k;
+        var r = s.residue;
+        var named = r == 78 || r == 89 || r == 83 || r == 84 || r == 67 || r == 71;
+        if (s.position < last || s.position >= chars || named == 0) { _fz_bad = _fz_bad + 1; }
+        if (s.ptm_type < 0 || s.ptm_type >= RY_PTM_TYPE_COUNT) { _fz_bad = _fz_bad + 1; }
+        if (s.motif_start < 0 || s.motif_len < 1 || s.motif_len > 24 || s.motif_start + s.motif_len > len) {
+            _fz_bad = _fz_bad + 1;
+        }
+        if (s.ptm_type == RY_PTM_TYPE_DISULFIDE_BOND) { cys = cys + 1; }
+        last = s.position;
+        k = k + 1;
+    }
+    if (ry_disulfide_bond_count(data, len) != cys / 2) { _fz_bad = _fz_bad + 1; }
+    _fz_ptm = _fz_ptm + count;
+    return 0;
+}
+
 # Copies seed `s` into buf and applies up to three random edits. Returns the new length.
 fn fz_mutate(buf, cap, s): i64 {
     var n = strlen(s);
@@ -331,7 +385,7 @@ fn main() {
     var buf = alloc(cap + 1);
     _fz_arena = arena_allocator_growable(65536);
     _fz_sb = str_builder_new();
-    var seeds = alloc(8 * 35);
+    var seeds = alloc(8 * 37);
     store64(seeds, "trace");
     store64(seeds + 8, "DEBUG");
     store64(seeds + 16, "info,warn");
@@ -367,6 +421,8 @@ fn main() {
     store64(seeds + 256, "acdkAAAAAAPAAANPDGvvvvv");
     store64(seeds + 264, "HEAGAWGHEEPAWHEAE");
     store64(seeds + 272, "MKTAYIAKQRQISFVKSHFSRQMKVLAAGIVGLLLAQPSHAEKR");
+    store64(seeds + 280, "MGSNKSKPKDKRASNSTAYCSAAERRSSNASA");
+    store64(seeds + 288, "MGÉ🧬ASANÉSARRÉSSÉÉEcCnasa");
     var i = 0;
     while (i < 50000) {
         var n = 0;
@@ -375,13 +431,14 @@ fn main() {
             var k = 0;
             while (k < n) { store8(buf + k, fz_below(256)); k = k + 1; }
         } else {
-            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(35)));
+            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(37)));
         }
         fuzz_main(buf, n);
         fuzz_json(buf, n);
         fuzz_membrane(buf, n);
         fuzz_protein(buf, n);
         fuzz_alignment(buf, n);
+        fuzz_ptm(buf, n);
         i = i + 1;
     }
     if (_fz_bad != 0) {
@@ -399,6 +456,8 @@ fn main() {
     fmt_int(_fz_protein);
     print(", halves aligned: ", 18);
     fmt_int(_fz_aligned);
+    print(", PTM sites: ", 13);
+    fmt_int(_fz_ptm);
     println(")");
     return 0;
 }

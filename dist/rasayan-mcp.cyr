@@ -8443,3 +8443,327 @@ fn ry_alignment_score_to_json_a(a, sb, s: *RyAlignmentScore): Result {
 fn ry_alignment_score_to_json(sb, s: *RyAlignmentScore): Result {
     return ry_alignment_score_to_json_a(default_alloc(), sb, s);
 }
+
+# --- ptm.cyr ---
+
+# ptm.cyr — post-translational modification site prediction: the PROSITE N-glycosylation (PS00001), PKA (PS00004),
+# CK2 (PS00006) and N-myristoylation (PS00008) motifs, the generic Ser/Thr/Tyr phospho-acceptors and the Cys disulfide
+# candidates (Rust 1.2.0's `ptm.rs`, transcribed). Short consensus patterns with high false-positive rates: a hit is a
+# candidate, not a prediction of an actual modification.
+#
+# A sequence is `(seq, n)`: n bytes of UTF-8 at seq (Rust's `&str`). Rust matches `chars()` and reports character
+# indices, and its wildcard (`x`) and exclusion (`{P}`) slots take any character, a non-ASCII one included; so the
+# scan here steps by character (a lead byte and its continuation bytes), counts positions in characters, and lets a
+# non-ASCII character fill a slot that wants no particular residue. Invalid UTF-8, which a Rust `&str` cannot hold,
+# is read the same way: an ASCII byte is one character, any other byte begins one that takes the continuation bytes
+# after it (so a stray continuation byte begins a non-ASCII character). Every result is exact (class A in
+# tests/golden/ptm.tsv).
+#
+# The Cyrius forms (ADR 0002 rows 2–4):
+# - PtmType is `enum RyPtmType`, its values Rust's declaration order (append-only);
+# - `scan_ptm_sites`'s `Option<Vec<PtmSite>>` fills a caller buffer of RyPtmSite records and returns Ok(count), Ok(-1)
+#   for None (an empty sequence; a Some may be empty), or Err(RY_ERR_BUFFER_TOO_SMALL), with nothing written;
+# - PtmSite's `motif: String` is a byte range into the caller's sequence, Rust's motif being those characters with
+#   ASCII letters uppercased (`ry_ptm_site_motif` writes it); its `residue: char` is the code point;
+# - PtmType and PtmSite write `ry_<type>_to_json` (and `_a`, on an allocator).
+
+# The kinds of modification site (Rust's `PtmType`). The values are append-only.
+enum RyPtmType {
+    RY_PTM_TYPE_N_GLYCOSYLATION = 0;
+    RY_PTM_TYPE_PHOSPHO_SER = 1;
+    RY_PTM_TYPE_PHOSPHO_THR = 2;
+    RY_PTM_TYPE_PHOSPHO_TYR = 3;
+    RY_PTM_TYPE_DISULFIDE_BOND = 4;
+    RY_PTM_TYPE_PKA_SITE = 5;
+    RY_PTM_TYPE_CK2_SITE = 6;
+    RY_PTM_TYPE_MYRISTOYLATION = 7;
+}
+
+# The number of PtmType values.
+const RY_PTM_TYPE_COUNT = 8;
+
+# The most sites one character carries (an S or T: CK2, the phospho-acceptor and a PKA acceptor), so 3 · n records
+# always hold the sites of an n-byte sequence.
+const RY_PTM_MAX_SITES_PER_RESIDUE = 3;
+
+# The variant name of a PtmType (`"NGlycosylation"`, as serde writes it), or 0 for a value that is none.
+#must_use
+#pure
+fn ry_ptm_type_name(t): cstring {
+    match t {
+        RY_PTM_TYPE_N_GLYCOSYLATION => { return "NGlycosylation"; }
+        RY_PTM_TYPE_PHOSPHO_SER => { return "PhosphoSer"; }
+        RY_PTM_TYPE_PHOSPHO_THR => { return "PhosphoThr"; }
+        RY_PTM_TYPE_PHOSPHO_TYR => { return "PhosphoTyr"; }
+        RY_PTM_TYPE_DISULFIDE_BOND => { return "DisulfideBond"; }
+        RY_PTM_TYPE_PKA_SITE => { return "PkaSite"; }
+        RY_PTM_TYPE_CK2_SITE => { return "Ck2Site"; }
+        RY_PTM_TYPE_MYRISTOYLATION => { return "Myristoylation"; }
+        _ => { return 0; }
+    }
+    return 0;
+}
+
+# A predicted modification site (Rust's `PtmSite`): the character index, the residue (an uppercase ASCII code point),
+# the RyPtmType, and the motif as the byte range [motif_start, motif_start + motif_len) of the scanned sequence.
+struct RyPtmSite {
+    position;
+    residue;
+    ptm_type;
+    motif_start;
+    motif_len;
+}
+
+# The byte length of the character starting at byte k of the n bytes at seq (k < n): 1 for an ASCII byte, else the
+# byte and the continuation bytes after it.
+#must_use
+fn _ry_ptm_char_len(seq, n, k): i64 {
+    if (load8(seq + k) < 128) { return 1; }
+    var e = k + 1;
+    while (e < n && (load8(seq + e) & 192) == 128) { e = e + 1; }
+    return e - k;
+}
+
+# The character starting at byte k, as the scan compares it: an ASCII byte uppercased (Rust's `to_ascii_uppercase`),
+# 256 for a non-ASCII character (it equals no residue), -1 past the end (k >= n).
+#must_use
+fn _ry_ptm_code(seq, n, k): i64 {
+    if (k >= n) { return 0 - 1; }
+    var c = load8(seq + k);
+    if (c >= 128) { return 256; }
+    if (c >= 97 && c <= 122) { c = c - 32; }
+    return c;
+}
+
+# Writes site k (when k < cap) and returns k + 1.
+#must_use
+fn _ry_ptm_put(out: *RyPtmSite, cap, k, position, residue, ptm_type, start, end): i64 {
+    if (k < cap) {
+        var s: *RyPtmSite = out + k;
+        s.position = position;
+        s.residue = residue;
+        s.ptm_type = ptm_type;
+        s.motif_start = start;
+        s.motif_len = end - start;
+    }
+    return k + 1;
+}
+
+# 1 when the code is S or T.
+#must_use
+#pure
+#inline
+fn _ry_ptm_st(c): i64 { return c == 83 || c == 84; }
+
+# The position of the N-myristoylation Gly (PS00008 `G-{EDRKHPFYW}-x(2)-[STAGCN]-{P}` on the six characters from
+# index 0, or from index 1 after an initiator Met) and its window's byte range, or (-1, 0, 0) for none.
+#must_use
+fn _ry_ptm_myristoyl(seq, n): (i64, i64, i64) {
+    var gly = 0;
+    var b = 0;
+    var c0 = _ry_ptm_code(seq, n, 0);
+    if (c0 == 77) {
+        gly = 1;
+        b = _ry_ptm_char_len(seq, n, 0);
+        c0 = _ry_ptm_code(seq, n, b);
+    }
+    # No Gly where the pattern starts: no site (the window's first test, made before the window is read).
+    if (c0 != 71) { return (0 - 1, 0, 0); }
+    var w[56];
+    var start = b;
+    var k = 0;
+    while (k < _RY_PTM_MYRISTOYL_LEN) {
+        if (b >= n) { return (0 - 1, 0, 0); }
+        store64(&w + 8 * k, _ry_ptm_code(seq, n, b));
+        b = b + _ry_ptm_char_len(seq, n, b);
+        k = k + 1;
+    }
+    if (load64(&w) != 71) { return (0 - 1, 0, 0); }
+    var c1 = load64(&w + 8);
+    if (c1 == 69 || c1 == 68 || c1 == 82 || c1 == 75 || c1 == 72 || c1 == 80 || c1 == 70 || c1 == 89 || c1 == 87) {
+        return (0 - 1, 0, 0);
+    }
+    var c4 = load64(&w + 32);
+    if (c4 != 83 && c4 != 84 && c4 != 65 && c4 != 71 && c4 != 67 && c4 != 78) { return (0 - 1, 0, 0); }
+    if (load64(&w + 40) == 80) { return (0 - 1, 0, 0); }
+    return (gly, start, b);
+}
+
+# The scan: the sites of the n > 0 bytes at seq in Rust's order, the first `cap` written to out (none when cap is 0);
+# returns how many there are. Rust pushes each position's sites as it passes it, a PKA site three characters on (at its
+# acceptor) and the myristoyl Gly last, then sorts stably by position; so at each position this emits the PKA site
+# found three characters back, then the position's own sites in Rust's push order, then the myristoyl site, which is
+# the sorted order, with no sort.
+#must_use
+fn _ry_ptm_scan(seq, n, out: *RyPtmSite, cap): i64 {
+    var myr, myr_start, myr_end = _ry_ptm_myristoyl(seq, n);
+    # The pending PKA sites, by acceptor position mod 4: the position (-1 for none), its residue and motif range.
+    var pk[128];
+    var q = 0;
+    while (q < 4) {
+        store64(&pk + 32 * q, 0 - 1);
+        q = q + 1;
+    }
+    # The characters at positions i .. i + 3 (c0 .. c3, -1 past the end) and the bytes where i .. i + 4 start.
+    var b0 = 0;
+    var b1 = _ry_ptm_char_len(seq, n, 0);
+    var b2 = b1;
+    if (b2 < n) { b2 = b2 + _ry_ptm_char_len(seq, n, b2); }
+    var b3 = b2;
+    if (b3 < n) { b3 = b3 + _ry_ptm_char_len(seq, n, b3); }
+    var b4 = b3;
+    if (b4 < n) { b4 = b4 + _ry_ptm_char_len(seq, n, b4); }
+    var c0 = _ry_ptm_code(seq, n, 0);
+    var c1 = _ry_ptm_code(seq, n, b1);
+    var c2 = _ry_ptm_code(seq, n, b2);
+    var c3 = _ry_ptm_code(seq, n, b3);
+    var k = 0;
+    var i = 0;
+    while (c0 >= 0) {
+        var slot = &pk + 32 * (i & 3);
+        if (load64(slot) == i) {
+            var pk_res = load64(slot + 8);
+            k = _ry_ptm_put(out, cap, k, i, pk_res, RY_PTM_TYPE_PKA_SITE, load64(slot + 16), load64(slot + 24));
+        }
+        if (c0 == 78 && c3 >= 0 && c1 != 80 && _ry_ptm_st(c2) && c3 != 80) {
+            k = _ry_ptm_put(out, cap, k, i, 78, RY_PTM_TYPE_N_GLYCOSYLATION, b0, b4);
+        }
+        if (c0 == 89) { k = _ry_ptm_put(out, cap, k, i, 89, RY_PTM_TYPE_PHOSPHO_TYR, b0, b1); }
+        if ((c0 == 82 || c0 == 75) && (c1 == 82 || c1 == 75) && _ry_ptm_st(c3)) {
+            var ps = &pk + 32 * ((i + 3) & 3);
+            store64(ps, i + 3);
+            store64(ps + 8, c3);
+            store64(ps + 16, b0);
+            store64(ps + 24, b4);
+        }
+        if (_ry_ptm_st(c0) && (c3 == 68 || c3 == 69)) {
+            k = _ry_ptm_put(out, cap, k, i, c0, RY_PTM_TYPE_CK2_SITE, b0, b4);
+        }
+        if (c0 == 83) { k = _ry_ptm_put(out, cap, k, i, 83, RY_PTM_TYPE_PHOSPHO_SER, b0, b1); }
+        if (c0 == 84) { k = _ry_ptm_put(out, cap, k, i, 84, RY_PTM_TYPE_PHOSPHO_THR, b0, b1); }
+        if (c0 == 67) { k = _ry_ptm_put(out, cap, k, i, 67, RY_PTM_TYPE_DISULFIDE_BOND, b0, b1); }
+        if (i == myr) { k = _ry_ptm_put(out, cap, k, i, 71, RY_PTM_TYPE_MYRISTOYLATION, myr_start, myr_end); }
+        # The next character, as _ry_ptm_code and _ry_ptm_char_len read it, written in place (one call fewer each).
+        c0 = c1;
+        c1 = c2;
+        c2 = c3;
+        b0 = b1;
+        b1 = b2;
+        b2 = b3;
+        b3 = b4;
+        c3 = 0 - 1;
+        if (b4 < n) {
+            var lead = load8(seq + b4);
+            b4 = b4 + 1;
+            if (lead >= 128) {
+                lead = 256;
+                while (b4 < n && (load8(seq + b4) & 192) == 128) { b4 = b4 + 1; }
+            } elif (lead >= 97 && lead <= 122) {
+                lead = lead - 32;
+            }
+            c3 = lead;
+        }
+        i = i + 1;
+    }
+    return k;
+}
+
+# Scans the n bytes of UTF-8 at seq for candidate modification sites into the `cap` RyPtmSite records at out, sorted by
+# position (the sites at one position in Rust's detection order). Ok(count) (0 when none is found), Ok(-1) for an
+# empty sequence (Rust's None), or Err(RY_ERR_BUFFER_TOO_SMALL) when more than `cap` sites are found (nothing is
+# written; RY_PTM_MAX_SITES_PER_RESIDUE · n records always suffice). Unknown residues, whitespace and non-ASCII are
+# not validated: they never fill a slot that wants a particular residue, and they do fill the wildcard and exclusion
+# slots. Positions are character indices. Mirrors `ptm::scan_ptm_sites`.
+#must_use
+fn ry_scan_ptm_sites(seq, n, out: *RyPtmSite, cap): Result {
+    if (n <= 0) { return Ok(0 - 1); }
+    if (cap < RY_PTM_MAX_SITES_PER_RESIDUE * n && _ry_ptm_scan(seq, n, out, 0) > cap) {
+        return Err(_ry_fail_text(RY_ERR_BUFFER_TOO_SMALL, "scan_ptm_sites", 14));
+    }
+    return Ok(_ry_ptm_scan(seq, n, out, cap));
+}
+
+# The number of potential disulfide bonds in the n bytes at seq: its Cys residues (C or c) in pairs, rounded down.
+# Mirrors `ptm::disulfide_bond_count`.
+#must_use
+#pure
+fn ry_disulfide_bond_count(seq, n): i64 {
+    var cys = 0;
+    var k = 0;
+    while (k < n) {
+        var c = load8(seq + k);
+        if (c == 67 || c == 99) { cys = cys + 1; }
+        k = k + 1;
+    }
+    return cys / 2;
+}
+
+# Writes site s's motif, as Rust's `PtmSite::motif` holds it (the bytes of seq it spans, ASCII letters uppercased),
+# into the `cap` bytes at buf: Ok(length), or Err(RY_ERR_BUFFER_TOO_SMALL) (nothing written). A motif is at most six
+# characters, 24 bytes.
+#must_use
+fn ry_ptm_site_motif(seq, s: *RyPtmSite, buf, cap): Result {
+    var len = s.motif_len;
+    if (len > cap) { return Err(RY_ERR_BUFFER_TOO_SMALL); }
+    var p = seq + s.motif_start;
+    var k = 0;
+    while (k < len) {
+        var c = load8(p + k);
+        if (c >= 97 && c <= 122) { c = c - 32; }
+        store8(buf + k, c);
+        k = k + 1;
+    }
+    return Ok(len);
+}
+
+# ── JSON (P7: serde_json's documents) ──
+
+# Appends PtmType `t` as serde_json writes a unit variant (`"PkaSite"`): Ok(0), Err(RY_ERR_INVALID_PARAMETER) for a
+# value that is none, or Err(RY_ERR_OUT_OF_MEMORY). Serialize only in Rust.
+#must_use
+fn ry_ptm_type_to_json_a(a, sb, t): Result {
+    var name = ry_ptm_type_name(t);
+    if (name == 0) { return Err(RY_ERR_INVALID_PARAMETER); }
+    if (_ry_jw_unit(a, sb, name) != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return Ok(0);
+}
+
+# ry_ptm_type_to_json_a on the default allocator (a builder from str_builder_new).
+#must_use
+fn ry_ptm_type_to_json(sb, t): Result {
+    return ry_ptm_type_to_json_a(default_alloc(), sb, t);
+}
+
+# Appends PtmSite `s` of sequence `seq` as serde_json writes it, `{"position":…,"residue":…,"ptm_type":…,"motif":…}`
+# (the residue a one-character string, the motif as ry_ptm_site_motif gives it): Ok(0), Err(RY_ERR_INVALID_PARAMETER)
+# for a site that no scan gives (a type that is none, a residue outside ASCII, a motif over 24 bytes), or
+# Err(RY_ERR_OUT_OF_MEMORY). Serialize only in Rust.
+#must_use
+fn ry_ptm_site_to_json_a(a, sb, seq, s: *RyPtmSite): Result {
+    var name = ry_ptm_type_name(s.ptm_type);
+    var res = s.residue;
+    if (name == 0 || res < 0 || res > 127) { return Err(RY_ERR_INVALID_PARAMETER); }
+    var m[24];
+    var tm, len = ry_ptm_site_motif(seq, s, &m, 24);
+    if (is_err_result(tm) == 1) { return Err(RY_ERR_INVALID_PARAMETER); }
+    var rb[8];
+    store8(&rb, res);
+    var r = _ry_jw_byte(a, sb, 123);
+    r = r | _ry_jw_key(a, sb, "position", 1);
+    r = r | _ry_jw_u64(a, sb, s.position);
+    r = r | _ry_jw_key(a, sb, "residue", 0);
+    r = r | _ry_jw_char(a, sb, &rb, 1);
+    r = r | _ry_jw_key(a, sb, "ptm_type", 0);
+    r = r | _ry_jw_unit(a, sb, name);
+    r = r | _ry_jw_key(a, sb, "motif", 0);
+    r = r | _ry_jw_str(a, sb, &m, len);
+    r = r | _ry_jw_byte(a, sb, 125);
+    if (r != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return Ok(0);
+}
+
+# ry_ptm_site_to_json_a on the default allocator.
+#must_use
+fn ry_ptm_site_to_json(sb, seq, s: *RyPtmSite): Result {
+    return ry_ptm_site_to_json_a(default_alloc(), sb, seq, s);
+}

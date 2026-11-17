@@ -1221,3 +1221,41 @@ the i32 range, so clamping the exact sum is `saturating_add`, and one clamp of t
 6.8 ns a cell against Rust's 2.1 (571.5 µs for 300 × 280, 173.9 in Rust). The review took the cell from three
 clamps to one, exactly, because a clamp is monotone; together with locals, pointer steps and a branchless sign
 extension that is 917.2 → 571.5 µs. Putting the table pick inline took substitution_score from 23 to 18 ns.
+
+### 6c. Part 3: ptm (2026-11-17)
+
+**What is compared.** `tests/golden/ptm.tsv`, a new module of 3,568 rows through the oracle's public API:
+`scan_ptm_sites` over 1,762 sequences (the edges, every Rust test's sequence, 1,344 with one slot of a pattern filled
+with each of 64 characters, the six proteins in both cases, 300 seeded sequences and a 3,000-residue protein);
+`disulfide_bond_count` over the same sequences and a 100,000-residue one; the serde documents of the eight `PtmType`
+values and of 35 sites. The slot characters are both cases of the alphabet, space, newline, tab, NUL, DEL, `"`, `\`,
+a digit, three 2-byte letters and a 4-byte emoji. Each slot is one of PS00001's four, PKA's four, CK2's three, or the
+myristoylation window's, at index 0 and after the initiator Met. A scan row is `v:<count>`, then each site's position,
+residue, type and motif; a non-ASCII character in a wildcard slot puts it in the motif, and in the position count as
+one character. Every row is class A.
+
+| Check | Result |
+|---|---|
+| every row | identical on the first run; each scan row also checks that a buffer one site short is refused and left as it was, and that an exact buffer gives the same records |
+| corrected oracle | no arithmetic: no `ptm.cr.tsv` |
+| `validate.py` | every row re-derived from its own transcription of `ptm.rs` (pinned lines; `PtmType`'s variants read from its source), Python's `str` as Rust's `chars()`, `list.sort` as the stable `sort_by_key`; 102,405 checks in all |
+| Rust tests | 16 ported (`tests/ptm.tcyr`, 37 checks: the unit tests and the Cyrius forms); the ledger at 323 of 723, 0 due and unported |
+| fuzz | every input scanned: Ok(-1) only when empty, at most three sites a byte, positions sorted and inside the sequence, a residue its pattern names, a motif range inside the input, the disulfide count half the Cys sites (110,475 sites) |
+| three targets (`scripts/gates.sh`, 264 s) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 99,738 ok, 234 accepted, 0 failed; coverage 136 of 136 public fns executed |
+
+**The Cyrius forms** (ADR 0002 rows 2–4): `PtmType` is `RyPtmType`, append-only values 0–7 in Rust's declaration
+order. The scan reads characters, not bytes, because a non-ASCII character fills a wildcard or exclusion slot and
+then counts as one position. An ASCII byte is one character, and any other byte starts one that takes the
+continuation bytes after it. That is `chars()` for valid UTF-8, and it stays in bounds on invalid input. The scan
+keeps a window of four characters, codes and start bytes, and decodes one character a step. Rust pushes a PKA site at
+its acceptor three characters on and the myristoyl Gly last, then sorts stably by position. So at each position the
+port emits the PKA site found three characters back, then the position's own sites in Rust's push order, then the
+myristoyl site, which is the sorted order without a sort (a four-slot ring holds the pending PKA sites). A site is
+five words; its motif is a byte range of the sequence, read with ASCII letters uppercased as Rust's `to_ascii_uppercase`
+leaves it. `Option<Vec<…>>` is `Ok(count)` or `Ok(-1)`: a Some can be empty here, unlike `chou_fasman`'s. A buffer of
+3 · n records (`RY_PTM_MAX_SITES_PER_RESIDUE`: an S or T carries CK2, its phospho site and a PKA acceptor) is filled
+in one pass; a smaller one gets a counting pass first, so a refused buffer is never written.
+
+**Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): ptm_scan_20 is 374 ns against
+Rust's 190 (Rust allocates a Vec and a String per site; the port writes a caller buffer). The review decoded the
+next character in the loop itself and stopped the myristoylation check at a missing Gly: 560 → 374 ns.

@@ -6,7 +6,7 @@
 > milestone hasn't come. The golden corpus (`tests/golden/`) checks every ported function on its grid besides.
 > The 2 doc tests and the example are M9's.
 
-**723 Rust tests:** 307 ported; 40 at M3, 53 at M4a, 80 at M4b, 38 at M5, 108 at M6, 62 at M7, 35 at M8.
+**723 Rust tests:** 323 ported; 24 at M3, 53 at M4a, 80 at M4b, 38 at M5, 108 at M6, 62 at M7, 35 at M8.
 
 | Rust file | Tests | Ported | Due, unported | Later (milestone) |
 |---|---:|---:|---:|---|
@@ -33,14 +33,14 @@
 | `src/pathway.rs` | 34 | 0 | 0 | 34 (M5) |
 | `src/pi3k.rs` | 11 | 0 | 0 | 11 (M6) |
 | `src/protein.rs` | 68 | 68 | 0 | — |
-| `src/ptm.rs` | 16 | 0 | 0 | 16 (M3) |
+| `src/ptm.rs` | 16 | 16 | 0 | — |
 | `src/receptor.rs` | 12 | 0 | 0 | 12 (M6) |
 | `src/signal.rs` | 21 | 21 | 0 | — |
 | `src/signaling.rs` | 13 | 0 | 0 | 13 (M6) |
 | `src/tca.rs` | 26 | 0 | 0 | 26 (M4a) |
 | `tests/integration.rs` | 70 | 33 | 0 | 2 (M4a), 10 (M4b), 4 (M5), 15 (M6), 6 (M7) |
 | `tests/validation.rs` | 25 | 25 | 0 | — |
-| **Total** | **723** | **307** | **0** | |
+| **Total** | **723** | **323** | **0** | |
 
 ## Where each is ported
 
@@ -274,6 +274,22 @@
 | `src/protein.rs` `test_try_lookup_ok` | `tests/protein.tcyr` `lookups` |
 | `src/protein.rs` `test_whitespace_and_non_ascii_do_not_panic` | `tests/protein.tcyr` `robustness` |
 | `src/protein.rs` `test_with_lehninger_is_the_default` | `tests/protein.tcyr` `pka_sets` |
+| `src/ptm.rs` `test_ck2_site` | `tests/ptm.tcyr` `kinases_and_cys` |
+| `src/ptm.rs` `test_disulfide_bond` | `tests/ptm.tcyr` `kinases_and_cys` |
+| `src/ptm.rs` `test_disulfide_bond_count` | `tests/ptm.tcyr` `kinases_and_cys` |
+| `src/ptm.rs` `test_empty` | `tests/ptm.tcyr` `order_and_edges` |
+| `src/ptm.rs` `test_lowercase` | `tests/ptm.tcyr` `order_and_edges` |
+| `src/ptm.rs` `test_myristoylation` | `tests/ptm.tcyr` `myristoylation` |
+| `src/ptm.rs` `test_myristoylation_after_initiator_met` | `tests/ptm.tcyr` `myristoylation` |
+| `src/ptm.rs` `test_myristoylation_full_pattern` | `tests/ptm.tcyr` `myristoylation` |
+| `src/ptm.rs` `test_n_glycosylation` | `tests/ptm.tcyr` `glycosylation` |
+| `src/ptm.rs` `test_n_glycosylation_proline_after_acceptor_excluded` | `tests/ptm.tcyr` `glycosylation` |
+| `src/ptm.rs` `test_n_glycosylation_proline_excluded` | `tests/ptm.tcyr` `glycosylation` |
+| `src/ptm.rs` `test_no_false_glycosylation` | `tests/ptm.tcyr` `glycosylation` |
+| `src/ptm.rs` `test_phospho_tyr` | `tests/ptm.tcyr` `kinases_and_cys` |
+| `src/ptm.rs` `test_pka_site` | `tests/ptm.tcyr` `kinases_and_cys` |
+| `src/ptm.rs` `test_sorted_by_position` | `tests/ptm.tcyr` `order_and_edges` |
+| `src/ptm.rs` `test_whitespace_and_non_ascii_do_not_panic` | `tests/ptm.tcyr` `order_and_edges` |
 | `src/signal.rs` `test_activations_clamp_out_of_range_state` | `tests/signal.tcyr` `activation_hardening` |
 | `src/signal.rs` `test_activations_sanitize_intensity` | `tests/signal.tcyr` `activation_hardening` |
 | `src/signal.rs` `test_dose_response_at_ec50` | `tests/signal.tcyr` `binding` |

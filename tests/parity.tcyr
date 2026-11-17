@@ -70,6 +70,7 @@ include "src/metabolism.cyr"
 include "src/energy.cyr"
 include "src/protein.cyr"
 include "src/alignment.cyr"
+include "src/ptm.cyr"
 
 alloc_init();
 
@@ -2102,6 +2103,117 @@ fn _par_math(fp, fl): i64 {
     return 0;
 }
 
+# ── ptm ─────────────────────────────────────────────────────────────────────────────
+# src/ptm.cyr (M3 part 3).
+
+# Input token k as a PtmType (`e:PtmType.<Variant>`): its RyPtmType value, by the port's own names; -1 otherwise.
+fn _par_ptm_type(k): i64 {
+    if (k >= _par_in_n || load64(_par_in_k + 8 * k) != 101) { return 0 - 1; }
+    var p = load64(_par_in_v + 8 * k);
+    var l = load64(_par_in_l + 8 * k);
+    if (l < 9 || memeq(p, "PtmType.", 8) != 1) { return 0 - 1; }
+    var t = 0;
+    while (t < RY_PTM_TYPE_COUNT) {
+        if (_par_eq(p + 8, l - 8, ry_ptm_type_name(t)) == 1) { return t; }
+        t = t + 1;
+    }
+    return 0 - 1;
+}
+
+# An allocation as a *RyPtmSite (the cast-helper idiom).
+#must_use
+fn _par_as_sites(p): *RyPtmSite { return p; }
+
+# Appends PtmType t as its golden text (`PtmType.<Variant>`).
+fn _par_got_ptm_type(t) {
+    var name = ry_ptm_type_name(t);
+    var nl = strlen(name);
+    var buf = alloc(nl + 9);
+    memcpy(buf, "PtmType.", 8);
+    memcpy(buf + 8, name, nl);
+    store8(buf + 8 + nl, 0);
+    _par_got_e(buf);
+    return 0;
+}
+
+# The ptm rows (src/ptm.cyr, M3 part 3): scan_ptm_sites (each site's position, residue, type and motif; a buffer one
+# site short is refused and left as it was), disulfide_bond_count, and the serde rows.
+fn _par_ptm(fp, fl): i64 {
+    var lw[8];
+    if (_par_eq(fp, fl, "ptm::scan_ptm_sites") == 1) {
+        var seq = _par_in_bytes(0, &lw);
+        var n = load64(&lw);
+        if (_par_in_n != 1 || seq == 0) { return 0 - 1; }
+        var cap = RY_PTM_MAX_SITES_PER_RESIDUE * n;
+        var sites: *RyPtmSite = _par_as_sites(alloc(40 * cap + 40));
+        var t, count = ry_scan_ptm_sites(seq, n, sites, cap);
+        if (is_err_result(t) == 1) { return 0 - 1; }
+        if (count < 0) {
+            _par_got_none();
+            return 1;
+        }
+        if (count > 0) {
+            var small: *RyPtmSite = _par_as_sites(alloc(40 * count));
+            store64(small, 0x5A5A5A5A);
+            var ts, vs = ry_scan_ptm_sites(seq, n, small, count - 1);
+            if (is_err_result(ts) == 0 || vs != RY_ERR_BUFFER_TOO_SMALL) { return 0 - 1; }
+            if (load64(small) != 0x5A5A5A5A) { return 0 - 1; }
+            var te, ve = ry_scan_ptm_sites(seq, n, small, count);
+            if (is_err_result(te) == 1 || ve != count) { return 0 - 1; }
+            if (memeq(small, sites, 40 * count) != 1) { return 0 - 1; }
+        }
+        _par_got_seq(count);
+        var k = 0;
+        while (k < count) {
+            var s: *RyPtmSite = sites + k;
+            _par_got_i(s.position);
+            _par_got_char(s.residue);
+            _par_got_ptm_type(s.ptm_type);
+            var m = alloc(32);
+            var tm, ml = ry_ptm_site_motif(seq, s, m, 24);
+            if (is_err_result(tm) == 1) { return 0 - 1; }
+            _par_got_text(m, ml);
+            k = k + 1;
+        }
+        return 1;
+    }
+    if (_par_eq(fp, fl, "ptm::disulfide_bond_count") == 1) {
+        var q = _par_in_bytes(0, &lw);
+        if (_par_in_n != 1 || q == 0) { return 0 - 1; }
+        _par_got_i(ry_disulfide_bond_count(q, load64(&lw)));
+        return 1;
+    }
+    if (_par_jsb == 0) { _par_jsb = str_builder_new(); }
+    var jb = _par_jsb;
+    store64(jb + 8, 0);
+    if (_par_eq(fp, fl, "serde_json::to_string<PtmType>") == 1) {
+        var pt = _par_ptm_type(0);
+        if (_par_in_n != 1 || pt < 0) { return 0 - 1; }
+        var t1, v1 = ry_ptm_type_to_json(jb, pt);
+        if (is_err_result(t1) == 1) { return 0 - 1; }
+        _par_got_text(load64(jb), load64(jb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::to_string<PtmSite>") == 1) {
+        if (_par_in_n != 4 || load64(_par_in_k) != 105) { return 0 - 1; }
+        var mot = _par_in_bytes(3, &lw);
+        var res = _par_in_codepoint(1);
+        var st = _par_ptm_type(2);
+        if (mot == 0 || res < 0 || st < 0) { return 0 - 1; }
+        var site: RyPtmSite;
+        site.position = _par_in(0);
+        site.residue = res;
+        site.ptm_type = st;
+        site.motif_start = 0;
+        site.motif_len = load64(&lw);
+        var t2, v2 = ry_ptm_site_to_json(jb, mot, &site);
+        if (is_err_result(t2) == 1) { return 0 - 1; }
+        _par_got_text(load64(jb), load64(jb + 8));
+        return 1;
+    }
+    return 0;
+}
+
 # ── routing and hooks ───────────────────────────────────────────────────────────────
 
 # Routes a row to its module's dispatcher. 0 (pending) for a module or function with no Cyrius code yet: the module
@@ -2112,6 +2224,7 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
     if (_par_eq(mp, ml, "math") == 1) { return _par_math(fp, fl); }
     if (_par_eq(mp, ml, "protein") == 1) { return _par_protein(fp, fl); }
     if (_par_eq(mp, ml, "alignment") == 1) { return _par_alignment(fp, fl); }
+    if (_par_eq(mp, ml, "ptm") == 1) { return _par_ptm(fp, fl); }
     if (_par_eq(mp, ml, "enzyme") == 1) { return _par_enzyme(fp, fl); }
     if (_par_eq(mp, ml, "membrane") == 1) { return _par_membrane(fp, fl); }
     if (_par_eq(mp, ml, "signal") == 1) { return _par_signal(fp, fl); }

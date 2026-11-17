@@ -14,11 +14,28 @@ three-target baselines and `scripts/gates.sh`, step 9's probes 1–4, 8 and 12) 
 the profiles, and step 10's upstream drafts). M0 is complete. M1 part 1 (the foundation's error codes, guard layer
 and integrators), part 2 (logging, the failure events, the surface-parity and Rust-test gates) and part 3 (the
 JSON writers and readers) follow: M1 is complete. M2 part 1 (enzyme), part 2 (membrane), part 3 (signal), part 4
-(metabolism) and part 5 (energy) follow: M2 is complete. M3 part 1 (protein) and part 2 (alignment)
+(metabolism) and part 5 (energy) follow: M2 is complete. M3 parts 1–3 (protein, alignment, ptm)
 follow.
 
 ### Added
 
+- **src/ptm.cyr** (M3 part 3) — `ptm.rs` transcribed: `RyPtmType`, `ry_scan_ptm_sites` (the PROSITE N-glycosylation,
+  PKA, CK2 and N-myristoylation patterns, the Ser/Thr/Tyr acceptors and the Cys candidates, matched by character with
+  positions as character indices; the sites go into a caller buffer of `RyPtmSite` records in Rust's sorted order,
+  emitted in that order with no sort), `ry_disulfide_bond_count`, `ry_ptm_site_motif` (a motif is a byte range into
+  the sequence, read with ASCII letters uppercased) and the serde writers of PtmType and PtmSite
+- **tests/golden/ptm.tsv** (M3 part 3, 3,568 rows, a new module) — `scan_ptm_sites` over 1,762 sequences (the edges;
+  every Rust test's sequence; each slot of the four patterns filled with 64 characters: both cases, whitespace,
+  control characters, `"` and `\`, 2- and 4-byte UTF-8; the six proteins in both cases; 300 seeded sequences; a
+  3,000-residue protein), `disulfide_bond_count` over them and a 100,000-residue sequence, and the serde documents
+  (escapes and non-ASCII motifs among them). All class A, all matching on the first run; `validate.py` models every
+  row (102,405 independent checks)
+- **tests/ptm.tcyr** (M3 part 3, 37 checks) — the 16 `ptm.rs` unit tests as they are written, and the Cyrius forms (a
+  buffer one site short refused and left as it was, a lowercase motif read uppercased, the documents): the Rust-test
+  ledger at 323 of 723, 0 due and unported. The fuzz harness scans every input: 110,475 sites, each sorted, inside
+  the sequence, with a residue its pattern names and a motif inside the input; the disulfide count is half the Cys
+  sites
+- **benchmarks** (M3 part 3) — ptm_scan_20, Rust → Cyrius: 190 → 374 ns
 - **src/alignment.cyr** (M3 part 2) — `alignment.rs` transcribed: `RyMatrix` over the generated BLOSUM62 and PAM250
   tables, `ry_substitution_score`, `ry_score_alignment` (`RyAlignmentScore`; Rust's byte-length check, then the
   residues), and Needleman-Wunsch (`ry_needleman_wunsch_a`: two rolling rows of the shorter sequence, Rust's swap kept,
@@ -451,6 +468,11 @@ follow.
 
 ### Changed
 
+- **tests/parity.tcyr** (M3 part 3) — the ptm dispatcher: each scan row also checks that a buffer one site short is
+  refused and left as it was, and that an exact buffer gives the same records
+- **scripts/surface_parity.py**, **scripts/rust_test_ledger.py** (M3 part 3) — ptm is ported: its 14 public items
+  have their names
+- **cyrius.cyml** (M3 part 3) — `src/ptm.cyr` in the three bundles after `src/alignment.cyr`
 - **tests/parity.tcyr** (M3 part 2) — `alignment::substitution_score`'s 1,008 table rows run through the ported
   `ry_substitution_score` (M0 answered them from the generated tables)
 - **scripts/surface_parity.py**, **scripts/rust_test_ledger.py** (M3 part 2) — alignment is ported: its 9 public
@@ -563,6 +585,8 @@ follow.
 
 ### Performance
 
+- **src/ptm.cyr** (M3 part 3, review) — the scan decodes the next character in place, and the myristoylation check
+  stops at a missing Gly before it reads its window: ptm_scan_20 560 → 374 ns (Rust 190)
 - **src/alignment.cyr** (M3 part 2, review) — one clamp per Needleman-Wunsch cell instead of three (the clamp of
   the max of the exact sums is Rust's max of saturated sums), the row values in locals, pointer steps, and a branchless
   sign extension: needleman_wunsch_300 917.2 → 571.5 µs, needleman_wunsch_10 1,532 → 1,056 ns (Rust 173.9 µs, 441 ns);

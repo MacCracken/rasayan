@@ -135,3 +135,14 @@ the same as on a quiet machine. The review cut the Needleman-Wunsch cell from th
 `diag.max(up).max(left)` over saturated sums equals the clamp of the max of the exact i64 sums, because a clamp is
 monotone, so every cell keeps its value and the 5,530 rows are unchanged. The loop also carries `prev[j]` and
 `curr[j]` in locals, steps pointers instead of multiplying indices, and sign-extends the matrix byte without a branch.
+
+## M3 part 3: ptm
+
+| Benchmark | Rust 1.2.0 (ns) | Cyrius (ns) | Before review (ns) | Notes |
+|---|---|---|---|---|
+| ptm_scan_20 | 189.71 | 374 | 560 | the 20 residues once (four sites); a caller buffer of 60 records, where Rust allocates a Vec and a String per site |
+
+Measured at load 4.0–4.7 (another project's jobs), with the reference rows 2–3 % above their quiet values (nernst 82
+ns against 80, score_alignment 199 against 194). The review decoded the next character in the scan loop itself
+instead of two helper calls per character (560 → 447 ns). It also stopped the myristoylation check at a missing Gly
+before it decodes its six-character window (447 → 384; 374 on the final run).
