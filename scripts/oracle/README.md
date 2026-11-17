@@ -14,6 +14,7 @@ cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml          
 cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml -- --check  # verify
 python3 -I -B scripts/oracle/validate.py .                                          # independent check
 python3 -I -B scripts/oracle/probe_tables.py . --all-targets                       # every generated value, compiled
+python3 -I -B scripts/oracle/mpfr_ref.py [--write . | --check .]                   # MPFR self-checks; tests/golden/math.cr.tsv
 ```
 
 `--check` regenerates every output in memory and compares it byte for byte. It exits 1 on:
@@ -119,7 +120,8 @@ Pending, at their milestones (port plan §4 step 6, §6):
   joining the module files the tables seeded; the `PkaSet`-dependent pI and charge rows and the
   Chou-Fasman predictions are M3's;
 - the JSON rows (each module's milestone) and the MCP / request rows (M8);
-- the corrected-oracle files `<module>.cr.tsv` (ADR 0003, M0 part 2c, `mpfr_ref.py`).
+- a corrected-oracle file `<module>.cr.tsv` for each module with class-C rows, with that module's
+  operation model in `mpfr_ref.py` and `validate.py` (M2 on; `math.cr.tsv` since part 2c-1, below).
 
 ## Format 1
 
@@ -259,14 +261,60 @@ rustfmt's layout and Python's arithmetic; nothing shared with `rustsrc.rs`):
   their offsets), every declaration accounted for, names `RY_` / `_RY_` and unique across all
   generated files, f64 literals positional.
 
-On this corpus: 11,540 values checked (7,866 of them part 2a's), 0 failures. Class C rows
-(11,094) are checked against MPFR by the corrected-oracle tooling (M0 part 2c), not here. Run it
-with `python3 -I -B`. A tampered row fails it, as checked when it was written: a constant's bits,
+Since part 2c-1 it also checks the corrected oracle, `tests/golden/math.cr.tsv` (next section):
+every class-C math row is recomputed correctly rounded with its own MPFR binding, nothing shared
+with `mpfr_ref.py` — MPFR's default exponent range (about 2^±2^30, so binary64's subnormals and
+overflow are not MPFR's to handle), a Ziv loop from 128 to 16,384 bits that stops when both ends of
+the result's error interval round to the same double, and the final rounding to binary64 (ties to
+even, subnormals, overflow) in Python integer arithmetic. The file must list exactly the rows where
+that value differs from the golden one, in golden order (a key the corpus repeats once per row), each
+with the correctly rounded output and the note the format gives; its header must carry the golden
+file's provenance and an MPFR version. On the recorded libm platform each listed glibc value must
+also be what Python's `math` returns, which calls the same glibc.
+
+On this corpus: 22,634 values checked (part 2b's 11,540 and the 11,094 class-C rows), 0 failures.
+Run it with `python3 -I -B`. A tampered row fails it, as checked when it was written: a constant's bits,
 a `max` row's signed zero, a `powi(1.1, 4)` row set to the left-fold result, and a
 `src/constants.cyr` literal (part 2a); BLOSUM62 W–W set to 12 in a golden row (the row and the
 `_data.cyr` cell both fail), a Chou-Fasman bend frequency in a source-derived row, Trp's mass in
-`src/protein_data.cyr`, and one byte of an EC-number blob in `src/enzyme_data.cyr` (part 2b).
-Each gave exit 1.
+`src/protein_data.cyr`, and one byte of an EC-number blob in `src/enzyme_data.cyr` (part 2b);
+the `exp(-59.49995704921839)` correction deleted from `math.cr.tsv` (part 2c-1: the row count and
+the missing misrounded row both fail). Each gave exit 1.
+
+## mpfr_ref.py and the corrected oracle (ADR 0003)
+
+`mpfr_ref.py` (M0 part 2c-1, from ushma's, kimiya's originally) calls the system MPFR (4.x,
+`libmpfr.so.6`, through ctypes; no Python package): 53 bits, binary64's exponent range (emin =
+−1073, emax = 1024), `mpfr_subnormalize`. That makes each of its primitives — `exp`, `expm1`, `log`,
+`pow`, the four rasayan's library calls through Rust std — the IEEE round-to-nearest-even value of
+the exact function, exact ties and subnormals included. Its self-checks (run on every invocation;
+`python3 -I -B scripts/oracle/mpfr_ref.py` runs only them) cover exact ties, the subnormal and
+overflow ends, signed zeros and C99's special values, `expm1(x) = x` for tiny x, `pow(x, 0.5) =
+sqrt(x)`, and `pow(10, k)` against Python's correctly rounded `float("1ek")` for every k from −330
+to 311 (the Henderson–Hasselbalch sites).
+
+`--write .` evaluates Rust's operation sequence for every class-C row of `math.tsv` with these
+primitives. A math row is one call: `f64::powf` is `pow` (the `10_f64.powf(x)` rows too, which
+call glibc's `pow`, not `exp10`: "Where the math rows come from"), `f64::exp` is `exp`, `f64::ln`
+`log` and `f64::exp_m1` `expm1`. Each row whose correctly rounded output differs from the golden
+(glibc's) one goes to `tests/golden/math.cr.tsv`:
+
+```text
+fn <TAB> inputs <TAB> corrected outputs <TAB> note
+```
+
+- **fn** and **inputs** are the golden row's, byte for byte: the key the harness matches. A key the
+  corpus repeats gets one row per occurrence (the harness uses each correction once, in file order).
+- **outputs** are format-1 tokens, the oracle's operations with every primitive correctly rounded.
+- **note** is `oracle <outputs>; <fn>(<args>) glibc f:<g> correctly rounded f:<c>`.
+- The five-line header carries the golden file's provenance (so `--check` of the generator reads
+  the same libm platform from it), the MPFR version and the row count.
+
+`--check .` regenerates the file in memory and compares it byte for byte. At part 2c-1: 96 of the
+11,094 class-C rows, each 1 ulp — `exp_m1` 94 (85 on `integrate::step_factors`' branch above
+`SERIES_MAX`), `exp` 1, `powf` 1, `ln` 0. `tests/parity.tcyr` loads the file and compares each such
+row against the corrected outputs (ADR 0003 item 2): measured while class C runs on the stdlib,
+gated at 0 ulp from part 2c-2, when a port value equal to glibc's misrounded one is a failure.
 
 ## probe_tables.py
 

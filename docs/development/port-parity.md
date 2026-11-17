@@ -119,8 +119,8 @@ zero's sign is visible in class A rows and in serde_json's text (`-0.0`).
 | ceil | IEEE ceil, −0 kept | builtin `f64_ceil` |
 | negation | Rust's `-x` (sign flip, −0 for +0) | unary minus on a typed `f64`, or `f64_neg` (§0.7) |
 
-These are written at M1 (not here) and checked against the class A/B `math` rows by the parity
-harness (M0 step 7).
+They are written test-side at M0 part 2c-1 (`tests/parity_math.cyr`, the forms above) and the parity
+harness checks them against every class A/B `math` row: 0 failures (§2a). M1 moves them into `src/`.
 
 ### 0.9 The Rust side, re-derived
 
@@ -142,9 +142,91 @@ row. The output is byte-identical on x86_64 ELF, aarch64 (qemu) and x86_64 PE (w
 literals convert to the same bits on every target, and an `i8` cell reads back sign-extended
 (PAM250 C–W is −8) on all three.
 
-## 2. Baselines on three targets (M0 step 8)
+## 2. Baselines (M0 step 8)
 
-*Pending (M0 part 3).*
+### 2a. The parity harness (M0 part 2c-1, 2026-11-16)
+
+`cyrius test` runs `tests/parity.tcyr` (with `tests/parity_core.cyr` and `tests/ulp.cyr`, from
+ushma's harness) over the whole corpus, warning-free:
+
+`=== parity summary: 8 modules, 0 failing | rows: 9069 ok, 0 failed, 11094 measured, 0 pending, 0 accepted (ADR 3: 0), 0 glibc-matching (failed) ===`
+
+The same on x86_64 ELF, `--bounds` and aarch64 (qemu, `cyrius test --aarch64`); PE at part 3.
+
+- **ok, 9,069.** The 108 `const` rows (constants 67, constants_private 16, protein 23, enzyme 1,
+  ai 1) against `src/constants.cyr`, `src/constants_private.cyr` and the data files' scalars; the
+  1,229 table rows against the generated columns, with every index constant checked
+  (`AMINO_ACIDS[i]`, `LOOKUP_INDEX`, the side chains, the four pKa sets, the Bjellqvist termini,
+  `CHOU_FASMAN`, `KNOWN_ENZYMES[i]`, `DEFAULT_PERMEABILITY`; and `lookup`, `lookup_enzyme` and
+  all 1,008 `substitution_score` rows, which apply the Rust function's rule to the generated
+  tables until M2/M3 port the functions); and the 7,732 class A/B math rows.
+- **Class A/B math, on the §0.8 helpers and the builtins.** `_ry_min` / `_ry_max` (931 rows each),
+  `_ry_clamp` (845), `_ry_is_finite` / `_ry_is_nan` (37 each), `_ry_f64_to_u32` (99), `f64_abs`
+  (477) and `f64_ceil` (2,023) are bit-identical on every row; `f64_sqrt` (1,284) and `_ry_powi`
+  (1,068, `__powidf2`'s order) are at 0 ulp on every row, so no class-B row needed its tolerance.
+  The shadow lines show what the stdlib alone would give: `f64_max` / `f64_min` differ on 59 of
+  931 rows each, every one a NaN second operand (§0.1); `f64_clamp` matches all 845; `f64_to`
+  differs from `as u32` on 14 of 99 (negatives, ±∞, 2³² and past, §0.6).
+- **measured, 11,094: the class-C rows**, on the stdlib's current functions against the corrected
+  oracle (§2b, §2c), until M0 part 2c-2 gates them at 0 ulp on `src/mathx.cyr`.
+- **pending, 0**: every row so far has Cyrius code to answer it (the module rows arrive from M1 on;
+  a row with no dispatcher entry is reported pending).
+
+The comparison rules were checked by tampering, then restoring, one row each: BLOSUM62 W–W set to 12
+(class A), `sqrt(2.2250738585072014e-308)` moved 3 ulp (class B; a 1-ulp move of `sqrt(5e-324)` in
+the same run passed and was listed as needing the tolerance), and `sqrt(−0)` given +0 (a zero of the
+other sign, class B). Each gave `1 failing` and exit 1. The same +0 in the class-C `exp_m1(−0)` row
+stayed measured and showed in the line's `zero-sign:1` bucket.
+
+### 2b. glibc against MPFR: the corrected oracle (ADR 0003, 2026-11-16)
+
+`python3 -I -B scripts/oracle/mpfr_ref.py --write .` evaluates every class-C math row correctly
+rounded (MPFR 4.2.2: 53 bits, binary64's exponent range, subnormalized; each row is one call, the
+`10_f64.powf` rows included, which are glibc `pow`). glibc 2.44 (x86_64 fma) misrounds **96 of
+11,094**, each by 1 ulp. They are `tests/golden/math.cr.tsv`; `validate.py` re-derives the same 96
+with its own MPFR binding (`scripts/oracle/README.md`), and checks on this platform that each
+listed glibc value is what Python's `math` (the same glibc) returns.
+
+| Function | Rows | glibc misrounds |
+|---|---|---|
+| powf | 5,056 | 1: `pow(4.695799439058017, 5.956605217514028)` |
+| exp | 2,292 | 1: `exp(-59.49995704921839)` |
+| ln | 2,108 | 0 |
+| exp_m1 | 1,638 | **94**, 85 of them among the 1,458 rows of `integrate::step_factors`' branch above `SERIES_MAX` (`(−y).exp_m1()`, y ∈ [0.0625, 800]), the branch every `tick()` takes for a large step: 5.8 % of those rows |
+
+### 2c. The stdlib's class-C counterparts against the corrected oracle (M0 part 2c-1)
+
+What the stdlib would give in place of ADR 0003's primitives: the harness's measured rows, as the
+ulp distance from the correctly rounded value (`math.cr.tsv` where it has the row, else the golden
+row). Rows at 0 / 1 ulp; none is further, except the one non-finite `pow` row.
+
+| Function (rows) | Counterpart | x86_64 ELF | aarch64 | On the corrected rows |
+|---|---|---|---|---|
+| powf (5,056) | `ganita_f64_pow` | 4,584 / 471, + 1 non-finite | same | glibc's misrounding (1 of 1) |
+| exp (2,292) | `f64_exp` builtin (x87 on x86_64) | 2,261 / 31 | 2,086 / 206 | correct (1 of 1) |
+| | `_f64_exp_polyfill` | 2,086 / 206 | same | correct |
+| ln (2,108) | `f64_ln` builtin (x87 on x86_64) | 2,108 / 0 | 2,050 / 58 | — |
+| | `_f64_ln_polyfill` | 2,050 / 58 | same | — |
+| exp_m1 (1,638) | ganita's private `_gn_expm1` (the stdlib's only expm1) | 1,543 / 95 | same | glibc's misrounding (94 of 94) |
+
+Against glibc instead (the same run before `math.cr.tsv` existed): `ganita_f64_pow` 470 rows off,
+`f64_exp` 32, `_f64_exp_polyfill` 207, `f64_ln` 0, `_f64_ln_polyfill` 58, `_gn_expm1` 1.
+
+- **No stdlib function is correctly rounded on these rows.** The x87 builtins come closest on x86
+  (`f64_ln` is right on every row) but are target-dependent: on aarch64 the builtins are the
+  polyfills. The polyfills give the same bits everywhere and are 1 ulp off on 9.0 % (exp) and
+  2.8 % (ln) of the rows.
+- **`ganita_f64_pow`** is 1 ulp off on 9.3 % of the rows and gives +∞ for `pow(−1, DBL_MAX)`,
+  where C99 and glibc give 1 (ganita's known defect, tanmatra ADR 0007, kimiya ADR 0004).
+- **`_gn_expm1`** (fdlibm's `s_expm1.c`, as glibc's is) repeats all 94 of glibc's misroundings and
+  adds one: it is 1 ulp off on 5.8 % of the rows, most of them in the integrators' branch.
+- So each of the four primitives needs ADR 0003's correctly rounded `_ry_cr_*` (M0 part 2c-2): the
+  gain over the best target-independent stdlib option is 206 exp, 58 ln, 471 + 1 pow and 95 expm1
+  rows of these 11,094, and over glibc the 96 rows of §2b.
+
+### 2d. Three targets
+
+*PE (wine) and the full three-target run: pending (M0 part 3).*
 
 ## 3. Probes 1–8 (M0 step 9)
 

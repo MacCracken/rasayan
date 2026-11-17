@@ -22,8 +22,14 @@ compares bit for bit:
   sqrt and powi are recomputed in IEEE double arithmetic (Python floats are binary64; powi follows
   `__powidf2`'s order; min/max follow Rust 1.100's recorded semantics: a NaN operand is ignored
   and (±0, ∓0) gives the second operand, as probe 0 and the disassembly found), and each function
-  must carry the class the port plan gives it. Class C rows (glibc's powf, exp, ln and exp_m1) are
-  checked against MPFR by the corrected-oracle tooling (ADR 0003, M0 part 2c), not here;
+  must carry the class the port plan gives it;
+- the corrected oracle (ADR 0003, M0 part 2c), `tests/golden/math.cr.tsv`, which `mpfr_ref.py`
+  writes: every class-C math row (powf, exp, ln, exp_m1) is recomputed correctly rounded with a
+  second MPFR binding of its own (MPFR's default exponent range, a Ziv loop over the precision,
+  the final rounding to binary64 in integer arithmetic; nothing shared with `mpfr_ref.py`). The
+  file must list exactly the rows where glibc's golden value differs, in golden order, each with
+  the correctly rounded output and its note; and, on the corpus's recorded libm platform, each
+  listed glibc value must be this machine's libm result (Python's `math` calls the same glibc);
 - the table data (M0 part 2b), with its own reader of the Rust source (regular expressions over
   rustfmt's layout and Python's binary64 arithmetic, nothing shared with the generator's
   tokenizer): every row of `protein`, `alignment`, `enzyme`, `membrane`, `ai` and
@@ -38,8 +44,11 @@ Exit status 1 on any failure; the last line is `FAILURES: <n>`.
 """
 
 import ast
+import ctypes
+import ctypes.util
 import math
 import pathlib
+import platform
 import re
 import struct
 import sys
@@ -412,6 +421,256 @@ def check_math(rows, rep):
     if missing:
         rep.fail("math.tsv", f"no rows for {missing}")
     return counts
+
+
+# ── the corrected oracle (ADR 0003): tests/golden/math.cr.tsv, re-derived with a second MPFR binding ──
+#
+# mpfr_ref.py writes the file with MPFR at 53 bits in binary64's exponent range (`mpfr_subnormalize`). This shares
+# nothing with it: its own ctypes binding, MPFR's default exponent range (about 2^±2^30, far wider than binary64's), a
+# Ziv loop over the working precision, and the final rounding to binary64 (ties to even, subnormals, overflow) done
+# here in integer arithmetic. A mistake in either binding's precision, exponent range or subnormal handling makes the
+# two disagree. (It must not share a process with mpfr_ref.py either: MPFR's exponent range is global state.)
+
+class _MpfrT(ctypes.Structure):
+    """mpfr_t on LP64."""
+    _fields_ = [("prec", ctypes.c_long), ("sign", ctypes.c_int), ("exp", ctypes.c_long), ("d", ctypes.c_void_p)]
+
+
+class IndependentMpfr:
+    """Correctly rounded binary64 values of exp, expm1, log and pow from MPFR at high precision."""
+
+    PRECISIONS = (128, 256, 512, 1024, 2048, 4096, 8192, 16384)
+    UNARY = {"exp", "expm1", "log"}
+    BINARY = {"pow"}
+
+    def __init__(self):
+        m = ctypes.CDLL(ctypes.util.find_library("mpfr") or "libmpfr.so.6")
+        ref = ctypes.POINTER(_MpfrT)
+        m.mpfr_get_version.restype = ctypes.c_char_p
+        m.mpfr_init2.argtypes = [ref, ctypes.c_long]
+        m.mpfr_set_prec.argtypes = [ref, ctypes.c_long]
+        m.mpfr_set_d.argtypes = [ref, ctypes.c_double, ctypes.c_int]
+        for name in self.UNARY:
+            getattr(m, "mpfr_" + name).argtypes = [ref, ref, ctypes.c_int]
+        for name in self.BINARY:
+            getattr(m, "mpfr_" + name).argtypes = [ref, ref, ref, ctypes.c_int]
+        for name in ("nan_p", "inf_p", "zero_p", "signbit"):
+            getattr(m, "mpfr_" + name).argtypes = [ref]
+        m.mpfr_get_str.restype = ctypes.c_void_p
+        m.mpfr_get_str.argtypes = [ctypes.c_char_p, ctypes.POINTER(ctypes.c_long), ctypes.c_int, ctypes.c_size_t,
+                                   ref, ctypes.c_int]
+        m.mpfr_free_str.argtypes = [ctypes.c_void_p]
+        m.mpfr_get_emin.restype = ctypes.c_long
+        self.m = m
+        self.version = m.mpfr_get_version().decode()
+        self.x, self.y, self.r = _MpfrT(), _MpfrT(), _MpfrT()
+        for v, prec in ((self.x, 64), (self.y, 64), (self.r, self.PRECISIONS[0])):
+            m.mpfr_init2(ctypes.byref(v), prec)
+        if m.mpfr_get_emin() > -1_000_000:
+            raise RuntimeError("MPFR's exponent range is not its default, which this check needs (far wider than "
+                               "binary64's)")
+
+    @staticmethod
+    def round_binary64(m, e):
+        """The binary64 value nearest m * 2^e (m >= 0 an integer): ties to even, subnormals, overflow to inf."""
+        if m == 0:
+            return 0.0
+        top = m.bit_length() - 1 + e  # m * 2^e lies in [2^top, 2^(top + 1))
+        q = max(top - 52, -1074)  # the exponent of a binary64 ulp there
+        shift = q - e
+        if shift <= 0:
+            n = m << -shift
+        else:
+            n = m >> shift
+            rem = m - (n << shift)
+            half = 1 << (shift - 1)
+            if rem > half or (rem == half and n & 1):
+                n += 1
+        try:
+            return math.ldexp(n, q)  # n <= 2^53: exact unless it overflows
+        except OverflowError:
+            return math.inf
+
+    def value(self, name, args):
+        """The correctly rounded binary64 value of MPFR function `name` (exp, expm1, log, pow) at `args`."""
+        m = self.m
+        x, y, r = ctypes.byref(self.x), ctypes.byref(self.y), ctypes.byref(self.r)
+        m.mpfr_set_d(x, args[0], 0)
+        if name in self.BINARY:
+            m.mpfr_set_d(y, args[1], 0)
+        for prec in self.PRECISIONS:
+            m.mpfr_set_prec(r, prec)
+            m.mpfr_clear_flags()
+            if name in self.BINARY:
+                t = m.mpfr_pow(r, x, y, 0)
+            else:
+                t = getattr(m, "mpfr_" + name)(r, x, 0)
+            neg = m.mpfr_signbit(r) != 0
+            if m.mpfr_nan_p(r):
+                return math.nan
+            if m.mpfr_inf_p(r) or m.mpfr_overflow_p():
+                return -math.inf if neg else math.inf
+            if m.mpfr_zero_p(r) or m.mpfr_underflow_p():
+                return -0.0 if neg else 0.0  # exact, or below 2^emin: nothing binary64 can hold but a zero
+            ep = ctypes.c_long(0)
+            sp = m.mpfr_get_str(None, ctypes.byref(ep), 2, prec, r, 0)
+            digits = ctypes.string_at(sp).decode()
+            m.mpfr_free_str(sp)
+            sig = int(digits.lstrip("-"), 2)  # r = 0.<digits> * 2^ep = sig * 2^(ep - prec)
+            e = ep.value - prec
+            if t == 0:
+                v = self.round_binary64(sig, e)  # r is the exact value
+            else:
+                # The exact value is strictly inside (sig - 1, sig + 1) * 2^e. When both ends round alike, so does
+                # everything between them; and it is not a tie, which an exact result would have shown.
+                v = self.round_binary64(sig - 1, e)
+                if bits(v) != bits(self.round_binary64(sig + 1, e)):
+                    continue
+            return -v if neg else v
+        raise RuntimeError(f"{name}{tuple(args)}: undecided at {self.PRECISIONS[-1]} bits")
+
+
+CR_SUFFIX = ".cr.tsv"
+CR_FN = {  # golden fn -> (the MPFR function its one call is, the libm function glibc's value came from)
+    "f64::powf": ("pow", math.pow),  # also `10_f64.powf(x)`: glibc's pow, no exp10 (README, the libm attribution)
+    "f64::exp": ("exp", math.exp),
+    "f64::ln": ("log", math.log),
+    "f64::exp_m1": ("expm1", math.expm1),
+}
+CR_COLUMNS = (
+    "# columns: fn<TAB>inputs<TAB>outputs<TAB>note (fn, inputs: the golden row's, byte for byte; outputs: the "
+    "oracle's operations with every primitive result correctly rounded; note: the oracle's outputs, then each call "
+    "glibc misrounded)"
+)
+
+
+def running_platform():
+    """`glibc 2.44 x86_64 fma`, as scripts/oracle/src/glibc.rs names it."""
+    _lib, ver = platform.libc_ver()
+    arch = platform.machine()
+    cpu = "generic"
+    if arch == "x86_64":
+        flags = set()
+        try:
+            with open("/proc/cpuinfo") as f:
+                for line in f:
+                    if line.startswith("flags"):
+                        flags = set(line.split(":", 1)[1].split())
+                        break
+        except OSError:
+            pass
+        cpu = "fma" if {"fma", "avx2"} <= flags else "no-fma"
+    return f"glibc {ver} {arch} {cpu}"
+
+
+def fbits(x):
+    return f"f:{bits(x):016x}"
+
+
+def check_corrections(root, tables, rep):
+    """tests/golden/math.cr.tsv against an independent MPFR recomputation of every class-C math row: every listed row
+    really is misrounded by glibc and carries the correctly rounded outputs, and no misrounded row is missing.
+    Returns the misrounded rows per function, the class-C rows recomputed and the MPFR version."""
+    gold = root / "tests/golden"
+    for stale in sorted(gold.glob("*" + CR_SUFFIX)):
+        if stale.name != f"math{CR_SUFFIX}":
+            rep.fail(stale.name, "a corrected oracle for a module with no class-C model here (only math has one)")
+    mp = IndependentMpfr()
+    golden_text = (gold / "math.tsv").read_text()
+    prov = golden_text.split("\n", 2)[1].split(". Generated by", 1)[0]
+    exact = prov.split("libm: ", 1)[1] == running_platform()
+    # Every class-C row recomputed; the rows where glibc's value differs are what the file must hold, in golden order
+    # (a key the corpus repeats is listed once per row: the harness uses each correction once).
+    rows = {}  # (fn, inputs) -> (golden output token, MPFR function, args, correctly rounded value)
+    derived = []
+    evaluated = 0
+    for n, fn, cls, ins, outs in tables.get("math.tsv", []):
+        if cls != "C":
+            continue
+        if fn not in CR_FN:
+            rep.fail(f"math.tsv:{n}", f"class-C {fn} has no corrected-oracle model")
+            continue
+        name = CR_FN[fn][0]
+        args = [tok_f(t) for t in ins]
+        if len(args) != (2 if name in IndependentMpfr.BINARY else 1) or len(outs) != 1:
+            rep.fail(f"math.tsv:{n}", f"{fn}: {len(args)} inputs, {len(outs)} outputs")
+            continue
+        key = (fn, " ".join(ins))
+        c = mp.value(name, args)
+        evaluated += 1
+        if key in rows and rows[key][0] != outs[0]:
+            rep.fail(f"math.tsv:{n}", f"{fn} {key[1]} has two different golden outputs")
+        rows[key] = (outs[0], name, args, c)
+        if not same(c, tok_f(outs[0])):
+            derived.append(key)
+    per = {}
+    for fn, _ in derived:
+        per[fn] = per.get(fn, 0) + 1
+    path = gold / f"math{CR_SUFFIX}"
+    if not path.exists():
+        if derived:
+            rep.fail(path.name, f"missing; {len(derived)} rows need a correction (mpfr_ref.py --write)")
+        return per, evaluated, mp.version
+    text = path.read_text()
+    if not text.endswith("\n"):
+        rep.fail(path.name, "no final newline")
+    lines = text.split("\n")[:-1]
+    head, body = lines[:5], lines[5:]
+    tail = ". Generated by scripts/oracle/mpfr_ref.py; do not edit."
+    version = re.fullmatch(re.escape(prov) + r"\. Correctly rounded: MPFR ([0-9]+\.[0-9]+\.[0-9]+)" + re.escape(tail),
+                           head[1] if len(head) > 1 else "")
+    want_head = [
+        "# rasayan corrected oracle (ADR 0003), format 1: math",
+        head[1] if version else f"{prov}. Correctly rounded: MPFR <version>{tail}",
+        "# regenerate: python3 -I -B scripts/oracle/mpfr_ref.py --write .",
+        CR_COLUMNS,
+        f"# rows: {len(body)}",
+    ]
+    for k, w in enumerate(want_head):
+        if k >= len(head) or head[k] != w:
+            rep.fail(f"{path.name}:{k + 1}", f"header line {head[k] if k < len(head) else None!r}, expected {w!r}")
+    listed = []
+    for k, line in enumerate(body, 6):
+        where = f"{path.name}:{k}"
+        cols = line.split("\t")
+        if len(cols) != 4:
+            rep.fail(where, f"{len(cols)} fields")
+            continue
+        fn, ins, outs, note = cols
+        key = (fn, ins)
+        if key not in rows:
+            rep.fail(where, f"no class-C golden row {fn} {ins}")
+            continue
+        listed.append(key)
+        golden_out, name, args, c = rows[key]
+        call = f"{name}({', '.join(fbits(a) for a in args)}) glibc {golden_out} correctly rounded {fbits(c)}"
+        problems = []
+        if same(c, tok_f(golden_out)):
+            problems.append(f"glibc's {golden_out} is the correctly rounded value: not a misrounded row")
+        if outs != fbits(c):
+            problems.append(f"outputs {outs}, the correctly rounded value is {fbits(c)}")
+        if note != f"oracle {golden_out}; {call}":
+            problems.append(f"note {note!r}, expected 'oracle {golden_out}; {call}'")
+        if exact:
+            try:
+                libm = CR_FN[fn][1](*args)
+            except (OverflowError, ValueError):
+                libm = None  # Python raises where C returns ±inf / NaN; such a row is no misrounding anyway
+            if libm is not None and not same(libm, tok_f(golden_out)):
+                problems.append(f"this machine's libm gives {fbits(libm)}, the golden row {golden_out}")
+        if problems:
+            rep.fail(where, "; ".join(problems))
+    for key in sorted(set(derived)):
+        if listed.count(key) < derived.count(key):
+            rep.fail(path.name, f"misrounded by glibc but not listed (for each of its rows): {key[0]} {key[1]}")
+    for key in sorted(set(listed)):
+        if listed.count(key) > derived.count(key):
+            rep.fail(path.name, f"listed more often than the corpus has the row: {key[0]} {key[1]}")
+    if listed == derived:
+        rep.ok(evaluated)  # every class-C row: listed exactly when glibc misrounds it
+    elif sorted(listed) == sorted(derived):
+        rep.fail(path.name, "the rows are not in the golden file's order")
+    return per, evaluated, mp.version
 
 
 # ── the table data (M0 part 2b): an independent reader of the Rust source ──
@@ -1182,14 +1441,18 @@ def main():
     counts = check_math(tables.get("math.tsv", []), rep)
     extras = check_tables(root, tables, rep)
     check_data_files(root, tables, extras, rep)
+    per, evaluated, mpfr_version = check_corrections(root, tables, rep)
     total = sum(len(v) for v in tables.values())
     n_items, n_excused = extras.get("_counts", (0, 0))
     print(f"files: {len(files)}; rows: {total}; math classes: {dict(sorted(counts.items()))}")
     print(f"const/static items in rust-old/src: {n_items}, {n_items - n_excused} with golden rows, {n_excused} excused")
     print(
+        f"ADR 0003 corrected oracle (MPFR {mpfr_version}, an independent binding): {evaluated} class-C math rows "
+        f"recomputed; glibc misrounds {sum(per.values())} {dict(sorted(per.items()))}"
+    )
+    print(
         f"independently checked: {rep.checked} (constants, src/constants.cyr, math classes A and B, the table rows, "
-        f"every cell of the generated data files); class C ({counts.get('C', 0)} rows) is left to the MPFR corrected "
-        f"oracle (M0 part 2c)"
+        f"every cell of the generated data files, every class-C math row against MPFR)"
     )
     print(f"FAILURES: {rep.failures}")
     return 1 if rep.failures else 0

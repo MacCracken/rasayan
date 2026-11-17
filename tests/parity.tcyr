@@ -1,0 +1,782 @@
+# parity.tcyr — replays the golden corpus (tests/golden/*.tsv) against the port.
+#
+# Port plan §4 step 7, adapted from ushma's tests/parity.tcyr (kimiya's, itself tanmatra's). Format and comparison
+# rules: scripts/oracle/README.md. The module list is tests/golden/modules.txt, which the generator writes. The replay
+# machinery is tests/parity_core.cyr and tests/ulp.cyr; this file holds the dispatchers, and tests/parity_math.cyr the
+# Rust-semantics helpers the math rows use until M1 moves them into src/.
+#
+# Every row of every module is one of:
+# - ok: every output matched within its class (A bit-identical, NaN matching any NaN; B <= 2 ulp; C 0 ulp against
+#   the corrected oracle once a bound is set; D relative <= 1e-12; a zero carries the oracle's sign in every class);
+# - FAILED: an output differs; the first 10 per module are printed with the row's note and both bit patterns;
+# - measured: class C, with no bound set yet for its function. The ulp distance from the corrected oracle
+#   (tests/golden/math.cr.tsv where it has the row, else the golden row) is recorded but not gated
+#   (docs/development/port-parity.md §2a);
+# - accepted: a divergence an ADR accepts (_par_accepted), or a pass against the ADR 0003 corrected oracle;
+# - pending: its module or function has no Cyrius code yet (no dispatcher entry).
+#
+# Per function it prints the row counts and the ulp histogram. Shadow lines (`fn ~ candidate`) compare the same rows
+# against another Cyrius candidate and are never gated. The exit code is the number of modules with a failure (at
+# most a handful, so the 8-bit exit status can't wrap).
+#
+# What is wired up at M0 part 2c-1:
+# - `const` rows of every module: src/constants.cyr, src/constants_private.cyr and the scalar consts of the
+#   generated data files, by Rust name;
+# - the table rows (protein, alignment, enzyme, membrane): answered from the generated src/*_data.cyr columns. A row
+#   of a lookup over a table (`protein::lookup`, `enzyme::lookup_enzyme`, `alignment::substitution_score`) applies
+#   the Rust function's rule to the generated data here, so every cell is compared through the oracle's API; at M2
+#   and M3 those rows move to the ported `ry_*` functions;
+# - `math` rows: classes A and B on the builtins (abs, ceil, sqrt) and tests/parity_math.cyr's helpers; class C
+#   (powf, exp, ln, exp_m1) on the stdlib's current functions, measured until the correctly rounded primitives
+#   (src/mathx.cyr, M0 part 2c-2) are gated at 0 ulp.
+
+include "tests/ulp.cyr"
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/protein_data.cyr"
+include "src/alignment_data.cyr"
+include "src/enzyme_data.cyr"
+include "src/membrane_data.cyr"
+include "src/ai_data.cyr"
+include "tests/parity_math.cyr"
+
+alloc_init();
+
+include "tests/parity_core.cyr"
+
+# The Rust variant name of an error code. src/error.cyr arrives in M1; until then no row returns an error.
+#must_use
+fn _par_error_name(code): i64 {
+    return "Unknown";
+}
+
+# ── inputs ──────────────────────────────────────────────────────────────────────────
+
+# Input token k, an `s:` token, decoded into a fresh buffer (a NUL byte allowed, unlike _par_in_cstr); its length goes
+# to *lenp. 0 if the token is no `s:` token or an escape is malformed.
+fn _par_in_bytes(k, lenp): i64 {
+    var at = k * 8;
+    if (k >= _par_in_n || load64(_par_in_k + at) != 115) { return 0; }
+    var p = load64(_par_in_v + at);
+    var len = load64(_par_in_l + at);
+    var out = alloc(len + 1);
+    if (out == 0) { return 0; }
+    var n = 0;
+    var j = 0;
+    while (j < len) {
+        var c = load8(p + j);
+        if (c == 37) {
+            if (j + 2 >= len) { return 0; }
+            var hi = _par_hex_upper(load8(p + j + 1));
+            var lo = _par_hex_upper(load8(p + j + 2));
+            if (hi < 0 || lo < 0) { return 0; }
+            c = hi * 16 + lo;
+            j = j + 3;
+        } else {
+            j = j + 1;
+        }
+        store8(out + n, c);
+        n = n + 1;
+    }
+    store64(lenp, n);
+    return out;
+}
+
+# Input token k as a Rust `char`: its byte when it is one ASCII character, 256 for any other character (a non-ASCII
+# char is two to four UTF-8 bytes, and no rasayan table holds one), -1 for no `s:` token or an empty one.
+fn _par_in_char(k): i64 {
+    var lw[8];
+    var p = _par_in_bytes(k, &lw);
+    if (p == 0) { return 0 - 1; }
+    var n = load64(&lw);
+    if (n == 0) { return 0 - 1; }
+    if (n == 1 && load8(p) < 128) { return load8(p); }
+    return 256;
+}
+
+# Input token k as a row index into a table of `count` rows, or -1 when it is no `i:` token or out of range.
+#must_use
+fn _par_in_index(k, count): i64 {
+    if (k >= _par_in_n || load64(_par_in_k + k * 8) != 105) { return 0 - 1; }
+    var r = _par_in(k);
+    if (r < 0 || r >= count) { return 0 - 1; }
+    return r;
+}
+
+# ── outputs ─────────────────────────────────────────────────────────────────────────
+
+# Appends a `char` result (`s:` with its one byte).
+fn _par_got_char(c) {
+    var b[8];
+    store8(&b, c);
+    _par_got_text(&b, 1);
+    return 0;
+}
+
+# Row i's C string in a NUL-terminated blob: the blob plus the row's offset.
+#must_use
+fn _par_blob(bytes, off): i64 {
+    return bytes + off;
+}
+
+# Appends a NUL-terminated string result.
+fn _par_got_cstr(p) {
+    _par_got_text(p, strlen(p));
+    return 0;
+}
+
+# ── const rows ──────────────────────────────────────────────────────────────────────
+# `const` rows of any module (input `s:<module>::<NAME>`, fn-local consts `<module>::<fn>::<NAME>`), by the naming
+# rule of scripts/oracle/README.md: a constants.tsv row is a public `RY_` const of src/constants.cyr; the others are
+# the private `_RY_<MODULE>_<NAME>` consts of src/constants_private.cyr and the data files. An unknown name is a defect
+# (-1, so the row fails).
+
+# 1, appending the f64 x, when [np, np + nl) is `name`.
+fn _par_cf(np, nl, name, x: f64): i64 {
+    if (_par_eq(np, nl, name) != 1) { return 0; }
+    _par_got_f(x);
+    return 1;
+}
+
+# 1, appending the integer v, when [np, np + nl) is `name`.
+fn _par_ci(np, nl, name, v): i64 {
+    if (_par_eq(np, nl, name) != 1) { return 0; }
+    _par_got_i(v);
+    return 1;
+}
+
+# One `const` row.
+fn _par_const(): i64 {
+    if (_par_in_n != 1 || load64(_par_in_k) != 115) { return 0 - 1; }
+    var np = load64(_par_in_v);
+    var nl = load64(_par_in_l);
+    # constants.tsv (67)
+    if (_par_cf(np, nl, "calcium::SUBSTEP_MAX_DT", RY_CALCIUM_SUBSTEP_MAX_DT) == 1) { return 1; }
+    if (_par_ci(np, nl, "calcium::MAX_SUBSTEPS", RY_CALCIUM_MAX_SUBSTEPS) == 1) { return 1; }
+    if (_par_cf(np, nl, "calcium::ER_CA_REFERENCE", RY_CALCIUM_ER_CA_REFERENCE) == 1) { return 1; }
+    if (_par_cf(np, nl, "calcium::ER_CYTOSOL_VOLUME_RATIO", RY_CALCIUM_ER_CYTOSOL_VOLUME_RATIO) == 1) { return 1; }
+    if (_par_cf(np, nl, "calcium::SOCE_MAX", RY_CALCIUM_SOCE_MAX) == 1) { return 1; }
+    if (_par_cf(np, nl, "calcium::SOCE_K_ER", RY_CALCIUM_SOCE_K_ER) == 1) { return 1; }
+    if (_par_cf(np, nl, "calcium::PM_CA_LEAK", RY_CALCIUM_PM_CA_LEAK) == 1) { return 1; }
+    if (_par_cf(np, nl, "constants::R_GAS", RY_R_GAS) == 1) { return 1; }
+    if (_par_cf(np, nl, "constants::FARADAY", RY_FARADAY) == 1) { return 1; }
+    if (_par_cf(np, nl, "constants::BODY_TEMP_K", RY_BODY_TEMP_K) == 1) { return 1; }
+    if (_par_cf(np, nl, "constants::RESTING_NAD_RATIO", RY_RESTING_NAD_RATIO) == 1) { return 1; }
+    if (_par_cf(np, nl, "constants::MAX_NAD_FACTOR", RY_MAX_NAD_FACTOR) == 1) { return 1; }
+    if (_par_cf(np, nl, "constants::MAX_ATP_ADP_RATIO", RY_MAX_ATP_ADP_RATIO) == 1) { return 1; }
+    if (_par_cf(np, nl, "energy::ATP_HYDROLYSIS_DG", RY_ENERGY_ATP_HYDROLYSIS_DG) == 1) { return 1; }
+    if (_par_cf(np, nl, "energy::MET_O2_RATE", RY_ENERGY_MET_O2_RATE) == 1) { return 1; }
+    if (_par_cf(np, nl, "energy::PCR_RECOVERY_HALF_TIME", RY_ENERGY_PCR_RECOVERY_HALF_TIME) == 1) { return 1; }
+    if (_par_cf(np, nl, "energy::PCR_RECOVERY_RATE", RY_ENERGY_PCR_RECOVERY_RATE) == 1) { return 1; }
+    if (_par_cf(np, nl, "energy::PCR_DEPLETION_RATE", RY_ENERGY_PCR_DEPLETION_RATE) == 1) { return 1; }
+    if (_par_cf(np, nl, "energy::PCR_DEMAND_THRESHOLD", RY_ENERGY_PCR_DEMAND_THRESHOLD) == 1) { return 1; }
+    if (_par_cf(np, nl, "energy::GLYCOGEN_DEPLETION_RATE", RY_ENERGY_GLYCOGEN_DEPLETION_RATE) == 1) { return 1; }
+    if (_par_cf(np, nl, "energy::GLYCOGEN_ANAEROBIC_RATE", RY_ENERGY_GLYCOGEN_ANAEROBIC_RATE) == 1) { return 1; }
+    if (_par_cf(np, nl, "energy::GLYCOGEN_RECOVERY_RATE", RY_ENERGY_GLYCOGEN_RECOVERY_RATE) == 1) { return 1; }
+    if (_par_cf(np, nl, "energy::GLYCOGEN_RECOVERY_THRESHOLD",
+        RY_ENERGY_GLYCOGEN_RECOVERY_THRESHOLD) == 1) { return 1; }
+    if (_par_cf(np, nl, "etc::COMPLEX_I_KM_NADH", RY_ETC_COMPLEX_I_KM_NADH) == 1) { return 1; }
+    if (_par_cf(np, nl, "glycolysis::HK_KM_ATP", RY_GLYCOLYSIS_HK_KM_ATP) == 1) { return 1; }
+    if (_par_cf(np, nl, "glycolysis::PFK_KM_ATP", RY_GLYCOLYSIS_PFK_KM_ATP) == 1) { return 1; }
+    if (_par_cf(np, nl, "glycolysis::PGK_KM_ADP", RY_GLYCOLYSIS_PGK_KM_ADP) == 1) { return 1; }
+    if (_par_cf(np, nl, "glycolysis::PK_KM_ADP", RY_GLYCOLYSIS_PK_KM_ADP) == 1) { return 1; }
+    if (_par_cf(np, nl, "glycolysis::GAPDH_KM_NAD_FRACTION", RY_GLYCOLYSIS_GAPDH_KM_NAD_FRACTION) == 1) { return 1; }
+    if (_par_cf(np, nl, "hormonal::ACTH_FEEDBACK_KI", RY_HORMONAL_ACTH_FEEDBACK_KI) == 1) { return 1; }
+    if (_par_cf(np, nl, "mapk::ERK_FEEDBACK_KI", RY_MAPK_ERK_FEEDBACK_KI) == 1) { return 1; }
+    if (_par_cf(np, nl, "mapk::SUBSTEP_MAX_DT", RY_MAPK_SUBSTEP_MAX_DT) == 1) { return 1; }
+    if (_par_ci(np, nl, "mapk::MAX_SUBSTEPS", RY_MAPK_MAX_SUBSTEPS) == 1) { return 1; }
+    if (_par_ci(np, nl, "mcp::MAX_SEQUENCE_LEN", RY_MCP_MAX_SEQUENCE_LEN) == 1) { return 1; }
+    if (_par_ci(np, nl, "mcp::MAX_ALIGNMENT_CELLS", RY_MCP_MAX_ALIGNMENT_CELLS) == 1) { return 1; }
+    if (_par_cf(np, nl, "metabolism::LACTATE_CLEARANCE_RATE", RY_METABOLISM_LACTATE_CLEARANCE_RATE) == 1) { return 1; }
+    if (_par_cf(np, nl, "metabolism::ADENYLATE_KINASE_KEQ", RY_METABOLISM_ADENYLATE_KINASE_KEQ) == 1) { return 1; }
+    if (_par_cf(np, nl, "neurotransmitter::PLASMA_TRYPTOPHAN",
+        RY_NEUROTRANSMITTER_PLASMA_TRYPTOPHAN) == 1) { return 1; }
+    if (_par_cf(np, nl, "neurotransmitter::PLASMA_TYROSINE", RY_NEUROTRANSMITTER_PLASMA_TYROSINE) == 1) { return 1; }
+    if (_par_cf(np, nl, "neurotransmitter::PRECURSOR_TRANSPORT_RATE",
+        RY_NEUROTRANSMITTER_PRECURSOR_TRANSPORT_RATE) == 1) { return 1; }
+    if (_par_cf(np, nl, "neurotransmitter::MIN_CLEARANCE_RATE",
+        RY_NEUROTRANSMITTER_MIN_CLEARANCE_RATE) == 1) { return 1; }
+    if (_par_cf(np, nl, "pathway::NAD_POOL_TOTAL", RY_PATHWAY_NAD_POOL_TOTAL) == 1) { return 1; }
+    if (_par_cf(np, nl, "pathway::NAD_RATIO_MIN", RY_PATHWAY_NAD_RATIO_MIN) == 1) { return 1; }
+    if (_par_cf(np, nl, "pathway::NAD_RATIO_MAX", RY_PATHWAY_NAD_RATIO_MAX) == 1) { return 1; }
+    if (_par_cf(np, nl, "pathway::NETWORK_MAX_SUBSTEP", RY_PATHWAY_NETWORK_MAX_SUBSTEP) == 1) { return 1; }
+    if (_par_ci(np, nl, "pathway::NETWORK_MAX_SUBSTEPS", RY_PATHWAY_NETWORK_MAX_SUBSTEPS) == 1) { return 1; }
+    if (_par_cf(np, nl, "pathway::GLUCOSE_TRANSPORT_RATE", RY_PATHWAY_GLUCOSE_TRANSPORT_RATE) == 1) { return 1; }
+    if (_par_cf(np, nl, "pathway::FATTY_ACID_TRANSPORT_RATE", RY_PATHWAY_FATTY_ACID_TRANSPORT_RATE) == 1) { return 1; }
+    if (_par_cf(np, nl, "pathway::AMINO_ACID_TRANSPORT_RATE", RY_PATHWAY_AMINO_ACID_TRANSPORT_RATE) == 1) { return 1; }
+    if (_par_cf(np, nl, "pathway::TCA_POOL_REFERENCE", RY_PATHWAY_TCA_POOL_REFERENCE) == 1) { return 1; }
+    if (_par_cf(np, nl, "pathway::CATAPLEROSIS_RATE", RY_PATHWAY_CATAPLEROSIS_RATE) == 1) { return 1; }
+    if (_par_cf(np, nl, "pathway::RESTING_ATP_DEMAND", RY_PATHWAY_RESTING_ATP_DEMAND) == 1) { return 1; }
+    if (_par_cf(np, nl, "pathway::ATP_DEMAND_KM", RY_PATHWAY_ATP_DEMAND_KM) == 1) { return 1; }
+    if (_par_cf(np, nl, "pathway::MALONYL_PER_ACETYL_COA", RY_PATHWAY_MALONYL_PER_ACETYL_COA) == 1) { return 1; }
+    if (_par_cf(np, nl, "pathway::LDH_VMAX", RY_PATHWAY_LDH_VMAX) == 1) { return 1; }
+    if (_par_cf(np, nl, "pathway::PFK_KI_CITRATE", RY_PATHWAY_PFK_KI_CITRATE) == 1) { return 1; }
+    if (_par_cf(np, nl, "pathway::LDH_KM_PYRUVATE", RY_PATHWAY_LDH_KM_PYRUVATE) == 1) { return 1; }
+    if (_par_cf(np, nl, "pathway::LDH_KM_NADH", RY_PATHWAY_LDH_KM_NADH) == 1) { return 1; }
+    if (_par_cf(np, nl, "signal::ACTIVATION_GAIN", RY_SIGNAL_ACTIVATION_GAIN) == 1) { return 1; }
+    if (_par_cf(np, nl, "signal::IP3_CA_COUPLING", RY_SIGNAL_IP3_CA_COUPLING) == 1) { return 1; }
+    if (_par_cf(np, nl, "signal::CAMP_DECAY_RATE", RY_SIGNAL_CAMP_DECAY_RATE) == 1) { return 1; }
+    if (_par_cf(np, nl, "signal::IP3_DECAY_RATE", RY_SIGNAL_IP3_DECAY_RATE) == 1) { return 1; }
+    if (_par_cf(np, nl, "signal::CA_DECAY_RATE", RY_SIGNAL_CA_DECAY_RATE) == 1) { return 1; }
+    if (_par_cf(np, nl, "signal::CAMP_FLOOR", RY_SIGNAL_CAMP_FLOOR) == 1) { return 1; }
+    if (_par_cf(np, nl, "signal::IP3_FLOOR", RY_SIGNAL_IP3_FLOOR) == 1) { return 1; }
+    if (_par_cf(np, nl, "signal::CA_FLOOR", RY_SIGNAL_CA_FLOOR) == 1) { return 1; }
+    if (_par_cf(np, nl, "tca::PDH_KI_ACETYL_COA", RY_TCA_PDH_KI_ACETYL_COA) == 1) { return 1; }
+    # constants_private.tsv (16)
+    if (_par_cf(np, nl, "calcium::CYTOSOL_ER_VOLUME_RATIO", _RY_CALCIUM_CYTOSOL_ER_VOLUME_RATIO) == 1) { return 1; }
+    if (_par_cf(np, nl, "calcium::RESTING_CA", _RY_CALCIUM_RESTING_CA) == 1) { return 1; }
+    if (_par_cf(np, nl, "calcium::DEFAULT_PMCA_RATE", _RY_CALCIUM_DEFAULT_PMCA_RATE) == 1) { return 1; }
+    if (_par_ci(np, nl, "domain::ZF_C2H2_MIN_LEN", _RY_DOMAIN_ZF_C2H2_MIN_LEN) == 1) { return 1; }
+    if (_par_ci(np, nl, "domain::EF_HAND_LEN", _RY_DOMAIN_EF_HAND_LEN) == 1) { return 1; }
+    if (_par_cf(np, nl, "energy::KGM_PER_MIN_PER_WATT", _RY_ENERGY_KGM_PER_MIN_PER_WATT) == 1) { return 1; }
+    if (_par_cf(np, nl, "integrate::SERIES_MAX", _RY_INTEGRATE_SERIES_MAX) == 1) { return 1; }
+    if (_par_cf(np, nl, "integrate::step_factors::C1", _RY_INTEGRATE_C1) == 1) { return 1; }
+    if (_par_cf(np, nl, "integrate::step_factors::C2", _RY_INTEGRATE_C2) == 1) { return 1; }
+    if (_par_cf(np, nl, "integrate::step_factors::C3", _RY_INTEGRATE_C3) == 1) { return 1; }
+    if (_par_cf(np, nl, "integrate::step_factors::C4", _RY_INTEGRATE_C4) == 1) { return 1; }
+    if (_par_ci(np, nl, "pathway::SOLVE_MAX_ITERATIONS", _RY_PATHWAY_SOLVE_MAX_ITERATIONS) == 1) { return 1; }
+    if (_par_cf(np, nl, "pathway::SOLVE_RELATIVE_TOLERANCE", _RY_PATHWAY_SOLVE_RELATIVE_TOLERANCE) == 1) { return 1; }
+    if (_par_cf(np, nl, "pathway::run_to_steady_state::ALPHA", _RY_PATHWAY_ALPHA) == 1) { return 1; }
+    if (_par_ci(np, nl, "pathway::run_to_steady_state::MIN_TICKS", _RY_PATHWAY_MIN_TICKS) == 1) { return 1; }
+    if (_par_ci(np, nl, "ptm::MYRISTOYL_LEN", _RY_PTM_MYRISTOYL_LEN) == 1) { return 1; }
+    # protein.tsv (23)
+    if (_par_ci(np, nl, "protein::NO_RESIDUE", _RY_PROTEIN_NO_RESIDUE) == 1) { return 1; }
+    if (_par_cf(np, nl, "protein::WATER_AVG_MASS", _RY_PROTEIN_WATER_AVG_MASS) == 1) { return 1; }
+    if (_par_cf(np, nl, "protein::PKA_N_TERM", _RY_PROTEIN_PKA_N_TERM) == 1) { return 1; }
+    if (_par_cf(np, nl, "protein::PKA_C_TERM", _RY_PROTEIN_PKA_C_TERM) == 1) { return 1; }
+    if (_par_cf(np, nl, "protein::EXT_TRP", _RY_PROTEIN_EXT_TRP) == 1) { return 1; }
+    if (_par_cf(np, nl, "protein::EXT_TYR", _RY_PROTEIN_EXT_TYR) == 1) { return 1; }
+    if (_par_cf(np, nl, "protein::EXT_CYSTINE", _RY_PROTEIN_EXT_CYSTINE) == 1) { return 1; }
+    if (_par_ci(np, nl, "protein::CF_HELIX_NUCLEUS", _RY_PROTEIN_CF_HELIX_NUCLEUS) == 1) { return 1; }
+    if (_par_ci(np, nl, "protein::CF_HELIX_NUCLEUS_FORMERS", _RY_PROTEIN_CF_HELIX_NUCLEUS_FORMERS) == 1) { return 1; }
+    if (_par_ci(np, nl, "protein::CF_HELIX_FORMER", _RY_PROTEIN_CF_HELIX_FORMER) == 1) { return 1; }
+    if (_par_ci(np, nl, "protein::CF_SHEET_NUCLEUS", _RY_PROTEIN_CF_SHEET_NUCLEUS) == 1) { return 1; }
+    if (_par_ci(np, nl, "protein::CF_SHEET_NUCLEUS_FORMERS", _RY_PROTEIN_CF_SHEET_NUCLEUS_FORMERS) == 1) { return 1; }
+    if (_par_ci(np, nl, "protein::CF_SHEET_FORMER", _RY_PROTEIN_CF_SHEET_FORMER) == 1) { return 1; }
+    if (_par_ci(np, nl, "protein::CF_BREAKER", _RY_PROTEIN_CF_BREAKER) == 1) { return 1; }
+    if (_par_ci(np, nl, "protein::CF_HELIX_ACCEPT", _RY_PROTEIN_CF_HELIX_ACCEPT) == 1) { return 1; }
+    if (_par_ci(np, nl, "protein::CF_HELIX_MIN_LEN", _RY_PROTEIN_CF_HELIX_MIN_LEN) == 1) { return 1; }
+    if (_par_ci(np, nl, "protein::CF_SHEET_ACCEPT", _RY_PROTEIN_CF_SHEET_ACCEPT) == 1) { return 1; }
+    if (_par_ci(np, nl, "protein::CF_TURN_ACCEPT", _RY_PROTEIN_CF_TURN_ACCEPT) == 1) { return 1; }
+    if (_par_ci(np, nl, "protein::CF_BEND_PRODUCT_MIN", _RY_PROTEIN_CF_BEND_PRODUCT_MIN) == 1) { return 1; }
+    if (_par_ci(np, nl, "protein::CF_PRO_HELIX_FIRST_TURN", _RY_PROTEIN_CF_PRO_HELIX_FIRST_TURN) == 1) { return 1; }
+    if (_par_ci(np, nl, "protein::CF_HELIX", _RY_PROTEIN_CF_HELIX) == 1) { return 1; }
+    if (_par_ci(np, nl, "protein::CF_SHEET", _RY_PROTEIN_CF_SHEET) == 1) { return 1; }
+    if (_par_ci(np, nl, "protein::CF_TURN", _RY_PROTEIN_CF_TURN) == 1) { return 1; }
+    # enzyme.tsv (1)
+    if (_par_cf(np, nl, "enzyme::REGRESSION_REL_TOL", _RY_ENZYME_REGRESSION_REL_TOL) == 1) { return 1; }
+    # ai.tsv (1)
+    if (_par_eq(np, nl, "ai::SYSTEM_PROMPT") == 1) {
+        _par_got_text(&_RY_AI_SYSTEM_PROMPT, _RY_AI_SYSTEM_PROMPT_LEN);
+        return 1;
+    }
+    return 0 - 1;
+}
+
+# ── table index constants ───────────────────────────────────────────────────────────
+# The public tables' row constants by the Rust key they are named after, as a vec of (key, index) pairs:
+# RY_AMINO_ACID_<ABBR> and RY_KNOWN_ENZYME_<NAME>. A table row is only answered when the key the data gives for that
+# row is the key whose constant is the row's index, so every index constant is compared against the oracle too.
+var _par_tab_amino = 0;
+var _par_tab_enzyme = 0;
+
+# Appends one (Rust key, index constant) pair.
+fn _par_tab_add(t, key, idx) {
+    vec_push(t, key);
+    vec_push(t, idx);
+    return 0;
+}
+
+# The key whose index constant is r in table t, or 0.
+#must_use
+fn _par_tab_key(t, r): i64 {
+    var k = 0;
+    while (k < vec_len(t)) {
+        if (vec_get(t, k + 1) == r) { return vec_get(t, k); }
+        k = k + 2;
+    }
+    return 0;
+}
+
+# 1 if row r's key in the data (the C string `key`) is the key of table t's constant r.
+#must_use
+fn _par_tab_agrees(t, r, key): i64 {
+    var want = _par_tab_key(t, r);
+    if (want == 0) { return 0; }
+    return streq(want, key);
+}
+
+# Builds the two tables.
+fn _par_tables_init(): i64 {
+    var a = vec_new();
+    _par_tab_add(a, "Ala", RY_AMINO_ACID_ALA);
+    _par_tab_add(a, "Cys", RY_AMINO_ACID_CYS);
+    _par_tab_add(a, "Asp", RY_AMINO_ACID_ASP);
+    _par_tab_add(a, "Glu", RY_AMINO_ACID_GLU);
+    _par_tab_add(a, "Phe", RY_AMINO_ACID_PHE);
+    _par_tab_add(a, "Gly", RY_AMINO_ACID_GLY);
+    _par_tab_add(a, "His", RY_AMINO_ACID_HIS);
+    _par_tab_add(a, "Ile", RY_AMINO_ACID_ILE);
+    _par_tab_add(a, "Lys", RY_AMINO_ACID_LYS);
+    _par_tab_add(a, "Leu", RY_AMINO_ACID_LEU);
+    _par_tab_add(a, "Met", RY_AMINO_ACID_MET);
+    _par_tab_add(a, "Asn", RY_AMINO_ACID_ASN);
+    _par_tab_add(a, "Pro", RY_AMINO_ACID_PRO);
+    _par_tab_add(a, "Gln", RY_AMINO_ACID_GLN);
+    _par_tab_add(a, "Arg", RY_AMINO_ACID_ARG);
+    _par_tab_add(a, "Ser", RY_AMINO_ACID_SER);
+    _par_tab_add(a, "Thr", RY_AMINO_ACID_THR);
+    _par_tab_add(a, "Val", RY_AMINO_ACID_VAL);
+    _par_tab_add(a, "Trp", RY_AMINO_ACID_TRP);
+    _par_tab_add(a, "Tyr", RY_AMINO_ACID_TYR);
+    _par_tab_amino = a;
+    var e = vec_new();
+    _par_tab_add(e, "Carbonic anhydrase", RY_KNOWN_ENZYME_CARBONIC_ANHYDRASE);
+    _par_tab_add(e, "Acetylcholinesterase", RY_KNOWN_ENZYME_ACETYLCHOLINESTERASE);
+    _par_tab_add(e, "Catalase", RY_KNOWN_ENZYME_CATALASE);
+    _par_tab_add(e, "Hexokinase", RY_KNOWN_ENZYME_HEXOKINASE);
+    _par_tab_add(e, "Lactate dehydrogenase", RY_KNOWN_ENZYME_LACTATE_DEHYDROGENASE);
+    _par_tab_add(e, "Chymotrypsin", RY_KNOWN_ENZYME_CHYMOTRYPSIN);
+    _par_tab_add(e, "Fumarase", RY_KNOWN_ENZYME_FUMARASE);
+    _par_tab_add(e, "Triose phosphate isomerase", RY_KNOWN_ENZYME_TRIOSE_PHOSPHATE_ISOMERASE);
+    _par_tab_add(e, "Lysozyme", RY_KNOWN_ENZYME_LYSOZYME);
+    _par_tab_add(e, "Phosphofructokinase", RY_KNOWN_ENZYME_PHOSPHOFRUCTOKINASE);
+    _par_tab_add(e, "Pyruvate kinase", RY_KNOWN_ENZYME_PYRUVATE_KINASE);
+    _par_tab_add(e, "Aspartate transcarbamoylase", RY_KNOWN_ENZYME_ASPARTATE_TRANSCARBAMOYLASE);
+    _par_tab_enzyme = e;
+    return 0;
+}
+
+# ── protein ─────────────────────────────────────────────────────────────────────────
+# src/protein_data.cyr. The module's functions (pI, charge, Chou-Fasman, ...) arrive at M3; their rows are pending.
+
+# AMINO_ACIDS[r]'s fields in AminoAcid's declaration order: code, abbreviation, name, mw, hydrophobicity and the
+# Option<f64> side-chain pKa. -1 when r's abbreviation is not the one its index constant is named after.
+fn _par_fill_amino(r): i64 {
+    var abbr = _par_blob(&_RY_AMINO_ACID_ABBR_BYTES, _RY_AMINO_ACID_ABBR_OFF[r]);
+    if (_par_tab_agrees(_par_tab_amino, r, abbr) != 1) { return 0 - 1; }
+    _par_got_char(RY_AMINO_ACID_CODE[r]);
+    _par_got_cstr(abbr);
+    _par_got_cstr(_par_blob(&_RY_AMINO_ACID_NAME_BYTES, _RY_AMINO_ACID_NAME_OFF[r]));
+    var x: f64 = RY_AMINO_ACID_MW[r];
+    _par_got_f(x);
+    x = RY_AMINO_ACID_HYDROPHOBICITY[r];
+    _par_got_f(x);
+    if (RY_AMINO_ACID_HAS_SIDE_CHAIN_PKA[r] != 0) {
+        x = RY_AMINO_ACID_SIDE_CHAIN_PKA[r];
+        _par_got_f(x);
+    } else {
+        _par_got_none();
+    }
+    return 1;
+}
+
+# `protein::lookup(code)`: Rust's rule on the generated index — ASCII uppercase, then `'A'..='Z'` through
+# LOOKUP_INDEX into AMINO_ACIDS, None off the alphabet or at NO_RESIDUE.
+fn _par_protein_lookup(): i64 {
+    if (_par_in_n != 1) { return 0 - 1; }
+    var c = _par_in_char(0);
+    if (c < 0) { return 0 - 1; }
+    if (c >= 97 && c <= 122) { c = c - 32; }
+    if (c < 65 || c > 90) {
+        _par_got_none();
+        return 1;
+    }
+    var slot = _RY_PROTEIN_LOOKUP_INDEX[c - 65];
+    if (slot >= RY_AMINO_ACID_COUNT) {
+        _par_got_none();
+        return 1;
+    }
+    return _par_fill_amino(slot);
+}
+
+# One pKa set (PkaSet's row): n_term, c_term, then the side-chain pKa in SIDE_CHAINS order.
+fn _par_fill_pka_set(set): i64 {
+    var x: f64 = _RY_PROTEIN_PKA_SET_N_TERM[set];
+    _par_got_f(x);
+    x = _RY_PROTEIN_PKA_SET_C_TERM[set];
+    _par_got_f(x);
+    _par_got_seq(_RY_PROTEIN_SIDE_CHAIN_COUNT);
+    var j = 0;
+    while (j < _RY_PROTEIN_SIDE_CHAIN_COUNT) {
+        x = _RY_PROTEIN_PKA_SET_SIDE[set * _RY_PROTEIN_SIDE_CHAIN_COUNT + j];
+        _par_got_f(x);
+        j = j + 1;
+    }
+    return 1;
+}
+
+# `bjellqvist_n_term(first)` (n_term = 1) or `bjellqvist_c_term(last)`: the first matching arm of the generated code
+# and pKa columns, else (another residue, or None) BJELLQVIST_PKA's terminus.
+fn _par_bjellqvist(n_term): i64 {
+    if (_par_in_n != 1) { return 0 - 1; }
+    var set = _RY_PROTEIN_PKA_SET_BJELLQVIST;
+    var x: f64 = _RY_PROTEIN_PKA_SET_C_TERM[set];
+    if (n_term == 1) { x = _RY_PROTEIN_PKA_SET_N_TERM[set]; }
+    var kind = load64(_par_in_k);
+    if (kind == 115) {
+        var c = _par_in_char(0);
+        if (c < 0) { return 0 - 1; }
+        var j = 0;
+        if (n_term == 1) {
+            while (j < _RY_PROTEIN_BJELLQVIST_N_TERM_COUNT) {
+                if (_RY_PROTEIN_BJELLQVIST_N_TERM_CODE[j] == c) {
+                    x = _RY_PROTEIN_BJELLQVIST_N_TERM_PKA[j];
+                    break;
+                }
+                j = j + 1;
+            }
+        } else {
+            while (j < _RY_PROTEIN_BJELLQVIST_C_TERM_COUNT) {
+                if (_RY_PROTEIN_BJELLQVIST_C_TERM_CODE[j] == c) {
+                    x = _RY_PROTEIN_BJELLQVIST_C_TERM_PKA[j];
+                    break;
+                }
+                j = j + 1;
+            }
+        }
+    } elif (kind != 110) {
+        return 0 - 1;
+    }
+    _par_got_f(x);
+    return 1;
+}
+
+# CHOU_FASMAN[r]: code, P(alpha), P(beta), P(turn) (x100), then the four bend frequencies (x1000).
+fn _par_fill_chou_fasman(r): i64 {
+    _par_got_char(_RY_PROTEIN_CHOU_FASMAN_CODE[r]);
+    _par_got_i(_RY_PROTEIN_CHOU_FASMAN_P_ALPHA[r]);
+    _par_got_i(_RY_PROTEIN_CHOU_FASMAN_P_BETA[r]);
+    _par_got_i(_RY_PROTEIN_CHOU_FASMAN_P_TURN[r]);
+    _par_got_seq(4);
+    var j = 0;
+    while (j < 4) {
+        _par_got_i(_RY_PROTEIN_CHOU_FASMAN_BEND[r * 4 + j]);
+        j = j + 1;
+    }
+    return 1;
+}
+
+# The protein rows.
+fn _par_protein(fp, fl): i64 {
+    if (_par_eq(fp, fl, "protein::AMINO_ACIDS.len") == 1) {
+        _par_got_i(RY_AMINO_ACID_COUNT);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "protein::AMINO_ACIDS") == 1) {
+        var r = _par_in_index(0, RY_AMINO_ACID_COUNT);
+        if (r < 0) { return 0 - 1; }
+        return _par_fill_amino(r);
+    }
+    if (_par_eq(fp, fl, "protein::lookup") == 1) { return _par_protein_lookup(); }
+    if (_par_eq(fp, fl, "protein::LOOKUP_INDEX") == 1) {
+        var r = _par_in_index(0, 26);
+        if (r < 0) { return 0 - 1; }
+        _par_got_i(_RY_PROTEIN_LOOKUP_INDEX[r]);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "protein::SIDE_CHAINS") == 1) {
+        var r = _par_in_index(0, _RY_PROTEIN_SIDE_CHAIN_COUNT);
+        if (r < 0) { return 0 - 1; }
+        _par_got_char(_RY_PROTEIN_SIDE_CHAIN_CODE[r]);
+        var x: f64 = _RY_PROTEIN_SIDE_CHAIN_PKA[r];
+        _par_got_f(x);
+        x = _RY_PROTEIN_SIDE_CHAIN_SIGN[r];
+        _par_got_f(x);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "protein::LEHNINGER_PKA") == 1) { return _par_fill_pka_set(_RY_PROTEIN_PKA_SET_LEHNINGER); }
+    if (_par_eq(fp, fl, "protein::BJELLQVIST_PKA") == 1) { return _par_fill_pka_set(_RY_PROTEIN_PKA_SET_BJELLQVIST); }
+    if (_par_eq(fp, fl, "protein::EMBOSS_PKA") == 1) { return _par_fill_pka_set(_RY_PROTEIN_PKA_SET_EMBOSS); }
+    if (_par_eq(fp, fl, "protein::IPC_PROTEIN_PKA") == 1) {
+        return _par_fill_pka_set(_RY_PROTEIN_PKA_SET_IPC_PROTEIN);
+    }
+    if (_par_eq(fp, fl, "protein::bjellqvist_n_term") == 1) { return _par_bjellqvist(1); }
+    if (_par_eq(fp, fl, "protein::bjellqvist_c_term") == 1) { return _par_bjellqvist(0); }
+    if (_par_eq(fp, fl, "protein::CHOU_FASMAN") == 1) {
+        var r = _par_in_index(0, _RY_PROTEIN_CHOU_FASMAN_COUNT);
+        if (r < 0) { return 0 - 1; }
+        return _par_fill_chou_fasman(r);
+    }
+    return 0;
+}
+
+# ── alignment ───────────────────────────────────────────────────────────────────────
+# src/alignment_data.cyr. Needleman-Wunsch and the alignment scores arrive at M3.
+
+# Rust's `aa_index(code)`: ASCII uppercase, then the generated 26-entry index; -1 for None.
+#must_use
+fn _par_aa_index(c): i64 {
+    var u = c;
+    if (u >= 97 && u <= 122) { u = u - 32; }
+    if (u < 65 || u > 90) { return 0 - 1; }
+    var i = _RY_ALIGNMENT_AA_INDEX[u - 65];
+    if (i >= _RY_ALIGNMENT_RESIDUE_COUNT) { return 0 - 1; }   # NO_RESIDUE
+    return i;
+}
+
+# `alignment::substitution_score(a, b, matrix)`: both residues through aa_index (None if either is None), then the
+# matrix's row-major cell (a signed i8).
+fn _par_alignment(fp, fl): i64 {
+    if (_par_eq(fp, fl, "alignment::substitution_score") != 1) { return 0; }
+    if (_par_in_n != 3 || load64(_par_in_k + 16) != 101) { return 0 - 1; }
+    var a = _par_in_char(0);
+    var b = _par_in_char(1);
+    if (a < 0 || b < 0) { return 0 - 1; }
+    var mp = load64(_par_in_v + 16);
+    var ml = load64(_par_in_l + 16);
+    var blosum = 0;
+    if (_par_eq(mp, ml, "Matrix.Blosum62") == 1) { blosum = 1; }
+    elif (_par_eq(mp, ml, "Matrix.Pam250") != 1) { return 0 - 1; }
+    var i = _par_aa_index(a);
+    if (i < 0) {
+        _par_got_none();
+        return 1;
+    }
+    var j = _par_aa_index(b);
+    if (j < 0) {
+        _par_got_none();
+        return 1;
+    }
+    var cell = i * _RY_ALIGNMENT_RESIDUE_COUNT + j;
+    if (blosum == 1) { _par_got_i(_RY_ALIGNMENT_BLOSUM62[cell]); }
+    else { _par_got_i(_RY_ALIGNMENT_PAM250[cell]); }
+    return 1;
+}
+
+# ── enzyme ──────────────────────────────────────────────────────────────────────────
+# src/enzyme_data.cyr. The kinetics arrive at M2.
+
+# KNOWN_ENZYMES[r]'s fields in KnownEnzyme's order: name, EC number, substrate, km, kcat, hill_n. -1 when r's name is
+# not the one its index constant is named after.
+fn _par_fill_enzyme(r): i64 {
+    var name = _par_blob(&_RY_KNOWN_ENZYME_NAME_BYTES, _RY_KNOWN_ENZYME_NAME_OFF[r]);
+    if (_par_tab_agrees(_par_tab_enzyme, r, name) != 1) { return 0 - 1; }
+    _par_got_cstr(name);
+    _par_got_cstr(_par_blob(&_RY_KNOWN_ENZYME_EC_NUMBER_BYTES, _RY_KNOWN_ENZYME_EC_NUMBER_OFF[r]));
+    _par_got_cstr(_par_blob(&_RY_KNOWN_ENZYME_SUBSTRATE_BYTES, _RY_KNOWN_ENZYME_SUBSTRATE_OFF[r]));
+    var x: f64 = RY_KNOWN_ENZYME_KM[r];
+    _par_got_f(x);
+    x = RY_KNOWN_ENZYME_KCAT[r];
+    _par_got_f(x);
+    x = RY_KNOWN_ENZYME_HILL_N[r];
+    _par_got_f(x);
+    return 1;
+}
+
+# 1 if [a, a + al) and [b, b + bl) are equal ignoring ASCII case: Rust's `str::eq_ignore_ascii_case`, byte for byte,
+# so a non-ASCII byte must match exactly.
+#must_use
+fn _par_eq_ascii_ci(a, al, b, bl): i64 {
+    if (al != bl) { return 0; }
+    var k = 0;
+    while (k < al) {
+        var x = load8(a + k);
+        var y = load8(b + k);
+        if (x >= 65 && x <= 90) { x = x + 32; }
+        if (y >= 65 && y <= 90) { y = y + 32; }
+        if (x != y) { return 0; }
+        k = k + 1;
+    }
+    return 1;
+}
+
+# `enzyme::lookup_enzyme(name)`: the first KNOWN_ENZYMES entry whose name equals `name` ignoring ASCII case, or None.
+fn _par_lookup_enzyme(): i64 {
+    if (_par_in_n != 1) { return 0 - 1; }
+    var lw[8];
+    var p = _par_in_bytes(0, &lw);
+    if (p == 0) { return 0 - 1; }
+    var n = load64(&lw);
+    var r = 0;
+    while (r < RY_KNOWN_ENZYME_COUNT) {
+        var e = _par_blob(&_RY_KNOWN_ENZYME_NAME_BYTES, _RY_KNOWN_ENZYME_NAME_OFF[r]);
+        if (_par_eq_ascii_ci(e, strlen(e), p, n) == 1) { return _par_fill_enzyme(r); }
+        r = r + 1;
+    }
+    _par_got_none();
+    return 1;
+}
+
+# The enzyme rows.
+fn _par_enzyme(fp, fl): i64 {
+    if (_par_eq(fp, fl, "enzyme::KNOWN_ENZYMES.len") == 1) {
+        _par_got_i(RY_KNOWN_ENZYME_COUNT);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "enzyme::KNOWN_ENZYMES") == 1) {
+        var r = _par_in_index(0, RY_KNOWN_ENZYME_COUNT);
+        if (r < 0) { return 0 - 1; }
+        return _par_fill_enzyme(r);
+    }
+    if (_par_eq(fp, fl, "enzyme::lookup_enzyme") == 1) { return _par_lookup_enzyme(); }
+    return 0;
+}
+
+# ── membrane ────────────────────────────────────────────────────────────────────────
+# src/membrane_data.cyr. Nernst, Goldman and Fick arrive at M2.
+
+# The membrane rows: DEFAULT_PERMEABILITY's fields (p_na, p_k, p_cl).
+fn _par_membrane(fp, fl): i64 {
+    if (_par_eq(fp, fl, "membrane::DEFAULT_PERMEABILITY") != 1) { return 0; }
+    if (_par_in_n != 0) { return 0 - 1; }
+    var x: f64 = RY_MEMBRANE_DEFAULT_PERMEABILITY_P_NA;
+    _par_got_f(x);
+    x = RY_MEMBRANE_DEFAULT_PERMEABILITY_P_K;
+    _par_got_f(x);
+    x = RY_MEMBRANE_DEFAULT_PERMEABILITY_P_CL;
+    _par_got_f(x);
+    return 1;
+}
+
+# ── math ────────────────────────────────────────────────────────────────────────────
+# `f64::` rows: the port's counterpart of each Rust std method rasayan calls (port plan §7.1, port-parity.md §0).
+# - Class A: abs and ceil (builtins); min, max, clamp, is_finite, is_nan and the `as u32` cast (tests/parity_math.cyr,
+#   Rust's semantics where the stdlib's differ).
+# - Class B: sqrt (builtin, correctly rounded); powi (`_ry_powi`, `__powidf2`'s order).
+# - Class C (ADR 0003), measured: exp and ln on the builtins (x87 on x86_64, the polyfills on aarch64), powf on
+#   ganita's pow and exp_m1 on ganita's private `_gn_expm1` (the stdlib's only expm1; ganita is a test-only stdlib
+#   dependency for this). The reference is the corrected oracle; M0 part 2c-2 puts these rows on src/mathx.cyr's
+#   correctly rounded primitives at 0 ulp.
+fn _par_math(fp, fl): i64 {
+    var x: f64 = _par_in(0);
+    if (_par_eq(fp, fl, "f64::abs") == 1) { var r: f64 = f64_abs(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::ceil") == 1) { var r: f64 = f64_ceil(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::sqrt") == 1) { var r: f64 = f64_sqrt(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::is_finite") == 1) { _par_got_i(_ry_is_finite(x)); return 1; }
+    if (_par_eq(fp, fl, "f64::is_nan") == 1) { _par_got_i(_ry_is_nan(x)); return 1; }
+    if (_par_eq(fp, fl, "f64::as_u32") == 1) { _par_got_i(_ry_f64_to_u32(x)); return 1; }
+    if (_par_eq(fp, fl, "f64::exp") == 1) { var r: f64 = f64_exp(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::ln") == 1) { var r: f64 = f64_ln(x); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::exp_m1") == 1) { var r: f64 = _gn_expm1(x); _par_got_f(r); return 1; }
+    if (_par_in_n < 2) { return 0; }
+    if (_par_eq(fp, fl, "f64::powi") == 1) {
+        if (load64(_par_in_k + 8) != 105) { return 0 - 1; }
+        var r: f64 = _ry_powi(x, _par_in(1));
+        _par_got_f(r);
+        return 1;
+    }
+    var y: f64 = _par_in(1);
+    if (_par_eq(fp, fl, "f64::max") == 1) { var r: f64 = _ry_max(x, y); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::min") == 1) { var r: f64 = _ry_min(x, y); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::powf") == 1) { var r: f64 = ganita_f64_pow(x, y); _par_got_f(r); return 1; }
+    if (_par_eq(fp, fl, "f64::clamp") == 1 && _par_in_n == 3) {
+        var hi: f64 = _par_in(2);
+        var r: f64 = _ry_clamp(x, y, hi);
+        _par_got_f(r);
+        return 1;
+    }
+    return 0;
+}
+
+# ── routing and hooks ───────────────────────────────────────────────────────────────
+
+# Routes a row to its module's dispatcher. 0 (pending) for a module or function with no Cyrius code yet: the module
+# rows of every module arrive from M1 on, each with its dispatcher here.
+fn _par_dispatch(mp, ml, fp, fl): i64 {
+    _par_got_n = 0;
+    if (_par_eq(fp, fl, "const") == 1) { return _par_const(); }
+    if (_par_eq(mp, ml, "math") == 1) { return _par_math(fp, fl); }
+    if (_par_eq(mp, ml, "protein") == 1) { return _par_protein(fp, fl); }
+    if (_par_eq(mp, ml, "alignment") == 1) { return _par_alignment(fp, fl); }
+    if (_par_eq(mp, ml, "enzyme") == 1) { return _par_enzyme(fp, fl); }
+    if (_par_eq(mp, ml, "membrane") == 1) { return _par_membrane(fp, fl); }
+    return 0;
+}
+
+# Shadow comparisons, never gated: the same golden rows through another stdlib candidate, against the same reference
+# (the corrected oracle where it has the row):
+# - exp / ln: the polyfills, which give the same bits on every target, beside the builtins;
+# - the stdlib's f64_max / f64_min / f64_clamp and f64_to that tests/parity_math.cyr's helpers stand in for, to show
+#   where their semantics differ from Rust's (port-parity.md §0.1, §0.6).
+fn _par_shadows(mp, ml, fp, fl, cls) {
+    if (_par_eq(mp, ml, "math") != 1) { return 0; }
+    var x: f64 = _par_in(0);
+    if (_par_eq(fp, fl, "f64::exp") == 1) {
+        _par_got_n = 0;
+        var r: f64 = _f64_exp_polyfill(x);
+        _par_got_f(r);
+        _par_shadow_record("f64::exp ~ _f64_exp_polyfill", cls);
+        return 0;
+    }
+    if (_par_eq(fp, fl, "f64::ln") == 1) {
+        _par_got_n = 0;
+        var r: f64 = _f64_ln_polyfill(x);
+        _par_got_f(r);
+        _par_shadow_record("f64::ln ~ _f64_ln_polyfill", cls);
+        return 0;
+    }
+    if (_par_eq(fp, fl, "f64::as_u32") == 1) {
+        _par_got_n = 0;
+        _par_got_i(f64_to(x));
+        _par_shadow_record("f64::as_u32 ~ f64_to", cls);
+        return 0;
+    }
+    if (_par_in_n < 2 || load64(_par_in_k + 8) != 102) { return 0; }
+    var y: f64 = _par_in(1);
+    if (_par_eq(fp, fl, "f64::max") == 1) {
+        _par_got_n = 0;
+        var r: f64 = f64_max(x, y);
+        _par_got_f(r);
+        _par_shadow_record("f64::max ~ f64_max", cls);
+        return 0;
+    }
+    if (_par_eq(fp, fl, "f64::min") == 1) {
+        _par_got_n = 0;
+        var r: f64 = f64_min(x, y);
+        _par_got_f(r);
+        _par_shadow_record("f64::min ~ f64_min", cls);
+        return 0;
+    }
+    if (_par_eq(fp, fl, "f64::clamp") == 1 && _par_in_n == 3) {
+        _par_got_n = 0;
+        var hi: f64 = _par_in(2);
+        var r: f64 = f64_clamp(x, y, hi);
+        _par_got_f(r);
+        _par_shadow_record("f64::clamp ~ f64_clamp", cls);
+        return 0;
+    }
+    return 0;
+}
+
+# The class-C bound for a function, in ulps; -1 when none is set yet (the rows are measured). Under ADR 0003 every
+# class-C function is compared at 0 ulp against the corrected oracle once it runs on its correctly rounded primitive
+# (src/mathx.cyr, M0 part 2c-2); until then the stdlib's functions are measured, never gated.
+#must_use
+fn _par_c_bound(fp, fl): i64 {
+    return 0 - 1;
+}
+
+# The ADR accepting a divergent row (function and raw input field), or 0. The ADR 0002 rows arrive with their
+# modules (port plan §3.3).
+#must_use
+fn _par_accepted(fp, fl, ip, il): i64 {
+    return 0;
+}
+
+# No ADR's accepted rows are summarised quietly yet.
+#must_use
+fn _par_accepted_quiet(adr): i64 {
+    return 0;
+}
+
+# Every printed accepted row gets its bit pair.
+#must_use
+fn _par_accepted_bits(adr): i64 {
+    return 1;
+}
+
+# No module-specific summary lines yet.
+fn _par_module_done(mp, ml) {
+    return 0;
+}
+
+# rasayan has one harness: no module is skipped.
+#must_use
+fn _par_skip(mp, ml): i64 {
+    return 0;
+}
+
+_par_tables_init();
+var exit_code = _par_main();
+sys_exit_group(exit_code);

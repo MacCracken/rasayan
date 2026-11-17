@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 Cyrius port, M0 part 1 ([port plan](docs/development/rasayan-port-plan.md) §4 steps 0–2),
-part 2a (steps 4–5, first part) and part 2b (step 6).
+part 2a (steps 4–5, first part), part 2b (step 6) and part 2c-1 (step 7 and the corrected oracle).
 
 ### Added
 
@@ -56,6 +56,29 @@ part 2a (steps 4–5, first part) and part 2b (step 6).
   compiler, with identical output on ELF, aarch64 and PE
 - **tests/tables.tcyr** — compiles every generated source together and checks 69 sampled cells
   (f64 bits, signed `i8` cells, `u32` / `u8` / `bool` columns, names through the blob offsets)
+- **tests/parity.tcyr** (M0 part 2c-1) — the parity harness: replays every golden row in
+  `cyrius test` and reports each as ok / FAILED / measured / accepted / pending, per function with
+  an ulp histogram; the exit code is the number of failing modules. `tests/parity_core.cyr` and
+  `tests/ulp.cyr` come from ushma's harness (its sign-of-zero rule included: a zero must carry the
+  oracle's sign in every class), with a histogram bucket for a zero of the other sign and a list of
+  the class-B rows that needed their 2-ulp tolerance. Every constant and table row (index
+  constants included) matches the generated sources; every class A/B math row matches on the
+  builtins and on `tests/parity_math.cyr`, the `_ry_max` / `_ry_min` / `_ry_clamp` / `_ry_is_nan` /
+  `_ry_is_finite` / `_ry_powi` / `_ry_f64_to_u32` helpers with Rust's semantics (test-side until M1
+  moves them into `src/`). The 11,094 class-C rows run on the stdlib's functions and are measured,
+  not gated, against the corrected oracle: no stdlib function is correctly rounded on them
+  (`docs/development/port-parity.md` §2). 9,069 ok, 0 failed, 0 pending; the same on `--bounds`
+  and aarch64
+- **corrected oracle** (M0 part 2c-1, [ADR 0003](docs/adr/0003-correct-rounding-is-the-accuracy-target.md)) —
+  `scripts/oracle/mpfr_ref.py` gives correctly rounded exp, expm1, log and pow through the system
+  MPFR (ctypes, no Python package; self-checks include exact ties, the subnormal and overflow ends
+  and every `10^k` from 1e-330 to 1e311), and `--write` evaluates every class-C math row with them:
+  glibc 2.44 misrounds 96 of 11,094 rows by 1 ulp (exp_m1 94, 85 of them on the integrators'
+  large-step branch; exp 1; powf 1; ln 0), written to `tests/golden/math.cr.tsv`, which the
+  harness compares class C against. `validate.py` re-derives the whole set with a second MPFR
+  binding of its own (default exponent range, a Ziv loop, its own rounding to binary64) and checks
+  the file's format, every listed row, that no misrounded row is missing, and that each listed
+  glibc value is this machine's libm result (22,634 checks, 0 failures)
 
 ### Changed
 
@@ -70,7 +93,9 @@ part 2a (steps 4–5, first part) and part 2b (step 6).
 - **docs** — ADRs 0001–0004 accepted (port with a frozen oracle; API divergences; correct rounding;
   serde-compatible JSON); `docs/development/state.md`.
 - **cyrius.cyml** — `math` added to the `[deps]` stdlib leaves (`lib/math.cyr` vendored, `cyrius.lock`
-  28 entries): the math probe calls `f64_min`/`f64_max`/`f64_clamp`.
+  28 entries): the math probe calls `f64_min`/`f64_max`/`f64_clamp`. Part 2c-1 adds `ganita` and
+  `overflow` to `[test] stdlib` only (`cyrius.lock` 30 entries): the harness's saturating ulp
+  arithmetic, and ganita's `pow` and `expm1` as the measured stdlib counterparts.
 
 ## [1.2.0] - 2026-11-16
 

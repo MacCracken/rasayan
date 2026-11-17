@@ -15,10 +15,11 @@ milestone (M9) sets 2.0.0.
 | M0 step 0 — freeze | ✅ tag `1.2.0` at `adadf54`, published to crates.io; Rust bench baseline recorded at the tag (48 benchmarks, `rust-old/bench-history.csv` rows `adadf54`); oracle env rustc 1.100.0 + glibc 2.44 x86_64; reverse dependencies: mastishk 1.1.0, sharira 1.1.0, kiran 1.0.0 |
 | M0 step 1 — scaffold | ✅ `cyrius port` (6.7.18); Rust crate in `rust-old/` (47 of 49 tagged files byte-identical, the 2 others are the bench history with the baseline rows) |
 | M0 step 2 — repairs | ✅ `CLAUDE.md` translated, roadmap/ADR index restored, Rust scripts/workflows/README/architecture under `rust-old/`, ADRs 0001–0004 accepted, `.gitignore` keeps `rust-old/Cargo.lock` |
-| M0 step 3 — `cyrius.cyml` | 🟡 partial: `${file:VERSION}`, `[test] stdlib` with `bench`. `[lib]`/`[lib.mcp]`/`[lib.ai]` profiles and `[deps.bote]` are added when their first module lands (M1, M8) |
+| M0 step 3 — `cyrius.cyml` | 🟡 partial: `${file:VERSION}`, `[test] stdlib` with `bench`, `ganita` and `overflow` (part 2c-1: the harness's saturating ulp arithmetic, and ganita's pow and expm1 as the measured stdlib counterparts; test-only). `[lib]`/`[lib.mcp]`/`[lib.ai]` profiles and `[deps.bote]` are added when their first module lands (M1, M8) |
 | M0 part 2a — steps 4–5 (first part) | ✅ math check (probe 0, `port-parity.md` §0); the generator `scripts/oracle/` (constants + math sweep: 67 + 18,826 golden rows, `src/constants.cyr`); `validate.py` (7,866 rows re-derived, 0 failures); libm attribution (no `exp10`) |
 | M0 part 2b — step 6 | ✅ table data: `src/{protein,alignment,enzyme,membrane,ai}_data.cyr` and `src/constants_private.cyr` (2,470 generated values), pinned by 1,270 golden rows (`protein`, `alignment`, `enzyme`, `membrane`, `ai`, `constants_private`); the completeness proof (`rustsrc.rs`, `t_private::complete`) covers all 123 `const`/`static` items of `rust-old/src` (120 generated, 3 excused); `validate.py` re-derives every row and cell (11,540 checks, 0 failures); `probe_tables.py --all-targets` compiles every value, identical on ELF, aarch64 and PE; `tests/tables.tcyr`; ADR 0002 row 10 (table layout) |
-| M0 steps 7–10 (rest) | ⏳ 2c parity harness, `src/mathx.cyr`, MPFR corrected oracle; part 3 baselines, probes 1–8, upstream |
+| M0 part 2c-1 — step 7 + the corrected oracle | ✅ the parity harness `tests/parity.tcyr` (`tests/parity_core.cyr`, `tests/ulp.cyr` from ushma; `tests/parity_math.cyr`, the §0.8 helpers test-side until M1) runs in `cyrius test`: 9,069 ok, 0 failed, 11,094 class-C rows measured on the stdlib, 0 pending (`port-parity.md` §2a); the MPFR corrected oracle `scripts/oracle/mpfr_ref.py` writes `tests/golden/math.cr.tsv` (glibc misrounds 96 of 11,094 class-C rows: exp_m1 94, exp 1, powf 1), which `validate.py` re-derives with its own MPFR binding (§2b); the stdlib's class-C baseline against it (§2c) |
+| M0 steps 7–10 (rest) | ⏳ 2c-2 `src/mathx.cyr` (class C gated at 0 ulp); part 3 baselines on three targets, probes 1–8, upstream |
 
 ## Golden corpus
 
@@ -26,6 +27,7 @@ milestone (M9) sets 2.0.0.
 |---|---|---|
 | `tests/golden/constants.tsv` | 67 | A |
 | `tests/golden/math.tsv` | 18,826 | A 5,380 · B 2,352 · C 11,094 |
+| `tests/golden/math.cr.tsv` | 96 corrections (ADR 0003, MPFR 4.2.2; written by `mpfr_ref.py`) | — |
 | `tests/golden/constants_private.tsv` | 16 | A |
 | `tests/golden/protein.tsv` | 184 (table cells; module rows from M3) | A |
 | `tests/golden/alignment.tsv` | 1,008 (`substitution_score`; module rows from M3) | A |
@@ -34,8 +36,8 @@ milestone (M9) sets 2.0.0.
 | `tests/golden/ai.tsv` | 1 (`SYSTEM_PROMPT`; module rows from M8) | A |
 
 20,163 rows. Recorded with rustc 1.100.0 on glibc 2.44 x86_64 fma (rasayan 1.2.0). `--check`,
-`validate.py` (11,540 checks) and `probe_tables.py --all-targets` (2,470 compiled values) are
-clean. Generated: `src/constants.cyr` (67 constants, 333 lines), `src/constants_private.cyr` (16,
+`validate.py` (22,634 checks: part 2b's 11,540 and the 11,094 class-C rows against MPFR),
+`mpfr_ref.py --check` and `probe_tables.py --all-targets` (2,470 compiled values) are clean. Generated: `src/constants.cyr` (67 constants, 333 lines), `src/constants_private.cyr` (16,
 74 lines), `src/protein_data.cyr` (721 lines), `src/alignment_data.cyr` (129),
 `src/enzyme_data.cyr` (251), `src/membrane_data.cyr` (28), `src/ai_data.cyr` (36).
 
@@ -51,17 +53,31 @@ clean. Generated: `src/constants.cyr` (67 constants, 333 lines), `src/constants_
   `src/constants_private.cyr`, `src/*_data.cyr`); no `[lib]` yet (the data files join it with
   their modules; `src/ai_data.cyr` belongs to `[lib.ai]` only)
 
+## Parity harness
+
+`cyrius test` runs `tests/parity.tcyr`, warning-free (the same on `--bounds` and aarch64):
+
+`=== parity summary: 8 modules, 0 failing | rows: 9069 ok, 0 failed, 11094 measured, 0 pending, 0 accepted (ADR 3: 0), 0 glibc-matching (failed) ===`
+
+- **ok:** the 108 `const` rows, the 1,229 table rows (from the generated data, index constants
+  included) and the 7,732 class A/B math rows (`tests/parity_math.cyr`'s helpers and the builtins).
+- **measured:** the class-C math rows on the stdlib (`f64_exp`, `f64_ln`, `ganita_f64_pow`,
+  `_gn_expm1`) against the corrected oracle, until `src/mathx.cyr` (part 2c-2) gates them at 0 ulp.
+- **pending:** none yet; a module row with no dispatcher entry is reported pending (M1 on).
+
 ## Tests
 
 - Cyrius: scaffold smoke test, `tests/constants.tcyr` (19 checks of `src/constants.cyr` against the
   golden bits), `tests/tables.tcyr` (69 checks: every generated file compiled together, a sample of
-  cells bit for bit), bench and fuzz stubs; `cyrius test` warning-free, `--bounds` and `cyrius audit` pass
+  cells bit for bit), `tests/parity.tcyr` (the golden corpus, above), bench and fuzz stubs;
+  `cyrius test` warning-free, `--bounds` and `cyrius audit` pass
 - Oracle: 628 unit + 70 integration + 25 validation + 2 doc tests pass in `rust-old/` (`--all-features`)
 
 ## Dependencies
 
-- stdlib — string, fmt, alloc, vec, str, syscalls, io, args, math (`cyrius.lock`: 28 vendored modules)
-- test stdlib — assert, bench
+- stdlib — string, fmt, alloc, vec, str, syscalls, io, args, math
+- test stdlib — assert, bench, ganita (the measured pow / expm1), overflow (the harness's `-|`)
+- `cyrius.lock`: 30 vendored modules (ganita and overflow added at part 2c-1)
 
 ## Consumers
 
@@ -69,5 +85,6 @@ Rust crate (crates.io): mastishk 1.1.0, sharira 1.1.0, kiran 1.0.0. No Cyrius co
 
 ## Next
 
-M0 part 2c: parity harness (`tests/parity.tcyr`, its dispatchers for the `const` and table rows),
-`src/mathx.cyr`, `mpfr_ref.py`. Then part 3: baselines on three targets, probes 1–8, upstream.
+M0 part 2c-2: `src/mathx.cyr` (the correctly rounded exp, expm1, ln and pow vendored from ushma, and
+the `_ry_*` helpers), the class-C math rows gated at 0 ulp against `math.cr.tsv`. Then part 3:
+baselines on three targets, probes 1–8, upstream.

@@ -14,4 +14,4 @@ output = "build/rasayan"
 stdlib = ["string", "fmt", "alloc", "vec", "str", "syscalls", "io", "args", "math"]
 
 [test]
-stdlib = ["assert", "bench"]
+stdlib = ["assert", "bench", "ganita", "overflow"]

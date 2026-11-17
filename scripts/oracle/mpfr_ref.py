@@ -1,0 +1,239 @@
+"""Correctly rounded binary64 results from the system MPFR library, and rasayan's corrected oracle (ADR 0003).
+
+    python3 -I -B scripts/oracle/mpfr_ref.py               # the self-checks
+    python3 -I -B scripts/oracle/mpfr_ref.py --write .     # (re)write tests/golden/math.cr.tsv
+    python3 -I -B scripts/oracle/mpfr_ref.py --check .     # regenerate it in memory and compare byte for byte
+
+Each primitive returns the IEEE-754 binary64 round-to-nearest-even value of the exact mathematical result: MPFR at
+53 bits of precision with binary64's exponent range (emin = -1073, emax = 1024) and `mpfr_subnormalize`, so subnormal
+results, overflow to infinity and exact ties (pow(3*2^-215, 5)) round exactly as IEEE round-to-nearest does. A decimal
+reference at fixed precision can't do that: it misjudges exact ties (it rounds pow(0.5, 1075) = 2^-1075 up instead of
+to 0). MPFR's special values follow ISO C99 Annex F, as glibc's do (pow(-1, ±inf) = 1, pow(x, ±0) = 1, expm1(-inf) =
+-1).
+
+The core is ushma's scripts/oracle/mpfr_ref.py (kimiya's originally), cut to the primitives rasayan's library calls
+through Rust std: exp, expm1, log and pow (port plan §7.1). No Python package is needed: MPFR (libmpfr.so.6, MPFR 4.x)
+is called through ctypes.
+
+The corrected oracle. For every class-C row of tests/golden/math.tsv it evaluates Rust's operation sequence with every
+primitive correctly rounded. A math row is one call (`f64::powf` is `pow`, since rasayan's four `10_f64.powf(x)` sites
+call glibc's pow, not exp10: scripts/oracle/README.md, "Where the math rows come from"; `f64::exp` is `exp`, `f64::ln`
+`log`, `f64::exp_m1` `expm1`), so the sequence is that call. Where the correctly rounded result differs from the
+oracle's (glibc 2.44's), the row goes to tests/golden/math.cr.tsv with the correctly rounded outputs; the parity
+harness compares the port against those (ADR 0003 item 2). scripts/oracle/validate.py re-derives the whole set with
+its own MPFR binding and checks the file.
+"""
+import ctypes
+import ctypes.util
+import math
+import pathlib
+import struct
+import sys
+
+_lib = ctypes.util.find_library("mpfr") or "libmpfr.so.6"
+_m = ctypes.CDLL(_lib)
+
+# mpfr_t on LP64: _mpfr_prec (long), _mpfr_sign (int, padded), _mpfr_exp (long), _mpfr_d (limb *).
+_MPFR_T = ctypes.c_byte * 32
+_RNDN = 0
+_P = ctypes.c_void_p
+
+_m.mpfr_get_version.restype = ctypes.c_char_p
+_m.mpfr_set_emin.argtypes = [ctypes.c_long]
+_m.mpfr_set_emax.argtypes = [ctypes.c_long]
+_m.mpfr_init2.argtypes = [_P, ctypes.c_long]
+_m.mpfr_set_d.argtypes = [_P, ctypes.c_double, ctypes.c_int]
+_m.mpfr_get_d.argtypes = [_P, ctypes.c_int]
+_m.mpfr_get_d.restype = ctypes.c_double
+_m.mpfr_subnormalize.argtypes = [_P, ctypes.c_int, ctypes.c_int]
+
+_UNARY = ("exp", "expm1", "log")
+_BINARY = ("pow",)
+for _name in _UNARY:
+    getattr(_m, "mpfr_" + _name).argtypes = [_P, _P, ctypes.c_int]
+for _name in _BINARY:
+    getattr(_m, "mpfr_" + _name).argtypes = [_P, _P, _P, ctypes.c_int]
+
+_m.mpfr_set_emin(-1073)
+_m.mpfr_set_emax(1024)
+_a = _MPFR_T()
+_b = _MPFR_T()
+_r = _MPFR_T()
+for _v in (_a, _b, _r):
+    _m.mpfr_init2(ctypes.byref(_v), 53)
+
+VERSION = _m.mpfr_get_version().decode()
+
+
+def bits(x):
+    return struct.unpack("<Q", struct.pack("<d", x))[0]
+
+
+def from_bits(b):
+    return struct.unpack("<d", struct.pack("<Q", b))[0]
+
+
+def _finish(t):
+    t = _m.mpfr_subnormalize(ctypes.byref(_r), t, _RNDN)
+    return _m.mpfr_get_d(ctypes.byref(_r), _RNDN)
+
+
+def cr(name, x):
+    """The correctly rounded binary64 value of the unary MPFR function `name` at x (a float)."""
+    if name not in _UNARY:
+        raise ValueError(name)
+    _m.mpfr_set_d(ctypes.byref(_a), x, _RNDN)
+    t = getattr(_m, "mpfr_" + name)(ctypes.byref(_r), ctypes.byref(_a), _RNDN)
+    return _finish(t)
+
+
+def cr2(name, x, y):
+    """The correctly rounded binary64 value of the binary MPFR function `name` (pow)."""
+    if name not in _BINARY:
+        raise ValueError(name)
+    _m.mpfr_set_d(ctypes.byref(_a), x, _RNDN)
+    _m.mpfr_set_d(ctypes.byref(_b), y, _RNDN)
+    t = getattr(_m, "mpfr_" + name)(ctypes.byref(_r), ctypes.byref(_a), ctypes.byref(_b), _RNDN)
+    return _finish(t)
+
+
+def exp(x): return cr("exp", x)
+def expm1(x): return cr("expm1", x)
+def log(x): return cr("log", x)
+def pow(x, y): return cr2("pow", x, y)
+
+
+def self_checks():
+    # Exact ties, rounded to even (glibc 2.44's pow returns 121 here, kimiya port-parity.md §8).
+    assert bits(pow(3 * 2.0 ** -215, 5)) == 122
+    assert bits(pow(9 * 2.0 ** -430, 2.5)) == 122
+    assert pow(0.5, 1075) == 0.0 and bits(pow(0.5, 1074)) == 1
+    # Subnormal and overflow ends.
+    assert bits(exp(-745.1332191019411)) == 1 and exp(-745.2) == 0.0
+    assert exp(709.78) < math.inf and exp(709.8) == math.inf
+    # Signed zeros, specials.
+    assert bits(expm1(-0.0)) == bits(-0.0) and bits(log(1.0)) == 0 and math.isnan(log(-1.0))
+    assert log(0.0) == -math.inf and exp(-math.inf) == 0.0 and expm1(-math.inf) == -1.0
+    assert expm1(math.inf) == math.inf and math.isnan(expm1(math.nan)) and log(math.inf) == math.inf
+    # expm1 of a tiny x is x (x + x^2/2 is within half an ulp), down to the subnormals.
+    for x in (5e-324, -5e-324, 2.0 ** -60, -(2.0 ** -60), 2.2250738585072014e-308):
+        assert bits(expm1(x)) == bits(x), x
+    # C99 Annex F special cases of pow, as glibc's (ushma's pow(-1, DBL_MAX) row: ganita gives +inf).
+    assert pow(-1.0, math.inf) == 1.0 and pow(-1.0, from_bits(0x7FEFFFFFFFFFFFFF)) == 1.0
+    assert pow(math.nan, 0.0) == 1.0 and pow(1.0, math.nan) == 1.0 and pow(2.0, 0.5) == math.sqrt(2.0)
+    assert bits(pow(-0.0, 3.0)) == bits(-0.0) and pow(-0.0, -1.0) == -math.inf and math.isnan(pow(-1.0, 0.5))
+    # pow(x, 0.5) is sqrt(x) exactly, so their correct roundings agree (math.sqrt is correctly rounded).
+    for x in (3.0, 10.0, 1e-300, 5e-324, 1.7976931348623157e308):
+        assert pow(x, 0.5) == math.sqrt(x), x
+    # The Henderson–Hasselbalch 10^k (rasayan's `10_f64.powf`): 10^k is exact, so its correct rounding is the
+    # double Python's correctly rounded parser reads for `1ek`, through the subnormals (1e-323 is 2 * 2^-1074,
+    # 1e-324 rounds to 0) and past the overflow threshold (1e309 is inf).
+    for k in range(-330, 312):
+        assert bits(pow(10.0, float(k))) == bits(float(f"1e{k}")), k
+    # Agrees with glibc where glibc is correctly rounded.
+    assert exp(1.0) == math.e and log(10.0) == math.log(10.0) and log(2.0) == math.log(2.0)
+
+
+# ── the corrected oracle ──
+
+CR_FN = {  # the golden fn of a class-C math row -> the primitive its one call makes
+    "f64::powf": "pow",
+    "f64::exp": "exp",
+    "f64::ln": "log",
+    "f64::exp_m1": "expm1",
+}
+COLUMNS = ("# columns: fn<TAB>inputs<TAB>outputs<TAB>note (fn, inputs: the golden row's, byte for byte; outputs: "
+           "the oracle's operations with every primitive result correctly rounded; note: the oracle's outputs, then "
+           "each call glibc misrounded)")
+REGENERATE = "# regenerate: python3 -I -B scripts/oracle/mpfr_ref.py --write ."
+
+
+def _f(tok):
+    if not tok.startswith("f:") or len(tok) != 18:
+        raise ValueError(f"expected an f: token, got {tok!r}")
+    return from_bits(int(tok[2:], 16))
+
+
+def _ftok(x):
+    return f"f:{bits(x):016x}"
+
+
+def _same(x, y):
+    """Identical bits, or both NaN (a NaN's payload is not a rounding)."""
+    return (math.isnan(x) and math.isnan(y)) or bits(x) == bits(y)
+
+
+def corrections(golden_text):
+    """The class-C rows of math.tsv whose correctly rounded outputs differ from the oracle's, as
+    (fn, inputs, outputs, note) in file order; and the number of class-C rows evaluated."""
+    rows = []
+    evaluated = 0
+    for n, line in enumerate(golden_text.split("\n"), 1):
+        if not line or line.startswith("#"):
+            continue
+        cols = line.split("\t")
+        if len(cols) != 5:
+            raise ValueError(f"math.tsv:{n}: {len(cols)} columns")
+        fn, cls, ins, outs, _note = cols
+        if cls != "C":
+            continue
+        if fn not in CR_FN:
+            raise ValueError(f"math.tsv:{n}: class-C {fn} has no operation model here")
+        name = CR_FN[fn]
+        args = [_f(t) for t in ins.split(" ")]
+        want = outs.split(" ")
+        if len(want) != 1 or len(args) != (1 if name in _UNARY else 2):
+            raise ValueError(f"math.tsv:{n}: {fn} takes {len(args)} inputs and gives {len(want)} outputs")
+        g = _f(want[0])
+        c = cr(name, args[0]) if name in _UNARY else cr2(name, args[0], args[1])
+        evaluated += 1
+        if _same(c, g):
+            continue
+        call = f"{name}({', '.join(_ftok(a) for a in args)}) glibc {_ftok(g)} correctly rounded {_ftok(c)}"
+        rows.append((fn, ins, _ftok(c), f"oracle {outs}; {call}"))
+    return rows, evaluated
+
+
+def cr_text(golden_text, rows):
+    """tests/golden/math.cr.tsv: the golden file's provenance, the MPFR version, then the rows."""
+    prov = golden_text.split("\n", 2)[1].split(". Generated by", 1)[0]
+    head = [
+        "# rasayan corrected oracle (ADR 0003), format 1: math",
+        f"{prov}. Correctly rounded: MPFR {VERSION}. Generated by scripts/oracle/mpfr_ref.py; do not edit.",
+        REGENERATE,
+        COLUMNS,
+        f"# rows: {len(rows)}",
+    ]
+    return "\n".join(head + ["\t".join(r) for r in rows]) + "\n"
+
+
+def main(argv):
+    self_checks()
+    print(f"mpfr_ref: MPFR {VERSION}: self-checks pass")
+    if not argv:
+        return 0
+    if len(argv) != 2 or argv[0] not in ("--write", "--check"):
+        print("usage: mpfr_ref.py [--write <root> | --check <root>]")
+        return 2
+    gold = pathlib.Path(argv[1]).resolve() / "tests/golden"
+    golden_text = (gold / "math.tsv").read_text()
+    rows, evaluated = corrections(golden_text)
+    text = cr_text(golden_text, rows)
+    path = gold / "math.cr.tsv"
+    per = {}
+    for fn, *_ in rows:
+        per[fn] = per.get(fn, 0) + 1
+    summary = f"{len(rows)} of {evaluated} class-C rows misrounded by glibc {dict(sorted(per.items()))}"
+    if argv[0] == "--write":
+        path.write_text(text)
+        print(f"wrote tests/golden/math.cr.tsv: {summary}")
+        return 0
+    if not path.exists() or path.read_text() != text:
+        print(f"DIFFERS  tests/golden/math.cr.tsv (regenerate with --write): {summary}")
+        return 1
+    print(f"ok       tests/golden/math.cr.tsv: {summary}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
