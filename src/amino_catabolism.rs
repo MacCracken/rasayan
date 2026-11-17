@@ -272,6 +272,27 @@ pub struct AminoCatabFlux {
     pub deamination_rate: f64,
 }
 
+impl AminoCatabFlux {
+    /// Add a sub-step's flux into a tick total: amounts are summed and
+    /// per-second rates are weighted by `weight` (sub-step / tick length),
+    /// so the total reads as if the tick had been taken in one step.
+    #[inline]
+    pub(crate) fn accumulate(&mut self, other: &Self, weight: f64) {
+        self.amino_acids_consumed += other.amino_acids_consumed;
+        self.nadh_produced += other.nadh_produced;
+        self.nh4_produced += other.nh4_produced;
+        self.nh4_cleared += other.nh4_cleared;
+        self.to_pyruvate += other.to_pyruvate;
+        self.to_acetyl_coa += other.to_acetyl_coa;
+        self.to_alpha_kg += other.to_alpha_kg;
+        self.to_succinyl_coa += other.to_succinyl_coa;
+        self.to_fumarate += other.to_fumarate;
+        self.to_oxaloacetate += other.to_oxaloacetate;
+        self.transamination_rate += other.transamination_rate * weight;
+        self.deamination_rate += other.deamination_rate * weight;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Simulation
 // ---------------------------------------------------------------------------

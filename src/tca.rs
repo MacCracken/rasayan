@@ -27,6 +27,14 @@
 use serde::{Deserialize, Serialize};
 
 use crate::constants::{MAX_ATP_ADP_RATIO, MAX_NAD_FACTOR, RESTING_NAD_RATIO};
+
+/// Pyruvate dehydrogenase inhibition constant for acetyl-CoA (mM).
+///
+/// Lumps the acetyl-CoA/CoA product control of PDH's E2 subunit (Garland &
+/// Randle, *Biochem. J.* 91:6c, 1964; Pettit et al., *J. Biol. Chem.*
+/// 250:7841, 1975): rising acetyl-CoA from fat oxidation throttles
+/// pyruvate entry (the Randle cycle).
+pub const PDH_KI_ACETYL_COA: f64 = 0.2;
 use crate::enzyme;
 use crate::error::RasayanError;
 use crate::guard::{self, shift, take};
@@ -194,7 +202,7 @@ pub struct TcaConfig {
 impl Default for TcaConfig {
     fn default() -> Self {
         Self {
-            pdh_vmax: 0.1,
+            pdh_vmax: 0.3,
             pdh_km_pyruvate: 0.025,
 
             cs_vmax: 0.15,
@@ -319,6 +327,23 @@ pub struct TcaFlux {
     pub step_rates: [f64; 9],
 }
 
+impl TcaFlux {
+    /// Add a sub-step's flux into a tick total: amounts are summed and
+    /// per-second rates are weighted by `weight` (sub-step / tick length),
+    /// so the total reads as if the tick had been taken in one step.
+    #[inline]
+    pub(crate) fn accumulate(&mut self, other: &Self, weight: f64) {
+        self.pyruvate_consumed += other.pyruvate_consumed;
+        self.nadh_produced += other.nadh_produced;
+        self.fadh2_produced += other.fadh2_produced;
+        self.gtp_produced += other.gtp_produced;
+        self.co2_produced += other.co2_produced;
+        for (r, o) in self.step_rates.iter_mut().zip(other.step_rates) {
+            *r += o * weight;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Simulation
 // ---------------------------------------------------------------------------
@@ -375,7 +400,10 @@ impl TcaState {
             1.0 / (1.0 + (atp_adp_ratio / config.energy_half_inhibition).powi(2));
 
         // --- Step 0: PDH — Pyruvate → Acetyl-CoA + CO2 (NADH) ---
-        let pdh_factor = energy_inhibition * nad_factor;
+        // Product inhibition by acetyl-CoA (acetyl-CoA/CoA control of the
+        // E2 subunit), the brake that matches PDH to TCA capacity.
+        let accoa_inhibition = 1.0 / (1.0 + self.acetyl_coa / PDH_KI_ACETYL_COA);
+        let pdh_factor = energy_inhibition * nad_factor * accoa_inhibition;
         let v_pdh = enzyme::michaelis_menten(
             pyruvate,
             config.pdh_vmax * pdh_factor,

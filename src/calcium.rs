@@ -2,48 +2,70 @@
 //!
 //! Models intracellular calcium oscillations driven by IP3 receptor
 //! channels on the ER membrane. Features calcium-induced calcium release
-//! (CICR) positive feedback and SERCA pump reuptake.
+//! (CICR) positive feedback, SERCA pump reuptake, PMCA extrusion and
+//! plasma-membrane Ca2+ entry (a constitutive leak plus store-operated
+//! Ca2+ entry, SOCE).
 //!
 //! ```text
-//! IP3 → IP3R opens → Ca2+ release from ER (CICR amplifies)
-//!                        ↓
-//!              Cytoplasmic Ca2+ spike
-//!                        ↓
-//!              SERCA pump → Ca2+ back to ER
-//!                        ↓
-//!              Ca2+ returns to baseline → cycle repeats
+//! outside ──(PM leak + SOCE)──► cytosol ──(PMCA)──► outside
+//!                                ▲   │
+//!     IP3R release (CICR) + leak │   │ SERCA
+//!                                │   ▼
+//!                                  ER   (store depletion opens SOCE)
 //! ```
+//!
+//! # Compartments and units
+//!
+//! The ER and the cytosol have different volumes: the ER volume is
+//! [`ER_CYTOSOL_VOLUME_RATIO`] times the cytosolic volume. Every flux
+//! (release, leak, SERCA, PMCA, influx) is expressed in **cytosolic**
+//! concentration units (uM/s of cytosolic Ca2+). A transfer that changes
+//! cytosolic Ca2+ by `x` changes ER Ca2+ by `−x / ER_CYTOSOL_VOLUME_RATIO`,
+//! so ER ↔ cytosol exchange conserves the total *amount*
+//! [`CalciumState::total_amount`] = `cytoplasmic_ca +
+//! ER_CYTOSOL_VOLUME_RATIO · er_ca`. Only the plasma-membrane fluxes change
+//! it.
+//!
+//! # Plasma-membrane Ca2+ entry
+//!
+//! Influx is [`plasma_membrane_influx`]: a constitutive leak
+//! [`PM_CA_LEAK`] plus SOCE through STIM1/Orai1, which opens as the ER
+//! empties, `SOCE_MAX / (1 + (er_ca / SOCE_K_ER)⁴)` (capacitative entry,
+//! Putney 1986; ER Ca2+ dependence after Luik et al. 2008). The constants
+//! are calibrated so that with the default config and IP3 = 0 the default
+//! state (0.1 uM cytosolic, 500 uM ER) is a steady state: influx balances
+//! PMCA and the passive ER leak balances SERCA, so total Ca2+ stays
+//! constant over hours. Sustained IP3 partially empties the ER; SOCE then
+//! supports a raised cytosolic plateau (≈ 1 uM at IP3 = 0.5) and refills
+//! the store when IP3 returns to 0.
 //!
 //! # Limitations
 //!
-//! - **Closed system with a sink only.** There is no plasma-membrane Ca2+
-//!   influx (no store-operated Ca2+ entry / SOCE, no PM leak), while PMCA
-//!   extrudes Ca2+ continuously. Total Ca2+ (`cytoplasmic_ca + er_ca`)
-//!   therefore never increases and drains over long runs. With the default
-//!   config about 40% is lost per hour at IP3 = 0, and with sustained
-//!   IP3 = 0.5 roughly 75% is gone after 5 minutes (raised cytosolic Ca2+
-//!   speeds up PMCA extrusion), so stores empty and oscillations die out.
-//! - ER and cytosol are treated as equal volumes (no volume ratio), so a
-//!   1 uM release from the ER raises cytosolic Ca2+ by 1 uM.
 //! - Ca2+-dependent IP3R inactivation is instantaneous (a factor on the open
-//!   target), not a separate slow gate; see
-//!   [`CalciumConfig::ip3r_inactivation_rate`].
+//!   target), not a separate slow gate (the Li–Rinzel `h` gate would need a
+//!   state field); see [`CalciumConfig::ip3r_inactivation_rate`].
+//! - [`CalciumFlux`] has no field for the plasma-membrane influx; it is
+//!   [`plasma_membrane_influx`] evaluated at the ER level.
 //!
 //! # Integration
 //!
 //! [`CalciumState::tick`] sub-steps internally so that each sub-step is at
 //! most [`SUBSTEP_MAX_DT`] seconds (the SERCA slope at resting Ca2+ is
 //! ~50 s^-1, which makes a single explicit step unstable above ~0.04 s),
-//! using at most [`MAX_SUBSTEPS`] sub-steps per tick. For `dt` above
-//! `SUBSTEP_MAX_DT · MAX_SUBSTEPS` (10 s) the sub-step grows beyond
-//! `SUBSTEP_MAX_DT` and accuracy degrades, but each transfer is capped at its
-//! source pool, so concentrations stay non-negative and total Ca2+ never
-//! increases.
+//! using at most [`MAX_SUBSTEPS`] sub-steps per tick. Within a sub-step the
+//! ER ↔ cytosol exchange (release, leak, SERCA) is an explicit step with
+//! each transfer capped at its source pool, followed by the
+//! plasma-membrane exchange (influx in, PMCA out), solved exactly over the
+//! sub-step. For `dt` above `SUBSTEP_MAX_DT · MAX_SUBSTEPS` (10 s) the
+//! sub-step grows beyond `SUBSTEP_MAX_DT` and accuracy degrades, but
+//! concentrations stay finite and non-negative, and cytosolic Ca2+ stays
+//! bounded by the ER content plus the influx/PMCA balance.
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::RasayanError;
 use crate::guard;
+use crate::integrate;
 
 /// Largest internal sub-step (s) used by [`CalciumState::tick`] while the
 /// sub-step budget [`MAX_SUBSTEPS`] allows.
@@ -54,16 +76,91 @@ pub const SUBSTEP_MAX_DT: f64 = 0.01;
 /// `dt / MAX_SUBSTEPS` each.
 pub const MAX_SUBSTEPS: u32 = 1000;
 
-/// Reference ER Ca2+ level (uM) at which `er_release_rate` is specified;
-/// release scales linearly with `er_ca / ER_CA_REFERENCE`.
-const ER_CA_REFERENCE: f64 = 500.0;
+/// Reference (resting, full-store) ER Ca2+ level (uM).
+///
+/// `CalciumConfig::er_release_rate` is specified at this level (release
+/// scales linearly with `er_ca / ER_CA_REFERENCE`), and the default state
+/// sits here. Resting ER free Ca2+ is a few hundred uM (≈ 100–800 uM
+/// across cell types; Bygrave & Benedetti, Cell Calcium 19:547, 1996).
+pub const ER_CA_REFERENCE: f64 = 500.0;
+
+/// ER volume as a fraction of the cytosolic volume (dimensionless).
+///
+/// A transfer that changes cytosolic Ca2+ by `x` changes ER Ca2+ by
+/// `−x / ER_CYTOSOL_VOLUME_RATIO`. Value `c1 = 0.185` from De Young &
+/// Keizer (PNAS 89:9895, 1992), also used by Li & Rinzel (J Theor Biol
+/// 166:461, 1994).
+pub const ER_CYTOSOL_VOLUME_RATIO: f64 = 0.185;
+
+/// `1 / ER_CYTOSOL_VOLUME_RATIO`: cytosolic-to-ER concentration conversion.
+const CYTOSOL_ER_VOLUME_RATIO: f64 = 1.0 / ER_CYTOSOL_VOLUME_RATIO;
+
+/// Maximal store-operated Ca2+ entry (uM/s, cytosolic units), reached when
+/// the ER is empty.
+///
+/// SOCE (capacitative Ca2+ entry; Putney, Cell Calcium 7:1, 1986) through
+/// STIM1/Orai1 CRAC channels sustains the plateau phase of agonist-evoked
+/// Ca2+ signals at a few hundred nM to ~1 uM. The value is calibrated so
+/// that against the default PMCA (0.5 s^-1) a sustained IP3 = 0.5 holds a
+/// ≈ 1 uM plateau with the ER partly emptied (≈ 15–20% of
+/// [`ER_CA_REFERENCE`]).
+pub const SOCE_MAX: f64 = 0.5;
+
+/// ER Ca2+ level (uM) at which SOCE is half-active; activation is
+/// `1 / (1 + (er_ca / SOCE_K_ER)⁴)`.
+///
+/// Luik et al. (Nature 454:538, 2008) measured CRAC-channel activation and
+/// STIM1 redistribution versus ER free Ca2+ in Jurkat T cells: K½ ≈
+/// 170–190 uM with a Hill coefficient ≈ 4 (the exponent used here).
+pub const SOCE_K_ER: f64 = 180.0;
+
+/// Resting cytosolic Ca2+ (uM) of the default state.
+const RESTING_CA: f64 = 0.1;
+
+/// Default PMCA rate constant (s^-1).
+const DEFAULT_PMCA_RATE: f64 = 0.5;
+
+/// Constitutive (store-independent) plasma-membrane Ca2+ leak (uM/s,
+/// cytosolic units).
+///
+/// Calibrated so that at rest (cytosolic Ca2+ 0.1 uM, ER at
+/// [`ER_CA_REFERENCE`], default PMCA 0.5 s^-1) the total influx
+/// `PM_CA_LEAK + SOCE_MAX · soce(ER_CA_REFERENCE)` exactly balances PMCA
+/// extrusion (0.05 uM/s), making the default state a steady state
+/// (≈ 0.0417 uM/s; resting cells carry a small constitutive Ca2+ influx
+/// matched by PMCA, as in the `J_in` term of Sneyd et al., PNAS 101:1392,
+/// 2004).
+pub const PM_CA_LEAK: f64 =
+    RESTING_CA * DEFAULT_PMCA_RATE - SOCE_MAX * soce_activation(ER_CA_REFERENCE);
+
+/// SOCE open fraction for an ER level `er_ca >= 0`:
+/// `1 / (1 + (er_ca / SOCE_K_ER)⁴)` (exact integer power).
+#[inline]
+const fn soce_activation(er_ca: f64) -> f64 {
+    let u = er_ca / SOCE_K_ER;
+    let u2 = u * u;
+    1.0 / (1.0 + u2 * u2)
+}
+
+/// Plasma-membrane Ca2+ influx (uM/s, cytosolic units) at ER Ca2+ level
+/// `er_ca` (uM): `PM_CA_LEAK + SOCE_MAX / (1 + (er_ca / SOCE_K_ER)⁴)`.
+///
+/// Rises from ≈ 0.05 uM/s with a full store to `PM_CA_LEAK + SOCE_MAX` as
+/// the ER empties. NaN and negative `er_ca` are treated as an empty store.
+#[must_use]
+#[inline]
+pub fn plasma_membrane_influx(er_ca: f64) -> f64 {
+    // `> 0.0` is false for NaN; +inf passes and gives no SOCE.
+    let er = if er_ca > 0.0 { er_ca } else { 0.0 };
+    PM_CA_LEAK + SOCE_MAX * soce_activation(er)
+}
 
 /// Calcium oscillation state.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CalciumState {
     /// Cytoplasmic Ca2+ concentration (uM). Resting ~0.1 uM, peak ~1-10 uM.
     pub cytoplasmic_ca: f64,
-    /// ER Ca2+ store (uM). Resting ~500 uM.
+    /// ER Ca2+ concentration (uM, per ER volume). Resting ~500 uM.
     pub er_ca: f64,
     /// IP3R channel open fraction (0.0-1.0).
     pub ip3r_open: f64,
@@ -72,8 +169,8 @@ pub struct CalciumState {
 impl Default for CalciumState {
     fn default() -> Self {
         Self {
-            cytoplasmic_ca: 0.1,
-            er_ca: 500.0,
+            cytoplasmic_ca: RESTING_CA,
+            er_ca: ER_CA_REFERENCE,
             ip3r_open: 0.01,
         }
     }
@@ -89,9 +186,22 @@ impl CalciumState {
         guard::fraction("ip3r_open", self.ip3r_open)?;
         Ok(())
     }
+
+    /// Total Ca2+ amount in cytosolic concentration units (uM):
+    /// `cytoplasmic_ca + ER_CYTOSOL_VOLUME_RATIO · er_ca`.
+    ///
+    /// ER ↔ cytosol fluxes conserve it; only plasma-membrane influx and
+    /// PMCA extrusion change it.
+    #[must_use]
+    #[inline]
+    pub fn total_amount(&self) -> f64 {
+        self.cytoplasmic_ca + ER_CYTOSOL_VOLUME_RATIO * self.er_ca
+    }
 }
 
 /// Kinetic parameters for calcium oscillations.
+///
+/// All fluxes are in cytosolic concentration units (see the module docs).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CalciumConfig {
     /// IP3R gating relaxation rate toward its open target (s^-1).
@@ -105,22 +215,31 @@ pub struct CalciumConfig {
     /// Rate of a slow Ca2+-dependent IP3R inactivation gate (s^-1).
     ///
     /// **Currently unused**: inactivation is applied instantaneously through
-    /// [`ip3r_inactivation_threshold`](Self::ip3r_inactivation_threshold).
-    /// It is still validated (`>= 0`) and kept for compatibility.
+    /// [`ip3r_inactivation_threshold`](Self::ip3r_inactivation_threshold)
+    /// (a slow Li–Rinzel `h` gate would need an extra state field). It is
+    /// still validated (`>= 0`) and kept for compatibility.
     pub ip3r_inactivation_rate: f64,
     /// Ca2+ level (uM) at which IP3R opening is halved by Ca2+-dependent
     /// inactivation, `1 / (1 + (Ca / threshold)²)`. Must be > 0.
     pub ip3r_inactivation_threshold: f64,
-    /// ER Ca2+ release rate through open IP3R (uM/s per open fraction, at an
-    /// ER level of 500 uM; scales linearly with `er_ca`).
+    /// ER Ca2+ release rate through open IP3R (cytosolic uM/s per open
+    /// fraction, at an ER level of [`ER_CA_REFERENCE`]; scales linearly with
+    /// `er_ca`).
     pub er_release_rate: f64,
-    /// SERCA pump Vmax (uM/s).
+    /// SERCA pump Vmax (cytosolic uM/s).
     pub serca_vmax: f64,
     /// SERCA Km for cytoplasmic Ca2+ (uM; must be > 0).
     pub serca_km: f64,
-    /// Plasma membrane Ca2+ extrusion rate (s^-1).
+    /// Plasma membrane Ca2+ extrusion (PMCA) rate constant (s^-1).
     pub pmca_rate: f64,
-    /// Basal Ca2+ leak from ER (s^-1).
+    /// Passive ER → cytosol leak coefficient (s^-1): the leak is
+    /// `er_leak_rate · er_ca` in cytosolic uM/s.
+    ///
+    /// The default, 1/150 s^-1, makes the leak at [`ER_CA_REFERENCE`]
+    /// (3.33 uM/s) balance SERCA at resting Ca2+ (`10 · 0.1 / (0.2 + 0.1)`),
+    /// so the default state is a steady state (the ER leak is the
+    /// conventional balancing term, as in Li & Rinzel, J Theor Biol
+    /// 166:461, 1994).
     pub er_leak_rate: f64,
 }
 
@@ -136,8 +255,8 @@ impl Default for CalciumConfig {
             er_release_rate: 50.0,
             serca_vmax: 10.0,
             serca_km: 0.2,
-            pmca_rate: 0.5,
-            er_leak_rate: 0.01,
+            pmca_rate: DEFAULT_PMCA_RATE,
+            er_leak_rate: 1.0 / 150.0,
         }
     }
 }
@@ -167,8 +286,11 @@ impl CalciumConfig {
 
 /// Calcium dynamics flux.
 ///
-/// Each field is the mean rate over the tick (amount moved / `dt`). A zero
-/// flux is returned for an invalid `dt`.
+/// Each field is the mean rate over the tick (amount moved / `dt`) in
+/// cytosolic concentration units (uM/s); the matching ER change is the flux
+/// divided by [`ER_CYTOSOL_VOLUME_RATIO`]. Plasma-membrane influx is not a
+/// field (see [`plasma_membrane_influx`]). A zero flux is returned for an
+/// invalid `dt`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[must_use]
 pub struct CalciumFlux {
@@ -232,6 +354,7 @@ impl CalciumState {
 
         for _ in 0..n {
             let ca = self.cytoplasmic_ca;
+            let er = self.er_ca;
 
             // IP3R gating: opened by IP3, amplified by Ca2+ (CICR),
             // inactivated at high Ca2+
@@ -241,24 +364,33 @@ impl CalciumState {
             let target_open = (ip3_activation * (1.0 + cicr) * inactivation).clamp(0.0, 1.0);
             self.ip3r_open += (target_open - self.ip3r_open) * gate_w;
 
-            // ER → cytosol: release through open IP3R + basal leak, capped at
-            // the ER pool.
+            // ER → cytosol: release through open IP3R + passive leak
+            // (cytosolic units), capped at the ER content expressed in
+            // cytosolic units.
             let (release, leak) = cap_pair(
-                config.er_release_rate * self.ip3r_open * (self.er_ca / ER_CA_REFERENCE) * h,
-                config.er_leak_rate * self.er_ca * h,
-                self.er_ca,
+                config.er_release_rate * self.ip3r_open * (er / ER_CA_REFERENCE) * h,
+                config.er_leak_rate * er * h,
+                er * ER_CYTOSOL_VOLUME_RATIO,
             );
+            // Cytosol → ER (SERCA), capped at the cytosolic pool.
+            let serca = guard::take(config.serca_vmax * ca / (config.serca_km + ca) * h, ca);
 
-            // Cytosol → ER (SERCA) and → outside (PMCA), capped at the
-            // cytosolic pool.
-            let (serca, pmca) = cap_pair(
-                config.serca_vmax * ca / (config.serca_km + ca) * h,
-                config.pmca_rate * ca * h,
-                ca,
-            );
+            // Amount-conserving exchange: x cytosolic ↔ x / ratio in the ER.
+            // `min` absorbs a rounding excess of the capped ER outflow.
+            let to_cytosol = release + leak;
+            let er_out = (to_cytosol * CYTOSOL_ER_VOLUME_RATIO).min(er);
+            self.er_ca = (er - er_out) + serca * CYTOSOL_ER_VOLUME_RATIO;
+            let exchanged = (ca - serca) + to_cytosol;
 
-            self.cytoplasmic_ca += release + leak - serca - pmca;
-            self.er_ca += serca - release - leak;
+            // Plasma membrane: influx (leak + SOCE, sensing the ER level at
+            // the start of the sub-step) against first-order PMCA, solved
+            // exactly over the sub-step so a long sub-step cannot overshoot.
+            let j_in = plasma_membrane_influx(er);
+            let after_pm = integrate::produce_decay(exchanged, j_in, config.pmca_rate, h);
+            // Exact extrusion is exchanged·(1 − e^(−kh)) + j_in·h·(1 − g) ≥ 0;
+            // max(0) absorbs rounding when PMCA is negligible.
+            let pmca = (exchanged + j_in * h - after_pm).max(0.0);
+            self.cytoplasmic_ca = after_pm;
 
             released += release;
             pumped += serca;
@@ -278,13 +410,21 @@ mod tests {
     use super::*;
 
     fn total(s: &CalciumState) -> f64 {
-        s.cytoplasmic_ca + s.er_ca
+        s.total_amount()
+    }
+
+    fn run(state: &mut CalciumState, config: &CalciumConfig, ip3: f64, dt: f64, seconds: f64) {
+        let steps = (seconds / dt).round() as usize;
+        for _ in 0..steps {
+            let _ = state.tick(config, ip3, dt);
+        }
     }
 
     #[test]
     fn test_default_valid() {
         assert!(CalciumState::default().validate().is_ok());
         assert!(CalciumConfig::default().validate().is_ok());
+        assert!(PM_CA_LEAK > 0.0 && PM_CA_LEAK.is_finite());
     }
 
     #[test]
@@ -354,6 +494,146 @@ mod tests {
     }
 
     #[test]
+    fn test_default_state_is_steady_at_rest_for_two_hours() {
+        // Used to lose ~40% of total Ca2+ per hour (PMCA sink, no influx).
+        let config = CalciumConfig::default();
+        // With the IP3R closed the default concentrations are a fixed point.
+        let mut state = CalciumState {
+            ip3r_open: 0.0,
+            ..CalciumState::default()
+        };
+        let start = total(&state);
+        for _ in 0..2 {
+            run(&mut state, &config, 0.0, 1.0, 3600.0);
+            assert!(
+                (total(&state) - start).abs() < 1e-9 * start,
+                "total {} vs {start}",
+                total(&state)
+            );
+        }
+        assert!((state.cytoplasmic_ca - 0.1).abs() < 1e-9, "{state:?}");
+        assert!((state.er_ca - ER_CA_REFERENCE).abs() < 1e-6, "{state:?}");
+        // Influx balances PMCA at rest.
+        let flux = state.tick(&config, 0.0, 0.01);
+        let j_in = plasma_membrane_influx(state.er_ca);
+        assert!((flux.pmca_extrusion - j_in).abs() < 1e-9, "{flux:?} {j_in}");
+
+        // The default state (IP3R 1% open) returns to the same rest after
+        // its brief release transient.
+        let mut state = CalciumState::default();
+        run(&mut state, &config, 0.0, 1.0, 7200.0);
+        assert!((total(&state) - start).abs() < 1e-6 * start, "{state:?}");
+        assert!((state.cytoplasmic_ca - 0.1).abs() < 1e-6, "{state:?}");
+        assert!((state.er_ca - ER_CA_REFERENCE).abs() < 1e-3, "{state:?}");
+    }
+
+    #[test]
+    fn test_store_depletion_and_refill() {
+        // Used to lose ~75% of total Ca2+ in 5 min at IP3 = 0.5, never
+        // refilling.
+        let config = CalciumConfig::default();
+        let mut state = CalciumState::default();
+        run(&mut state, &config, 0.5, 0.01, 300.0);
+        // ER partially empties; SOCE holds a raised cytosolic plateau.
+        assert!(
+            state.er_ca < 0.5 * ER_CA_REFERENCE && state.er_ca > 0.05 * ER_CA_REFERENCE,
+            "{state:?}"
+        );
+        assert!(
+            state.cytoplasmic_ca > 0.3 && state.cytoplasmic_ca < 3.0,
+            "{state:?}"
+        );
+        // The plateau is a steady state: SOCE-driven influx matches PMCA.
+        let plateau = state.clone();
+        run(&mut state, &config, 0.5, 0.01, 60.0);
+        assert!(
+            (state.cytoplasmic_ca - plateau.cytoplasmic_ca).abs() < 1e-3,
+            "{state:?} vs {plateau:?}"
+        );
+        assert!(plasma_membrane_influx(state.er_ca) > 5.0 * PM_CA_LEAK);
+        // IP3 removed: the store refills toward rest.
+        run(&mut state, &config, 0.0, 0.05, 300.0);
+        assert!(
+            state.er_ca > 0.6 * ER_CA_REFERENCE,
+            "5 min refill: {state:?}"
+        );
+        run(&mut state, &config, 0.0, 0.05, 3300.0);
+        assert!(
+            (state.er_ca - ER_CA_REFERENCE).abs() < 0.02 * ER_CA_REFERENCE,
+            "{state:?}"
+        );
+        assert!((state.cytoplasmic_ca - 0.1).abs() < 0.01, "{state:?}");
+        assert!(state.validate().is_ok());
+    }
+
+    #[test]
+    fn test_amount_changes_only_through_plasma_membrane() {
+        // One sub-step per tick, so influx is evaluated at the start-of-tick
+        // ER level and the bookkeeping is exact.
+        let config = CalciumConfig::default();
+        let mut state = CalciumState::default();
+        for ip3 in [0.0, 0.5, 1.0, 0.2] {
+            for _ in 0..500 {
+                let before = total(&state);
+                let j_in = plasma_membrane_influx(state.er_ca);
+                let flux = state.tick(&config, ip3, SUBSTEP_MAX_DT);
+                let expected = (j_in - flux.pmca_extrusion) * SUBSTEP_MAX_DT;
+                let change = total(&state) - before;
+                assert!(
+                    (change - expected).abs() < 1e-12,
+                    "ip3={ip3}: {change} vs {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_er_change_uses_volume_ratio() {
+        // SERCA only (no leak, release or PMCA): x leaving the cytosol adds
+        // x / ratio to the ER.
+        let config = CalciumConfig {
+            er_leak_rate: 0.0,
+            pmca_rate: 0.0,
+            ..CalciumConfig::default()
+        };
+        let mut state = CalciumState {
+            cytoplasmic_ca: 2.0,
+            er_ca: 300.0,
+            ip3r_open: 0.0,
+        };
+        let j_in = plasma_membrane_influx(state.er_ca);
+        let flux = state.tick(&config, 0.0, SUBSTEP_MAX_DT);
+        let pumped = flux.serca_uptake * SUBSTEP_MAX_DT;
+        assert!(pumped > 0.0);
+        assert!((state.er_ca - (300.0 + pumped / ER_CYTOSOL_VOLUME_RATIO)).abs() < 1e-12);
+        assert!(
+            (state.cytoplasmic_ca - (2.0 - pumped + j_in * SUBSTEP_MAX_DT)).abs() < 1e-12,
+            "{state:?}"
+        );
+        assert_eq!(flux.pmca_extrusion, 0.0);
+    }
+
+    #[test]
+    fn test_plasma_membrane_influx_shape() {
+        let full = plasma_membrane_influx(ER_CA_REFERENCE);
+        assert!((full - 0.05).abs() < 1e-15, "{full}");
+        assert!((plasma_membrane_influx(0.0) - (PM_CA_LEAK + SOCE_MAX)).abs() < 1e-15);
+        assert!((plasma_membrane_influx(SOCE_K_ER) - (PM_CA_LEAK + 0.5 * SOCE_MAX)).abs() < 1e-15);
+        assert_eq!(plasma_membrane_influx(f64::INFINITY), PM_CA_LEAK);
+        assert_eq!(
+            plasma_membrane_influx(f64::NAN),
+            plasma_membrane_influx(0.0)
+        );
+        assert_eq!(plasma_membrane_influx(-5.0), plasma_membrane_influx(0.0));
+        let mut prev = f64::INFINITY;
+        for i in 0..=100 {
+            let j = plasma_membrane_influx(f64::from(i) * 10.0);
+            assert!(j <= prev && j >= PM_CA_LEAK, "{i}: {j}");
+            prev = j;
+        }
+    }
+
+    #[test]
     fn test_substepping_matches_fine_steps() {
         let config = CalciumConfig::default();
         let mut coarse = CalciumState::default();
@@ -374,18 +654,24 @@ mod tests {
     #[test]
     fn test_large_dt_stable_and_non_negative() {
         let config = CalciumConfig::default();
-        for dt in [0.05, 0.1, 1.0, 10.0, 100.0, 1e6] {
-            let mut state = CalciumState::default();
-            let mut prev_total = total(&state);
-            for _ in 0..50 {
-                let _ = state.tick(&config, 1.0, dt);
-                assert!(state.validate().is_ok(), "dt={dt}: {state:?}");
-                // No Ca2+ source: total never increases.
-                assert!(total(&state) <= prev_total + 1e-9, "dt={dt}: {state:?}");
-                prev_total = total(&state);
+        for ip3 in [0.0, 1.0] {
+            for dt in [0.05, 0.1, 1.0, 10.0, 100.0, 1e3, 1e6] {
+                let mut state = CalciumState::default();
+                for _ in 0..50 {
+                    let _ = state.tick(&config, ip3, dt);
+                    assert!(state.validate().is_ok(), "ip3={ip3} dt={dt}: {state:?}");
+                    assert!(state.cytoplasmic_ca < 100.0, "ip3={ip3} dt={dt}: {state:?}");
+                    assert!(
+                        state.er_ca < 2.0 * ER_CA_REFERENCE,
+                        "ip3={ip3} dt={dt}: {state:?}"
+                    );
+                }
             }
-            assert!(state.cytoplasmic_ca < 100.0, "dt={dt}: {state:?}");
         }
+        // Up to the full sub-step budget (dt <= 10 s) rest stays at rest.
+        let mut state = CalciumState::default();
+        run(&mut state, &config, 0.0, 10.0, 3600.0);
+        assert!((state.cytoplasmic_ca - 0.1).abs() < 1e-6, "{state:?}");
     }
 
     #[test]
@@ -394,9 +680,13 @@ mod tests {
         let mut state = CalciumState::default();
         let before = total(&state);
         let flux = state.tick(&config, 0.5, 2.0);
-        // Only PMCA leaves the system.
-        let lost = before - total(&state);
-        assert!((lost - flux.pmca_extrusion * 2.0).abs() < 1e-9);
+        // Only the plasma membrane changes the amount: PMCA out, influx in
+        // (between PM_CA_LEAK and PM_CA_LEAK + SOCE_MAX).
+        let gained = total(&state) - before + flux.pmca_extrusion * 2.0;
+        assert!(
+            (PM_CA_LEAK * 2.0 - 1e-9..=(PM_CA_LEAK + SOCE_MAX) * 2.0 + 1e-9).contains(&gained),
+            "{gained}"
+        );
     }
 
     #[test]
@@ -435,6 +725,10 @@ mod tests {
             },
             CalciumConfig {
                 serca_vmax: f64::NAN,
+                ..CalciumConfig::default()
+            },
+            CalciumConfig {
+                er_leak_rate: f64::NAN,
                 ..CalciumConfig::default()
             },
         ] {

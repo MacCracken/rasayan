@@ -7,6 +7,126 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-16
+
+The final Rust release and the oracle for the Cyrius port
+([port plan](docs/development/rasayan-port-plan.md), [ADR 0001](docs/adr/0001-cyrius-port-with-rust-oracle.md)).
+It batches the remaining model fixes from the 1.1.0 audit so the port copies a corrected model.
+The public API only grows (every 1.1.0 item unchanged, verified by diffing the public surface);
+the changes below alter simulated values and are listed so consumers can recalibrate.
+Bridge functions used by mastishk and sharira return values identical to 1.1.0.
+
+### Changed — metabolic network (`pathway`)
+
+- **Explicit NAD+/NADH pool, solved implicitly.** The ETC used to receive only the NADH produced
+  *this tick* (oxidizing 2.6% of it at dt = 0.1 s and 57% at dt = 5 s), so results depended on the
+  step size and `nad_ratio` collapsed. Now NADH = `NAD_POOL_TOTAL / (1 + nad_ratio)` and each step
+  solves the end-of-step NADH by backward Euler against Complex I and LDH, with the producers'
+  NAD dependence included (a probe on a copy of the network, then Illinois regula falsi; arithmetic
+  only, fixed iteration cap). The resting state is the same from dt = 1 ms to 5 s (NAD+/NADH within
+  0.3 %, ATP within 0.04 %). Ticks longer than `NETWORK_MAX_SUBSTEP` (0.02 s) are sub-stepped
+  (`NETWORK_MAX_SUBSTEPS` = 5000).
+- **Environment: ATP demand and plasma exchange.** New `NetworkEnvironment` (ATP demand, plasma
+  glucose / fatty acids / amino acids) and `MetabolicNetwork::tick_in`, returning `NetworkTick`
+  (`flux` + `NetworkExchange`: substrate uptake, lactate export, ATP demand met). `tick()` runs a
+  resting cell (`RESTING_ATP_DEMAND`). Demand is saturable in ATP (`ATP_DEMAND_KM`), so a cell whose
+  demand exceeds supply settles at low ATP instead of locking at zero. Before, there was no demand
+  (ADP hit 0 within 10 s) and no supply (glucose, fat and amino acids gone within minutes).
+- **Missing physiology added**: lactate dehydrogenase + lactate export (`LDH_VMAX`, `LDH_KM_*`) —
+  the NAD+ source that keeps glycolysis running under anoxia (Pasteur effect: glycolysis ×1.5–2.8,
+  lactate ×5) and full recovery on reoxygenation; ACC-derived malonyl-CoA throttling CPT-I
+  (`MALONYL_PER_ACETYL_COA`); citrate inhibition of PFK-1 (`PFK_KI_CITRATE`, the Randle cycle);
+  cataplerosis of malate above the resting TCA pool (`TCA_POOL_REFERENCE`, `CATAPLEROSIS_RATE`);
+  α-KG consumed by transamination and returned by GDH; substrate transport constants.
+- Resting steady state (default config and environment): NAD+/NADH ≈ 1126, ATP/ADP ≈ 10.6,
+  pmf 0.56, RQ 0.88, pyruvate 0.027 mM, acetyl-CoA 0.83 mM, all pools bounded for hours.
+- `NetworkConfig::nad_ratio_sensitivity` is unused (documented; still validated).
+
+### Changed — pathway modules
+
+- **etc** — Complex I is Michaelis-Menten in NADH (`COMPLEX_I_KM_NADH` = 2 µM); FAD-linked electrons
+  enter Q directly up to Complex II's capacity (FADH2 is not a free pool). Defaults recalibrated so
+  the chain carries resting electron flux at the default carrier states: `complex_i_vmax` 0.5 → 3.5,
+  `complex_ii_vmax` 0.2 → 0.5, `complex_iii_vmax` 0.8 → 6.0, `complex_iv_vmax` 0.6 → 7.0,
+  `atp_synthase_vmax` 1.0 → 3.3.
+- **glycolysis** — kinase nucleotide saturation (`HK_KM_ATP`, `PFK_KM_ATP`, `PGK_KM_ADP`,
+  `PK_KM_ADP`: no ATP, no phosphorylation); GAPDH is Michaelis-Menten in NAD+
+  (`GAPDH_KM_NAD_FRACTION`) instead of scaling with the NAD+/NADH ratio. Defaults: `hk_ki_g6p`
+  10 → 0.02 mM (hexokinase I Ki is tens of µM; hexose phosphates piled up without bound),
+  `aldo_vmax_f`/`_r` 0.05/0.02 → 0.5/0.2 (aldolase was rate-limiting), `pfk_atp_half_inhibition`
+  15 → 6.
+- **tca** — PDH product inhibition by acetyl-CoA (`PDH_KI_ACETYL_COA`); `pdh_vmax` 0.1 → 0.3.
+
+### Changed — signaling, physiology, neuroendocrine
+
+- **calcium** — plasma-membrane Ca2+ entry: constitutive leak + store-operated entry, Hill 4 on ER
+  depletion (`plasma_membrane_influx`, `PM_CA_LEAK`, `SOCE_MAX`, `SOCE_K_ER`; Luik et al. 2008); ER/
+  cytosol volume ratio 0.185 (`ER_CYTOSOL_VOLUME_RATIO`) so exchange conserves amount
+  (`CalciumState::total_amount`); `ER_CA_REFERENCE` is public. The default state is now a true steady
+  state (it lost ~40 % of its calcium per hour); sustained IP3 gives a ≈ 1 µM SOCE plateau and the store
+  refills. Default `er_leak_rate` 0.01 → 1/150 (the leak exceeded SERCA's maximum at rest).
+- **mapk** — ultrasensitivity via the quasi-steady state of distributive dual phosphorylation for
+  MEK and ERK (Huang & Ferrell 1996): effective Hill coefficient 1.85 open-loop, 1.16 with the
+  default ERK feedback (which flattens it, as in Sturm et al. 2010). Large-dt sub-stepping
+  (`SUBSTEP_MAX_DT` 0.5 s, `MAX_SUBSTEPS`) removes a period-2 alternation at dt = 100. Steady ERK at
+  full growth factor 0.611 → 0.449.
+- **energy** — PCr recovers first-order with a 30 s half-time (`PCR_RECOVERY_HALF_TIME`; Harris
+  1976) instead of ~18 min; depletion is calibrated to sprint data (`PCR_DEPLETION_RATE` 0.02 → 0.25 /min
+  per MET above threshold) and keys off `anaerobic_threshold` (`PCR_DEMAND_THRESHOLD` kept, no longer
+  read). Glycogen lasts ≈ 106 min at 10 MET (was ≈ 18; Bergström 1967): `GLYCOGEN_DEPLETION_RATE`
+  0.005 → 0.0006, new `GLYCOGEN_ANAEROBIC_RATE`, `GLYCOGEN_RECOVERY_RATE` 0.002 → 0.001 (6 %/h). For
+  sharira: the fatigue multiplier at 10 MET after 30 min is 1.93 (was pinned at 3.0 once energy hit 0
+  at 18 min); sharira's tests still pass.
+- **metabolism** — Atkinson energy charge with AMP: `adp` is the low-energy pool split by the
+  adenylate kinase equilibrium (`ADENYLATE_KINASE_KEQ` = 0.44; Lawson & Veech 1979), new `amp()` and
+  `free_adp()`; finite for every input, 0 at ATP = 0.
+- **hormonal** — pituitary arm of glucocorticoid feedback on ACTH (`ACTH_FEEDBACK_KI`; Keller-Wood &
+  Dallman 1984); resting cortisol −15 %, CRH-pulse response half-width 75 → 69 s. Time constants stay
+  compressed (documented).
+
+### Changed — sequence analysis
+
+- **protein** — selectable pKa sets: `PkaSet` (`Lehninger` default, `Bjellqvist` = ExPASy Compute pI,
+  `Emboss`, `Ipc`), `isoelectric_point_with`, `net_charge_with`. `isoelectric_point`/`net_charge` are
+  bit-identical to 1.1.0. Bjellqvist matches ExPASy for ubiquitin (6.56), lysozyme (9.32), myoglobin,
+  cytochrome c, calmodulin and RNase A to ≤ 0.006.
+- **protein** — Chou-Fasman now follows the 1978 method (nucleation, extension until ⟨P⟩ < 1.00,
+  Pro rules, acceptance thresholds, overlap by segment averages, turns by bend-frequency product),
+  in exact integer arithmetic (parameters ×100, bend frequencies ×1000 from Prevelige & Fasman 1989).
+  Predictions change (e.g. ubiquitin's strands and helix are now recovered).
+- **enzyme** — `KNOWN_ENZYMES`: catalase Km 25 mM → 1.1 M (the pair consistent with kcat/Km 4 × 10⁷,
+  below the diffusion limit); pyruvate kinase is the muscle M1 isoform (Hill n 4.0 → 1.0, Km 0.2 →
+  0.05 mM). PFK-1's *E. coli* Hill coefficient is documented, not changed.
+- **mcp** — `rasayan_protein` takes an optional `pka_set` for `isoelectric_point`/`net_charge`.
+
+### Added
+
+- `docs/development/rasayan-port-plan.md`, `docs/adr/` (ADR 0001 proposed).
+- Benchmarks `network_tick_1s`, `isoelectric_point_bjellqvist`.
+- Tests: 625 → 689 with default features (593 unit, 70 integration, 25 validation, 1 doc; 725 with
+  `--all-features`) — network dt-invariance, sub-steps bit-identical to manual steps, carbon balance
+  with plasma exchange at dt 0.01–5, NADH pool bookkeeping to 1e-12, anoxia/recovery, exercise,
+  calcium steady state and refill, MAPK Hill coefficient, PCr half-time and glycogen endurance,
+  ExPASy pI, Chou-Fasman rules, enzyme-database diffusion limit.
+
+### Performance
+
+Criterion medians from interleaved A/B runs against a 1.1.0 worktree (pinned to one core, 2
+repetitions; other workloads shared the machine), plus the `bench-history.csv` row
+`2026-11-17T00:23:19Z`.
+
+- `network_tick` (one 0.01 s tick from the default state) 259 → 930 ns (×3.6): the producer probe on a
+  copy of the network plus two implicit NADH solves (≈ 10 Illinois evaluations each), LDH, transport and
+  the feedbacks. This buys the dt-invariance above; the 1.1.0 network was cheaper because it was wrong.
+  New `network_tick_1s` (50 sub-steps): 50.9 µs.
+- `bioenergy_tick` 8.5 → 25.9 ns: PCr now relaxes exactly (`integrate::activate`); the benchmark's 1-min
+  step takes the `exp_m1` branch (sharira's 0.1 s steps take the series branch).
+- `calcium_tick` 17.6 → 23.9 ns (PM influx/efflux solved exactly), `mapk_tick` 38.8 → 45.0 ns (QSS
+  targets), `signaling_tick` 124 → 146 ns, `hormonal_tick` 30.0 → 32.5 ns.
+- `chou_fasman` 401 → 321 ns (−20 %, integer arithmetic). `isoelectric_point_bjellqvist` (new) 1.70 µs,
+  the same cost as the Lehninger set.
+- All other benchmarks are unchanged within run-to-run noise (±5 %).
+
 ## [1.1.0] - 2026-11-16
 
 P(-1) scaffold hardening pass plus a toolchain and dependency update. The public

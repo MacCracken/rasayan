@@ -44,10 +44,52 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::constants::{MAX_ATP_ADP_RATIO, MAX_NAD_FACTOR, RESTING_NAD_RATIO};
+use crate::constants::{MAX_ATP_ADP_RATIO, RESTING_NAD_RATIO};
 use crate::enzyme;
 use crate::error::RasayanError;
 use crate::guard::{self, shift, take};
+
+/// Hexokinase Michaelis constant for MgATP (mM). Hexokinases I/II:
+/// Km(ATP) ≈ 0.4–1 mM (Wilson, *J. Exp. Biol.* 206:2049, 2003).
+pub const HK_KM_ATP: f64 = 0.4;
+
+/// PFK-1 Michaelis constant for MgATP at the catalytic site (mM); the
+/// inhibitory ATP site is modeled separately by `pfk_atp_half_inhibition`.
+pub const PFK_KM_ATP: f64 = 0.05;
+
+/// Phosphoglycerate kinase Michaelis constant for MgADP (mM) (≈ 0.2–0.35).
+pub const PGK_KM_ADP: f64 = 0.3;
+
+/// Pyruvate kinase Michaelis constant for MgADP (mM) (muscle PK ≈ 0.3).
+pub const PK_KM_ADP: f64 = 0.3;
+
+/// GAPDH Michaelis constant for NAD+, as a fraction of the total NAD(H)
+/// pool (≈ 0.1 mM of a ≈ 1 mM cytosolic pool; GAPDH Km(NAD+) ≈ 0.05–0.1 mM).
+pub const GAPDH_KM_NAD_FRACTION: f64 = 0.1;
+
+/// GAPDH's NAD+ dependence at NAD+/NADH ratio `nad_ratio`, normalized to 1 at
+/// [`RESTING_NAD_RATIO`].
+///
+/// GAPDH is Michaelis-Menten in cytosolic NAD+, whose fraction of the pool
+/// is `r / (1 + r)`. Unlike the mitochondrial dehydrogenases (which scale
+/// with the ratio itself and stop when the ETC stops), glycolysis therefore
+/// keeps running at low ratios as long as lactate dehydrogenase regenerates
+/// NAD+ — the anaerobic (Pasteur) mode. Non-finite or negative ratios give 0.
+#[inline]
+#[must_use]
+pub(crate) fn gapdh_nad_factor(nad_ratio: f64) -> f64 {
+    // x / (K + x) with x = r / (1 + r) simplifies to r / (K + (1 + K)·r).
+    let r = guard::conc(nad_ratio);
+    let resting = RESTING_NAD_RATIO
+        / (GAPDH_KM_NAD_FRACTION + (1.0 + GAPDH_KM_NAD_FRACTION) * RESTING_NAD_RATIO);
+    r / (GAPDH_KM_NAD_FRACTION + (1.0 + GAPDH_KM_NAD_FRACTION) * r) / resting
+}
+
+/// Saturation `x / (k + x)` of a co-substrate, 0 for an empty pool.
+#[inline]
+fn saturation(x: f64, k: f64) -> f64 {
+    if x > 0.0 { x / (k + x) } else { 0.0 }
+}
 
 // ---------------------------------------------------------------------------
 // State
@@ -242,7 +284,7 @@ impl Default for GlycolysisConfig {
             // Step 1: Hexokinase
             hk_vmax: 0.1,
             hk_km_glucose: 0.1,
-            hk_ki_g6p: 10.0,
+            hk_ki_g6p: 0.02,
 
             // Step 2: PGI (fast, near equilibrium)
             pgi_vmax_f: 1.0,
@@ -254,12 +296,12 @@ impl Default for GlycolysisConfig {
             pfk_vmax: 0.1,
             pfk_km_f6p: 0.03,
             pfk_hill_n: 3.8,
-            pfk_atp_half_inhibition: 15.0,
+            pfk_atp_half_inhibition: 6.0,
 
             // Step 4: Aldolase
-            aldo_vmax_f: 0.05,
+            aldo_vmax_f: 0.5,
             aldo_km_f: 0.012,
-            aldo_vmax_r: 0.02,
+            aldo_vmax_r: 0.2,
             aldo_km_r: 0.1,
 
             // Step 5: TPI (very fast, near diffusion limit)
@@ -386,6 +428,23 @@ pub struct GlycolysisFlux {
     pub step_rates: [f64; 10],
 }
 
+impl GlycolysisFlux {
+    /// Add a sub-step's flux into a tick total: amounts are summed and
+    /// per-second rates are weighted by `weight` (sub-step / tick length),
+    /// so the total reads as if the tick had been taken in one step.
+    #[inline]
+    pub(crate) fn accumulate(&mut self, other: &Self, weight: f64) {
+        self.atp_consumed += other.atp_consumed;
+        self.atp_produced += other.atp_produced;
+        self.net_atp += other.net_atp;
+        self.nadh_produced += other.nadh_produced;
+        self.pyruvate_produced += other.pyruvate_produced;
+        for (r, o) in self.step_rates.iter_mut().zip(other.step_rates) {
+            *r += o * weight;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Simulation
 // ---------------------------------------------------------------------------
@@ -423,9 +482,26 @@ impl GlycolysisState {
         nad_ratio: f64,
         dt: f64,
     ) -> GlycolysisFlux {
+        self.tick_regulated(config, atp, adp, nad_ratio, 1.0, dt)
+    }
+
+    /// [`tick`](Self::tick) with an extra multiplicative modifier on PFK-1
+    /// (`pfk_modifier`, clamped to `[0, 1]`): the metabolic network passes
+    /// citrate inhibition here (the Randle cycle), which the standalone
+    /// pathway cannot see.
+    pub(crate) fn tick_regulated(
+        &mut self,
+        config: &GlycolysisConfig,
+        atp: f64,
+        adp: f64,
+        nad_ratio: f64,
+        pfk_modifier: f64,
+        dt: f64,
+    ) -> GlycolysisFlux {
         if !guard::valid_dt(dt) {
             return GlycolysisFlux::default();
         }
+        let pfk_modifier = guard::unit(pfk_modifier);
         let atp = guard::conc(atp);
         let adp = guard::conc(adp);
         let nad_ratio = guard::conc(nad_ratio);
@@ -435,13 +511,14 @@ impl GlycolysisState {
 
         // Step 1: Hexokinase — Glucose → G6P (ATP → ADP)
         // Competitive product inhibition by G6P
+        // ATP is the co-substrate: no ATP, no phosphorylation.
         let v1 = enzyme::competitive_inhibition(
             self.glucose,
             self.g6p,
             config.hk_vmax,
             config.hk_km_glucose,
             config.hk_ki_g6p,
-        );
+        ) * saturation(atp, HK_KM_ATP);
 
         // Step 2: PGI — G6P ⇌ F6P (reversible)
         let v2 = enzyme::reversible_michaelis_menten(
@@ -464,10 +541,10 @@ impl GlycolysisState {
         let pfk_atp_factor = 1.0 / (1.0 + (atp_adp_ratio / config.pfk_atp_half_inhibition).powi(2));
         let v3 = enzyme::hill_equation(
             self.f6p,
-            config.pfk_vmax * pfk_atp_factor,
+            config.pfk_vmax * pfk_atp_factor * pfk_modifier,
             config.pfk_km_f6p,
             config.pfk_hill_n,
-        );
+        ) * saturation(atp, PFK_KM_ATP);
 
         // Step 4: Aldolase — F1,6BP ⇌ DHAP + G3P
         // Reverse rate depends on the product of triose concentrations (ordered
@@ -489,16 +566,16 @@ impl GlycolysisState {
         );
 
         // Step 6: GAPDH — G3P → 1,3BPG (NAD+ → NADH)
-        // Rate scales with NAD+ availability (approximated by nad_ratio)
-        let nad_factor = (nad_ratio / RESTING_NAD_RATIO).min(MAX_NAD_FACTOR);
+        // Michaelis-Menten in cytosolic NAD+ (see `gapdh_nad_factor`).
         let v6 = enzyme::michaelis_menten(
             self.g3p,
-            config.gapdh_vmax * nad_factor,
+            config.gapdh_vmax * gapdh_nad_factor(nad_ratio),
             config.gapdh_km_g3p,
         );
 
-        // Step 7: PGK — 1,3BPG → 3PG (ADP → ATP)
-        let v7 = enzyme::reversible_michaelis_menten(
+        // Step 7: PGK — 1,3BPG → 3PG (ADP → ATP). Forward needs ADP, the
+        // reverse direction ATP.
+        let v7_raw = enzyme::reversible_michaelis_menten(
             self.bpg13,
             self.pg3,
             config.pgk_vmax_f,
@@ -506,6 +583,11 @@ impl GlycolysisState {
             config.pgk_vmax_r,
             config.pgk_km_r,
         );
+        let v7 = if v7_raw >= 0.0 {
+            v7_raw * saturation(adp, PGK_KM_ADP)
+        } else {
+            v7_raw * saturation(atp, PGK_KM_ADP)
+        };
 
         // Step 8: PGM — 3PG ⇌ 2PG
         let v8 = enzyme::reversible_michaelis_menten(
@@ -536,7 +618,7 @@ impl GlycolysisState {
             config.pk_vmax * f16bp_activation,
             config.pk_km_pep,
             config.pk_hill_n,
-        );
+        ) * saturation(adp, PK_KM_ADP);
 
         // --- Integrate (Euler, applied step by step in pathway order) ---
         // Each transfer is capped at the pool it drains, so no pool can go

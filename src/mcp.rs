@@ -184,6 +184,14 @@ fn protein_def() -> ToolDef {
     );
     props.insert("ph".into(), prop_f64("pH for net_charge calculation"));
     props.insert(
+        "pka_set".into(),
+        prop_enum(
+            "pKa set for isoelectric_point / net_charge (default lehninger; \
+             bjellqvist matches ExPASy Compute pI)",
+            &["lehninger", "bjellqvist", "emboss", "ipc"],
+        ),
+    );
+    props.insert(
         "code".into(),
         prop_str("Single amino acid code (for lookup)"),
     );
@@ -316,6 +324,21 @@ fn get_seq<'a>(params: &'a Value, key: &str, usage: &str) -> Result<&'a str, Val
         )));
     }
     Ok(seq)
+}
+
+/// Read the optional `pka_set` parameter (default: Lehninger, the 1.x
+/// behavior of `isoelectric_point` / `net_charge`).
+fn get_pka_set(params: &Value) -> Result<crate::protein::PkaSet, Value> {
+    use crate::protein::PkaSet;
+    match get_str(params, "pka_set").unwrap_or("lehninger") {
+        "lehninger" => Ok(PkaSet::Lehninger),
+        "bjellqvist" => Ok(PkaSet::Bjellqvist),
+        "emboss" => Ok(PkaSet::Emboss),
+        "ipc" => Ok(PkaSet::Ipc),
+        other => Err(err(&format!(
+            "unknown pka_set: {other} (expected lehninger, bjellqvist, emboss or ipc)"
+        ))),
+    }
 }
 
 /// Reject non-finite results (division by zero, ln of 0, overflow) instead
@@ -647,7 +670,11 @@ fn protein_handler(params: Value) -> Value {
                 Ok(s) => s,
                 Err(e) => return e,
             };
-            match crate::protein::isoelectric_point(seq) {
+            let set = match get_pka_set(&params) {
+                Ok(set) => set,
+                Err(e) => return e,
+            };
+            match crate::protein::isoelectric_point_with(seq, set) {
                 Some(pi) => json!({"pI": pi}),
                 None => err("invalid sequence"),
             }
@@ -696,7 +723,11 @@ fn protein_handler(params: Value) -> Value {
             if !(0.0..=14.0).contains(&ph) {
                 return err("net_charge: 'ph' must be in [0, 14]");
             }
-            let charge = crate::protein::net_charge(seq, ph);
+            let set = match get_pka_set(&params) {
+                Ok(set) => set,
+                Err(e) => return e,
+            };
+            let charge = crate::protein::net_charge_with(seq, ph, set);
             json!({"net_charge": charge, "ph": ph})
         }
         "lookup" => {
@@ -1121,6 +1152,30 @@ mod tests {
         assert!(bad.get("error").is_some());
         let bad = metabolism_handler(json!({"action": "consume_atp", "amount": -5.0}));
         assert!(bad.get("error").is_some());
+    }
+
+    #[test]
+    fn test_protein_pka_set_selection() {
+        let ubiquitin =
+            "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG";
+        let default =
+            protein_handler(json!({"function": "isoelectric_point", "sequence": ubiquitin}));
+        let lehninger = protein_handler(json!({
+            "function": "isoelectric_point", "sequence": ubiquitin, "pka_set": "lehninger",
+        }));
+        assert_eq!(default, lehninger);
+        let expasy = protein_handler(json!({
+            "function": "isoelectric_point", "sequence": ubiquitin, "pka_set": "bjellqvist",
+        }));
+        // ExPASy Compute pI: 6.56.
+        assert!(
+            (expasy["pI"].as_f64().unwrap() - 6.56).abs() < 0.01,
+            "{expasy}"
+        );
+        let bad = protein_handler(json!({
+            "function": "net_charge", "sequence": "ACDK", "pka_set": "nope",
+        }));
+        assert!(bad["error"].as_str().unwrap().contains("unknown pka_set"));
     }
 
     #[test]

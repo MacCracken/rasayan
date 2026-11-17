@@ -597,7 +597,29 @@ pub fn lookup_enzyme(name: &str) -> Option<&'static KnownEnzyme> {
 /// Database of well-characterized enzymes with consensus kinetic values.
 ///
 /// Sources: Stryer Biochemistry, Lehninger Principles, BRENDA.
-/// Km in molar (M), kcat in s^-1.
+/// Km in molar (M), kcat in s^-1. For entries with `hill_n` ≠ 1 the `km`
+/// field is the half-saturation concentration S0.5 that
+/// [`EnzymeParams::rate`] passes to the Hill equation.
+///
+/// Entry notes:
+/// - **Catalase** — kcat 4×10⁷ s⁻¹ with apparent Km 1.1 M (kcat/Km
+///   4×10⁷ M⁻¹ s⁻¹), the self-consistent pair in Lehninger's table of
+///   enzymes with kcat/Km near the diffusion limit (Table 6-8 in the
+///   4th–7th eds., after Fersht, *Structure and Mechanism in Protein
+///   Science*, 1999). Catalase does not saturate in the Michaelis-Menten
+///   sense, hence the molar apparent Km. The 25 mM Km quoted elsewhere would
+///   put kcat/Km at 1.6×10⁹ M⁻¹ s⁻¹, above the diffusion limit.
+/// - **Pyruvate kinase** — muscle isoform M1 (rabbit skeletal muscle):
+///   hyperbolic in PEP (M1 is not allosterically activated by fructose
+///   1,6-bisphosphate; UniProt P14618), Km(PEP) 0.05 mM from the 0.03–0.08 mM
+///   range reported for the muscle enzyme (BRENDA EC 2.7.1.40), kcat 400 s⁻¹
+///   (≈ the 350–600 U/mg specific activity of the purified enzyme at
+///   58 kDa per subunit). The cooperative liver isoform (L-PK, S0.5 ≈ 0.5–1
+///   mM, nH ≈ 2) is not listed.
+/// - **Phosphofructokinase** — nH 3.8 is the *E. coli* PFK-1 value
+///   (Blangy, Buc & Monod, *J. Mol. Biol.* 31:13, 1968); the 30 µM `km` is a
+///   high-affinity (R-state-like) constant, lower than the apparent S0.5
+///   that accompanies nH 3.8. Kept pending a verified S0.5.
 pub const KNOWN_ENZYMES: &[KnownEnzyme] = &[
     KnownEnzyme {
         name: "Carbonic anhydrase",
@@ -615,11 +637,12 @@ pub const KNOWN_ENZYMES: &[KnownEnzyme] = &[
         kcat: 14_000.0,
         hill_n: 1.0,
     },
+    // Lehninger Table 6-8 (4th–7th eds.) / Fersht 1999: kcat 4e7, Km 1.1 M.
     KnownEnzyme {
         name: "Catalase",
         ec_number: "1.11.1.6",
         substrate: "H2O2",
-        km: 0.025,
+        km: 1.1,
         kcat: 40_000_000.0,
         hill_n: 1.0,
     },
@@ -671,6 +694,8 @@ pub const KNOWN_ENZYMES: &[KnownEnzyme] = &[
         kcat: 0.5,
         hill_n: 1.0,
     },
+    // E. coli PFK-1 nH (Blangy, Buc & Monod 1968) with an R-state-like K;
+    // see the KNOWN_ENZYMES notes.
     KnownEnzyme {
         name: "Phosphofructokinase",
         ec_number: "2.7.1.11",
@@ -679,13 +704,14 @@ pub const KNOWN_ENZYMES: &[KnownEnzyme] = &[
         kcat: 100.0,
         hill_n: 3.8,
     },
+    // Muscle M1 isoform (rabbit): hyperbolic, Km(PEP) 0.05 mM, kcat 400 s⁻¹.
     KnownEnzyme {
         name: "Pyruvate kinase",
         ec_number: "2.7.1.40",
         substrate: "PEP",
-        km: 2e-4,
+        km: 5e-5,
         kcat: 400.0,
-        hill_n: 4.0,
+        hill_n: 1.0,
     },
     KnownEnzyme {
         name: "Aspartate transcarbamoylase",
@@ -1034,8 +1060,40 @@ mod tests {
     fn test_allosteric_enzymes_have_hill_gt_1() {
         let pfk = lookup_enzyme("Phosphofructokinase").unwrap();
         assert!(pfk.hill_n > 1.0);
+        let atcase = lookup_enzyme("Aspartate transcarbamoylase").unwrap();
+        assert!(atcase.hill_n > 1.0);
+    }
+
+    #[test]
+    fn test_pyruvate_kinase_is_muscle_m1() {
+        // 1.1.0 had nH 4.0 (the subunit count, the theoretical maximum) with
+        // Km 0.2 mM. The entry is now the hyperbolic muscle M1 isoform.
         let pk = lookup_enzyme("Pyruvate kinase").unwrap();
-        assert!(pk.hill_n > 1.0);
+        assert!((pk.hill_n - 1.0).abs() < f64::EPSILON);
+        assert!((3e-5..=8e-5).contains(&pk.km), "Km(PEP) = {}", pk.km);
+        // hill_n == 1 routes rate() through Michaelis-Menten: v(Km) = Vmax/2.
+        let p = pk.params(1e-6);
+        assert!((p.rate(pk.km) - p.vmax / 2.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_catalase_below_diffusion_limit() {
+        // 1.1.0 paired kcat 4e7 with Km 25 mM → kcat/Km 1.6e9 M⁻¹s⁻¹.
+        let cat = lookup_enzyme("Catalase").unwrap();
+        let eff = cat.catalytic_efficiency();
+        assert!((eff - 4e7).abs() / 4e7 < 0.15, "catalase kcat/Km = {eff}");
+    }
+
+    #[test]
+    fn test_known_enzymes_respect_diffusion_limit() {
+        for e in KNOWN_ENZYMES {
+            let eff = e.catalytic_efficiency();
+            assert!(eff <= 1e9, "{}: kcat/Km = {eff:e}", e.name);
+            assert!(e.params(1e-6).validate().is_ok(), "{}", e.name);
+            // Cooperativity can never exceed the number of binding sites;
+            // every listed enzyme has at most 6 (ATCase catalytic sites).
+            assert!((1.0..=6.0).contains(&e.hill_n), "{}", e.name);
+        }
     }
 
     // --- Hardening regressions ---

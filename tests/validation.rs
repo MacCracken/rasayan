@@ -201,13 +201,14 @@ fn validate_goldman_resting_potential() {
 }
 
 // ==========================================================================
-// Isoelectric point — published protein pI values
-// Source: ExPASy Compute pI (Swiss-Prot)
+// Isoelectric point — free amino acids (default PkaSet::Lehninger)
+// Source: Nelson & Cox, Lehninger Principles of Biochemistry, Table 3-1
+// (free-amino-acid pKa values; termini use the Ala α-group values 2.34/9.69)
 // ==========================================================================
 
 #[test]
 fn validate_pi_glycine_free_amino_acid() {
-    // Glycine: pI = 5.97 (Lehninger)
+    // Glycine: pI = 5.97 (Lehninger Table 3-1)
     let pi = protein::isoelectric_point("G").unwrap();
     assert!(
         (pi - 5.97).abs() < 0.2,
@@ -233,6 +234,76 @@ fn validate_pi_acidic_amino_acid_glutamate() {
         (pi - 3.30).abs() < 0.15,
         "Glutamate pI should be ~3.30, got {pi}"
     );
+}
+
+// ==========================================================================
+// Isoelectric point — proteins, ExPASy Compute pI/Mw (PkaSet::Bjellqvist)
+// Source: ExPASy Compute pI/Mw theoretical pI (Bjellqvist et al.,
+// Electrophoresis 14:1023, 1993; 15:529, 1994) for the UniProt mature chains
+// below. ExPASy prints two decimals, so the tolerance is half a print digit
+// plus the 0.0005 bisection error. The molecular weights are ExPASy's average
+// masses for the same chains and confirm the sequences match.
+// ==========================================================================
+
+/// Human ubiquitin, P0CG48 mature chain (76 aa).
+const UBIQUITIN: &str =
+    "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG";
+/// Hen egg-white lysozyme, P00698 residues 19–147 (mature, 129 aa).
+const HEN_LYSOZYME: &str = "KVFGRCELAAAMKRHGLDNYRGYSLGNWVCAAKFESNFNTQATNRNTDGSTDYGILQINSRWWCNDGRTPGSRNLCNIPCSALLSSDITASVNCAKKIVSDGNGMNAWVAWRNRCKGTDVQAWIRGCRL";
+/// Horse heart myoglobin, P68082 without the initiator Met (153 aa).
+const HORSE_MYOGLOBIN: &str = "GLSDGEWQQVLNVWGKVEADIAGHGQEVLIRLFTGHPETLEKFDKFKHLKTEAEMKASEDLKKHGTVVLTALGGILKKKGHHEAELKPLAQSHATKHKIPIKYLEFISDAIIHVLHSKHPGDFGADAQGAMTKALELFRNDIAAKYKELGFQG";
+/// Horse heart cytochrome c, P00004 without the initiator Met (104 aa).
+const HORSE_CYTOCHROME_C: &str = "GDVEKGKKIFVQKCAQCHTVEKGGKHKTGPNLHGLFGRKTGQAPGFTYTDANKNKGITWKEETLMEYLENPKKYIPGTKMIFAGIKKKTEREDLIAYLKKATNE";
+/// Human calmodulin, P0DP23 including the initiator Met (149 aa).
+const HUMAN_CALMODULIN: &str = "MADQLTEEQIAEFKEAFSLFDKDGDGTITTKELGTVMRSLGQNPTEAELQDMINEVDADGNGTIDFPEFLTMMARKMKDTDSEEEIREAFRVFDKDGNGYISAAELRHVMTNLGEKLTDEEVDEMIREADIDGDGQVNYEEFVQMMTAK";
+/// Bovine pancreatic ribonuclease A, P61823 mature chain (124 aa).
+const BOVINE_RNASE_A: &str = "KETAAAKFERQHMDSSTSAASSSNYCNQMMKSRNLTKDRCKPVNTFVHESLADVQAVCSQKNVACKNGQTNCYQSYSTMSITDCRETGSSKYPNCAYKTTQANKHIIVACEGNPYVPVHFDASV";
+
+fn assert_expasy_pi(name: &str, sequence: &str, expasy_pi: f64) {
+    let pi = protein::isoelectric_point_with(sequence, protein::PkaSet::Bjellqvist).unwrap();
+    assert!(
+        (pi - expasy_pi).abs() < 0.006,
+        "{name}: Bjellqvist pI {pi:.4}, ExPASy {expasy_pi}"
+    );
+}
+
+#[test]
+fn validate_pi_expasy_ubiquitin() {
+    // ExPASy: pI 6.56, Mw 8564.84.
+    assert_expasy_pi("ubiquitin", UBIQUITIN, 6.56);
+    let mw = protein::molecular_weight(UBIQUITIN).unwrap();
+    assert!((mw - 8564.84).abs() < 0.5, "ubiquitin Mw {mw}");
+}
+
+#[test]
+fn validate_pi_expasy_hen_lysozyme() {
+    // ExPASy: pI 9.32, Mw 14313.14.
+    assert_expasy_pi("lysozyme", HEN_LYSOZYME, 9.32);
+    let mw = protein::molecular_weight(HEN_LYSOZYME).unwrap();
+    assert!((mw - 14313.14).abs() < 0.5, "lysozyme Mw {mw}");
+}
+
+#[test]
+fn validate_pi_expasy_more_proteins() {
+    // ExPASy theoretical pI: myoglobin 7.36 (Mw 16951.49), cytochrome c
+    // 9.59, calmodulin 4.09, ribonuclease A 8.64.
+    assert_expasy_pi("myoglobin", HORSE_MYOGLOBIN, 7.36);
+    assert_expasy_pi("cytochrome c", HORSE_CYTOCHROME_C, 9.59);
+    assert_expasy_pi("calmodulin", HUMAN_CALMODULIN, 4.09);
+    assert_expasy_pi("ribonuclease A", BOVINE_RNASE_A, 8.64);
+    let mw = protein::molecular_weight(HORSE_MYOGLOBIN).unwrap();
+    assert!((mw - 16951.49).abs() < 0.5, "myoglobin Mw {mw}");
+}
+
+#[test]
+fn validate_pi_sets_differ_for_proteins() {
+    // The free-amino-acid set is not a protein pI tool: for ubiquitin it is
+    // ~1.1 pH units above ExPASy (Kozlowski, Biol. Direct 11:55, 2016,
+    // compares the sets).
+    let lehninger = protein::isoelectric_point(UBIQUITIN).unwrap();
+    let bjellqvist =
+        protein::isoelectric_point_with(UBIQUITIN, protein::PkaSet::Bjellqvist).unwrap();
+    assert!(lehninger - bjellqvist > 1.0, "{lehninger} vs {bjellqvist}");
 }
 
 // ==========================================================================
@@ -262,7 +333,8 @@ fn validate_extinction_coefficient_pace_values() {
 
 // ==========================================================================
 // Enzyme database — validate against published Km/kcat
-// Source: Lehninger 8th ed., BRENDA enzyme database
+// Source: Lehninger (Nelson & Cox) Tables 6-6 to 6-8 (4th–7th eds.; after
+// Fersht, Structure and Mechanism in Protein Science, 1999), BRENDA
 // ==========================================================================
 
 #[test]
@@ -278,12 +350,48 @@ fn validate_enzyme_db_carbonic_anhydrase() {
 
 #[test]
 fn validate_enzyme_db_catalase() {
-    // Catalase: kcat ~ 40,000,000 s⁻¹ (fastest known)
+    // Catalase: kcat 4×10⁷ s⁻¹ (the largest turnover number in Lehninger
+    // Table 6-7), apparent Km(H2O2) 1.1 M, kcat/Km 4×10⁷ M⁻¹s⁻¹ (Table 6-8).
     let enz = enzyme::lookup_enzyme("Catalase").unwrap();
     assert!(
         enz.kcat > 10_000_000.0,
         "Catalase kcat should be >10^7 s⁻¹, got {}",
         enz.kcat
+    );
+    assert!((enz.km - 1.1).abs() < 1e-9, "Catalase Km {}", enz.km);
+    let eff = enz.catalytic_efficiency();
+    assert!(
+        (eff - 4e7).abs() / 4e7 < 0.15,
+        "Catalase kcat/Km should be ~4×10⁷ M⁻¹s⁻¹, got {eff:e}"
+    );
+}
+
+#[test]
+fn validate_enzyme_db_diffusion_limit() {
+    // No enzyme can beat the diffusion-controlled encounter rate,
+    // ~10⁸–10⁹ M⁻¹s⁻¹ (Alberty & Hammes, J. Phys. Chem. 62:154, 1958;
+    // Lehninger Table 6-8).
+    for enz in enzyme::KNOWN_ENZYMES {
+        let eff = enz.catalytic_efficiency();
+        assert!(
+            eff <= 1e9,
+            "{}: kcat/Km {eff:e} exceeds diffusion limit",
+            enz.name
+        );
+    }
+}
+
+#[test]
+fn validate_enzyme_db_pyruvate_kinase_muscle() {
+    // Muscle pyruvate kinase (M1, rabbit): hyperbolic in PEP, Km 0.03–0.08 mM
+    // (BRENDA EC 2.7.1.40). M1 is not activated by fructose 1,6-bisphosphate
+    // (UniProt P14618), unlike the cooperative L/R/M2 isoforms.
+    let enz = enzyme::lookup_enzyme("Pyruvate kinase").unwrap();
+    assert!((enz.hill_n - 1.0).abs() < f64::EPSILON, "nH {}", enz.hill_n);
+    assert!(
+        (3e-5..=8e-5).contains(&enz.km),
+        "PK Km(PEP) should be 0.03–0.08 mM, got {} M",
+        enz.km
     );
 }
 

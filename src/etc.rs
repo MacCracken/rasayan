@@ -35,11 +35,30 @@
 //! oxidized, one QH2 oxidized (two cytochrome c reduced), or ½ O2 reduced
 //! to one H2O at Complex IV. The Q and cytochrome c pools are tracked as
 //! reduced fractions in the same units (implicit pool size 1 mM).
+//!
+//! # Substrate entry
+//!
+//! - **NADH** enters at Complex I with Michaelis-Menten kinetics in the NADH
+//!   *concentration* ([`COMPLEX_I_KM_NADH`], low µM), scaled by oxidized Q
+//!   and pmf backpressure.
+//! - **FADH2** is not a free pool: succinate dehydrogenase (which *is*
+//!   Complex II) and electron-transferring flavoprotein hand FAD-linked
+//!   electrons straight to Q. The `fadh2` input is therefore the electron
+//!   pairs delivered this step; they enter Q up to Complex II's capacity
+//!   (`complex_ii_vmax · oxidized Q · dt`) and the oxidized-Q room left.
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::RasayanError;
 use crate::guard::{self, take};
+
+/// Complex I Michaelis constant for NADH (mM).
+///
+/// Mammalian Complex I has low-micromolar affinity for NADH (Km ≈ 2–10 µM;
+/// Hirst, *Annu. Rev. Biochem.* 82:551, 2013). With free NADH itself in
+/// the low-µM range at resting NAD+/NADH ratios, Complex I runs near
+/// half-saturation, which is what lets the ETC track NADH supply.
+pub const COMPLEX_I_KM_NADH: f64 = 0.002;
 
 // ---------------------------------------------------------------------------
 // State
@@ -71,6 +90,20 @@ impl Default for EtcState {
             cytc_reduced: 0.2,
         }
     }
+}
+
+/// Inputs for one ETC step (crate-internal; see [`EtcState::step`]).
+pub(crate) struct EtcDrive {
+    /// NADH concentration Complex I's rate is evaluated at (mM).
+    pub(crate) nadh_conc: f64,
+    /// NADH Complex I may consume at most (mM).
+    pub(crate) nadh_avail: f64,
+    /// FAD-linked electron pairs delivered this step (mM).
+    pub(crate) fadh2: f64,
+    /// O2 availability (0–1).
+    pub(crate) oxygen: f64,
+    /// ADP for ATP synthase (mM).
+    pub(crate) adp: f64,
 }
 
 impl EtcState {
@@ -130,12 +163,12 @@ pub struct EtcConfig {
 impl Default for EtcConfig {
     fn default() -> Self {
         Self {
-            complex_i_vmax: 0.5,
-            complex_ii_vmax: 0.2,
-            complex_iii_vmax: 0.8,
-            complex_iv_vmax: 0.6,
+            complex_i_vmax: 3.5,
+            complex_ii_vmax: 0.5,
+            complex_iii_vmax: 6.0,
+            complex_iv_vmax: 7.0,
             complex_iv_km_o2: 0.01,
-            atp_synthase_vmax: 1.0,
+            atp_synthase_vmax: 3.3,
             atp_synthase_pmf_threshold: 0.3,
             atp_synthase_km_adp: 0.1,
             proton_leak_rate: 0.05,
@@ -232,6 +265,23 @@ pub struct EtcFlux {
     pub complex_rates: [f64; 5],
 }
 
+impl EtcFlux {
+    /// Add a sub-step's flux into a tick total: amounts are summed and
+    /// per-second rates are weighted by `weight` (sub-step / tick length),
+    /// so the total reads as if the tick had been taken in one step.
+    #[inline]
+    pub(crate) fn accumulate(&mut self, other: &Self, weight: f64) {
+        self.nadh_consumed += other.nadh_consumed;
+        self.fadh2_consumed += other.fadh2_consumed;
+        self.o2_consumed += other.o2_consumed;
+        self.atp_produced += other.atp_produced;
+        self.h2o_produced += other.h2o_produced;
+        for (r, o) in self.complex_rates.iter_mut().zip(other.complex_rates) {
+            *r += o * weight;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Simulation
 // ---------------------------------------------------------------------------
@@ -246,7 +296,7 @@ impl EtcState {
     ///
     /// Rates are evaluated from the state at the start of the tick, then
     /// each transfer is capped at what it drains: Complex I at `nadh` and
-    /// oxidized Q, Complex II at `fadh2` and oxidized Q, Complex III at QH2
+    /// oxidized Q, Complex II at `fadh2`, its capacity and oxidized Q, Complex III at QH2
     /// and oxidized cytochrome c, Complex IV at reduced cytochrome c, and
     /// ATP synthase at `adp` and the protons available. Electrons are
     /// therefore conserved for any `dt` (in = out + stored in Q/cyt c), and
@@ -259,8 +309,9 @@ impl EtcState {
     ///
     /// # Arguments
     /// * `config` — kinetic parameters for all complexes
-    /// * `nadh` — available NADH (mM)
-    /// * `fadh2` — available FADH2 (mM)
+    /// * `nadh` — NADH concentration (mM); Complex I is Michaelis-Menten in
+    ///   it ([`COMPLEX_I_KM_NADH`]) and consumes at most this much
+    /// * `fadh2` — FAD-linked electron pairs delivered this step (mM)
     /// * `oxygen` — O2 availability (normalized 0.0-1.0)
     /// * `adp` — ADP concentration (mM), drives ATP synthase
     /// * `dt` — timestep in seconds (recommend <= 0.1s for accuracy)
@@ -274,14 +325,51 @@ impl EtcState {
         adp: f64,
         dt: f64,
     ) -> EtcFlux {
+        let nadh = guard::conc(nadh);
+        self.step(
+            config,
+            &EtcDrive {
+                nadh_conc: nadh,
+                nadh_avail: nadh,
+                fadh2,
+                oxygen,
+                adp,
+            },
+            dt,
+        )
+    }
+
+    /// Complex I's first-order capacity this step: `complex_i_vmax ×
+    /// oxidized Q × (1 − pmf)` (mM/s at saturating NADH).
+    ///
+    /// The metabolic network uses it to solve the NADH pool implicitly.
+    #[inline]
+    #[must_use]
+    pub(crate) fn complex_i_capacity(&self, config: &EtcConfig) -> f64 {
+        let q_available = 1.0 - guard::unit(self.qh2_fraction);
+        let pumping_capacity = 1.0 - guard::unit(self.pmf);
+        guard::conc(config.complex_i_vmax) * q_available * pumping_capacity
+    }
+
+    /// One ETC step with Complex I's rate evaluated at `drive.nadh_conc` but
+    /// its consumption capped at `drive.nadh_avail`.
+    ///
+    /// [`tick`](Self::tick) passes the same value for both. The metabolic
+    /// network passes its implicit end-of-step NADH concentration as
+    /// `nadh_conc` and the pool plus this step's production as
+    /// `nadh_avail`, which makes Complex I consume exactly the backward-Euler
+    /// amount — stable for any `dt` even though free NADH turns over in
+    /// milliseconds.
+    pub(crate) fn step(&mut self, config: &EtcConfig, drive: &EtcDrive, dt: f64) -> EtcFlux {
         if !guard::valid_dt(dt) {
             return EtcFlux::default();
         }
-        let nadh = guard::conc(nadh);
-        let fadh2 = guard::conc(fadh2);
-        let oxygen = guard::unit(oxygen);
-        let adp = guard::conc(adp);
-        tracing::trace!(dt, nadh, fadh2, oxygen, pmf = self.pmf, "etc_tick");
+        let nadh_conc = guard::conc(drive.nadh_conc);
+        let nadh_avail = guard::conc(drive.nadh_avail);
+        let fadh2 = guard::conc(drive.fadh2);
+        let oxygen = guard::unit(drive.oxygen);
+        let adp = guard::conc(drive.adp);
+        tracing::trace!(dt, nadh_conc, fadh2, oxygen, pmf = self.pmf, "etc_tick");
 
         // Work on sanitized copies of the state so a NaN or out-of-range
         // field (e.g. set directly by a caller) cannot poison the update.
@@ -299,15 +387,16 @@ impl EtcState {
 
         // --- Rates (mM/s, 2e⁻ units) from start-of-tick state ---
 
-        // Complex I: NADH → QH2 (pumps ci_h H+).
-        // Rate depends on NADH availability, Q availability, and pmf backpressure.
+        // Complex I: NADH → QH2 (pumps ci_h H+). Michaelis-Menten in the
+        // NADH concentration, scaled by oxidized Q and pmf backpressure.
         let q_available = 1.0 - qh2;
-        let v_ci = config.complex_i_vmax * nadh.min(1.0) * q_available * pumping_capacity;
+        let nadh_saturation = nadh_conc / (COMPLEX_I_KM_NADH + nadh_conc);
+        let v_ci = config.complex_i_vmax * nadh_saturation * q_available * pumping_capacity;
 
-        // Complex II: FADH2 → QH2 (feeds Q pool, does NOT pump protons).
-        // No pumping_capacity term: CII is not a proton pump, so it is not
-        // subject to pmf backpressure. It transfers electrons to Q only.
-        let v_cii = config.complex_ii_vmax * fadh2.min(1.0) * q_available;
+        // Complex II / ETF: FAD-linked electrons delivered this step enter Q
+        // directly, up to Complex II's capacity. Not a proton pump, so no
+        // pmf backpressure.
+        let cii_capacity = config.complex_ii_vmax * q_available * dt;
 
         // Complex III: QH2 → 2 cyt c (pumps ciii_h H+ per QH2).
         let cytc_oxidized = 1.0 - cytc;
@@ -342,9 +431,9 @@ impl EtcState {
         qh2 -= a_ciii;
         cytc += a_ciii;
         // CI and CII drain NADH / FADH2 and fill oxidized Q.
-        let a_ci = take(v_ci * dt, nadh.min(1.0 - qh2));
+        let a_ci = take(v_ci * dt, nadh_avail.min(1.0 - qh2));
         qh2 += a_ci;
-        let a_cii = take(v_cii * dt, fadh2.min(1.0 - qh2));
+        let a_cii = take(fadh2.min(cii_capacity), 1.0 - qh2);
         qh2 += a_cii;
 
         // Proton motive force: pumping adds H+; synthase and leak remove

@@ -25,7 +25,8 @@ rasayan/
 │   ├── etc.rs              — complexes I–IV, pmf, ATP synthase
 │   ├── beta_oxidation.rs   — fatty-acid oxidation
 │   ├── amino_catabolism.rs — transamination, GDH, carbon skeletons
-│   ├── pathway.rs          — MetabolicNetwork wiring the pathways above
+│   ├── pathway.rs          — MetabolicNetwork: implicit NAD+/NADH pool, ATP demand,
+│   │                         plasma exchange (NetworkEnvironment), LDH, feedbacks
 │   │
 │   ├── mapk.rs, pi3k.rs, jak_stat.rs, calcium.rs   — signaling cascades
 │   ├── receptor.rs, nuclear_receptor.rs            — receptor lifecycle, nuclear receptors

@@ -206,6 +206,23 @@ pub struct BetaOxFlux {
     pub activation_rate: f64,
 }
 
+impl BetaOxFlux {
+    /// Add a sub-step's flux into a tick total: amounts are summed and
+    /// per-second rates are weighted by `weight` (sub-step / tick length),
+    /// so the total reads as if the tick had been taken in one step.
+    #[inline]
+    pub(crate) fn accumulate(&mut self, other: &Self, weight: f64) {
+        self.ffa_consumed += other.ffa_consumed;
+        self.acyl_coa_consumed += other.acyl_coa_consumed;
+        self.acetyl_coa_produced += other.acetyl_coa_produced;
+        self.nadh_produced += other.nadh_produced;
+        self.fadh2_produced += other.fadh2_produced;
+        self.atp_consumed += other.atp_consumed;
+        self.oxidation_rate += other.oxidation_rate * weight;
+        self.activation_rate += other.activation_rate * weight;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Simulation
 // ---------------------------------------------------------------------------

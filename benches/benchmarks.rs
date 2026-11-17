@@ -259,6 +259,14 @@ fn bench_isoelectric_point(c: &mut Criterion) {
     c.bench_function("isoelectric_point", |b| {
         b.iter(|| protein::isoelectric_point(black_box("ACDEFGHIKLMNPQRSTVWY")))
     });
+    c.bench_function("isoelectric_point_bjellqvist", |b| {
+        b.iter(|| {
+            protein::isoelectric_point_with(
+                black_box("ACDEFGHIKLMNPQRSTVWY"),
+                black_box(protein::PkaSet::Bjellqvist),
+            )
+        })
+    });
 }
 
 fn bench_extinction_coefficient(c: &mut Criterion) {
@@ -373,6 +381,13 @@ fn bench_network_tick(c: &mut Criterion) {
         b.iter(|| {
             let mut net = MetabolicNetwork::default();
             net.tick(black_box(&config), black_box(0.01))
+        })
+    });
+    // A coarse 1 s tick: 50 internal sub-steps of NETWORK_MAX_SUBSTEP.
+    c.bench_function("network_tick_1s", |b| {
+        b.iter(|| {
+            let mut net = MetabolicNetwork::default();
+            net.tick(black_box(&config), black_box(1.0))
         })
     });
 }

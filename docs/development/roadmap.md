@@ -1,24 +1,42 @@
 # Development Roadmap
 
-> **Status**: 1.1.0 (2026-11-16) — P(-1) hardening, MSRV 1.100, deps refresh; 1.0.0 published on crates.io 2026-04-01. 1.x is API-stable; breaking changes are collected under 2.0.0 below.
+> **Status**: **1.2.0 (2026-11-16) is the final Rust release.** rasayan is porting to Cyrius as
+> 2.0.0, with 1.2.0 frozen as the parity oracle — see the
+> [port plan](rasayan-port-plan.md) and [ADR 0001](../adr/0001-cyrius-port-with-rust-oracle.md).
+> New work lands in the Cyrius port, not here.
+
+## Cyrius port (2.0.0)
+
+- [ ] M0 — freeze 1.2.0 (tag, bench baseline, glibc 2.44), `cyrius port`, oracle generator, parity harness, probes
+- [ ] M1–M8 — module milestones (plan §6)
+- [ ] M9 — release 2.0.0
 
 ## Backlog
 
-### Audit follow-ups — model fidelity (2026-11 P(-1) audit; API-compatible)
+### Audit follow-ups — model fidelity (2026-11 P(-1) audit)
 
-Large items — one per work-loop cycle, each with its own tests and benchmarks.
+Done in 1.2.0:
 
-- [ ] **pathway: real NAD+/NADH and FADH2 pools.** `MetabolicNetwork::tick` hands the ETC the NADH *produced this tick* as if it were the pool, so ETC throughput scales with `dt` and unconsumed NADH vanishes; at defaults NADH production (~0.42 mM/s) far exceeds ETC consumption (~0.006 mM/s), driving `nad_ratio` to its 1.0 clamp within ~30 s simulated. Needs explicit pools (a 2.0 field change, or a pool derived from `nad_ratio` and a constant total) plus re-balancing ETC capacity against producer Vmax. Add a dt-invariance test (dt 0.1 vs 0.01 reach the same state) and a long-run `nad_ratio` range test.
-- [ ] **pathway: α-KG bookkeeping and cataplerosis.** Transamination consumes α-KG and GDH regenerates it, but the network never applies either to `tca.alpha_kg`; amino-acid carbon skeletons accumulate in the TCA pool with no drain (no PEPCK / malic enzyme), so a protein RQ can't approach 0.8.
-- [ ] **glycolysis: substrate saturation for the kinases.** PGK/PK ignore ADP and HK/PFK-1 ignore ATP (PFK-1 runs at max with ATP = 0). `hk_ki_g6p` = 10 mM looks like a µM/mM slip (literature: tens of µM).
-- [ ] **calcium: influx and inactivation gate.** No store-operated entry or PM leak (total Ca drains); `ip3r_inactivation_rate` is unused (no Li-Rinzel h-gate); fluxes ignore the ER/cytosol volume ratio (~0.15).
-- [ ] **mapk: ultrasensitivity.** Each tier is a single MM step (Hill ≈ 1); add distributive dual-phosphorylation intermediates (Huang & Ferrell 1996, nH ≈ 4.9 for ERK).
-- [ ] **hormonal: time scales and feedback.** Rate constants are compressed (cortisol t½ ≈ 35 s vs 60–90 min); glucocorticoid feedback acts only on CRH, not ACTH/POMC.
-- [ ] **energy/metabolism calibration.** PCr resynthesis (~18 min vs ~30 s half-time), glycogen depletion at 10 MET (~18 min vs 90–120 min), PCr threshold ignores `anaerobic_threshold`; Atkinson energy charge needs AMP (adenylate kinase).
-- [ ] **enzyme database review.** Catalase Km (Lehninger lists both 25 mM and 1.1 M; kcat/Km with 25 mM exceeds the diffusion limit); PFK-1 nH = 3.8 is the *E. coli* value paired with an R-state K; PK nH = 4.0 is the theoretical maximum.
-- [ ] **protein: selectable pKa sets** (Lehninger / Bjellqvist / EMBOSS / IPC) — current pI uses free-amino-acid pKa values; faithful Chou-Fasman 1978 extension and acceptance rules.
+- [x] **pathway: real NAD+/NADH pool** — explicit pool solved implicitly; dt-invariant 1 ms – 5 s; ATP demand and plasma exchange (`NetworkEnvironment`, `tick_in`)
+- [x] **pathway: α-KG bookkeeping and cataplerosis**; LDH/lactate export; ACC → CPT-I; citrate → PFK-1 (Randle)
+- [x] **glycolysis: kinase nucleotide saturation**, hexokinase G6P Ki, aldolase capacity, GAPDH NAD+ kinetics
+- [x] **calcium: plasma-membrane influx (leak + SOCE) and ER volume ratio**
+- [x] **mapk: ultrasensitivity** (quasi-steady state of distributive dual phosphorylation)
+- [x] **hormonal: pituitary glucocorticoid feedback**
+- [x] **energy/metabolism calibration**: PCr t½ 30 s, glycogen endurance, threshold, Atkinson charge with AMP
+- [x] **enzyme database review**: catalase, pyruvate kinase (PFK-1 documented)
+- [x] **protein: selectable pKa sets; Chou-Fasman 1978**
 
-### Audit follow-ups — domain completeness (2026-11 external review)
+Moved to the Cyrius port (need new state or fields; plan §9):
+
+- [ ] calcium Li-Rinzel IP3R inactivation gate (state field); SOCE/leak as config
+- [ ] MAPK MEK-P/ERK-P intermediate states (true distributive dynamics)
+- [ ] separate cytosolic and mitochondrial NAD pools; glycogen; urea-cycle ATP cost
+- [ ] hormonal time-scale rescaling (constants are compressed simulation time — a design decision)
+- [ ] PFK-1 database entry (*E. coli* Hill n with an R-state K); glycolysis PK default (Hill 4.0) vs the muscle M1 database entry
+- [ ] `KnownEnzyme` organism/source metadata; `CalciumFlux` PM influx field; `MapkFlux` Raf deactivation field
+
+### Audit follow-ups — domain completeness (2026-11 external review; post-port)
 
 - [ ] Alignment: NW traceback, Smith-Waterman local alignment, Gotoh affine gaps, Hirschberg linear-space traceback, BLOSUM45/50/80 and PAM30/70
 - [ ] PROSITE pattern engine (replaces hand-coded motif loops; adds PKC, Tyr-kinase, ER-target patterns)
@@ -28,7 +46,7 @@ Large items — one per work-loop cycle, each with its own tests and benchmarks.
 - [ ] Metabolism: LDH / Cori cycle, gluconeogenesis, glycogen, ketogenesis, urea cycle (with ATP cost), pentose phosphate, odd-chain/unsaturated β-oxidation, ACC-derived malonyl-CoA, insulin/glucagon (PFK-2/F2,6BP) and Ca2+ control of dehydrogenases
 - [ ] Signaling: cAMP→PKA→CREB with PDE, PLCβ/DAG/PKC + CaM/CaMKII, NF-κB/IκB, AMPK–mTORC1, Wnt/β-catenin, TGF-β/SMAD, Notch, RTK dimerization, glucocorticoid receptor fed by HPA cortisol, HPT/HPG axes
 
-### 2.0.0 — API hardening (breaking; batch together)
+### API hardening (breaking — absorbed by the Cyrius 2.0.0 API, ADR 0002)
 
 - [ ] `#[non_exhaustive]` on public state/config/flux/result structs so fields can be added without a major bump (unblocks the NADH pools, α-KG flux fields, kinase saturation constants, calcium SOCE, Ca influx parameters)
 - [ ] Sequence APIs return `Result` with position-aware errors (`UnknownAminoAcid { ch, pos }`, `SequenceTooLong`) instead of `Option`
@@ -61,42 +79,42 @@ Large items — one per work-loop cycle, each with its own tests and benchmarks.
 - [x] Published on crates.io
 - [ ] All v1.0 criteria met (see below)
 
-## Post-1.0
+## Feature plan (post-port, Cyrius 2.x; demand-gated)
 
-### 1.2.0 — Pharmacokinetics
+### Pharmacokinetics
 
 - [ ] ADME modeling (absorption, distribution, metabolism, excretion)
 - [ ] Compartmental PK (one-compartment, two-compartment models)
 - [ ] Drug-drug interaction prediction (CYP450 inhibition/induction)
 - [ ] Bioavailability and half-life calculations
 
-### 1.3.0 — Metabolic Engineering
+### Metabolic Engineering
 
 - [ ] Flux balance analysis (FBA) with linear programming
 - [ ] Metabolic control analysis (elasticity, control coefficients)
 - [ ] Knockout/overexpression simulation
 - [ ] Yield optimization for target metabolites
 
-### 1.4.0 — Protein Biophysics
+### Protein Biophysics
 
 - [ ] Protein folding energy landscape (coarse-grained contact model)
 - [ ] Ramachandran plot validation
 - [ ] Hydrophobicity profile and transmembrane helix prediction
 - [ ] Disulfide bond connectivity prediction
 
-### 1.5.0 — Lipid & Glyco
+### Lipid & Glyco
 
 - [ ] Lipid bilayer mechanics (lateral pressure profile, curvature)
 - [ ] Glycobiology (sugar chain analysis, glycosylation pathway modeling)
 - [ ] Membrane protein insertion energetics
 
-### 1.6.0 — Evolution & Dynamics
+### Evolution & Dynamics
 
 - [ ] Enzyme evolution simulation (directed evolution scoring, fitness landscape)
 - [ ] Molecular clock / sequence divergence estimation
 - [ ] Allosteric network analysis (coevolution-based)
 
-### 1.7.0 — OS Integration
+### OS Integration
 
 - [ ] Daimon agent registration (AGNOS service mesh)
 - [ ] Event-driven metabolic state streaming via majra

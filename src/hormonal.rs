@@ -2,9 +2,22 @@
 //!
 //! Models key hormonal systems relevant to the bhava bridge:
 //!
-//! - **HPA axis**: CRH → ACTH → cortisol with cortisol negative feedback on
-//!   CRH secretion. There is no circadian input: CRH drive is basal secretion
-//!   plus [`HormonalInput::stress`].
+//! - **HPA axis**: CRH → ACTH → cortisol with two cortisol negative-feedback
+//!   arms (Keller-Wood & Dallman, Endocr. Rev. 5:1–24, 1984):
+//!   - *hypothalamic* — CRH secretion is scaled by
+//!     `1 / (1 + cortisol / Ki)` with Ki = [`HormonalConfig::cortisol_feedback_ki`];
+//!   - *pituitary* — corticotroph ACTH (POMC) secretion is scaled by
+//!     `1 / (1 + cortisol / ACTH_FEEDBACK_KI)` (see [`ACTH_FEEDBACK_KI`]),
+//!     so cortisol suppresses ACTH even at a fixed CRH drive.
+//!
+//!   Both arms read cortisol at the start of the step: the fast
+//!   (rate-sensitive) and delayed (level-sensitive) components of
+//!   glucocorticoid feedback are lumped into one instantaneous
+//!   level-dependent term. There is no circadian input: CRH drive is basal
+//!   secretion plus [`HormonalInput::stress`]. With the default config and
+//!   input the axis settles at CRH ≈ 0.280, ACTH ≈ 0.323, cortisol ≈ 1.568;
+//!   [`HormonalState::default`] (all 1.0) is a starting point, not that
+//!   set point.
 //! - **Melatonin**: serotonin → N-acetylserotonin → melatonin, light-gated suppression
 //! - **Oxytocin**: hypothalamic synthesis, stimulus-dependent release
 //! - **BDNF**: activity-dependent transcription, exercise/learning enhancement
@@ -40,6 +53,27 @@ use crate::enzyme;
 use crate::error::RasayanError;
 use crate::guard;
 use crate::integrate;
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Cortisol level giving half-maximal negative feedback on pituitary ACTH
+/// secretion, in the same model units as
+/// [`HormonalConfig::cortisol_feedback_ki`]: ACTH production in
+/// [`HormonalState::tick`] is scaled by `1 / (1 + cortisol / ACTH_FEEDBACK_KI)`.
+///
+/// Glucocorticoids inhibit POMC/ACTH secretion at the corticotroph as well
+/// as CRH at the hypothalamus (Keller-Wood & Dallman, Endocr. Rev. 5:1–24,
+/// 1984). Corticotrophs express the low-affinity glucocorticoid receptor
+/// (GR, roughly 10× lower affinity than the mineralocorticoid receptor),
+/// whereas the model's hypothalamic arm also lumps high-affinity
+/// MR-mediated limbic tone (de Kloet, Vreugdenhil, Oitzl & Joëls, Endocr.
+/// Rev. 19:269–301, 1998), so the pituitary arm is set weaker: twice the
+/// default hypothalamic Ki (2.0). The factor 2 is a model calibration, not
+/// a measured ratio; it lowers resting cortisol by about 15% relative to
+/// the hypothalamic-only model (1.844 → 1.568).
+pub const ACTH_FEEDBACK_KI: f64 = 4.0;
 
 // ---------------------------------------------------------------------------
 // State
@@ -127,7 +161,8 @@ pub struct HormonalConfig {
     /// Cortisol degradation rate (s^-1).
     pub cortisol_degradation_rate: f64,
     /// Cortisol level giving half-maximal negative feedback on CRH secretion
-    /// (Ki): CRH secretion is scaled by `1 / (1 + cortisol / Ki)`.
+    /// (Ki): CRH secretion is scaled by `1 / (1 + cortisol / Ki)`. This is
+    /// the hypothalamic arm; the pituitary arm uses [`ACTH_FEEDBACK_KI`].
     pub cortisol_feedback_ki: f64,
 
     // Melatonin
@@ -289,7 +324,10 @@ impl HormonalState {
     /// Each hormone follows zero-order production with first-order
     /// degradation, integrated exactly over `dt` (production held constant
     /// for the step). The HPA stages are updated in order CRH → ACTH →
-    /// cortisol, each driven by the freshly updated upstream level.
+    /// cortisol, each driven by the freshly updated upstream level. Cortisol
+    /// at the start of the step inhibits both CRH secretion
+    /// ([`HormonalConfig::cortisol_feedback_ki`]) and ACTH secretion
+    /// ([`ACTH_FEEDBACK_KI`]).
     ///
     /// A non-finite or non-positive `dt` leaves the state untouched and
     /// returns a zero flux. NaN, infinite or negative inputs are treated as 0;
@@ -306,6 +344,22 @@ impl HormonalState {
         input: &HormonalInput,
         dt: f64,
     ) -> HormonalFlux {
+        self.tick_with_acth_feedback(config, input, dt, ACTH_FEEDBACK_KI)
+    }
+
+    /// [`Self::tick`] with an explicit pituitary feedback Ki.
+    ///
+    /// `acth_feedback_ki = f64::INFINITY` makes the pituitary factor exactly
+    /// 1, reproducing the hypothalamic-only model bit for bit (used by the
+    /// tests as the pre-change baseline).
+    #[must_use = "flux contains hormonal accounting"]
+    fn tick_with_acth_feedback(
+        &mut self,
+        config: &HormonalConfig,
+        input: &HormonalInput,
+        dt: f64,
+        acth_feedback_ki: f64,
+    ) -> HormonalFlux {
         if !guard::valid_dt(dt) {
             tracing::trace!(dt, "hormonal_tick skipped: invalid dt");
             return HormonalFlux::default();
@@ -319,13 +373,15 @@ impl HormonalState {
 
         // --- HPA axis: CRH → ACTH → Cortisol with negative feedback ---
 
-        // CRH: basal + stress-driven, inhibited by cortisol (negative feedback)
+        // CRH: basal + stress-driven, inhibited by cortisol (hypothalamic arm)
         let cortisol_inhibition = 1.0 / (1.0 + self.cortisol / config.cortisol_feedback_ki);
         let v_crh = (config.crh_basal_rate + config.crh_stress_gain * stress) * cortisol_inhibition;
         self.crh = integrate::produce_decay(self.crh, v_crh, config.crh_degradation_rate, dt);
 
-        // ACTH: driven by CRH
-        let v_acth = enzyme::michaelis_menten(self.crh, config.acth_vmax, config.acth_km_crh);
+        // ACTH: driven by CRH, inhibited by cortisol (pituitary arm)
+        let pituitary_inhibition = 1.0 / (1.0 + self.cortisol / acth_feedback_ki);
+        let v_acth = enzyme::michaelis_menten(self.crh, config.acth_vmax, config.acth_km_crh)
+            * pituitary_inhibition;
         self.acth = integrate::produce_decay(self.acth, v_acth, config.acth_degradation_rate, dt);
 
         // Cortisol: driven by ACTH
@@ -391,6 +447,9 @@ impl HormonalState {
 /// Returns a synthesis rate in `[0, 0.08)`, not a cortisol level; the
 /// matching steady-state level is this rate divided by the cortisol
 /// degradation rate. `feedback` is typically the current cortisol level.
+/// This is a single lumped feedback term, independent of
+/// [`HormonalState::tick`]: it does not include the pituitary arm
+/// ([`ACTH_FEEDBACK_KI`]), and its output is kept fixed for existing callers.
 /// NaN, infinite or negative inputs are treated as 0 (so `feedback` can
 /// only reduce the rate).
 #[must_use]
@@ -731,6 +790,199 @@ mod tests {
         }
     }
 
+    // -- Pituitary feedback arm ---------------------------------------------
+
+    /// Run the default resting axis to its set point with the given
+    /// pituitary Ki (`f64::INFINITY` = hypothalamic-only, pre-change model).
+    fn rest_with_acth_ki(acth_ki: f64, steps: usize, dt: f64) -> HormonalState {
+        let config = HormonalConfig::default();
+        let input = HormonalInput::default();
+        let mut state = HormonalState::default();
+        for _ in 0..steps {
+            let _ = state.tick_with_acth_feedback(&config, &input, dt, acth_ki);
+        }
+        state
+    }
+
+    #[test]
+    fn test_pituitary_feedback_lowers_acth_at_fixed_crh() {
+        let input = HormonalInput {
+            stress: 1.0,
+            ..HormonalInput::default()
+        };
+        let dt = 1.0;
+        let start = HormonalState::default();
+        let at = |cortisol: f64| HormonalState {
+            cortisol,
+            ..start.clone()
+        };
+
+        // Hypothalamic arm off: CRH evolves identically whatever cortisol
+        // is, so any ACTH difference comes from the pituitary arm alone.
+        let no_hypo = HormonalConfig {
+            cortisol_feedback_ki: 1e300,
+            ..HormonalConfig::default()
+        };
+        let (mut low, mut high) = (at(0.1), at(10.0));
+        let _ = low.tick(&no_hypo, &input, dt);
+        let _ = high.tick(&no_hypo, &input, dt);
+        assert_eq!(low.crh, high.crh, "CRH must not depend on cortisol here");
+        assert!(
+            high.acth < low.acth,
+            "high cortisol should suppress ACTH at fixed CRH: low={} high={}",
+            low.acth,
+            high.acth
+        );
+        // ACTH secretion scales by 1 / (1 + cortisol / ACTH_FEEDBACK_KI);
+        // the exact update is linear in secretion.
+        let carry = start.acth * (-no_hypo.acth_degradation_rate * dt).exp();
+        let ratio = (low.acth - carry) / (high.acth - carry);
+        let expected = (1.0 + 10.0 / ACTH_FEEDBACK_KI) / (1.0 + 0.1 / ACTH_FEEDBACK_KI);
+        assert!(
+            (ratio - expected).abs() < 1e-9,
+            "secretion ratio {ratio}, expected {expected}"
+        );
+
+        // With the pituitary arm disabled too, cortisol has no effect on ACTH.
+        let (mut low, mut high) = (at(0.1), at(10.0));
+        let _ = low.tick_with_acth_feedback(&no_hypo, &input, dt, f64::INFINITY);
+        let _ = high.tick_with_acth_feedback(&no_hypo, &input, dt, f64::INFINITY);
+        assert_eq!(low.acth, high.acth);
+
+        // Default config: same CRH after the step with or without the
+        // pituitary arm, but lower ACTH with it.
+        let config = HormonalConfig::default();
+        let (mut both, mut hypo_only) = (at(3.0), at(3.0));
+        let _ = both.tick(&config, &input, dt);
+        let _ = hypo_only.tick_with_acth_feedback(&config, &input, dt, f64::INFINITY);
+        assert_eq!(both.crh, hypo_only.crh);
+        assert!(both.acth < hypo_only.acth);
+    }
+
+    #[test]
+    fn test_long_run_resting_steady_state() {
+        // Analytic set point of the default resting axis, both arms:
+        // C = Vc·A/(Kc + A)/kc, A = MM(R)/(1 + C/Ki_pit)/ka,
+        // R = basal/(1 + C/Ki_hyp)/kr (solved by bisection offline).
+        let expected = [
+            0.280_237_070_379_31,
+            0.322_506_161_283_497_5,
+            1.568_407_272_622_667,
+        ];
+        // Pre-change (hypothalamic-only) set point, for the record.
+        let pre_change = [
+            0.260_126_140_300_728_2,
+            0.427_768_048_139_047_5,
+            1.844_288_770_224_76,
+        ];
+
+        let config = HormonalConfig::default();
+        let input = HormonalInput::default();
+        // dt = 0.5 (series step factors) and dt = 2.0 (exp_m1 path) must
+        // land on the same fixed point.
+        for (steps, dt) in [(20_000, 0.5), (5_000, 2.0)] {
+            let mut s = rest_with_acth_ki(ACTH_FEEDBACK_KI, steps, dt);
+            for (got, want) in [s.crh, s.acth, s.cortisol].into_iter().zip(expected) {
+                assert!((got - want).abs() < 1e-9, "dt={dt}: {got} vs {want}");
+            }
+            // A true steady state: a further tick moves nothing.
+            let before = s.clone();
+            let flux = s.tick(&config, &input, dt);
+            assert!(flux.cortisol_net.abs() < 1e-12, "dt={dt}: {flux:?}");
+            for (a, b) in [
+                (before.crh, s.crh),
+                (before.acth, s.acth),
+                (before.cortisol, s.cortisol),
+            ] {
+                assert!((a - b).abs() < 1e-12, "dt={dt}: {a} -> {b}");
+            }
+        }
+
+        let old = rest_with_acth_ki(f64::INFINITY, 20_000, 0.5);
+        for (got, want) in [old.crh, old.acth, old.cortisol]
+            .into_iter()
+            .zip(pre_change)
+        {
+            assert!((got - want).abs() < 1e-9, "pre-change: {got} vs {want}");
+        }
+        // The extra arm lowers resting ACTH and cortisol; CRH rises slightly
+        // because the hypothalamus sees less cortisol.
+        assert!(expected[1] < pre_change[1] && expected[2] < pre_change[2]);
+        assert!(expected[0] > pre_change[0]);
+    }
+
+    /// Cortisol response to a CRH bolus given at the resting set point:
+    /// (peak excess over baseline, full width at half maximum in s,
+    /// time from the bolus until the excess falls back below half peak).
+    fn crh_pulse_response(acth_ki: f64) -> (f64, f64, f64) {
+        let config = HormonalConfig::default();
+        let input = HormonalInput::default();
+        let mut s = rest_with_acth_ki(acth_ki, 5_000, 1.0);
+        let base = s.cortisol;
+        s.crh += 5.0;
+        let dt = 0.1;
+        let n = 6_000; // 600 s
+        let mut excess = Vec::with_capacity(n);
+        for _ in 0..n {
+            let _ = s.tick_with_acth_feedback(&config, &input, dt, acth_ki);
+            excess.push(s.cortisol - base);
+        }
+        let mut i_peak = 0;
+        for (i, &e) in excess.iter().enumerate() {
+            if e > excess[i_peak] {
+                i_peak = i;
+            }
+        }
+        let peak = excess[i_peak];
+        let half = 0.5 * peak;
+        let mut i_up = 0;
+        while excess[i_up] < half {
+            i_up += 1;
+        }
+        let mut i_down = i_peak;
+        while i_down < n - 1 && excess[i_down] >= half {
+            i_down += 1;
+        }
+        assert!(excess[n - 1] < 0.01 * peak, "response did not resolve");
+        let t = |i: usize| (i + 1) as f64 * dt;
+        (peak, t(i_down) - t(i_up), t(i_down))
+    }
+
+    #[test]
+    fn test_pituitary_feedback_shortens_crh_pulse_response() {
+        let (peak_new, fwhm_new, back_new) = crh_pulse_response(ACTH_FEEDBACK_KI);
+        let (peak_old, fwhm_old, back_old) = crh_pulse_response(f64::INFINITY);
+        assert!(
+            fwhm_new < fwhm_old,
+            "stronger feedback should shorten the response: {fwhm_new} vs {fwhm_old} s"
+        );
+        assert!(back_new < back_old, "{back_new} vs {back_old} s");
+        assert!(peak_new < peak_old, "{peak_new} vs {peak_old}");
+    }
+
+    #[test]
+    fn test_acth_feedback_path_shares_guards() {
+        let config = HormonalConfig::default();
+        let input = HormonalInput {
+            stress: f64::NAN,
+            ..HormonalInput::default()
+        };
+        for ki in [ACTH_FEEDBACK_KI, f64::INFINITY] {
+            for dt in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+                let mut s = HormonalState::default();
+                let flux = s.tick_with_acth_feedback(&config, &input, dt, ki);
+                assert_eq!(flux, HormonalFlux::default());
+                assert_eq!(s, HormonalState::default());
+            }
+            let mut s = HormonalState {
+                cortisol: 1e300,
+                ..HormonalState::default()
+            };
+            let _ = s.tick_with_acth_feedback(&config, &input, 0.1, ki);
+            assert!(s.validate().is_ok(), "ki={ki}: {s:?}");
+        }
+    }
+
     // -- Bridges ------------------------------------------------------------
 
     #[test]
@@ -752,6 +1004,18 @@ mod tests {
         assert!((cortisol_from_hpa(0.5, 0.3, 0.1) - expected).abs() < 1e-15);
         let expected = mm(0.5, 0.05 / (1.0 + 5.0 * 0.4), 0.5);
         assert!((melatonin_from_serotonin(0.5, 1.0, 0.4) - expected).abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_bridges_pinned_for_mastishk_call_shapes() {
+        // mastishk::biochemistry calls exactly these shapes; the values were
+        // recorded before the pituitary feedback arm was added to `tick`
+        // and must not move (the bridges are independent of `tick`).
+        assert!((cortisol_from_hpa(0.5, 0.3, 0.1) - 0.031_372_549_019_607_836).abs() < 1e-12);
+        assert!((melatonin_from_serotonin(0.5, 1.0, 0.0) - 0.025).abs() < 1e-12);
+        assert!(
+            (melatonin_from_serotonin(0.5, 1.0, 1.0) - 0.004_166_666_666_666_667).abs() < 1e-12
+        );
     }
 
     const INPUTS: [f64; 9] = [

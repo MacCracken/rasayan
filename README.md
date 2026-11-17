@@ -20,11 +20,11 @@ Used by [mastishk](https://github.com/MacCracken/mastishk) (neuroscience), [kimi
 | `etc` | Electron transport chain: complexes I–IV, proton-motive force, ATP synthase, respiratory control |
 | `beta_oxidation` | Fatty-acid activation, CPT-I / malonyl-CoA control, β-oxidation spiral |
 | `amino_catabolism` | Transamination, glutamate dehydrogenase, carbon-skeleton routing, NH4+ clearance |
-| `pathway` | Metabolic network wiring all pathways through shared cofactor pools; steady state, respiratory quotient |
+| `pathway` | Metabolic network wiring all pathways through shared ATP/ADP and NAD+/NADH pools (solved implicitly — dt-invariant from 1 ms to 5 s), ATP demand and plasma exchange (`NetworkEnvironment`, `tick_in`), LDH/lactate, Randle-cycle feedbacks; steady state, respiratory quotient |
 | `mapk`, `pi3k`, `jak_stat`, `calcium` | Signaling cascades: Ras→Raf→MEK→ERK, PI3K→Akt→mTOR with PTEN, JAK→STAT with SOCS, IP3R/CICR/SERCA calcium |
 | `receptor`, `nuclear_receptor`, `signaling` | Receptor desensitization/recycling, steroid/thyroid receptor signaling, cross-talk network |
 | `neurotransmitter`, `hormonal` | Serotonin, dopamine, norepinephrine, GABA, glutamate, ACh, endorphins; HPA axis, melatonin, oxytocin, BDNF; mastishk bridge functions |
-| `protein` | Amino acid properties, molecular weight, composition, pI, net charge, A280 extinction coefficient, Chou-Fasman |
+| `protein` | Amino acid properties, molecular weight, composition, pI and net charge with selectable pKa sets (Lehninger, Bjellqvist/ExPASy, EMBOSS, IPC), A280 extinction coefficient, Chou-Fasman (1978) |
 | `alignment` | BLOSUM62 / PAM250, pairwise scoring, Needleman-Wunsch (linear memory) |
 | `ptm`, `domain` | PROSITE-style PTM sites (N-glycosylation, phosphorylation, PKA, CK2, myristoylation, disulfides) and domain motifs (C2H2 zinc finger, leucine zipper, EF-hand, Walker A, RGD, DEAD-box, NLS, KDEL) |
 
@@ -41,6 +41,9 @@ All state types validate with `validate()` (NaN/±inf rejected), and every `tick
 | `full` | -- | All of the above |
 
 MSRV: Rust 1.100.
+
+> **1.2.0 is the final Rust release.** rasayan is being ported to Cyrius (2.0.0) with 1.2.0 as the
+> parity oracle — see the [port plan](docs/development/rasayan-port-plan.md).
 
 ## Quick Start
 

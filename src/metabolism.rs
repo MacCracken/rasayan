@@ -14,12 +14,28 @@ use crate::{guard, integrate};
 /// line with post-exercise blood lactate clearance.
 pub const LACTATE_CLEARANCE_RATE: f64 = 0.001;
 
+/// Apparent equilibrium constant of adenylate kinase,
+/// `K′ = [ATP]·[AMP] / [ADP]²` for 2 ADP ⇌ ATP + AMP (dimensionless).
+///
+/// Measured apparent values run from ≈ 0.4 to ≈ 1.1 depending on free
+/// Mg²⁺, pH and temperature (Lawson & Veech, *J. Biol. Chem.* 254:6528,
+/// 1979); 0.44 is used here. Adenylate kinase is near equilibrium in vivo,
+/// so this sets the AMP share of the low-energy adenylate pool
+/// ([`MetabolicState::amp`]).
+pub const ADENYLATE_KINASE_KEQ: f64 = 0.44;
+
 /// Metabolic state tracking ATP/ADP balance and pathway activity.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MetabolicState {
     /// ATP concentration (mM, typical resting: 5-8 mM).
     pub atp: f64,
-    /// ADP concentration (mM).
+    /// Low-energy adenylate, ADP + AMP (mM).
+    ///
+    /// ATP hydrolysis adds to this pool and regeneration draws on it, so
+    /// `atp + adp` is the total adenylate. Adenylate kinase splits it into
+    /// free ADP and AMP ([`free_adp`](Self::free_adp),
+    /// [`amp`](Self::amp)); at the usual ATP/ADP ratios nearly all of it is
+    /// ADP (≈ 97 % in the default state).
     pub adp: f64,
     /// NAD+/NADH ratio (higher = more oxidized, typical: 700).
     pub nad_ratio: f64,
@@ -68,20 +84,76 @@ impl MetabolicState {
         Ok(())
     }
 
-    /// Energy charge: (ATP + 0.5*ADP) / (ATP + ADP).
+    /// The adenylate pools divided by `s = max(ATP, adp)`, with the AMP share
+    /// of `adp` from the adenylate kinase equilibrium: `(s, t, l, a)` with
+    /// `t = ATP/s`, `l = adp/s`, `a = AMP/s`. `None` when both pools are 0.
     ///
-    /// 1.0 = all adenylate as ATP. This state does not track AMP, so the
-    /// value bottoms out at 0.5 when all adenylate is ADP (Atkinson's full
-    /// definition, (ATP + ½ADP)/(ATP + ADP + AMP), reaches 0 with all AMP).
-    /// Healthy cells sit around 0.8-0.95. Returns 0.0 when ATP + ADP is 0.
+    /// With `L = adp = ADP + AMP` held fixed, `ATP·AMP = K′·(L − AMP)²` has
+    /// the root `AMP = 2K′L² / (2K′L + ATP + √(ATP² + 4K′L·ATP))` in
+    /// [0, L] (the cancellation-free form of the quadratic formula). It is
+    /// homogeneous of degree 1, so it is evaluated on the scaled pools —
+    /// one of `t`, `l` is exactly 1, the denominator is `>= min(1, 2K′)`,
+    /// and nothing overflows. NaN, infinite or negative pools count as 0.
+    #[inline]
+    fn scaled_adenylates(&self) -> Option<(f64, f64, f64, f64)> {
+        let atp = guard::conc(self.atp);
+        let pool = guard::conc(self.adp);
+        let scale = atp.max(pool);
+        if scale <= 0.0 {
+            return None;
+        }
+        let t = atp / scale;
+        let l = pool / scale;
+        let two_k_l = 2.0 * ADENYLATE_KINASE_KEQ * l;
+        let a = two_k_l * l / (two_k_l + t + (t * t + 2.0 * two_k_l * t).sqrt());
+        Some((scale, t, l, a))
+    }
+
+    /// AMP concentration (mM) implied by adenylate kinase equilibrium.
+    ///
+    /// The `adp` pool (ADP + AMP) is split so that `ATP·AMP =`
+    /// [`ADENYLATE_KINASE_KEQ`]` · ADP²` holds for the free ADP, i.e. the
+    /// textbook `AMP = K′·ADP² / ATP`. Always finite and in `[0, adp]`: with
+    /// no ATP the equilibrium leaves no free ADP and the whole pool is AMP;
+    /// with no ADP pool it is 0. Default state: ≈ 0.017 mM.
+    #[must_use]
+    #[inline]
+    pub fn amp(&self) -> f64 {
+        match self.scaled_adenylates() {
+            Some((scale, _, _, a)) => scale * a,
+            None => 0.0,
+        }
+    }
+
+    /// Free ADP concentration (mM): the `adp` pool minus [`amp`](Self::amp).
+    #[must_use]
+    #[inline]
+    pub fn free_adp(&self) -> f64 {
+        match self.scaled_adenylates() {
+            Some((scale, _, l, a)) => scale * (l - a),
+            None => 0.0,
+        }
+    }
+
+    /// Atkinson energy charge: (ATP + ½ADP) / (ATP + ADP + AMP).
+    ///
+    /// ADP and AMP are the free values from [`free_adp`](Self::free_adp)
+    /// and [`amp`](Self::amp), so the denominator is the total adenylate
+    /// `atp + adp`. Ranges over `[0, 1]`: 1.0 with all adenylate as ATP,
+    /// 0.0 with no ATP (the pool is then all AMP). Healthy cells sit around
+    /// 0.8–0.95; the default state gives ≈ 0.960. Returns 0.0 when there is
+    /// no adenylate at all; NaN, infinite or negative pools count as 0, so
+    /// the result is always finite.
+    ///
+    /// Before 1.2 this was (ATP + ½ADP)/(ATP + ADP), which ignored AMP and
+    /// could not fall below 0.5.
     #[must_use]
     #[inline]
     pub fn energy_charge(&self) -> f64 {
-        let total = self.atp + self.adp;
-        if total <= 0.0 {
-            return 0.0;
+        match self.scaled_adenylates() {
+            Some((_, t, l, a)) => (t + 0.5 * (l - a)) / (t + l),
+            None => 0.0,
         }
-        (self.atp + 0.5 * self.adp) / total
     }
 
     /// Net ATP yield per glucose at the current oxygen level.
@@ -112,7 +184,8 @@ impl MetabolicState {
 
     /// Consume ATP for work. Returns actual ATP consumed (may be less if depleted).
     ///
-    /// ATP is converted to ADP one-for-one, so ATP + ADP is conserved. A
+    /// ATP is converted to ADP one-for-one, so ATP + ADP (total adenylate)
+    /// is conserved. A
     /// negative, NaN or infinite `amount` consumes nothing (it can neither
     /// create ATP nor drive ADP negative).
     pub fn consume_atp(&mut self, amount: f64) -> f64 {
@@ -510,5 +583,118 @@ mod tests {
         };
         m.regenerate_atp(3600.0);
         assert_eq!(m.lactate, 8.0);
+    }
+
+    // --- Atkinson energy charge with AMP (1.2) ---
+
+    fn pools(atp: f64, adp: f64) -> MetabolicState {
+        MetabolicState {
+            atp,
+            adp,
+            ..MetabolicState::default()
+        }
+    }
+
+    #[test]
+    fn test_energy_charge_with_amp_hand_computed() {
+        // (ATP, ADP + AMP pool) → (AMP, free ADP, EC), from
+        // AMP = 2K·L² / (2K·L + ATP + √(ATP² + 4K·L·ATP)), K = 0.44.
+        for (atp, pool, amp, free, ec) in [
+            // Default: AMP = 0.88·0.25 / (6.44 + √41.28) ≈ 0.0171007.
+            (6.0, 0.5, 0.017_100_725_4, 0.482_899_274_6, 0.960_223_021_1),
+            (4.0, 2.5, 0.458_465_115_4, 2.041_534_884_6, 0.772_425_760_4),
+            (1.0, 5.5, 2.922_696_673_1, 2.577_303_326_9, 0.352_100_255_9),
+        ] {
+            let m = pools(atp, pool);
+            assert!(
+                (m.amp() - amp).abs() < 1e-9,
+                "{atp},{pool}: amp {}",
+                m.amp()
+            );
+            assert!((m.free_adp() - free).abs() < 1e-9, "{atp},{pool}");
+            assert!((m.energy_charge() - ec).abs() < 1e-9, "{atp},{pool}");
+            // Adenylate kinase equilibrium and pool conservation hold.
+            let k = atp * m.amp() / (m.free_adp() * m.free_adp());
+            assert!((k - ADENYLATE_KINASE_KEQ).abs() < 1e-9, "K' {k}");
+            assert!((m.amp() + m.free_adp() - pool).abs() < 1e-12);
+            // AMP lowers EC below the ADP-only formula.
+            assert!(m.energy_charge() < (atp + 0.5 * pool) / (atp + pool));
+        }
+    }
+
+    #[test]
+    fn test_energy_charge_limits() {
+        // No ATP: the pool is all AMP, EC = 0.
+        let m = pools(0.0, 0.5);
+        assert_eq!(m.amp(), 0.5);
+        assert_eq!(m.free_adp(), 0.0);
+        assert_eq!(m.energy_charge(), 0.0);
+        // No ADP/AMP: EC = 1.
+        let m = pools(6.0, 0.0);
+        assert_eq!(m.amp(), 0.0);
+        assert_eq!(m.energy_charge(), 1.0);
+        // Nothing at all.
+        let m = pools(0.0, 0.0);
+        assert_eq!((m.amp(), m.free_adp(), m.energy_charge()), (0.0, 0.0, 0.0));
+        // Continuous as ATP → 0 (no jump at the end point).
+        let near = pools(1e-12, 0.5).energy_charge();
+        assert!(near < 1e-5, "{near}");
+        // After consuming all ATP the charge is 0, not the old floor of 0.5.
+        let mut m = MetabolicState::default();
+        m.consume_atp(100.0);
+        assert_eq!(m.energy_charge(), 0.0);
+    }
+
+    #[test]
+    fn test_energy_charge_finite_in_unit_interval() {
+        let values = [
+            0.0,
+            f64::MIN_POSITIVE,
+            5e-324,
+            1e-9,
+            0.5,
+            6.0,
+            1e9,
+            1e300,
+            f64::MAX,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            -1.0,
+        ];
+        for atp in values {
+            for adp in values {
+                let m = pools(atp, adp);
+                let (ec, amp, free) = (m.energy_charge(), m.amp(), m.free_adp());
+                assert!(
+                    ec.is_finite() && (0.0..=1.0).contains(&ec),
+                    "{atp},{adp}: ec {ec}"
+                );
+                assert!(amp.is_finite() && amp >= 0.0, "{atp},{adp}: amp {amp}");
+                assert!(free.is_finite() && free >= 0.0, "{atp},{adp}: free {free}");
+                assert!(amp <= guard::conc(adp), "{atp},{adp}: amp {amp}");
+            }
+        }
+        // Scale invariance: EC depends only on the ATP : pool ratio.
+        let a = pools(6.0, 0.5).energy_charge();
+        let b = pools(6e200, 0.5e200).energy_charge();
+        assert!((a - b).abs() < 1e-12);
+        assert!(
+            (pools(f64::MAX, f64::MAX).energy_charge() - pools(1.0, 1.0).energy_charge()).abs()
+                < 1e-12
+        );
+    }
+
+    #[test]
+    fn test_energy_charge_monotone_in_atp_share() {
+        // Converting ATP to ADP always lowers the charge.
+        let mut m = MetabolicState::default();
+        let mut prev = m.energy_charge();
+        for _ in 0..65 {
+            m.consume_atp(0.1);
+            let ec = m.energy_charge();
+            assert!(ec <= prev, "{ec} > {prev}");
+            prev = ec;
+        }
     }
 }
