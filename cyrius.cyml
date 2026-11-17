@@ -11,7 +11,7 @@ entry = "src/main.cyr"
 output = "build/rasayan"
 
 [deps]
-stdlib = ["string", "fmt", "alloc", "vec", "str", "syscalls", "io", "args"]
+stdlib = ["string", "fmt", "alloc", "vec", "str", "syscalls", "io", "args", "math"]
 
 [test]
 stdlib = ["assert", "bench"]

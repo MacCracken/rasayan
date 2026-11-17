@@ -36,6 +36,11 @@ cyrius distlib --all                          # dist/rasayan.cyr, -mcp, -ai (fro
 cargo test --manifest-path rust-old/Cargo.toml --all-features   # the Rust oracle, read-only
 ```
 
+```sh
+cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml -- --check   # golden corpus + generated .cyr up to date
+python3 -I -B scripts/oracle/validate.py .                                         # independent check of the corpus
+```
+
 ## Development Process
 
 ### P(-1): Scaffold Hardening (before any new features)

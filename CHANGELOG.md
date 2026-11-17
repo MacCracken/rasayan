@@ -7,7 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Cyrius port, M0 part 1 ([port plan](docs/development/rasayan-port-plan.md) §4 steps 0–2).
+Cyrius port, M0 part 1 ([port plan](docs/development/rasayan-port-plan.md) §4 steps 0–2) and
+part 2a (steps 4–5, first part).
+
+### Added
+
+- **scripts/oracle** — the golden-value generator (crate `rasayan-oracle`, `publish = false`): drives
+  `rust-old/` read-only (path dependency, `features = ["full"]`, `Cargo.lock` seeded from the oracle's)
+  and writes `tests/golden/constants.tsv` (67 rows: every public scalar const, class A),
+  `tests/golden/math.tsv` (18,826 rows: every std f64 method rasayan's library calls, over its call
+  sites' ranges; A 5,380 · B 2,352 · C 11,094) and `src/constants.cyr` (the 67 constants as `RY_` /
+  `RY_<MODULE>_` consts). TSV format 1, byte-compatible with the sibling ports; the header records
+  rasayan 1.2.0, rustc 1.100.0 and `glibc 2.44 x86_64 fma`, and `--check` refuses a corpus from
+  another glibc. `validate.py` independently re-derives the constants (incl. the two const
+  expressions), every `src/constants.cyr` literal and every class A/B math row (7,866 checks, 0
+  failures). The libm attribution: `exp`, `expm1`, `log`, `pow` from glibc; `10_f64.powf` stays `pow`
+  (no `exp10`); `powi(2)` is an inline multiply; `ceil` is compiler-builtins' (`scripts/oracle/README.md`)
+- **scripts/probes/p0_math.cyr** — the math check: `f64_max`/`f64_min` return NaN for a NaN second
+  operand where Rust returns the other value; `f64_round` rounds ties to even; `f64_to` truncates to
+  i64 where Rust's `as u32` saturates; `0.0 - x` loses the −0 that Rust's `-x` gives
+  (`docs/development/port-parity.md` §0)
+- **tests/constants.tcyr** — compiles `src/constants.cyr` and checks a sample bit for bit against the
+  golden rows
 
 ### Changed
 
@@ -21,6 +42,8 @@ Cyrius port, M0 part 1 ([port plan](docs/development/rasayan-port-plan.md) §4 s
   oracle's tests; README, CONTRIBUTING and SECURITY describe the port.
 - **docs** — ADRs 0001–0004 accepted (port with a frozen oracle; API divergences; correct rounding;
   serde-compatible JSON); `docs/development/state.md`.
+- **cyrius.cyml** — `math` added to the `[deps]` stdlib leaves (`lib/math.cyr` vendored, `cyrius.lock`
+  28 entries): the math probe calls `f64_min`/`f64_max`/`f64_clamp`.
 
 ## [1.2.0] - 2026-11-16
 

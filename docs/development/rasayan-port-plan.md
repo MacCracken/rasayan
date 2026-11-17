@@ -323,17 +323,17 @@ sub-parts per CLAUDE.md task sizing.
 
 | Rust | Call sites | Cyrius | Class |
 |---|---|---|---|
-| `f64::powf` | 6: `enzyme::hill_fraction` (every Hill step — dose-response, PFK/IDH/PK), `q10_rate`, and four `10_f64.powf(…)` Henderson–Hasselbalch terms in pI/net charge | `_ry_cr_pow` (mathx); the `10^x` sites may compile to `exp10` in the oracle's release build (as `2.0.powf` → `exp2` in bijli) — attribute each libm call by disassembly at M0 step 5 | C |
+| `f64::powf` | 6: `enzyme::hill_fraction` (every Hill step — dose-response, PFK/IDH/PK), `q10_rate`, and four `10_f64.powf(…)` Henderson–Hasselbalch terms in pI/net charge | `_ry_cr_pow` (mathx); attributed at M0 step 5: the `10^x` sites stay glibc `pow(10, x)` — no `exp10` rewrite at rustc 1.100.0 (`scripts/oracle/README.md`) | C |
 | `f64::exp` | 2 (Arrhenius) | `_ry_cr_exp` | C |
 | `f64::exp_m1` | 1 (`integrate::step_factors` above `SERIES_MAX`) | `_ry_cr_expm1` | C |
 | `f64::ln` | 2 (Nernst, Goldman) | `_ry_cr_ln` | C |
 | `f64::sqrt` | 3: aldolase triose product, the adenylate-kinase quadratic (`MetabolicState::amp`), citrate synthase's energy factor | builtin `f64_sqrt` (correctly rounded) | B |
-| `f64::powi` | 2: PFK-1 and TCA energy inhibition, `(ATP/ADP ÷ K)²` | `_ry_powi` (repeated multiplication, Rust's order) | B |
-| `f64::ceil` | 3 (sub-step counts) | builtin `f64_ceil` | A |
-| `f64::min` / `max` / `clamp` | 62 | `_ry_min` / `_ry_max` / `_ry_clamp` with Rust NaN semantics | A |
-| `is_finite`, `is_nan` | (guard layer) | `_ry_is_finite`, `_ry_is_nan` (bit tests) | A |
+| `f64::powi` | 2: PFK-1 and TCA energy inhibition, `(ATP/ADP ÷ K)²` — both `.powi(2)`, an inline `x * x` in the oracle | `_ry_powi` (`x * x`; a general n in `__powidf2`'s order) | B |
+| `f64::ceil` | 3 (sub-step counts; compiler-builtins' exact `ceil` in the oracle) | builtin `f64_ceil` | A |
+| `f64::min` / `max` / `clamp` | 58 on f64 (26 / 22 / 10; 4 more `.max(` are `i32`/`u32` or a comment) | `_ry_min` / `_ry_max` / `_ry_clamp` with Rust NaN semantics (`port-parity.md` §0.1) | A |
+| `is_finite`, `is_nan` | 23, 3 (guard layer, fits, MCP checks) | `_ry_is_finite`, `_ry_is_nan` (bit tests, `port-parity.md` §0.3) | A |
 | `abs` | 4 | builtin `f64_abs` | A |
-| `as u32` (from f64) | 2 (sub-step counts) | saturating conversion matching Rust (probe 1) | A |
+| `as u32` (from f64) | 3 (sub-step counts: calcium, mapk, pathway) | `_ry_f64_to_u32`, saturating like Rust (`port-parity.md` §0.6) | A |
 
 ### 7.2 Libraries
 
@@ -387,7 +387,7 @@ signaling pathways).
 
 | Milestone | Status | Golden rows | Reference tests | Benches | Notes |
 |---|---|---|---|---|---|
-| M0 Prep + scaffold | 🟡 part 1 done (steps 0–2; step 3 partial) | — | — | Rust baseline at `adadf54` (48) | steps 4–10 next |
+| M0 Prep + scaffold | 🟡 part 1 done (steps 0–2; step 3 partial); part 2a done (step 4 math check, step 5 generator: constants + math sweep, `validate.py`) | 18,893 (constants 67, math 18,826) | — | Rust baseline at `adadf54` (48) | next: 2b table data, 2c harness + mathx + MPFR, part 3 baselines/probes |
 | M1 Foundation | — | | | | |
 | M2 Kinetics & cell physiology | — | | | | |
 | M3 Sequence analysis | — | | | | |

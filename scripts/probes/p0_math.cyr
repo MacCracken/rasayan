@@ -1,0 +1,243 @@
+# Probe 0 (port plan §4 step 4): how the Cyrius 6.7.18 stdlib and builtins behave on the cases
+# where rasayan's Rust code relies on Rust 1.100's f64 semantics: min / max / clamp on NaN and
+# signed zeros, NaN comparisons, is_finite / is_nan as bit tests, powi's evaluation order, round
+# ties, f64 -> integer conversion, ceil, and signed zeros through + - * /. Rust's own results are
+# the golden `math` rows (tests/golden/math.tsv); port-parity.md §0 puts the two side by side.
+#
+#   cyrius build scripts/probes/p0_math.cyr build/p0_math && ./build/p0_math
+
+# Print `label = 0x<bits>` for one f64 (an f64 travels as its i64 bit pattern).
+fn hx(label, bits) {
+    print(label, strlen(label));
+    print(" = ", 3);
+    fmt_hex0x(bits);
+    println("");
+    return 0;
+}
+
+# Print `label = <decimal>` for an integer result (a conversion, a comparison, a bit test).
+fn dec(label, n) {
+    print(label, strlen(label));
+    print(" = ", 3);
+    fmt_int(n);
+    println("");
+    return 0;
+}
+
+# is_nan as a bit test: exponent all ones and a non-zero fraction.
+fn bit_is_nan(bits) {
+    if ((bits & 0x7FFFFFFFFFFFFFFF) > 0x7FF0000000000000) { return 1; }
+    return 0;
+}
+
+# is_finite as a bit test: the exponent is not all ones.
+fn bit_is_finite(bits) {
+    if ((bits & 0x7FF0000000000000) != 0x7FF0000000000000) { return 1; }
+    return 0;
+}
+
+# One special value through both bit tests and both comparison idioms.
+fn classify(label, x: f64) {
+    var bits = load64(&x);
+    print(label, strlen(label));
+    print(": bits ", 7);
+    fmt_hex0x(bits);
+    print(" is_nan(bits) ", 14);
+    fmt_int(bit_is_nan(bits));
+    print(" is_finite(bits) ", 17);
+    fmt_int(bit_is_finite(bits));
+    print(" x!=x ", 6);
+    fmt_int(x != x);
+    var d: f64 = x - x;
+    print(" (x-x)==0 ", 10);
+    fmt_int(f64_eq(d, 0.0));
+    println("");
+    return 0;
+}
+
+# Every case, in the order port-parity.md §0 lists them.
+fn main() {
+    alloc_init();
+    var zero: f64 = 0.0;
+    var one: f64 = 1.0;
+    var two: f64 = 2.0;
+    var nan: f64 = zero / zero;
+    var nzero: f64 = -zero;
+    var inf: f64 = one / zero;
+    var ninf: f64 = -inf;
+
+    println("## min / max / clamp");
+    hx("f64_max(NaN, 1)", f64_max(nan, one));
+    hx("f64_max(1, NaN)", f64_max(one, nan));
+    hx("f64_min(NaN, 1)", f64_min(nan, one));
+    hx("f64_min(1, NaN)", f64_min(one, nan));
+    hx("f64_max(NaN, NaN)", f64_max(nan, nan));
+    hx("f64_max(-inf, NaN)", f64_max(ninf, nan));
+    hx("f64_max(+0, -0)", f64_max(zero, nzero));
+    hx("f64_max(-0, +0)", f64_max(nzero, zero));
+    hx("f64_min(+0, -0)", f64_min(zero, nzero));
+    hx("f64_min(-0, +0)", f64_min(nzero, zero));
+    hx("f64_clamp(NaN, 0, 1)", f64_clamp(nan, zero, one));
+    hx("f64_clamp(2, 0, 1)", f64_clamp(two, zero, one));
+    hx("f64_clamp(-1, 0, 1)", f64_clamp(-one, zero, one));
+    hx("f64_clamp(+inf, 0, 1)", f64_clamp(inf, zero, one));
+    hx("f64_clamp(-inf, 0, 1)", f64_clamp(ninf, zero, one));
+    hx("f64_clamp(-0, +0, 1)", f64_clamp(nzero, zero, one));
+    hx("f64_clamp(+0, -0, 1)", f64_clamp(zero, nzero, one));
+
+    println("## NaN in a typed f64 comparison (the guards' `x > 0.0` tests)");
+    dec("NaN > 0.0", nan > 0.0);
+    dec("NaN < 0.0", nan < 0.0);
+    dec("NaN >= 0.0", nan >= 0.0);
+    dec("NaN <= 0.0", nan <= 0.0);
+    dec("NaN == NaN", nan == nan);
+    dec("NaN != NaN", nan != nan);
+    dec("f64_gt(NaN, 0)", f64_gt(nan, zero));
+    dec("f64_lt(NaN, 0)", f64_lt(nan, zero));
+    dec("f64_ge(NaN, 0)", f64_ge(nan, zero));
+    dec("f64_le(NaN, 0)", f64_le(nan, zero));
+    dec("+0 == -0", zero == nzero);
+
+    println("## is_nan / is_finite as bit tests");
+    classify("+0", zero);
+    classify("-0", nzero);
+    classify("1", one);
+    var maxv: f64 = 0.0;
+    store64(&maxv, 0x7FEFFFFFFFFFFFFF);
+    classify("MAX", maxv);
+    var minpos: f64 = 0.0;
+    store64(&minpos, 0x0010000000000000);
+    classify("MIN_POSITIVE", minpos);
+    var sub: f64 = 0.0;
+    store64(&sub, 1);
+    classify("smallest subnormal", sub);
+    classify("+inf", inf);
+    classify("-inf", ninf);
+    classify("0/0", nan);
+    var qnan: f64 = 0.0;
+    store64(&qnan, 0x7FF8000000000000);
+    classify("+qNaN", qnan);
+    var snan: f64 = 0.0;
+    store64(&snan, 0x7FF0000000000001);
+    classify("sNaN pattern", snan);
+    var mnan: f64 = 0.0;
+    store64(&mnan, 0xFFF8000000000001);
+    classify("-NaN payload 1", mnan);
+
+    println("## powi: no stdlib counterpart; evaluation order");
+    var a: f64 = 1.1;
+    var a2: f64 = a * a;
+    var sq: f64 = a2 * a2;
+    var lf: f64 = a * a;
+    lf = lf * a;
+    lf = lf * a;
+    hx("1.1 * 1.1 (powi(1.1, 2))", a2);
+    hx("(1.1^2)^2 (__powidf2 order)", sq);
+    hx("((1.1*1.1)*1.1)*1.1 (left fold)", lf);
+
+    println("## round: ties");
+    var h: f64 = 0.5;
+    hx("f64_round(0.5)", f64_round(h));
+    var h15: f64 = 1.5;
+    hx("f64_round(1.5)", f64_round(h15));
+    var h25: f64 = 2.5;
+    hx("f64_round(2.5)", f64_round(h25));
+    var mh: f64 = -h;
+    hx("f64_round(-0.5)", f64_round(mh));
+    var mh25: f64 = -h25;
+    hx("f64_round(-2.5)", f64_round(mh25));
+    var below: f64 = 0.49999999999999994;
+    hx("f64_round(0.49999999999999994)", f64_round(below));
+
+    println("## f64_to (f64 -> i64, truncating) vs Rust's saturating `as u32`");
+    dec("f64_to(NaN)", f64_to(nan));
+    dec("f64_to(+inf)", f64_to(inf));
+    dec("f64_to(-inf)", f64_to(ninf));
+    var m15: f64 = -1.5;
+    dec("f64_to(-1.5)", f64_to(m15));
+    dec("f64_to(-0.5)", f64_to(mh));
+    dec("f64_to(-0)", f64_to(nzero));
+    dec("f64_to(0.5)", f64_to(h));
+    var nearly: f64 = 0.9999999999999999;
+    dec("f64_to(0.9999999999999999)", f64_to(nearly));
+    dec("f64_to(2.5)", f64_to(h25));
+    var u32max: f64 = 4294967295.0;
+    dec("f64_to(2^32 - 1)", f64_to(u32max));
+    var p32: f64 = 4294967296.0;
+    dec("f64_to(2^32)", f64_to(p32));
+    var p32h: f64 = 4294967296.5;
+    dec("f64_to(2^32 + 0.5)", f64_to(p32h));
+    var p63: f64 = 9223372036854775808.0;
+    dec("f64_to(2^63)", f64_to(p63));
+    var huge: f64 = 1000000000000000000000.0;
+    dec("f64_to(1e21)", f64_to(huge));
+
+    println("## ceil");
+    hx("f64_ceil(0.5)", f64_ceil(h));
+    hx("f64_ceil(-0.5)", f64_ceil(mh));
+    hx("f64_ceil(-0)", f64_ceil(nzero));
+    hx("f64_ceil(+0)", f64_ceil(zero));
+    hx("f64_ceil(1)", f64_ceil(one));
+    var up: f64 = 1.0000000000000002;
+    hx("f64_ceil(1 + ulp)", f64_ceil(up));
+    hx("f64_ceil(1 - ulp/2)", f64_ceil(nearly));
+    hx("f64_ceil(smallest subnormal)", f64_ceil(sub));
+    var msub: f64 = -sub;
+    hx("f64_ceil(-smallest subnormal)", f64_ceil(msub));
+    hx("f64_ceil(NaN)", f64_ceil(nan));
+    hx("f64_ceil(+inf)", f64_ceil(inf));
+    hx("f64_ceil(-inf)", f64_ceil(ninf));
+    var big: f64 = 4503599627370495.5;
+    hx("f64_ceil(2^52 - 0.5)", f64_ceil(big));
+    var r07: f64 = 0.07;
+    var s01: f64 = 0.01;
+    var ratio: f64 = r07 / s01;
+    hx("0.07 / 0.01", ratio);
+    hx("f64_ceil(0.07 / 0.01)", f64_ceil(ratio));
+    var r03: f64 = 0.03;
+    var ratio3: f64 = r03 / s01;
+    hx("f64_ceil(0.03 / 0.01)", f64_ceil(ratio3));
+
+    println("## signed zeros through + - * /");
+    var t: f64 = nzero + nzero;
+    hx("(-0) + (-0)", t);
+    t = nzero + zero;
+    hx("(-0) + (+0)", t);
+    t = zero - zero;
+    hx("(+0) - (+0)", t);
+    t = nzero - zero;
+    hx("(-0) - (+0)", t);
+    t = zero - nzero;
+    hx("(+0) - (-0)", t);
+    t = 0.0 - zero;
+    hx("0.0 - z, z = +0", t);
+    t = -zero;
+    hx("-z, z = +0 (typed f64)", t);
+    hx("f64_neg(+0)", f64_neg(zero));
+    t = 0.0 - nzero;
+    hx("0.0 - z, z = -0", t);
+    t = -nzero;
+    hx("-z, z = -0", t);
+    t = nzero * one;
+    hx("(-0) * 1", t);
+    t = zero * -1.0;
+    hx("(+0) * -1", t);
+    t = nzero * nzero;
+    hx("(-0) * (-0)", t);
+    t = nzero / one;
+    hx("(-0) / 1", t);
+    t = zero / -1.0;
+    hx("(+0) / -1", t);
+    t = one / ninf;
+    hx("1 / -inf", t);
+    t = msub * 0.5;
+    hx("(-smallest subnormal) * 0.5 (underflow)", t);
+    hx("f64_abs(-0)", f64_abs(nzero));
+    hx("f64_abs(-NaN payload 1)", f64_abs(mnan));
+    hx("f64_sqrt(-0)", f64_sqrt(nzero));
+    hx("f64_sqrt(-1)", f64_sqrt(-one));
+    return 0;
+}
+
+var r = main();
+sys_exit_group(r);
