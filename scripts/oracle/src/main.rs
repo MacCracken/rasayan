@@ -19,25 +19,55 @@
 //!
 //! Adapted from ushma's `scripts/oracle/` (same format, same rules; kimiya's and tanmatra's
 //! originally). Modules are added at their milestone, with the golden grid from the port plan §6:
-//! `constants` and `math` (M0 part 2a), then the table data (part 2b), then each module's rows
-//! from M1 on.
+//! `constants` and `math` (M0 part 2a); the table data and the rows that pin it (part 2b:
+//! `protein`, `alignment`, `enzyme`, `membrane`, `ai`, `constants_private`, with the
+//! completeness proof over every `const` and `static` item); each module's own rows from M1 on.
 
 mod cyr;
 mod glibc;
 mod grids;
 mod m_constants;
 mod m_math;
+mod rustsrc;
+mod t_ai;
+mod t_alignment;
 mod t_constants;
+mod t_enzyme;
+mod t_membrane;
+mod t_private;
+mod t_protein;
 mod tsv;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-/// Every golden emitter, in file-name order.
-fn golden_modules() -> Vec<tsv::Module> {
-    vec![m_constants::emit(), m_math::emit()]
+/// The 20 residue codes in `protein::AMINO_ACIDS` order (alignment's matrices share it).
+fn amino_codes() -> Vec<char> {
+    rasayan::protein::AMINO_ACIDS
+        .iter()
+        .map(|a| a.code)
+        .collect()
+}
+
+/// Every golden emitter, in file-name order: `constants`, `math`, the private constants, and the
+/// modules the tables seed (M0 part 2b). Each module's function rows join its file at its
+/// milestone.
+fn golden_modules(root: &Path) -> Result<Vec<tsv::Module>, String> {
+    let read = |m: &str| rustsrc::Source::read(root, m);
+    let mut v = vec![
+        m_constants::emit(),
+        m_math::emit(),
+        t_private::golden(root)?,
+        t_protein::golden(&read("protein")?)?,
+        t_alignment::golden(&read("alignment")?, &amino_codes())?,
+        t_enzyme::golden(&read("enzyme")?)?,
+        t_membrane::golden(&read("membrane")?)?,
+        t_ai::golden(&read("ai")?)?,
+    ];
+    v.sort_by_key(|m| m.name);
+    Ok(v)
 }
 
 /// One generated file: its path from the repo root, its contents, and a summary.
@@ -54,7 +84,30 @@ fn read(path: &Path) -> Result<String, String> {
 /// Every generated Cyrius source, in file-name order. Each is built from the oracle's API; the
 /// Rust source is read for comments (and, for private data, literals with a completeness proof).
 fn cyrius_outputs(root: &Path, prov: &str) -> Result<Vec<Output>, String> {
-    let files = [("src/constants.cyr", t_constants::emit(root, prov)?)];
+    let read = |m: &str| rustsrc::Source::read(root, m);
+    let mut files = vec![
+        ("src/constants.cyr", t_constants::emit(root, prov)?),
+        ("src/constants_private.cyr", t_private::emit(root, prov)?),
+        (
+            "src/protein_data.cyr",
+            t_protein::emit_cyr(&read("protein")?, prov)?,
+        ),
+        (
+            "src/alignment_data.cyr",
+            t_alignment::emit_cyr(&read("alignment")?, &amino_codes(), prov)?,
+        ),
+        (
+            "src/enzyme_data.cyr",
+            t_enzyme::emit_cyr(&read("enzyme")?, prov)?,
+        ),
+        (
+            "src/membrane_data.cyr",
+            t_membrane::emit_cyr(&read("membrane")?, prov)?,
+        ),
+        ("src/ai_data.cyr", t_ai::emit_cyr(&read("ai")?, prov)?),
+    ];
+    files.sort_by_key(|f| f.0);
+    check_names(&files)?;
     Ok(files
         .into_iter()
         .map(|(rel, text)| {
@@ -66,6 +119,34 @@ fn cyrius_outputs(root: &Path, prov: &str) -> Result<Vec<Output>, String> {
             }
         })
         .collect())
+}
+
+/// Every top-level `const` / `var` the generated files declare carries the `RY_` (public) or
+/// `_RY_` (private) prefix, and no name is declared twice across them: a bundle is concatenated
+/// into its consumers, so they share one namespace.
+fn check_names(files: &[(&str, String)]) -> Result<(), String> {
+    let mut seen: BTreeMap<String, &str> = BTreeMap::new();
+    for (rel, text) in files {
+        for line in text.lines() {
+            let Some(rest) = line
+                .strip_prefix("const ")
+                .or_else(|| line.strip_prefix("var "))
+            else {
+                continue;
+            };
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if !(name.starts_with("RY_") || name.starts_with("_RY_")) {
+                return Err(format!("{rel}: {name} has no RY_ / _RY_ prefix"));
+            }
+            if let Some(prev) = seen.insert(name.clone(), rel) {
+                return Err(format!("{name} is declared in both {prev} and {rel}"));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `version = "x"` from the first line that starts with it (the `[package]` one).
@@ -192,7 +273,7 @@ fn run() -> Result<bool, String> {
 
     let mut outputs = Vec::new();
     let mut emitted = BTreeSet::new();
-    for module in golden_modules() {
+    for module in golden_modules(&root)? {
         let name = format!("{}.tsv", module.name);
         emitted.insert(name.clone());
         outputs.push(Output {
@@ -220,6 +301,11 @@ fn run() -> Result<bool, String> {
     for out in &outputs {
         ok &= emit(&root, check, out)?;
     }
+    let (items, excused) = t_private::coverage(&root)?;
+    println!(
+        "complete {items} const/static items in rust-old/src: {} generated, {excused} excused",
+        items - excused
+    );
 
     // A .tsv with no emitter is stale: the harness would test rows nobody regenerates. A
     // `<module>.cr.tsv` (ADR 0003, M0 part 2c) belongs to its module's emitter.

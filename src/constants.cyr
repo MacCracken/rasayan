@@ -14,8 +14,8 @@
 # Each comment is the first paragraph of the Rust doc comment; the derivations and
 # citations that follow it stay in rust-old/src.
 #
-# Table-valued and private constants are table data, generated with their module's
-# data file (port plan §4 step 6).
+# Table-valued and private constants are generated with their module's data file
+# (src/<module>_data.cyr) or in src/constants_private.cyr (port plan §4 step 6).
 
 # Largest internal sub-step (s) used by [`CalciumState::tick`] while the
 # sub-step budget [`MAX_SUBSTEPS`] allows.

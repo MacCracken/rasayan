@@ -130,9 +130,17 @@ binary64 with the semantics above — 931 `max`, 931 `min`, 845 `clamp`, 2,023 `
 a NaN operand of `min`/`max` is ignored, (±0, ∓0) gives the second operand, `clamp` propagates
 NaN, `as u32` saturates, `powi` follows `__powidf2`.
 
-## 1. Generated tables on three targets (M0 step 6)
+## 1. Generated tables on three targets (M0 step 6, 2026-11-16)
 
-*Pending (M0 part 2b).*
+`python3 -I -B scripts/oracle/probe_tables.py . --all-targets` compiles all 2,470 generated
+values (156 consts and 2,314 cells of 39 arrays in `src/constants.cyr`,
+`src/constants_private.cyr` and the five `src/*_data.cyr`) with the Cyrius 6.7.18 compiler and
+prints each one: f64 cells by their bits, the signed `i8` matrix cells, the `u8` / `u16` / `u32`
+columns, the `bool` columns and every byte of the string blobs. Each matches its literal as
+Python's correctly rounded `float()` reads it, and `validate.py` ties every literal to its golden
+row. The output is byte-identical on x86_64 ELF, aarch64 (qemu) and x86_64 PE (wine): decimal
+literals convert to the same bits on every target, and an `i8` cell reads back sign-extended
+(PAM250 C–W is −8) on all three.
 
 ## 2. Baselines on three targets (M0 step 8)
 

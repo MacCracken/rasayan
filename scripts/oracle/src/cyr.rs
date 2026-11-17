@@ -96,13 +96,193 @@ fn doc_lines(src: &str, item: &str) -> Result<Vec<String>, String> {
 }
 
 /// The whole doc block above `item`, as `# ` comment lines. Empty if there is none.
-#[allow(dead_code)] // the table data's field comments (M0 part 2b)
 pub fn doc_comment(src: &str, item: &str) -> Result<String, String> {
     let mut out = String::new();
     for d in doc_lines(src, item)? {
         let _ = writeln!(out, "{}", comment_line(&d));
     }
     Ok(out)
+}
+
+/// As [`doc_comment`], for the first line starting with `item` (after leading whitespace) that
+/// follows the first line starting with `anchor`: a field inside `pub struct AminoAcid {`.
+pub fn doc_comment_after(src: &str, anchor: &str, item: &str) -> Result<String, String> {
+    let lines: Vec<&str> = src.lines().collect();
+    let from = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with(anchor))
+        .ok_or_else(|| format!("no `{anchor}` in the Rust source"))?;
+    let rest: String = lines[from..].join("\n");
+    doc_comment(&rest, item)
+}
+
+/// `lines` as `# ` comment lines.
+pub fn comments(lines: &[String]) -> String {
+    let mut out = String::new();
+    for l in lines {
+        let _ = writeln!(out, "{}", comment_line(l));
+    }
+    out
+}
+
+/// A Cyrius array element type and its values.
+pub enum Elem {
+    F64(Vec<f64>),
+    U8(Vec<u8>),
+    U16(Vec<u16>),
+    U32(Vec<u32>),
+    I8(Vec<i8>),
+    Bool(Vec<bool>),
+}
+
+impl Elem {
+    fn render(&self) -> Result<(&'static str, Vec<String>), String> {
+        Ok(match self {
+            Self::F64(v) => (
+                "f64",
+                v.iter().map(|&x| f64_lit(x)).collect::<Result<_, _>>()?,
+            ),
+            Self::U8(v) => ("u8", v.iter().map(u8::to_string).collect()),
+            Self::U16(v) => ("u16", v.iter().map(u16::to_string).collect()),
+            Self::U32(v) => ("u32", v.iter().map(u32::to_string).collect()),
+            Self::I8(v) => ("i8", v.iter().map(i8::to_string).collect()),
+            Self::Bool(v) => ("bool", v.iter().map(bool::to_string).collect()),
+        })
+    }
+}
+
+/// `var NAME: T[N] = { … };` under the `doc` comment lines, one element per line with its label.
+pub fn column(name: &str, doc: &str, elem: &Elem, labels: &[String]) -> Result<String, String> {
+    let (ty, vals) = elem.render()?;
+    if vals.len() != labels.len() {
+        return Err(format!(
+            "{name}: {} values, {} labels",
+            vals.len(),
+            labels.len()
+        ));
+    }
+    let mut out = doc.to_string();
+    let _ = writeln!(out, "var {name}: {ty}[{}] = {{", vals.len());
+    for (v, l) in vals.iter().zip(labels) {
+        let _ = writeln!(out, "    {v},  # {l}");
+    }
+    out.push_str("};\n");
+    Ok(out)
+}
+
+/// A row-major table `var NAME: T[rows × cols] = { … };`, one row per line with its label, under
+/// a header comment naming the columns. Each cell is left-aligned in a field of `width`, so the
+/// columns line up (cyrfmt keeps the spacing inside a line, not before it).
+pub fn grid(
+    name: &str,
+    doc: &str,
+    elem: &Elem,
+    cols: &[String],
+    rows: &[String],
+    width: usize,
+) -> Result<String, String> {
+    let (ty, vals) = elem.render()?;
+    if vals.len() != cols.len() * rows.len() {
+        return Err(format!(
+            "{name}: {} values for {} × {}",
+            vals.len(),
+            rows.len(),
+            cols.len()
+        ));
+    }
+    let mut out = doc.to_string();
+    let _ = writeln!(out, "var {name}: {ty}[{}] = {{", vals.len());
+    let head: String = cols.iter().map(|c| format!("{c:<width$}")).collect();
+    let _ = writeln!(out, "    # {}", head.trim_end());
+    for (r, label) in rows.iter().enumerate() {
+        let cells: String = vals[r * cols.len()..(r + 1) * cols.len()]
+            .iter()
+            .map(|v| format!("{:<width$}", format!("{v},")))
+            .collect();
+        let line = format!("    {}  # {label}", cells.trim_end());
+        if line.chars().count() > 120 {
+            return Err(format!("{name}: row {label} is wider than 120 columns"));
+        }
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out.push_str("};\n");
+    Ok(out)
+}
+
+/// A string column as one NUL-terminated `u8` blob and a `u16` offset column: `&BYTES + OFF[i]` is
+/// row i's C string, its UTF-8 bytes exactly, so `strlen` counts bytes and a C-string compare is a
+/// byte compare, as Rust's `&str ==` is (Cyrius arrays can't hold string literals). One blob line
+/// per row, its bytes then the text as the label; a long string runs over lines of 16 bytes.
+pub fn string_column(
+    bytes_name: &str,
+    off_name: &str,
+    doc: &str,
+    strings: &[String],
+) -> Result<String, String> {
+    let mut offsets = Vec::new();
+    let mut lines = Vec::new();
+    let mut at = 0_usize;
+    for s in strings {
+        if s.contains('\0') {
+            return Err(format!("{bytes_name}: {s:?} holds a NUL"));
+        }
+        offsets.push(u16::try_from(at).map_err(|_| format!("{off_name}: offset {at} > u16"))?);
+        lines.extend(byte_lines(s));
+        at += s.len() + 1;
+    }
+    let mut out = column(
+        off_name,
+        &format!("{doc}# Offset of row i's C string in {bytes_name}.\n"),
+        &Elem::U16(offsets),
+        strings,
+    )?;
+    out.push('\n');
+    let _ = writeln!(
+        out,
+        "# Every string, NUL-terminated, in row order (UTF-8 bytes)."
+    );
+    let _ = writeln!(out, "var {bytes_name}: u8[{at}] = {{");
+    for l in lines {
+        out.push_str(&l);
+        out.push('\n');
+    }
+    out.push_str("};\n");
+    Ok(out)
+}
+
+/// One string's bytes and its NUL as initializer lines: one line labelled with the text when it
+/// fits in 120 columns, else lines of 16 bytes each labelled with its own text.
+pub fn byte_lines(s: &str) -> Vec<String> {
+    let codes: Vec<String> = s.bytes().chain([0]).map(|b| b.to_string()).collect();
+    let one = format!("    {},  # {s}", codes.join(", "));
+    if one.chars().count() <= 120 {
+        return vec![one];
+    }
+    let bytes: Vec<u8> = s.bytes().chain([0]).collect();
+    bytes
+        .chunks(16)
+        .map(|chunk| {
+            let nums: Vec<String> = chunk.iter().map(u8::to_string).collect();
+            let text: String = chunk
+                .iter()
+                .filter(|&&b| b != 0)
+                .map(|&b| {
+                    if (0x20..0x7f).contains(&b) {
+                        char::from(b)
+                    } else {
+                        '.'
+                    }
+                })
+                .collect();
+            let label = if text.trim().is_empty() {
+                String::new()
+            } else {
+                format!("  # {}", text.trim_end())
+            };
+            format!("    {},{label}", nums.join(", "))
+        })
+        .collect()
 }
 
 /// The first paragraph of the doc block above `item` (rustdoc's summary), as `# ` comment lines.

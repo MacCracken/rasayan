@@ -14,8 +14,8 @@
 //!
 //! The table-valued consts (`protein::AMINO_ACIDS`, `enzyme::KNOWN_ENZYMES`,
 //! `membrane::DEFAULT_PERMEABILITY`) and the private constants (`integrate::SERIES_MAX`,
-//! `calcium::RESTING_CA`, …) are table data: they are generated with their module's data at
-//! M0 part 2b.
+//! `calcium::RESTING_CA`, …) are generated with their module's data file or in
+//! `src/constants_private.cyr` (M0 part 2b; `t_private.rs` proves every item is covered).
 //!
 //! Values come from the oracle's API (two are const expressions: `energy::PCR_RECOVERY_RATE` =
 //! `LN_2 / PCR_RECOVERY_HALF_TIME` and `calcium::PM_CA_LEAK`, a `const fn` evaluation); the
@@ -245,8 +245,8 @@ pub fn emit(root: &Path, provenance: &str) -> Result<String, String> {
              have SUBSTEP_MAX_DT and MAX_SUBSTEPS).",
             "Each comment is the first paragraph of the Rust doc comment; the derivations and\n\
              citations that follow it stay in rust-old/src.",
-            "Table-valued and private constants are table data, generated with their module's\n\
-             data file (port plan §4 step 6).",
+            "Table-valued and private constants are generated with their module's data file\n\
+             (src/<module>_data.cyr) or in src/constants_private.cyr (port plan §4 step 6).",
         ],
     );
     let mut sources = BTreeMap::new();

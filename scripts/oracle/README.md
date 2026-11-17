@@ -3,7 +3,8 @@
 Drives the frozen Rust rasayan 1.2.0 in `rust-old/` (by path, read-only; it is never edited)
 and writes everything the Cyrius port derives from it:
 - the golden corpus, `tests/golden/<module>.tsv`, which the parity harness replays;
-- the generated Cyrius sources, `src/constants.cyr` (and, from M0 part 2b, `src/<module>_data.cyr`).
+- the generated Cyrius sources, `src/constants.cyr`, `src/constants_private.cyr` and
+  `src/<module>_data.cyr`.
 
 Adapted from ushma's `scripts/oracle/` (format and rules unchanged; kimiya's and tanmatra's
 originally), so the sibling ports' parity harness reads these files as it reads theirs.
@@ -12,12 +13,17 @@ originally), so the sibling ports' parity harness reads these files as it reads 
 cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml             # write
 cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml -- --check  # verify
 python3 -I -B scripts/oracle/validate.py .                                          # independent check
+python3 -I -B scripts/oracle/probe_tables.py . --all-targets                       # every generated value, compiled
 ```
 
 `--check` regenerates every output in memory and compares it byte for byte. It exits 1 on:
 - a difference or a missing file;
 - a `.tsv` with no emitter;
 - a corpus recorded on another glibc platform (`src/glibc.rs`).
+
+It exits 2, writing nothing, when an output can't be generated: the completeness proof fails
+(a `const` or `static` item neither generated nor excused, below), the source no longer reads
+as an emitter expects, or two generated declarations share a name.
 
 A corpus written by another rustc shows up as DIFFERS too: the header names the compiler
 (`build.rs`), because how each f64 method reaches glibc is the compiler's choice (below).
@@ -28,14 +34,26 @@ cargo made is the `rasayan-oracle` package itself, and the oracle's dev-dependen
 and its tree) dropped out. The release profile keeps `overflow-checks = true`. Everything builds
 in `scripts/oracle/target/` (gitignored).
 
-## What's generated (M0 part 2a)
+## What's generated (M0 parts 2a and 2b)
 
 | Output | Rows / lines | What it is |
 |---|---|---|
 | `tests/golden/constants.tsv` | 67 | every public scalar const of rasayan 1.2.0 (62 `f64`, 3 `u32`, 2 `usize`, over 13 modules), class A |
 | `tests/golden/math.tsv` | 18,826 | every std f64 method rasayan's library calls, over rasayan's ranges (port plan §7.1): A 5,380 · B 2,352 · C 11,094 |
-| `tests/golden/modules.txt` | 2 | the module list the harness reads |
-| `src/constants.cyr` | 333 lines | the 67 constants as `RY_` consts, under the first paragraph of their Rust doc comments |
+| `tests/golden/constants_private.tsv` | 16 | the private scalar consts of the modules without a data file (calcium, domain, energy, integrate, pathway, ptm; 6 of them fn-local), as `const` rows, class A |
+| `tests/golden/protein.tsv` | 184 | through the API: `AMINO_ACIDS` (20 entries and its length) and `lookup` for 72 characters (every ASCII letter in both cases, the letter ranges' neighbours, digits, whitespace, NUL, DEL, 7 non-ASCII); read from the source: `LOOKUP_INDEX` (26), `SIDE_CHAINS` (7), the 4 `ChainPka` sets, the Bjellqvist termini (7 + 2 arms and the two `_` defaults), `CHOU_FASMAN` (20) and 23 scalar `const` rows; class A |
+| `tests/golden/alignment.tsv` | 1,008 | `substitution_score` for all 400 ordered pairs of both matrices (800), and for the 52 other characters `lookup` is called with, on either side of `A`, in both matrices (208); class A |
+| `tests/golden/enzyme.tsv` | 60 | through the API: `KNOWN_ENZYMES` (12 entries and its length) and `lookup_enzyme` for every name as written, lowercased and uppercased, plus 10 near misses; `REGRESSION_REL_TOL` from the source; class A |
+| `tests/golden/membrane.tsv` | 1 | `DEFAULT_PERMEABILITY`'s three fields, class A |
+| `tests/golden/ai.tsv` | 1 | `SYSTEM_PROMPT`'s text, class A |
+| `tests/golden/modules.txt` | 8 | the module list the harness reads |
+| `src/constants.cyr` | 333 lines | the 67 public constants as `RY_` consts, under the first paragraph of their Rust doc comments |
+| `src/constants_private.cyr` | 74 lines | the 16 private constants as `_RY_<MODULE>_<NAME>` (`t_private.rs`) |
+| `src/protein_data.cyr` | 721 lines | `RY_AMINO_ACID_*` columns and index constants; `_RY_PROTEIN_*`: the lookup index, the side chains, the pKa-set table, the Bjellqvist termini, the Chou-Fasman columns, 23 scalars (`t_protein.rs`) |
+| `src/alignment_data.cyr` | 129 lines | `_RY_ALIGNMENT_*`: the residue order, the 26-entry index, BLOSUM62 and PAM250 as `i8[400]` (`t_alignment.rs`) |
+| `src/enzyme_data.cyr` | 251 lines | `RY_KNOWN_ENZYME_*` columns and index constants; `_RY_ENZYME_REGRESSION_REL_TOL` (`t_enzyme.rs`) |
+| `src/membrane_data.cyr` | 28 lines | `RY_MEMBRANE_DEFAULT_PERMEABILITY_{P_NA,P_K,P_CL}` (`t_membrane.rs`) |
+| `src/ai_data.cyr` | 36 lines | `_RY_AI_SYSTEM_PROMPT` (308 bytes and a NUL) and its length; for `[lib.ai]` only (`t_ai.rs`) |
 
 **Constant names** (ADR 0001, P6): a const of `constants.rs` is `RY_<NAME>` (`RY_R_GAS`); a const
 of any other module is `RY_<MODULE>_<NAME>` (`RY_PATHWAY_NAD_POOL_TOTAL`,
@@ -44,16 +62,62 @@ of any other module is `RY_<MODULE>_<NAME>` (`RY_PATHWAY_NAD_POOL_TOTAL`,
 outside the test modules and that no two Cyrius names collide. Two of the 67 are const
 expressions, recorded by value: `energy::PCR_RECOVERY_RATE` (`LN_2 / PCR_RECOVERY_HALF_TIME`)
 and `calcium::PM_CA_LEAK` (a `const fn` evaluation). `tests/constants.tcyr` compiles
-`src/constants.cyr` and checks a sample bit for bit.
+`src/constants.cyr` and checks a sample bit for bit. A **private** const is `_RY_<MODULE>_<NAME>`
+(`_RY_INTEGRATE_SERIES_MAX`, `_RY_PROTEIN_WATER_AVG_MASS`), ushma's `_US_<MODULE>_<NAME>`
+convention with rasayan's prefix; a fn-local one drops its fn (`integrate::step_factors::C1` is
+`_RY_INTEGRATE_C1`). The generator fails if two generated declarations share a name or one lacks
+the `RY_` / `_RY_` prefix.
+
+**Table layout** (ADR 0002 row 10). A table is column data: `<PREFIX>_COUNT`, one index
+constant per row (`RY_AMINO_ACID_ALA` = 0 …, from the abbreviation; `RY_KNOWN_ENZYME_CATALASE`
+= 2 …, from the name), and one typed array per field: `f64[n]`; a `char` as its ASCII byte in a
+`u8[n]`; an `Option<f64>` as a `HAS_` `bool[n]` beside its value (0.0 for `None`, kimiya's form);
+a `u32` or an `i8` as itself. A 2-D table is row-major (`_RY_ALIGNMENT_BLOSUM62[i * 20 + j]`,
+`_RY_PROTEIN_PKA_SET_SIDE[set * 7 + slot]`, `_RY_PROTEIN_CHOU_FASMAN_BEND[row * 4 + j]`). A
+string column is one NUL-terminated byte blob with `u16` offsets (`&BYTES + OFF[i]` is row i's C
+string, its UTF-8 bytes exactly), as ushma's and kimiya's are: a Cyrius array cannot hold string
+literals, and a byte blob compares bytewise, as Rust's `&str ==` does. The four `ChainPka` consts
+are one table whose row is the `PkaSet` value: the generator proves they are declared in `PkaSet`
+order and that `for_chain` maps each variant to its const. The Bjellqvist termini are the `match`
+arms of `bjellqvist_n_term` / `bjellqvist_c_term` as code and pKa columns; the `_` arm is
+`BJELLQVIST_PKA`'s terminus. A struct value (`DEFAULT_PERMEABILITY`) is one const per field. What
+Rust makes public is `RY_`; everything else is `_RY_`.
+
+**Values.** Public tables come from the oracle's API and are checked against the source literal
+field by field. Private items are read from `rust-old/src` by `rustsrc.rs`: a tokenizer (so a
+`//` or a brace inside a string or char literal is not code), the `const` / `static` items at
+every depth, literals by Rust's `f64::from_str`, and a small evaluator for what the initializers
+use: `* / + -` in binary64, left to right, unary minus first; `<<`; `u8::MAX`; another const of
+the module; an element or field of one (`SIDE_CHAINS[0].1`, `BJELLQVIST_PKA.n_term`); struct and
+tuple literals; and a `const fn` whose body is `let` bindings and a tail expression (`cf_row`).
+`LOOKUP_INDEX` (`build_lookup_index()`, a loop) is re-derived from `lookup` and checked against
+the loop run on the source table, after checking the loop's text is unchanged. What the Rust code
+relies on is asserted: `SIDE_CHAINS` is in `side_chain_slot`'s order; `CHOU_FASMAN` rows are in
+`AMINO_ACIDS` order; both matrices are symmetric, each row's `// X` comment is its residue,
+`aa_index` maps the 20 codes to 0..19 in order (which is `AMINO_ACIDS` order) and `matrix_table`
+maps each `Matrix` to its table.
+
+**The completeness proof** (`t_private::complete`, run on every generation): every `const` and
+`static` item in the library part of every `rust-old/src` file (top level, in an `impl` and
+fn-local; 123 in all) is claimed by exactly one emitter (`t_constants` 67, `t_protein` 31,
+`t_private` 16, `t_alignment` 2, `t_enzyme` 2, `t_membrane` 1, `t_ai` 1) or excused, and nothing
+is claimed that the source lacks. A file's `#[cfg(test)]` must be one module running to its end,
+so nothing after it is library code. The excuses, each pinned to its initializer's text:
+
+| Item | Why |
+|---|---|
+| `ai::ensure_crypto_provider::INIT` (`static`, `std::sync::Once::new()`) | guards the rustls crypto-provider install: Rust TLS mechanics, not carried (ADR 0002 row 9) |
+| `mcp::alignment_handler::USAGE` (`"score requires: seq_a, seq_b (equal length)"`) | message text local to the handler's `score` arm, hoisted only because it is used twice: the same kind of text as the handler's inline `get_seq` usage literals. MCP response text, ported with the handler and pinned by the M8 response rows |
+| `mcp::alignment_handler::USAGE#2` (`"needleman_wunsch requires: seq_a, seq_b"`) | the same, for the `needleman_wunsch` arm |
+
+Deleting an emitter's entry (tried with `ptm::MYRISTOYL_LEN` and `protein::CHOU_FASMAN`) makes
+the generator exit 2, naming the item. `tests/tables.tcyr` compiles every generated file
+together and checks a sample of cells bit for bit (69 checks).
 
 Pending, at their milestones (port plan §4 step 6, §6):
-- **M0 part 2b, table data**: the table-valued public consts `protein::AMINO_ACIDS` (20
-  `AminoAcid`), `enzyme::KNOWN_ENZYMES` (the `KnownEnzyme` database) and
-  `membrane::DEFAULT_PERMEABILITY` (a `MembranePermeability`); the private tables (BLOSUM62 and
-  PAM250, the 26-entry lookup index, the Chou-Fasman parameters and bend frequencies, the pKa sets)
-  and the private scalar constants (`integrate::SERIES_MAX`, `calcium::RESTING_CA`, …), with a
-  completeness proof (`rustsrc.rs`);
-- each module's rows (M1 on), including the single-step rows and the class T trajectory digests;
+- each module's rows (M1 on), including the single-step rows and the class T trajectory digests,
+  joining the module files the tables seeded; the `PkaSet`-dependent pI and charge rows and the
+  Chou-Fasman predictions are M3's;
 - the JSON rows (each module's milestone) and the MCP / request rows (M8);
 - the corrected-oracle files `<module>.cr.tsv` (ADR 0003, M0 part 2c, `mpfr_ref.py`).
 
@@ -179,8 +243,39 @@ It shares no code with the generator. It re-derives from first principles:
   port plan's (A: abs, ceil, min, max, clamp, is_finite, is_nan, as_u32; B: sqrt, powi; C: powf,
   exp, ln, exp_m1).
 
-On this corpus: 7,866 values recomputed, 0 failures. Class C rows (11,094) are checked against
-MPFR by the corrected-oracle tooling (M0 part 2c), not here. Run it with `python3 -I -B`. A
-tampered row fails it, as checked when it was written: a constant's bits, a `max` row's signed
-zero, a `powi(1.1, 4)` row set to the left-fold result, and a `src/constants.cyr` literal each
-gave exit 1.
+Since part 2b it also re-reads the Rust source with its own parser (regular expressions over
+rustfmt's layout and Python's arithmetic; nothing shared with `rustsrc.rs`):
+- every row of the table files (`protein`, `alignment`, `enzyme`, `membrane`, `ai`,
+  `constants_private`) against its model of the source: the struct and tuple literals, the
+  `match` arms, the matrices, the string literal (escapes and line continuations), the private
+  constants' expressions, and `lookup`, `lookup_enzyme` and `substitution_score` re-implemented
+  (ASCII uppercasing; the first ASCII-case-insensitive match; `None` off the table); each table's
+  rows run `0 .. n-1` once;
+- **completeness**, independently: its own scan of every `const` / `static` item (the enclosing
+  fn found by indentation) must be exactly the items the golden rows cover plus its own copy of
+  the three excuses;
+- every `const` and every array cell of every generated data file against the value its golden
+  rows give (the layout re-derived: index constants, columns, row-major grids, the byte blobs and
+  their offsets), every declaration accounted for, names `RY_` / `_RY_` and unique across all
+  generated files, f64 literals positional.
+
+On this corpus: 11,540 values checked (7,866 of them part 2a's), 0 failures. Class C rows
+(11,094) are checked against MPFR by the corrected-oracle tooling (M0 part 2c), not here. Run it
+with `python3 -I -B`. A tampered row fails it, as checked when it was written: a constant's bits,
+a `max` row's signed zero, a `powi(1.1, 4)` row set to the left-fold result, and a
+`src/constants.cyr` literal (part 2a); BLOSUM62 W–W set to 12 in a golden row (the row and the
+`_data.cyr` cell both fail), a Chou-Fasman bend frequency in a source-derived row, Trp's mass in
+`src/protein_data.cyr`, and one byte of an EC-number blob in `src/enzyme_data.cyr` (part 2b).
+Each gave exit 1.
+
+## probe_tables.py
+
+Compiles every generated `const` and every array element with the Cyrius compiler
+(`build/oracle-probe/`, the project's `cyrius.cyml`) and compares each printed value with its own
+parse of the literal (Python's correctly rounded `float()` for an f64): the decimal conversion,
+an `i8` cell's sign, the `u8` / `u16` / `u32` widths, `bool`, the byte blobs. With
+`validate.py`'s literal-to-golden check, each compiled cell is tied to the oracle. It fails on a
+mismatch, on a declaration it cannot read, or on any compiler warning. `--all-targets` also
+builds for aarch64 (qemu) and PE (wine) and requires identical output. At part 2b: 2,470 values
+(156 consts, 2,314 cells of 39 arrays), identical on the three targets. A mismatch fails it, as
+checked when it was written.

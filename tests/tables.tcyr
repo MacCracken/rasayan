@@ -1,0 +1,161 @@
+# rasayan — the generated table data compiles, and its cells are the oracle's bits
+# Stdlib auto-included via cyrius.cyml
+#
+# Every generated source (scripts/oracle, never typed by hand) is included here, so the suite
+# proves they compile together and declare no name twice. A sample of cells is checked against
+# the golden corpus: f64 cells bit for bit, the signed i8 matrix cells, the u32 / u16 / u8 / bool
+# columns, the NUL-terminated name blobs through their offsets, and the index constants.
+# scripts/oracle/validate.py checks every literal against its golden row, and
+# scripts/oracle/probe_tables.py compiles and checks every cell.
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/protein_data.cyr"
+include "src/alignment_data.cyr"
+include "src/enzyme_data.cyr"
+include "src/membrane_data.cyr"
+include "src/ai_data.cyr"
+
+# The IEEE-754 bit pattern of an f64.
+fn bits_of(x: f64) {
+    var y: f64 = x;
+    return load64(&y);
+}
+
+# Row i's C string in a NUL-terminated blob.
+fn blob_at(bytes, off) {
+    return bytes + off;
+}
+
+# protein_data.cyr: the public amino-acid columns and the lookup index.
+fn check_amino_acids() {
+    test_group("protein: AMINO_ACIDS and the lookup index");
+    assert_eq(RY_AMINO_ACID_COUNT, 20, "20 amino acids");
+    assert_eq(RY_AMINO_ACID_ALA, 0, "Ala is row 0");
+    assert_eq(RY_AMINO_ACID_TRP, 18, "Trp is row 18");
+    assert_eq(RY_AMINO_ACID_CODE[RY_AMINO_ACID_TRP], 87, "Trp's code is W");
+    assert_eq(bits_of(RY_AMINO_ACID_MW[RY_AMINO_ACID_TRP]), 0x4069873d07c84b5e, "Trp mw 204.2262");
+    assert_eq(bits_of(RY_AMINO_ACID_HYDROPHOBICITY[RY_AMINO_ACID_ARG]), 0xc012000000000000, "Arg -4.5");
+    assert(!RY_AMINO_ACID_HAS_SIDE_CHAIN_PKA[RY_AMINO_ACID_ALA], "Ala has no side-chain pKa");
+    assert(RY_AMINO_ACID_HAS_SIDE_CHAIN_PKA[RY_AMINO_ACID_TYR], "Tyr has one");
+    assert_eq(bits_of(RY_AMINO_ACID_SIDE_CHAIN_PKA[RY_AMINO_ACID_TYR]), 0x402423d70a3d70a4, "Tyr pKa 10.07");
+    assert_eq(bits_of(RY_AMINO_ACID_SIDE_CHAIN_PKA[RY_AMINO_ACID_ALA]), 0, "None is +0.0");
+    var name = blob_at(&_RY_AMINO_ACID_NAME_BYTES, _RY_AMINO_ACID_NAME_OFF[RY_AMINO_ACID_TRP]);
+    assert(streq(name, "Tryptophan"), "Trp's name through its offset");
+    var last = blob_at(&_RY_AMINO_ACID_NAME_BYTES, _RY_AMINO_ACID_NAME_OFF[RY_AMINO_ACID_TYR]);
+    assert(streq(last, "Tyrosine"), "the last name");
+    var abbr = blob_at(&_RY_AMINO_ACID_ABBR_BYTES, _RY_AMINO_ACID_ABBR_OFF[RY_AMINO_ACID_GLN]);
+    assert(streq(abbr, "Gln"), "Gln's abbreviation");
+    assert_eq(_RY_PROTEIN_LOOKUP_INDEX[87 - 65], RY_AMINO_ACID_TRP, "W -> Trp");
+    assert_eq(_RY_PROTEIN_LOOKUP_INDEX[66 - 65], _RY_PROTEIN_NO_RESIDUE, "B -> NO_RESIDUE");
+    assert_eq(_RY_PROTEIN_NO_RESIDUE, 255, "NO_RESIDUE is u8::MAX");
+    assert_eq(bits_of(_RY_PROTEIN_WATER_AVG_MASS), 0x403203e963dc486b, "WATER_AVG_MASS");
+    return 0;
+}
+
+# protein_data.cyr: side chains, pKa sets, Bjellqvist termini and Chou-Fasman.
+fn check_protein_private() {
+    test_group("protein: pKa sets and Chou-Fasman");
+    assert_eq(_RY_PROTEIN_SIDE_CHAIN_COUNT, 7, "7 ionizable side chains");
+    assert_eq(_RY_PROTEIN_SIDE_CHAIN_CODE[4], 72, "slot 4 is H");
+    assert_eq(bits_of(_RY_PROTEIN_SIDE_CHAIN_SIGN[0]), 0xbff0000000000000, "Asp is acidic (-1.0)");
+    assert_eq(bits_of(_RY_PROTEIN_SIDE_CHAIN_PKA[0]), 0x400d333333333333, "Asp 3.65");
+    assert_eq(_RY_PROTEIN_PKA_SET_COUNT, 4, "4 pKa sets");
+    assert_eq(_RY_PROTEIN_PKA_SET_IPC_PROTEIN, 3, "IPC is row 3");
+    var ipc = _RY_PROTEIN_PKA_SET_IPC_PROTEIN;
+    assert_eq(bits_of(_RY_PROTEIN_PKA_SET_C_TERM[ipc]), 0x4006f3b645a1cac1, "IPC c_term 2.869");
+    var bj_his = _RY_PROTEIN_PKA_SET_BJELLQVIST * _RY_PROTEIN_SIDE_CHAIN_COUNT + 4;
+    assert_eq(bits_of(_RY_PROTEIN_PKA_SET_SIDE[bj_his]), 0x4017eb851eb851ec, "Bjellqvist His 5.98");
+    assert_eq(_RY_PROTEIN_BJELLQVIST_N_TERM_COUNT, 7, "7 Bjellqvist N-terminal residues");
+    assert_eq(_RY_PROTEIN_BJELLQVIST_N_TERM_CODE[3], 80, "the fourth is P");
+    assert_eq(bits_of(_RY_PROTEIN_BJELLQVIST_N_TERM_PKA[3]), 0x4020b851eb851eb8, "Pro 8.36");
+    assert_eq(_RY_PROTEIN_BJELLQVIST_C_TERM_COUNT, 2, "2 Bjellqvist C-terminal residues");
+    assert_eq(bits_of(_RY_PROTEIN_BJELLQVIST_C_TERM_PKA[0]), 0x4012333333333333, "Asp 4.55");
+    assert_eq(_RY_PROTEIN_CHOU_FASMAN_COUNT, 20, "20 Chou-Fasman rows");
+    assert_eq(_RY_PROTEIN_CHOU_FASMAN_CODE[RY_AMINO_ACID_PRO], 80, "rows in AMINO_ACIDS order");
+    assert_eq(_RY_PROTEIN_CHOU_FASMAN_BEND[RY_AMINO_ACID_PRO * 4 + 1], 301, "Pro f(i+1) 0.301");
+    assert_eq(_RY_PROTEIN_CHOU_FASMAN_P_BETA[RY_AMINO_ACID_VAL], 170, "Val P-beta 1.70");
+    assert_eq(_RY_PROTEIN_CHOU_FASMAN_P_ALPHA[RY_AMINO_ACID_GLU], 151, "Glu P-alpha 1.51");
+    assert_eq(_RY_PROTEIN_CF_BEND_PRODUCT_MIN, 75000000, "CF_BEND_PRODUCT_MIN");
+    assert_eq(_RY_PROTEIN_CF_TURN, 4, "CF_TURN flag");
+    return 0;
+}
+
+# alignment_data.cyr: the matrices read back as signed bytes.
+fn check_alignment() {
+    test_group("alignment: BLOSUM62, PAM250 and the residue index");
+    var w = _RY_ALIGNMENT_AA_INDEX[87 - 65];
+    var c = _RY_ALIGNMENT_AA_INDEX[67 - 65];
+    var a = _RY_ALIGNMENT_AA_INDEX[65 - 65];
+    var d = _RY_ALIGNMENT_AA_INDEX[68 - 65];
+    assert_eq(w, 18, "W is index 18");
+    assert_eq(_RY_ALIGNMENT_RESIDUES[w], 87, "and row 18 is W");
+    assert_eq(_RY_ALIGNMENT_AA_INDEX[66 - 65], _RY_ALIGNMENT_NO_RESIDUE, "B has no index");
+    assert_eq(_RY_ALIGNMENT_BLOSUM62[w * 20 + w], 11, "BLOSUM62 W-W 11");
+    assert_eq(_RY_ALIGNMENT_BLOSUM62[a * 20 + d], 0 - 2, "BLOSUM62 A-D -2");
+    assert_eq(_RY_ALIGNMENT_PAM250[w * 20 + w], 17, "PAM250 W-W 17");
+    assert_eq(_RY_ALIGNMENT_PAM250[c * 20 + w], 0 - 8, "PAM250 C-W -8 (sign-extended)");
+    assert_eq(_RY_ALIGNMENT_PAM250[w * 20 + c], 0 - 8, "symmetric");
+    assert(_RY_ALIGNMENT_PAM250[c * 20 + w] < 0, "an i8 cell compares as negative");
+    return 0;
+}
+
+# enzyme_data.cyr, membrane_data.cyr, ai_data.cyr.
+fn check_enzymes_membrane_ai() {
+    test_group("enzyme, membrane and ai data");
+    assert_eq(RY_KNOWN_ENZYME_COUNT, 12, "12 known enzymes");
+    assert_eq(RY_KNOWN_ENZYME_CATALASE, 2, "Catalase is row 2");
+    assert_eq(bits_of(RY_KNOWN_ENZYME_KCAT[RY_KNOWN_ENZYME_CATALASE]), 0x418312d000000000, "kcat 4e7");
+    var ache = RY_KNOWN_ENZYME_ACETYLCHOLINESTERASE;
+    var pfk = RY_KNOWN_ENZYME_PHOSPHOFRUCTOKINASE;
+    assert_eq(bits_of(RY_KNOWN_ENZYME_KM[ache]), 0x3f1797cc39ffd60f, "Km 9e-5");
+    assert_eq(bits_of(RY_KNOWN_ENZYME_HILL_N[pfk]), 0x400e666666666666, "PFK nH 3.8");
+    var i = RY_KNOWN_ENZYME_TRIOSE_PHOSPHATE_ISOMERASE;
+    var name = blob_at(&_RY_KNOWN_ENZYME_NAME_BYTES, _RY_KNOWN_ENZYME_NAME_OFF[i]);
+    assert(streq(name, "Triose phosphate isomerase"), "a name split over two blob lines");
+    var cat = RY_KNOWN_ENZYME_CATALASE;
+    var ec = blob_at(&_RY_KNOWN_ENZYME_EC_NUMBER_BYTES, _RY_KNOWN_ENZYME_EC_NUMBER_OFF[cat]);
+    assert(streq(ec, "1.11.1.6"), "Catalase EC");
+    var sub = blob_at(&_RY_KNOWN_ENZYME_SUBSTRATE_BYTES, _RY_KNOWN_ENZYME_SUBSTRATE_OFF[pfk]);
+    assert(streq(sub, "Fructose-6-phosphate"), "PFK substrate");
+    assert_eq(bits_of(_RY_ENZYME_REGRESSION_REL_TOL), 0x3d719799812dea11, "REGRESSION_REL_TOL 1e-12");
+    assert_eq(bits_of(RY_MEMBRANE_DEFAULT_PERMEABILITY_P_NA), 0x3fa47ae147ae147b, "P_Na 0.04");
+    assert_eq(bits_of(RY_MEMBRANE_DEFAULT_PERMEABILITY_P_K), 0x3ff0000000000000, "P_K 1.0");
+    assert_eq(bits_of(RY_MEMBRANE_DEFAULT_PERMEABILITY_P_CL), 0x3fdccccccccccccd, "P_Cl 0.45");
+    assert_eq(_RY_AI_SYSTEM_PROMPT_LEN, 308, "the prompt is 308 bytes");
+    assert_eq(strlen(&_RY_AI_SYSTEM_PROMPT), _RY_AI_SYSTEM_PROMPT_LEN, "and NUL-terminated there");
+    assert_eq(_RY_AI_SYSTEM_PROMPT[0], 89, "it starts with Y");
+    assert_eq(_RY_AI_SYSTEM_PROMPT[_RY_AI_SYSTEM_PROMPT_LEN - 1], 46, "and ends with a full stop");
+    return 0;
+}
+
+# constants_private.cyr: literals, the three folded expressions, an integer.
+fn check_private_constants() {
+    test_group("constants_private");
+    assert_eq(bits_of(_RY_INTEGRATE_SERIES_MAX), 0x3fb0000000000000, "SERIES_MAX 0.0625");
+    assert_eq(bits_of(_RY_INTEGRATE_C1), 0xbfe0000000000000, "C1 = -1.0 / 2.0");
+    assert_eq(bits_of(_RY_INTEGRATE_C3), 0xbfa5555555555555, "C3 = -1.0 / 24.0");
+    assert_eq(bits_of(_RY_CALCIUM_CYTOSOL_ER_VOLUME_RATIO), 0x40159f22983759f2, "1.0 / 0.185");
+    assert_eq(bits_of(_RY_PATHWAY_SOLVE_RELATIVE_TOLERANCE), 0x3d06849b86a12b9b, "1e-14");
+    assert_eq(_RY_PATHWAY_SOLVE_MAX_ITERATIONS, 100, "SOLVE_MAX_ITERATIONS");
+    var half: f64 = _RY_INTEGRATE_C1 * 2.0;
+    assert_eq(bits_of(half), 0xbff0000000000000, "an f64 const takes part in f64 arithmetic");
+    return 0;
+}
+
+# The tables suite.
+fn main() {
+    alloc_init();
+    check_amino_acids();
+    check_protein_private();
+    check_alignment();
+    check_enzymes_membrane_ai();
+    check_private_constants();
+    return assert_summary();
+}
+
+var exit_code = main();
+# Clamp before exiting: assert_summary() returns the raw failure COUNT, and a wait status is
+# only 8 bits. Any failure at all is exit 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

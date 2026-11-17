@@ -141,12 +141,12 @@
 | M1 | *(correctly rounded primitives, P4)* | — | — | — | `src/mathx.cyr` (vendored, private `_ry_cr_*`) |
 | M1 | *(JSON infrastructure, P7)* | — | — | — | `src/fmtf.cyr` (vendored), `src/json.cyr` |
 | M1 | `error.rs` | 19 | — | — | `src/error.cyr` |
-| M1 | `constants.rs` (+ public consts in 12 modules) | 6 | (consts) | — | `src/constants.cyr` (generated) |
+| M1 | `constants.rs` (+ public consts in 12 modules) | 6 | (consts) | — | `src/constants.cyr`, `src/constants_private.cyr` (generated) |
 | M1 | `guard.rs` | 92 | (private) | 4 | `src/guard.cyr` |
 | M1 | `integrate.rs` | 44 | (private) | 5 | `src/integrate.cyr` |
 | M1 | `logging.rs` | 14 | 2 | — | `src/logging.cyr` |
 | M2 | `enzyme.rs` | 418 | 21 | 58 | `src/enzyme_data.cyr` (generated), `src/enzyme.cyr` |
-| M2 | `membrane.rs` | 123 | 6 | 19 | `src/membrane.cyr` |
+| M2 | `membrane.rs` | 123 | 6 | 19 | `src/membrane_data.cyr` (generated), `src/membrane.cyr` |
 | M2 | `signal.rs` | 95 | 8 | 21 | `src/signal.cyr` |
 | M2 | `metabolism.rs` | 138 | 9 | 26 | `src/metabolism.cyr` |
 | M2 | `energy.rs` | 122 | 10 | 29 | `src/energy.cyr` |
@@ -170,7 +170,7 @@
 | M7 | `neurotransmitter.rs` | 368 | 10 | 31 | `src/neurotransmitter.cyr` |
 | M7 | `hormonal.rs` | 251 | 5 | 25 | `src/hormonal.cyr` |
 | M8 | `mcp.rs` | 893 | 3 | 31 | `src/mcp.cyr` (`[lib.mcp]`) |
-| M8 | `ai.rs` | 108 | 2 | 4 | `src/ai.cyr` (`[lib.ai]`) |
+| M8 | `ai.rs` | 108 | 2 | 4 | `src/ai_data.cyr` (generated), `src/ai.cyr` (`[lib.ai]`) |
 
 **Totals:** 146 of 146 public functions and methods, 628 unit tests, 70 integration tests, 25
 validation tests, 2 doc tests, 48 benchmarks and 1 example (`basic.rs`, M9). `lib.rs` (36 lines of
@@ -246,7 +246,8 @@ installation. Nothing observable is dropped.
    values and the crate's ranges, `validate.py` (independent model) and `mpfr_ref.py` (corrected
    oracle for class C).
 6. **Table/constant generator** (`t_*.rs`, `rustsrc.rs` with a proof every `const` is covered):
-   `src/constants.cyr`, `src/protein_data.cyr`, `src/alignment_data.cyr`, `src/enzyme_data.cyr`.
+   `src/constants.cyr`, `src/protein_data.cyr`, `src/alignment_data.cyr`, `src/enzyme_data.cyr`;
+   also `src/constants_private.cyr`, `src/membrane_data.cyr` and `src/ai_data.cyr` (part 2b).
 7. **Parity harness** (`tests/parity.tcyr`, `tests/parity_core.cyr`, `tests/ulp.cyr`), copied
    from ushma: each row ok / FAILED / measured / accepted / pending; exit code = failing modules.
 8. **Baselines** on x86_64 ELF, x86_64 PE (wine) and aarch64 (qemu); run targets one at a time and
@@ -387,7 +388,7 @@ signaling pathways).
 
 | Milestone | Status | Golden rows | Reference tests | Benches | Notes |
 |---|---|---|---|---|---|
-| M0 Prep + scaffold | 🟡 part 1 done (steps 0–2; step 3 partial); part 2a done (step 4 math check, step 5 generator: constants + math sweep, `validate.py`) | 18,893 (constants 67, math 18,826) | — | Rust baseline at `adadf54` (48) | next: 2b table data, 2c harness + mathx + MPFR, part 3 baselines/probes |
+| M0 Prep + scaffold | 🟡 part 1 done (steps 0–2; step 3 partial); part 2a done (step 4 math check, step 5 generator: constants + math sweep, `validate.py`); part 2b done (step 6: table data and private constants, completeness proof over all 123 `const`/`static` items, `probe_tables.py`, `tests/tables.tcyr`) | 20,163 (constants 67, math 18,826, table data 1,270: protein 184, alignment 1,008, enzyme 60, constants_private 16, membrane 1, ai 1) | — | Rust baseline at `adadf54` (48) | next: 2c harness + mathx + MPFR, part 3 baselines/probes. 2b added `src/constants_private.cyr`, `src/membrane_data.cyr` and `src/ai_data.cyr` ([lib.ai] only) beside the planned data files; ADR 0002 row 10 |
 | M1 Foundation | — | | | | |
 | M2 Kinetics & cell physiology | — | | | | |
 | M3 Sequence analysis | — | | | | |
