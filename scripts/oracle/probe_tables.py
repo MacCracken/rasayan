@@ -31,6 +31,7 @@ work.mkdir(parents=True, exist_ok=True)
 GENERATED = [
     "src/constants.cyr",
     "src/constants_private.cyr",
+    "src/energy_data.cyr",
     "src/protein_data.cyr",
     "src/alignment_data.cyr",
     "src/enzyme_data.cyr",

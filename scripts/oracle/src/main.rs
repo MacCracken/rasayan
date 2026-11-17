@@ -29,6 +29,7 @@ mod cyr;
 mod glibc;
 mod grids;
 mod m_constants;
+mod m_energy;
 mod m_enzyme;
 mod m_guard;
 mod m_integrate;
@@ -42,6 +43,7 @@ mod rustsrc;
 mod t_ai;
 mod t_alignment;
 mod t_constants;
+mod t_energy;
 mod t_enzyme;
 mod t_membrane;
 mod t_metabolism;
@@ -83,6 +85,7 @@ fn golden_modules(root: &Path) -> Result<Vec<tsv::Module>, String> {
         t_private::golden(root)?,
         t_protein::golden(&read("protein")?)?,
         t_alignment::golden(&read("alignment")?, &amino_codes())?,
+        t_energy::golden(&read("energy")?)?,
         t_enzyme::golden(&read("enzyme")?)?,
         t_membrane::golden(&read("membrane")?)?,
         t_metabolism::golden(&read("metabolism")?)?,
@@ -118,6 +121,10 @@ fn cyrius_outputs(root: &Path, prov: &str) -> Result<Vec<Output>, String> {
         (
             "src/alignment_data.cyr",
             t_alignment::emit_cyr(&read("alignment")?, &amino_codes(), prov)?,
+        ),
+        (
+            "src/energy_data.cyr",
+            t_energy::emit_cyr(&read("energy")?, prov)?,
         ),
         (
             "src/enzyme_data.cyr",

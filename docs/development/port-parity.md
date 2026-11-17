@@ -1105,3 +1105,47 @@ caller buffer, or 0 for Rust's None; `validate` walks the five pools through the
 to the guard and Rust-semantics helpers (`_ry_guard_conc`, `_ry_min`, `_ry_max`, …), each a few ns, which Rust inlines;
 they are multi-statement, so `#inline` does not apply to them at the pin. Cyrius only: `regenerate_atp` at 100 s 157 ns
 (the clearance's `expm1`), `energy_charge` 53 ns.
+
+### 5e. Part 5: energy (2026-11-17)
+
+**What is compared.** `tests/golden/energy.tsv` (new, 4,509 rows) through the oracle's public API:
+`BioenergyState::default()`; the four bridges (`atp_demand_from_power`, `fatigue_rate_from_energy`,
+`recovery_rate_modifier`, `met_from_power`) over 14 edge values per argument, seeded calls and the Rust tests' grids;
+`validate`, `is_anaerobic`, `o2_consumption` and `energy_available` over 128 states; single steps of `set_exertion` and
+`tick` (21 time steps in minutes, the activation's series cutoff ±1 ulp at each state's own rate); the serde
+documents. **sharira's call shape** (port plan §2 item 11) has its own rows: `sharira::MetabolicCoupling::tick`, the
+rasayan calls sharira 1.1.0 makes each frame (`met_from_power` → `set_exertion` → `tick(f64::from(dt_seconds) / 60)`
+with an f32 `dt_seconds` → `energy_available` → `fatigue_rate_from_energy` → `recovery_rate_modifier`), 148 single
+steps giving the state and the three results, and sharira sessions as trajectories (a 60-Hz warm-up at 50 W, a 6-s
+sprint at 800 W in 0.01-s frames, ten minutes at 150 W, five minutes recovering; a heavier rider at 30 Hz). The other
+trajectories are Rust's calibration scenarios: depletion at 10 MET, the PCr half-time in 0.1-s steps, sprints at 30
+and 40 MET in 0.01-s steps, glycogen endurance at 10 and 13 MET, resynthesis, one tick against many, moving and
+non-finite thresholds. The class follows the branch: C where the phosphocreatine activation reaches `exp_m1` (877),
+B elsewhere (3,096), T for the scripts (35), A for `validate`, `is_anaerobic`, `recovery_rate_modifier`, the default
+and the documents (501).
+
+| Check | Result |
+|---|---|
+| every row | identical on the first run (classes B and C at 0 ulp; the 35 trajectories, ~11,000-frame sharira sessions among them, bit for bit) |
+| corrected oracle | `mpfr_ref.py` reproduces all 912 class-C and class-T rows with glibc's primitives; with MPFR 4 `tick` rows change, where glibc's `expm1` misrounds (`energy.cr.tsv`). The port gives the corrected value on all 4 (ADR 3) |
+| `validate.py` | every row re-derived from its own transcription of `energy.rs` (pinned lines, the constants read from its source, `PCR_RECOVERY_RATE` as LN_2 / `PCR_RECOVERY_HALF_TIME`) and of sharira's calls, class C and T with an independent MPFR, each row's class checked against its branch; 79,004 checks in all |
+| Rust tests | 32 ported (`tests/energy.tcyr`, 93 checks); the ledger at 208 of 723, 0 due and unported: no M2 test is left |
+| fuzz | every input also read as a BioenergyState, written and read back bit for bit, then ticked: both reserves stay in [0, 1] (4,322 documents accepted across the five struct codecs) |
+| three targets (`scripts/gates.sh`, 250 s) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 76,337 ok, 234 accepted, 0 failed; coverage 96 of 96 public fns executed |
+
+**The Cyrius forms** (ADR 0002 rows 7, 10): the methods take `*RyBioenergyState`, the mutators update it in place;
+`recovery_rate_modifier`'s bool is an i64. sharira's composition lives in the harness (`_par_sharira_tick`), since it
+is sharira's code calling rasayan's functions, not a rasayan function.
+
+**Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): bioenergy_tick 27.2 → 152 ns (its 1-min step takes the
+activation's correctly rounded `expm1`, ~50 ns). Cyrius only: met_from_power 27 ns, a tick at 12 MET 129 ns.
+
+### 5f. M2 complete
+
+Five modules, 24,519 golden rows of their own (enzyme 7,159, membrane 1,738, signal 6,025, metabolism 5,088, energy
+4,509), every one matching the oracle or accepted under an ADR: 18 rows where glibc's `expm1` misrounds and the port
+gives the correctly rounded value (ADR 3: signal 4, metabolism 10, energy 4), and one reader row of bayan's filed `-0`
+gap (ADR 4). `pow`, `exp` and `log` were correctly rounded by glibc on every call M2 makes. Class T (trajectory
+scripts) arrived at part 3 and covers every M2 stateful type; the shared pieces each module now reuses are
+`rustsrc::default_literal` (generated `Default`s) and `_ry_jw_f64_fields` / `_ry_jr_f64_fields` (the all-f64 serde
+codecs). 195 Rust tests are ported with them.

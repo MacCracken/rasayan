@@ -36,6 +36,8 @@ include "src/signal_data.cyr"
 include "src/signal.cyr"
 include "src/metabolism_data.cyr"
 include "src/metabolism.cyr"
+include "src/energy_data.cyr"
+include "src/energy.cyr"
 
 # Keeps the loops' results observable.
 var _bn_sink = 0;
@@ -505,6 +507,47 @@ fn _bn_met(name, kind, n): i64 {
     return 0;
 }
 
+# ── M2 part 5: energy, the Rust bench's twin (the same loop body), and the bridges (Cyrius only) ──
+
+# n calls of energy benchmark `kind`, its result kept: 0 bioenergy_tick (Rust's body: a default state,
+# set_exertion(6), tick(1 min)), 1 met_from_power(150, 70), 2 a BioenergyState tick at 12 MET and 0.5 min (exp_m1).
+fn _bn_energy(kind, n): i64 {
+    var b: RyBioenergyState;
+    ry_bioenergy_state_default(&b);
+    var s: f64 = 0.0;
+    var i = 0;
+    while (i < n) {
+        if (kind == 0) {
+            ry_bioenergy_state_default(&b);
+            ry_bioenergy_state_set_exertion(&b, 6.0);
+            ry_bioenergy_state_tick(&b, 1.0);
+            var p: f64 = b.phosphocreatine;
+            s = s + p;
+        } elif (kind == 1) {
+            var m: f64 = ry_met_from_power(150.0, 70.0);
+            s = s + m;
+        } else {
+            b.met = 12.0;
+            ry_bioenergy_state_tick(&b, 0.5);
+        }
+        i = i + 1;
+    }
+    var g: f64 = b.glycogen;
+    s = s + g;
+    _bn_keep(s);
+    return 0;
+}
+
+# One energy benchmark of `n` calls.
+fn _bn_en(name, kind, n): i64 {
+    var b = bench_new(name);
+    bench_batch_start(b);
+    _bn_energy(kind, n);
+    bench_batch_stop(b, n);
+    bench_report(b);
+    return 0;
+}
+
 # One benchmark of the JSON writers: `kind` 0 the serde_json f64 form, 1 the Display form, 2 a ten-field document.
 fn _bn_json(name, kind, n): i64 {
     var b = bench_new(name);
@@ -579,6 +622,9 @@ fn main(): i64 {
     _bn_met("metabolic_tick", 0, 1000000);
     _bn_met("metabolism/regenerate_atp dt 100", 1, 1000000);
     _bn_met("metabolism/energy_charge", 2, 1000000);
+    _bn_en("bioenergy_tick", 0, 1000000);
+    _bn_en("energy/met_from_power", 1, 1000000);
+    _bn_en("energy/tick 12 MET dt 0.5", 2, 1000000);
     var br = bench_new("json/read MembranePermeability (3 f64)");
     bench_batch_start(br);
     _bn_read("{\"p_na\":0.04,\"p_k\":1.0,\"p_cl\":0.45}", 3, "p_na\0p_k\0p_cl\0", 100000);

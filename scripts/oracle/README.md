@@ -52,6 +52,7 @@ in `scripts/oracle/target/` (gitignored).
 | `tests/golden/constants_private.tsv` | 16 | the private scalar consts of the modules without a data file (calcium, domain, energy, integrate, pathway, ptm; 6 of them fn-local), as `const` rows, class A |
 | `tests/golden/protein.tsv` | 184 | through the API: `AMINO_ACIDS` (20 entries and its length) and `lookup` for 72 characters (every ASCII letter in both cases, the letter ranges' neighbours, digits, whitespace, NUL, DEL, 7 non-ASCII); read from the source: `LOOKUP_INDEX` (26), `SIDE_CHAINS` (7), the 4 `ChainPka` sets, the Bjellqvist termini (7 + 2 arms and the two `_` defaults), `CHOU_FASMAN` (20) and 23 scalar `const` rows; class A |
 | `tests/golden/alignment.tsv` | 1,008 | `substitution_score` for all 400 ordered pairs of both matrices (800), and for the 52 other characters `lookup` is called with, on either side of `A`, in both matrices (208); class A |
+| `tests/golden/energy.tsv` | 4,509 | M2 part 5: `BioenergyState::default()`'s four fields, and every public function and method of `energy.rs` through the oracle's API (`t_energy.rs`, `m_energy.rs`): the four bridges over 14 edges per argument and seeded calls; the methods over 128 states; single steps of `set_exertion` and `tick` (the activation's cutoff ±1 ulp among them); sharira 1.1.0's `MetabolicCoupling::tick` call shape (`sharira::MetabolicCoupling::tick`: the state, then power, mass, dt_seconds as the f32's f64, amplification, fraction; out the state, the energy available and the two multipliers); 35 trajectory scripts (Rust's calibration scenarios, sharira sessions); the serde documents; class C (`exp_m1`; `energy.cr.tsv`), B, T or A |
 | `tests/golden/enzyme.tsv` | 7,219 | the table rows (M0: 60) and, from M2 part 1, every public function and method of `enzyme.rs` through the oracle's API (`m_enzyme.rs`): each rate law's base point varied over 14 edges and 300 seeded calls, the fits over 163 data sets, the methods, the serde documents; class B, C (`powf`, `exp`; `enzyme.cr.tsv`) or A |
 | `tests/golden/membrane.tsv` | 1,739 | `DEFAULT_PERMEABILITY`'s three fields (M0) and, from M2 part 2, `IonicState::default()`'s six and every public function and method of `membrane.rs` through the oracle's API (`m_membrane.rs`): Nernst, Goldman and Fick over 14 edges per argument and seeded physiological (and, for Goldman, wild) calls, nine charges, the validators, `resting_potential`, the serde documents; class C (`ln`; `membrane.cr.tsv`), B or A |
 | `tests/golden/metabolism.tsv` | 5,088 | M2 part 4: `MetabolicState::default()`'s six fields, and every public method of `metabolism.rs` through the oracle's API (`t_metabolism.rs`, `m_metabolism.rs`): the read-only methods over 329 states (the default varied over 14 edges per field, the Rust tests' states, the 13 × 13 ATP-and-pool grid, 60 seeded); single-step rows of `consume_atp` and `regenerate_atp` at 14 amounts and 20 time steps, the clearance's cutoff ±1 ulp among them; 33 trajectory scripts (field sets included); the serde documents; class C (`exp_m1`; `metabolism.cr.tsv`), B, T or A |
@@ -61,11 +62,12 @@ in `scripts/oracle/target/` (gitignored).
 | `tests/golden/integrate.tsv` | 5,998 | M1 part 1: crate-private `integrate.rs` through its verbatim copy: `step_factors` (two outputs) and the three integrators across `SERIES_MAX` to `k·dt` = 1e6; B 2,963 (series branch, early returns) · C 3,035 (`exp_m1` branch) |
 | `tests/golden/logging.tsv` | 196 | M1 part 2: `logging::init` and `init_with_level` over every `RASAYAN_LOG` form and default: for each of the 20 targets rasayan's events carry, the most verbose level Rust's own filter passes (`logging.rs`'s `EnvFilter` statement through its verbatim copy, the real environment variable set per row); class A |
 | `tests/golden/json.tsv` | 20,120 | M1 part 3b: 1,265 reader rows, `serde_json::from_slice<T>` on each document's exact bytes for the same scalar kinds and an all-f64 struct (`MembranePermeability`), the value correctly rounded (core's parse of the token) where serde_json misreads, with the note saying so. M1 part 3a: serde_json 1.0.154's text for each scalar kind rasayan's serde types hold (f64, String, char, u32, usize, i32, `Option<f64>`, `[f64; 5]`) and Rust's Display of an f64, over 9,262 doubles (30 exact ties among them, found by an exact-fraction search and listed as bit patterns); class A |
-| `tests/golden/modules.txt` | 14 | the module list the harness reads |
+| `tests/golden/modules.txt` | 15 | the module list the harness reads |
 | `src/constants.cyr` | 333 lines | the 67 public constants as `RY_` consts, under the first paragraph of their Rust doc comments |
 | `src/constants_private.cyr` | 74 lines | the 16 private constants as `_RY_<MODULE>_<NAME>` (`t_private.rs`) |
 | `src/protein_data.cyr` | 721 lines | `RY_AMINO_ACID_*` columns and index constants; `_RY_PROTEIN_*`: the lookup index, the side chains, the pKa-set table, the Bjellqvist termini, the Chou-Fasman columns, 23 scalars (`t_protein.rs`) |
 | `src/alignment_data.cyr` | 129 lines | `_RY_ALIGNMENT_*`: the residue order, the 26-entry index, BLOSUM62 and PAM250 as `i8[400]` (`t_alignment.rs`) |
+| `src/energy_data.cyr` | 41 lines | `RY_ENERGY_BIOENERGY_STATE_DEFAULT_*`, the `Self { … }` literal of `impl Default for BioenergyState`, checked against the API (`t_energy.rs`) |
 | `src/enzyme_data.cyr` | 251 lines | `RY_KNOWN_ENZYME_*` columns and index constants; `_RY_ENZYME_REGRESSION_REL_TOL` (`t_enzyme.rs`) |
 | `src/membrane_data.cyr` | 56 lines | `RY_MEMBRANE_DEFAULT_PERMEABILITY_{P_NA,P_K,P_CL}` and `RY_MEMBRANE_IONIC_STATE_DEFAULT_*`, the `Self { … }` literal of `impl Default for IonicState`, checked against the API (`t_membrane.rs`) |
 | `src/metabolism_data.cyr` | 41 lines | `RY_METABOLISM_METABOLIC_STATE_DEFAULT_*`, the `Self { … }` literal of `impl Default for MetabolicState`, checked against the API (`t_metabolism.rs`) |
@@ -139,8 +141,8 @@ Pending, at their milestones (port plan §4 step 6, §6):
 - the JSON rows (each module's milestone) and the MCP / request rows (M8);
 - a corrected-oracle file `<module>.cr.tsv` for each module with class-C rows, with that module's
   operation model in `mpfr_ref.py` and `validate.py` (`math.cr.tsv` since part 2c-1, `integrate.cr.tsv` since M1
-  part 1, below; `enzyme.cr.tsv`, `membrane.cr.tsv`, `signal.cr.tsv` and `metabolism.cr.tsv` since M2 parts 1–4; the rest at their
-  milestones).
+  part 1, below; `enzyme.cr.tsv`, `membrane.cr.tsv`, `signal.cr.tsv`, `metabolism.cr.tsv` and `energy.cr.tsv` since M2; the rest
+  at their milestones).
 
 **Crate-private functions** (M1 on). The generator's crate can call only rasayan's public API, so a private layer it
 must pin is compiled from a verbatim copy: `src/v_guard.rs` and `src/v_integrate.rs` each hold one block between
@@ -174,7 +176,10 @@ fn <TAB> class <TAB> inputs <TAB> outputs <TAB> note
     `f:camp f:calcium f:ip3`, then `i:1 f:<x>` activate_gs, `i:2 f:<x>` activate_gi, `i:3 f:<x>` activate_gq,
     `i:4 f:<dt> i:<k>` tick(dt) k times. `metabolism::MetabolicState::trajectory` (M2 part 4): the six fields, then
     `i:1 f:<x>` consume_atp, `i:2 f:<dt> i:<k>` regenerate_atp k times, `i:3 i:<field> f:<x>` a public field set (0
-    atp … 5 lactate). A state too large to write out whole gets a digest per frame at its milestone.
+    atp … 5 lactate). `energy::BioenergyState::trajectory` (M2 part 5): the four fields, then `i:1 f:<met>`
+    set_exertion, `i:2 f:<dt> i:<k>` tick k times, `i:3 i:<field> f:<x>` a field set, `i:4 f:<power> f:<mass>
+    f:<dt_seconds> f:<amplification> f:<fraction> i:<k>` k ticks of sharira's call shape. A state too large to write
+    out whole gets a digest per frame at its milestone.
 - **inputs**, **outputs** — space-separated typed tokens (`-` when empty):
 
   | Token | Meaning |

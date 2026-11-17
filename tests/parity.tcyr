@@ -24,7 +24,7 @@
 # What is wired up at M1 part 1:
 # - `const` rows of every module: src/constants.cyr, src/constants_private.cyr and the scalar consts of the
 #   generated data files, by Rust name;
-# - the table rows (protein, alignment, enzyme, membrane, signal, metabolism): answered from the generated
+# - the table rows (protein, alignment, enzyme, membrane, signal, metabolism, energy): answered from the generated
 #   src/*_data.cyr columns. A row of a lookup over a table (`protein::lookup`, `enzyme::lookup_enzyme`,
 #   `alignment::substitution_score`) applies the Rust function's rule to the generated data here, so every cell is
 #   compared through the oracle's API; at M2 and M3 those rows move to the ported `ry_*` functions;
@@ -55,6 +55,7 @@ include "src/enzyme_data.cyr"
 include "src/membrane_data.cyr"
 include "src/signal_data.cyr"
 include "src/metabolism_data.cyr"
+include "src/energy_data.cyr"
 include "src/ai_data.cyr"
 include "src/fmtf.cyr"
 include "src/error.cyr"
@@ -66,6 +67,7 @@ include "src/enzyme.cyr"
 include "src/membrane.cyr"
 include "src/signal.cyr"
 include "src/metabolism.cyr"
+include "src/energy.cyr"
 
 alloc_init();
 
@@ -1284,6 +1286,187 @@ fn _par_metabolism_json(fp, fl): i64 {
     return 0;
 }
 
+# ── energy ──────────────────────────────────────────────────────────────────────────
+# src/energy_data.cyr and src/energy.cyr (M2 part 5). A BioenergyState row takes the state's four fields
+# (phosphocreatine, glycogen, met, anaerobic_threshold), then the method's argument. sharira's rows take the state,
+# then power, mass, dt_seconds, amplification and fraction. A trajectory row (class T) is a script: the state, then
+# `i:1 f:met` set_exertion, `i:2 f:dt i:k` k ticks, `i:3 i:field f:x` a field set, `i:4 f:power f:mass f:dt_s f:amp
+# f:frac i:k` k sharira ticks.
+
+# One tick of sharira 1.1.0's `MetabolicCoupling::tick` call shape on *b (sharira's composition of rasayan's
+# functions, so it lives here, not in src/): met_from_power → set_exertion → tick(dt_seconds / 60) → energy_available
+# → fatigue_rate_from_energy → recovery_rate_modifier(is_anaerobic). The three results go to out[0..3].
+fn _par_sharira_tick(b: *RyBioenergyState, power: f64, mass: f64, dt_s: f64, amp: f64, frac: f64, out) {
+    var met: f64 = ry_met_from_power(power, mass);
+    ry_bioenergy_state_set_exertion(b, met);
+    var dtm: f64 = dt_s / 60.0;
+    ry_bioenergy_state_tick(b, dtm);
+    var avail: f64 = ry_bioenergy_state_energy_available(b);
+    var fatigue: f64 = ry_fatigue_rate_from_energy(avail, amp);
+    var recovery: f64 = ry_recovery_rate_modifier(ry_bioenergy_state_is_anaerobic(b), frac);
+    store64(out, load64(&avail));
+    store64(out + 8, load64(&fatigue));
+    store64(out + 16, load64(&recovery));
+    return 0;
+}
+
+# Replays a trajectory script from input 4 on *b: 1, or -1 for a malformed script.
+fn _par_be_script(b: *RyBioenergyState): i64 {
+    var w = b;
+    var three[24];
+    var k = 4;
+    while (k < _par_in_n) {
+        if (load64(_par_in_k + k * 8) != 105) { return 0 - 1; }
+        var op = _par_in(k);
+        if (op == 1 && _par_is_f(k + 1) == 1) {
+            ry_bioenergy_state_set_exertion(b, _par_f(k + 1));
+            k = k + 2;
+        } elif (op == 2 && _par_is_f(k + 1) == 1 && k + 2 < _par_in_n && load64(_par_in_k + (k + 2) * 8) == 105) {
+            var dt: f64 = _par_f(k + 1);
+            var n = _par_in(k + 2);
+            var j = 0;
+            while (j < n) {
+                ry_bioenergy_state_tick(b, dt);
+                j = j + 1;
+            }
+            k = k + 3;
+        } elif (op == 3 && k + 2 < _par_in_n && load64(_par_in_k + (k + 1) * 8) == 105 && _par_is_f(k + 2) == 1) {
+            var field = _par_in(k + 1);
+            if (field < 0 || field > 3) { return 0 - 1; }
+            store64(w + 8 * field, _par_in(k + 2));
+            k = k + 3;
+        } elif (op == 4 && k + 6 < _par_in_n && _par_all_f_from(k + 1, 5) == 1
+          && load64(_par_in_k + (k + 6) * 8) == 105) {
+            var pw: f64 = _par_f(k + 1);
+            var ms: f64 = _par_f(k + 2);
+            var ds: f64 = _par_f(k + 3);
+            var am: f64 = _par_f(k + 4);
+            var fr: f64 = _par_f(k + 5);
+            var reps = _par_in(k + 6);
+            var r = 0;
+            while (r < reps) {
+                _par_sharira_tick(b, pw, ms, ds, am, fr, &three);
+                r = r + 1;
+            }
+            k = k + 7;
+        } else {
+            return 0 - 1;
+        }
+    }
+    return 1;
+}
+
+# The energy rows: the bridges, the default, BioenergyState's methods, sharira's call shape, the trajectories and the
+# serde rows.
+fn _par_energy(fp, fl): i64 {
+    if (_par_eq(fp, fl, "energy::atp_demand_from_power") == 1 && _par_all_f(1) == 1) {
+        var d: f64 = ry_atp_demand_from_power(_par_f(0));
+        _par_got_f(d);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "energy::fatigue_rate_from_energy") == 1 && _par_all_f(2) == 1) {
+        var fr: f64 = ry_fatigue_rate_from_energy(_par_f(0), _par_f(1));
+        _par_got_f(fr);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "energy::recovery_rate_modifier") == 1) {
+        if (_par_in_n != 2 || load64(_par_in_k) != 105 || _par_is_f(1) == 0) { return 0 - 1; }
+        var rr: f64 = ry_recovery_rate_modifier(_par_in(0), _par_f(1));
+        _par_got_f(rr);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "energy::met_from_power") == 1 && _par_all_f(2) == 1) {
+        var mp: f64 = ry_met_from_power(_par_f(0), _par_f(1));
+        _par_got_f(mp);
+        return 1;
+    }
+    var b: RyBioenergyState;
+    if (_par_eq(fp, fl, "energy::BioenergyState::default") == 1) {
+        if (_par_in_n != 0) { return 0 - 1; }
+        ry_bioenergy_state_default(&b);
+        _par_got_fields(&b, 4);
+        return 1;
+    }
+    if (_par_in_n < 4 || _par_all_f_from(0, 4) == 0) { return _par_energy_json(fp, fl); }
+    _par_fields_in(0, &b, 4);
+    if (_par_eq(fp, fl, "energy::BioenergyState::trajectory") == 1) {
+        if (_par_be_script(&b) != 1) { return 0 - 1; }
+        _par_got_fields(&b, 4);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "sharira::MetabolicCoupling::tick") == 1) {
+        if (_par_all_f(9) == 0) { return 0 - 1; }
+        var three[24];
+        _par_sharira_tick(&b, _par_f(4), _par_f(5), _par_f(6), _par_f(7), _par_f(8), &three);
+        _par_got_fields(&b, 4);
+        _par_got_fields(&three, 3);
+        return 1;
+    }
+    if (_par_in_n == 4) {
+        if (_par_eq(fp, fl, "energy::BioenergyState::validate") == 1) {
+            var t1, v1 = ry_bioenergy_state_validate(&b);
+            _par_got_outcome(t1, v1);
+            return 1;
+        }
+        if (_par_eq(fp, fl, "energy::BioenergyState::is_anaerobic") == 1) {
+            _par_got_i(ry_bioenergy_state_is_anaerobic(&b));
+            return 1;
+        }
+        var r: f64 = 0.0;
+        if (_par_eq(fp, fl, "energy::BioenergyState::o2_consumption") == 1) {
+            r = ry_bioenergy_state_o2_consumption(&b);
+        } elif (_par_eq(fp, fl, "energy::BioenergyState::energy_available") == 1) {
+            r = ry_bioenergy_state_energy_available(&b);
+        } else {
+            return _par_energy_json(fp, fl);
+        }
+        _par_got_f(r);
+        return 1;
+    }
+    if (_par_in_n != 5 || _par_is_f(4) == 0) { return _par_energy_json(fp, fl); }
+    var x: f64 = _par_f(4);
+    if (_par_eq(fp, fl, "energy::BioenergyState::set_exertion") == 1) {
+        ry_bioenergy_state_set_exertion(&b, x);
+    } elif (_par_eq(fp, fl, "energy::BioenergyState::tick") == 1) {
+        ry_bioenergy_state_tick(&b, x);
+    } else {
+        return _par_energy_json(fp, fl);
+    }
+    _par_got_fields(&b, 4);
+    return 1;
+}
+
+# The serde rows of BioenergyState.
+fn _par_energy_json(fp, fl): i64 {
+    var b: RyBioenergyState;
+    if (_par_eq(fp, fl, "serde_json::to_string<BioenergyState>") == 1 && _par_all_f(4) == 1) {
+        if (_par_jsb == 0) { _par_jsb = str_builder_new(); }
+        var sb = _par_jsb;
+        store64(sb + 8, 0);
+        _par_fields_in(0, &b, 4);
+        var t1, v1 = ry_bioenergy_state_to_json(sb, &b);
+        if (is_err_result(t1) == 1) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::from_slice<BioenergyState>") == 1) {
+        var lw[8];
+        var doc = _par_in_bytes(0, &lw);
+        if (doc == 0) { return 0 - 1; }
+        if (_par_jarena == 0) { _par_jarena = arena_allocator_growable(65536); }
+        _par_json_gap = _par_has_neg_zero_int(doc, load64(&lw));
+        reset_via(_par_jarena);
+        var t2, v2 = ry_bioenergy_state_from_json_a(_par_jarena, doc, load64(&lw), &b);
+        if (is_err_result(t2) == 1) {
+            _par_got_err(v2);
+            return 1;
+        }
+        _par_got_fields(&b, 4);
+        return 1;
+    }
+    return 0;
+}
+
 # ── guard ───────────────────────────────────────────────────────────────────────────
 # src/guard.cyr (M1). A validator's row has no output for Ok(()) and the error's Rust variant for Err (ADR 0002 row 1:
 # the code is compared, the payload is in the DEBUG event).
@@ -1655,6 +1838,7 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
     if (_par_eq(mp, ml, "membrane") == 1) { return _par_membrane(fp, fl); }
     if (_par_eq(mp, ml, "signal") == 1) { return _par_signal(fp, fl); }
     if (_par_eq(mp, ml, "metabolism") == 1) { return _par_metabolism(fp, fl); }
+    if (_par_eq(mp, ml, "energy") == 1) { return _par_energy(fp, fl); }
     if (_par_eq(mp, ml, "guard") == 1) { return _par_guard(fp, fl); }
     if (_par_eq(mp, ml, "integrate") == 1) { return _par_integrate(fp, fl); }
     if (_par_eq(mp, ml, "logging") == 1) { return _par_logging(fp, fl); }
@@ -1766,6 +1950,8 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "signal::dose_response") == 1) { return 0; }
     if (_par_eq(fp, fl, "signal::SecondMessenger::tick") == 1) { return 0; }
     if (_par_eq(fp, fl, "metabolism::MetabolicState::regenerate_atp") == 1) { return 0; }
+    if (_par_eq(fp, fl, "energy::BioenergyState::tick") == 1) { return 0; }
+    if (_par_eq(fp, fl, "sharira::MetabolicCoupling::tick") == 1) { return 0; }
     return 0 - 1;
 }
 

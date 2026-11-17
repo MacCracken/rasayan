@@ -6,7 +6,7 @@
 > milestone hasn't come. The golden corpus (`tests/golden/`) checks every ported function on its grid besides.
 > The 2 doc tests and the example are M9's.
 
-**723 Rust tests:** 176 ported; 32 at M2, 139 at M3, 53 at M4a, 80 at M4b, 38 at M5, 108 at M6, 62 at M7, 35 at M8.
+**723 Rust tests:** 208 ported; 139 at M3, 53 at M4a, 80 at M4b, 38 at M5, 108 at M6, 62 at M7, 35 at M8.
 
 | Rust file | Tests | Ported | Due, unported | Later (milestone) |
 |---|---:|---:|---:|---|
@@ -16,7 +16,7 @@
 | `src/beta_oxidation.rs` | 23 | 0 | 0 | 23 (M4b) |
 | `src/calcium.rs` | 17 | 0 | 0 | 17 (M6) |
 | `src/domain.rs` | 24 | 0 | 0 | 24 (M3) |
-| `src/energy.rs` | 29 | 0 | 0 | 29 (M2) |
+| `src/energy.rs` | 29 | 29 | 0 | — |
 | `src/enzyme.rs` | 58 | 58 | 0 | — |
 | `src/etc.rs` | 24 | 0 | 0 | 24 (M4b) |
 | `src/glycolysis.rs` | 25 | 0 | 0 | 25 (M4a) |
@@ -38,14 +38,43 @@
 | `src/signal.rs` | 21 | 21 | 0 | — |
 | `src/signaling.rs` | 13 | 0 | 0 | 13 (M6) |
 | `src/tca.rs` | 26 | 0 | 0 | 26 (M4a) |
-| `tests/integration.rs` | 70 | 27 | 0 | 3 (M2), 3 (M3), 2 (M4a), 10 (M4b), 4 (M5), 15 (M6), 6 (M7) |
+| `tests/integration.rs` | 70 | 30 | 0 | 3 (M3), 2 (M4a), 10 (M4b), 4 (M5), 15 (M6), 6 (M7) |
 | `tests/validation.rs` | 25 | 16 | 0 | 9 (M3) |
-| **Total** | **723** | **176** | **0** | |
+| **Total** | **723** | **208** | **0** | |
 
 ## Where each is ported
 
 | Rust test | Cyrius test |
 |---|---|
+| `src/energy.rs` `test_atp_demand_from_power` | `tests/energy.tcyr` `bridges` |
+| `src/energy.rs` `test_atp_demand_units_and_sanitizing` | `tests/energy.tcyr` `bridges` |
+| `src/energy.rs` `test_atp_demand_zero_power` | `tests/energy.tcyr` `bridges` |
+| `src/energy.rs` `test_complete_depletion` | `tests/energy.tcyr` `basics` |
+| `src/energy.rs` `test_energy_available_range` | `tests/energy.tcyr` `basics` |
+| `src/energy.rs` `test_fatigue_rate_from_energy` | `tests/energy.tcyr` `bridges` |
+| `src/energy.rs` `test_fatigue_rate_never_below_one` | `tests/energy.tcyr` `bridges` |
+| `src/energy.rs` `test_glycogen_endurance_at_10_met` | `tests/energy.tcyr` `calibration` |
+| `src/energy.rs` `test_glycogen_resynthesis_rate` | `tests/energy.tcyr` `calibration` |
+| `src/energy.rs` `test_high_exertion_depletes` | `tests/energy.tcyr` `basics` |
+| `src/energy.rs` `test_met_from_power` | `tests/energy.tcyr` `bridges` |
+| `src/energy.rs` `test_met_from_power_acsm` | `tests/energy.tcyr` `bridges` |
+| `src/energy.rs` `test_met_from_power_zero_mass` | `tests/energy.tcyr` `bridges` |
+| `src/energy.rs` `test_pcr_half_time_at_rest` | `tests/energy.tcyr` `calibration` |
+| `src/energy.rs` `test_pcr_maximal_effort_depletes_in_seconds` | `tests/energy.tcyr` `calibration` |
+| `src/energy.rs` `test_recovery_at_rest` | `tests/energy.tcyr` `basics` |
+| `src/energy.rs` `test_recovery_rate_modifier` | `tests/energy.tcyr` `bridges` |
+| `src/energy.rs` `test_recovery_rate_modifier_nan` | `tests/energy.tcyr` `bridges` |
+| `src/energy.rs` `test_resting_is_aerobic` | `tests/energy.tcyr` `basics` |
+| `src/energy.rs` `test_serde_roundtrip` | `tests/energy.tcyr` `serde` |
+| `src/energy.rs` `test_set_exertion_sanitizes` | `tests/energy.tcyr` `hardening` |
+| `src/energy.rs` `test_threshold_follows_anaerobic_threshold` | `tests/energy.tcyr` `thresholds` |
+| `src/energy.rs` `test_tick_bad_dt_is_noop` | `tests/energy.tcyr` `hardening` |
+| `src/energy.rs` `test_tick_dt_robust` | `tests/energy.tcyr` `thresholds` |
+| `src/energy.rs` `test_tick_sanitizes_reserves` | `tests/energy.tcyr` `thresholds` |
+| `src/energy.rs` `test_tick_with_nan_met_stays_finite` | `tests/energy.tcyr` `hardening` |
+| `src/energy.rs` `test_validate_negative_phosphocreatine` | `tests/energy.tcyr` `hardening` |
+| `src/energy.rs` `test_validate_rejects_non_finite` | `tests/energy.tcyr` `hardening` |
+| `src/energy.rs` `test_validate_valid` | `tests/energy.tcyr` `hardening` |
 | `src/enzyme.rs` `test_allosteric_enzymes_have_hill_gt_1` | `tests/enzyme.tcyr` `database` |
 | `src/enzyme.rs` `test_arrhenius_higher_temp_faster` | `tests/enzyme.tcyr` `temperature` |
 | `src/enzyme.rs` `test_arrhenius_relative_consistency` | `tests/enzyme.tcyr` `temperature` |
@@ -179,7 +208,10 @@
 | `src/signal.rs` `test_validate_out_of_range` | `tests/signal.tcyr` `validation` |
 | `src/signal.rs` `test_validate_rejects_non_finite` | `tests/signal.tcyr` `validation` |
 | `src/signal.rs` `test_validate_valid` | `tests/signal.tcyr` `validation` |
+| `tests/integration.rs` `test_all_defaults_validate` | `tests/energy.tcyr` `hardening` |
 | `tests/integration.rs` `test_arrhenius_temperature_sensitivity` | `tests/enzyme.tcyr` `temperature` |
+| `tests/integration.rs` `test_bioenergy_and_metabolism_alignment` | `tests/energy.tcyr` `basics` |
+| `tests/integration.rs` `test_bioenergy_state_serde_roundtrip` | `tests/energy.tcyr` `serde` |
 | `tests/integration.rs` `test_dose_response_at_ec50` | `tests/signal.tcyr` `binding` |
 | `tests/integration.rs` `test_dose_response_steep_hill` | `tests/signal.tcyr` `binding` |
 | `tests/integration.rs` `test_enzyme_db_params_produce_valid_rates` | `tests/enzyme.tcyr` `database` |

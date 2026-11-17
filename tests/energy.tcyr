@@ -1,0 +1,548 @@
+# rasayan — src/energy.cyr: Rust 1.2.0's energy tests, ported
+# Stdlib auto-included via cyrius.cyml
+#
+# The 29 unit tests of `energy.rs` and the 3 integration tests (tests/integration.rs) that call energy (two with
+# metabolism and enzyme, the modules M2 ported before it), as they are written; tests/golden/energy.tsv checks every
+# function, single step, sharira call and trajectory besides.
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+include "src/integrate.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
+include "src/enzyme_data.cyr"
+include "src/enzyme.cyr"
+include "src/metabolism_data.cyr"
+include "src/metabolism.cyr"
+include "src/energy_data.cyr"
+include "src/energy.cyr"
+
+# 1 when |a − b| < tol.
+fn near(a: f64, b: f64, tol: f64) {
+    var d: f64 = f64_abs(a - b);
+    return d < tol;
+}
+
+# The f64 with bit pattern `b`.
+fn fb(b): f64 {
+    var x: f64 = b;
+    return x;
+}
+
+# NaN (k 0), +inf (1), -inf (2).
+fn nonfinite(k): f64 {
+    if (k == 0) { return _ry_nan(); }
+    var inf: f64 = _RY_INF;
+    if (k == 1) { return inf; }
+    return -inf;
+}
+
+# A BioenergyState with the given fields.
+fn be_set(p: *RyBioenergyState, pcr: f64, gly: f64, met: f64, thr: f64) {
+    p.phosphocreatine = pcr;
+    p.glycogen = gly;
+    p.met = met;
+    p.anaerobic_threshold = thr;
+    return 0;
+}
+
+# 1 when both reserves are in [0, 1].
+fn reserves_in_unit(p: *RyBioenergyState) {
+    var pcr: f64 = p.phosphocreatine;
+    var gly: f64 = p.glycogen;
+    return pcr >= 0.0 && pcr <= 1.0 && gly >= 0.0 && gly <= 1.0;
+}
+
+# 1 when the state validates.
+fn be_ok(p: *RyBioenergyState) {
+    var t, v = ry_bioenergy_state_validate(p);
+    return is_ok(t);
+}
+
+# 1 when the two states are equal field by field.
+fn be_eq(a: *RyBioenergyState, b: *RyBioenergyState) {
+    var wa = a;
+    var wb = b;
+    var k = 0;
+    while (k < 4) {
+        var x: f64 = load64(wa + 8 * k);
+        var y: f64 = load64(wb + 8 * k);
+        if (x != y) { return 0; }
+        k = k + 1;
+    }
+    return 1;
+}
+
+# Rust's `minutes_until`: minutes of exertion at `met` in steps of `dt` until field `field` (0 phosphocreatine,
+# 1 glycogen) of a copy of *start first drops to `below`; infinity after 10⁶ steps.
+fn minutes_until(start: *RyBioenergyState, met: f64, dt: f64, field, below: f64): f64 {
+    var b: RyBioenergyState;
+    memcpy(&b, start, 32);
+    ry_bioenergy_state_set_exertion(&b, met);
+    var w = &b;
+    var t: f64 = 0.0;
+    var k = 0;
+    while (k < 1000000) {
+        var x: f64 = load64(w + 8 * field);
+        if (x <= below) { return t; }
+        ry_bioenergy_state_tick(&b, dt);
+        t = t + dt;
+        k = k + 1;
+    }
+    var inf: f64 = _RY_INF;
+    return inf;
+}
+
+# ── the captured events ──
+var _ev_buf[1024];
+var _ev_len = 0;
+
+# sakshi's subscriber: keeps the last event's message.
+fn _ev_hook(ts, level, category, msg, msg_len, extra) {
+    var n = msg_len;
+    if (n > 1024) { n = 1024; }
+    memcpy(&_ev_buf, msg, n);
+    _ev_len = msg_len;
+    return 0;
+}
+
+# 1 if the last captured event is the C string `want`.
+fn _ev_is(want) {
+    var n = strlen(want);
+    if (_ev_len != n) { return 0; }
+    return memeq(&_ev_buf, want, n);
+}
+
+# rust src/energy.rs: test_resting_is_aerobic, test_high_exertion_depletes, test_recovery_at_rest
+# rust src/energy.rs: test_energy_available_range, test_complete_depletion
+# rust tests/integration.rs: test_bioenergy_and_metabolism_alignment
+fn basics() {
+    test_group("energy: exertion and recovery");
+    var b: RyBioenergyState;
+    ry_bioenergy_state_default(&b);
+    var o2: f64 = ry_bioenergy_state_o2_consumption(&b);
+    assert(ry_bioenergy_state_is_anaerobic(&b) == 0 && near(o2, 3.5, 0.01), "rest: aerobic, 3.5 mL/kg/min");
+    var m: RyMetabolicState;
+    ry_metabolic_state_default(&m);
+    assert(ry_metabolic_state_is_anaerobic(&m) == 0, "and the default metabolic state is aerobic too");
+    ry_bioenergy_state_set_exertion(&b, 8.0);
+    ry_bioenergy_state_tick(&b, 10.0);
+    var pcr: f64 = b.phosphocreatine;
+    var gly: f64 = b.glycogen;
+    assert(pcr < 0.9 && gly < 0.8, "8 MET for 10 min draws both reserves");
+    ry_bioenergy_state_default(&b);
+    b.phosphocreatine = 0.3;
+    b.glycogen = 0.5;
+    ry_bioenergy_state_set_exertion(&b, 1.0);
+    ry_bioenergy_state_tick(&b, 30.0);
+    pcr = b.phosphocreatine;
+    gly = b.glycogen;
+    assert(pcr > 0.3 && gly > 0.5, "rest refills both");
+    ry_bioenergy_state_default(&b);
+    var e: f64 = ry_bioenergy_state_energy_available(&b);
+    assert(e >= 0.0 && e <= 1.0, "energy available in [0, 1]");
+    ry_bioenergy_state_set_exertion(&b, 10.0);
+    var k = 0;
+    while (k < 100) {
+        ry_bioenergy_state_tick(&b, 1.0);
+        k = k + 1;
+    }
+    gly = b.glycogen;
+    pcr = b.phosphocreatine;
+    var thr: f64 = b.anaerobic_threshold;
+    var k_use: f64 = RY_ENERGY_PCR_DEPLETION_RATE * (10.0 - thr);
+    var floor: f64 = RY_ENERGY_PCR_RECOVERY_RATE / (RY_ENERGY_PCR_RECOVERY_RATE + k_use);
+    assert(gly == 0.0, "100 min at 10 MET empties the glycogen");
+    assert(near(pcr, floor, 0.000000001), "and leaves PCr at k_rec / (k_rec + k_use)");
+    assert(floor >= 0.5 && floor < 0.7, "a partial level");
+    return 0;
+}
+
+# rust src/energy.rs: test_pcr_half_time_at_rest, test_pcr_maximal_effort_depletes_in_seconds
+# rust src/energy.rs: test_glycogen_endurance_at_10_met, test_glycogen_resynthesis_rate
+fn calibration() {
+    test_group("energy: calibration");
+    var b: RyBioenergyState;
+    be_set(&b, 0.0, 0.8, 1.0, 6.0);
+    var dt: f64 = 0.1 / 60.0;
+    var t: f64 = 0.0;
+    var pcr: f64 = b.phosphocreatine;
+    while (pcr < 0.5) {
+        ry_bioenergy_state_tick(&b, dt);
+        t = t + dt;
+        pcr = b.phosphocreatine;
+    }
+    var secs: f64 = t * 60.0;
+    assert(secs >= 24.0 && secs <= 36.0, "the PCr half-time at rest is 24-36 s");
+    be_set(&b, 0.0, 0.8, 1.0, 6.0);
+    ry_bioenergy_state_tick(&b, RY_ENERGY_PCR_RECOVERY_HALF_TIME);
+    pcr = b.phosphocreatine;
+    assert(near(pcr, 0.5, 0.000000000001), "one exact step of the half-time lands on 0.5");
+    var ln2: f64 = 0.6931471805599453;
+    var twice: f64 = 2.0 * ln2;
+    assert(near(RY_ENERGY_PCR_RECOVERY_RATE, twice, 0.000000000000001), "k_rec = 2 ln 2");
+    var full: RyBioenergyState;
+    be_set(&full, 1.0, 1.0, 1.0, 6.0);
+    memcpy(&b, &full, 32);
+    ry_bioenergy_state_set_exertion(&b, 40.0);
+    ry_bioenergy_state_tick(&b, 0.1);
+    pcr = b.phosphocreatine;
+    var gly: f64 = b.glycogen;
+    assert(pcr >= 0.35 && pcr <= 0.6, "a 6-s sprint uses about half the PCr");
+    assert(gly >= 0.95 && gly < 0.99, "and a few percent of the glycogen");
+    memcpy(&b, &full, 32);
+    ry_bioenergy_state_set_exertion(&b, 30.0);
+    ry_bioenergy_state_tick(&b, 0.5);
+    pcr = b.phosphocreatine;
+    assert(pcr >= 0.15 && pcr <= 0.25, "30 s all-out: about 20 % left");
+    var fine: f64 = 0.01 / 60.0;
+    var u30: f64 = minutes_until(&full, 30.0, fine, 0, 0.25);
+    var u40: f64 = minutes_until(&full, 40.0, fine, 0, 0.25);
+    var s30: f64 = 60.0 * u30;
+    var s40: f64 = 60.0 * u40;
+    assert(s30 >= 10.0 && s30 <= 30.0 && s40 >= 10.0 && s40 <= 30.0, "25 % within 10-30 s at 30 and 40 MET");
+    be_set(&full, 0.9, 1.0, 1.0, 6.0);
+    var mf: f64 = minutes_until(&full, 10.0, 0.5, 1, 0.0);
+    var d: RyBioenergyState;
+    ry_bioenergy_state_default(&d);
+    var md: f64 = minutes_until(&d, 10.0, 0.5, 1, 0.0);
+    assert(mf >= 80.0 && mf <= 130.0 && md >= 80.0 && md <= 130.0, "glycogen lasts 80-130 min at 10 MET");
+    var m13: f64 = minutes_until(&full, 13.0, 0.5, 1, 0.0);
+    assert(m13 >= 35.0 && m13 <= 70.0, "and 35-70 min at 13 MET");
+    be_set(&b, 0.9, 0.2, 1.0, 6.0);
+    ry_bioenergy_state_tick(&b, 60.0);
+    gly = b.glycogen;
+    assert(near(gly, 0.26, 0.000000000001), "6 % of the store per hour at rest");
+    ry_bioenergy_state_tick(&b, 100000.0);
+    gly = b.glycogen;
+    assert(gly == 1.0, "capped at a full store");
+    return 0;
+}
+
+# rust src/energy.rs: test_threshold_follows_anaerobic_threshold, test_tick_dt_robust, test_tick_sanitizes_reserves
+fn thresholds() {
+    test_group("energy: thresholds, step size, sanitizing");
+    var d: RyBioenergyState;
+    ry_bioenergy_state_default(&d);
+    var thr: f64 = d.anaerobic_threshold;
+    assert(thr - 1.0 == RY_ENERGY_PCR_DEMAND_THRESHOLD, "PCR_DEMAND_THRESHOLD is the default threshold - 1");
+    var tol: f64 = 0.000000000001;
+    var aerobic: f64 = RY_ENERGY_GLYCOGEN_DEPLETION_RATE * 7.0;
+    var anaerobic: f64 = RY_ENERGY_GLYCOGEN_ANAEROBIC_RATE * 4.0;
+    var b: RyBioenergyState;
+    be_set(&b, 0.9, 0.5, 1.0, 6.0);
+    ry_bioenergy_state_set_exertion(&b, 8.0);
+    ry_bioenergy_state_tick(&b, 1.0);
+    var pcr: f64 = b.phosphocreatine;
+    var gly: f64 = b.glycogen;
+    var left: f64 = 0.5 - gly - aerobic - anaerobic;
+    assert(pcr < 0.9 && near(left, 0.0, tol), "above the threshold: PCr falls, anaerobic glycogen use");
+    be_set(&b, 0.9, 0.5, 1.0, 10.0);
+    ry_bioenergy_state_set_exertion(&b, 8.0);
+    ry_bioenergy_state_tick(&b, 1.0);
+    pcr = b.phosphocreatine;
+    gly = b.glycogen;
+    left = 0.5 - gly - aerobic;
+    assert(pcr > 0.9 && near(left, 0.0, tol), "below a threshold of 10: PCr refills, aerobic use only");
+    var k = 0;
+    while (k < 2) {
+        be_set(&b, 0.9, 0.5, 1.0, nonfinite(k));
+        ry_bioenergy_state_set_exertion(&b, 20.0);
+        ry_bioenergy_state_tick(&b, 1.0);
+        pcr = b.phosphocreatine;
+        gly = b.glycogen;
+        var use19: f64 = RY_ENERGY_GLYCOGEN_DEPLETION_RATE * 19.0;
+        left = 0.5 - gly - use19;
+        assert(pcr > 0.9 && near(left, 0.0, tol), "a NaN or infinite threshold: no anaerobic use");
+        k = k + 1;
+    }
+    var one: RyBioenergyState;
+    var many: RyBioenergyState;
+    be_set(&one, 0.0, 0.2, 1.0, 6.0);
+    memcpy(&many, &one, 32);
+    ry_bioenergy_state_tick(&one, 60.0);
+    k = 0;
+    while (k < 600) {
+        ry_bioenergy_state_tick(&many, 0.1);
+        k = k + 1;
+    }
+    var p1: f64 = one.phosphocreatine;
+    var p2: f64 = many.phosphocreatine;
+    var g1: f64 = one.glycogen;
+    var g2: f64 = many.glycogen;
+    assert(near(p1, p2, 0.000000001) && near(g1, g2, 0.000000001), "at rest, one 60-min tick = 600 short ones");
+    be_set(&one, 1.0, 1.0, 12.0, 6.0);
+    memcpy(&many, &one, 32);
+    ry_bioenergy_state_tick(&one, 10.0);
+    k = 0;
+    while (k < 100) {
+        ry_bioenergy_state_tick(&many, 0.1);
+        k = k + 1;
+    }
+    p1 = one.phosphocreatine;
+    p2 = many.phosphocreatine;
+    g1 = one.glycogen;
+    g2 = many.glycogen;
+    assert(near(p1, p2, 0.000000001) && near(g1, g2, 0.000000001), "above it, one 10-min tick = 100 short ones");
+    var huge: f64 = 1000000000000.0;
+    var m = 0;
+    while (m < 3) {
+        var met: f64 = 1.0;
+        if (m == 1) { met = 12.0; }
+        if (m == 2) { met = fb(0x7e37e43c8800759c); }
+        ry_bioenergy_state_default(&b);
+        ry_bioenergy_state_set_exertion(&b, met);
+        ry_bioenergy_state_tick(&b, huge);
+        assert(reserves_in_unit(&b) == 1, "a huge step stays in range");
+        m = m + 1;
+    }
+    k = 0;
+    while (k < 5) {
+        var v: f64 = -0.5;
+        if (k < 3) { v = nonfinite(k); }
+        if (k == 4) { v = 1.5; }
+        be_set(&b, v, v, 1.0, 6.0);
+        ry_bioenergy_state_set_exertion(&b, 12.0);
+        ry_bioenergy_state_tick(&b, 1.0);
+        assert(reserves_in_unit(&b) == 1, "out-of-range reserves are mapped into [0, 1]");
+        k = k + 1;
+    }
+    return 0;
+}
+
+# rust src/energy.rs: test_atp_demand_from_power, test_atp_demand_zero_power, test_fatigue_rate_from_energy
+# rust src/energy.rs: test_recovery_rate_modifier, test_met_from_power, test_met_from_power_zero_mass
+# rust src/energy.rs: test_atp_demand_units_and_sanitizing, test_fatigue_rate_never_below_one
+# rust src/energy.rs: test_recovery_rate_modifier_nan, test_met_from_power_acsm
+fn bridges() {
+    test_group("energy: the sharira bridges");
+    var eps: f64 = fb(0x3CB0000000000000);
+    var tol: f64 = 0.000000000001;
+    var d100: f64 = ry_atp_demand_from_power(100.0);
+    var d200: f64 = ry_atp_demand_from_power(200.0);
+    assert(d100 > 0.0 && d200 > d100, "ATP demand rises with power");
+    var d0: f64 = ry_atp_demand_from_power(0.0);
+    var a0: f64 = f64_abs(d0);
+    assert(a0 < eps, "no power, no demand");
+    var want: f64 = 250.0 / 30.5;
+    assert(near(d100, want, tol), "100 W: 250 W metabolic / 30.5 kJ/mol");
+    var k = 0;
+    while (k < 4) {
+        var p: f64 = -100.0;
+        if (k > 0) { p = nonfinite(k - 1); }
+        var dp: f64 = ry_atp_demand_from_power(p);
+        assert(dp == 0.0, "negative or non-finite power: 0");
+        k = k + 1;
+    }
+    var f1: f64 = ry_fatigue_rate_from_energy(1.0, 5.0);
+    var f0: f64 = ry_fatigue_rate_from_energy(0.0, 5.0);
+    var fh: f64 = ry_fatigue_rate_from_energy(0.5, 5.0);
+    assert(near(f1, 1.0, eps) && near(f0, 5.0, eps) && near(fh, 3.0, eps), "fatigue 1, 5, 3 at energy 1, 0, 0.5");
+    var bad = 0;
+    var i = 0;
+    while (i < 6) {
+        var e: f64 = 0.0;
+        if (i == 1) { e = 0.5; }
+        if (i == 2) { e = 1.0; }
+        if (i == 3) { e = _ry_nan(); }
+        if (i == 4) { e = -1.0; }
+        if (i == 5) { e = 2.0; }
+        var j = 0;
+        while (j < 5) {
+            var mm: f64 = 0.2;
+            if (j == 1) { mm = 1.0; }
+            if (j > 1) { mm = nonfinite(j - 2); }
+            var fr: f64 = ry_fatigue_rate_from_energy(e, mm);
+            if (_ry_is_finite(fr) == 0 || fr < 1.0) { bad = bad + 1; }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    assert_eq(bad, 0, "the fatigue rate is always finite and >= 1");
+    var fn5: f64 = ry_fatigue_rate_from_energy(_ry_nan(), 5.0);
+    assert(near(fn5, 5.0, eps), "NaN energy counts as depleted");
+    var r1: f64 = ry_recovery_rate_modifier(0, 0.3);
+    var r2: f64 = ry_recovery_rate_modifier(1, 0.3);
+    assert(near(r1, 1.0, eps) && near(r2, 0.3, eps), "recovery 1 aerobic, the fraction anaerobic");
+    var rn: f64 = ry_recovery_rate_modifier(1, _ry_nan());
+    var r2b: f64 = ry_recovery_rate_modifier(1, 2.0);
+    var rfn: f64 = ry_recovery_rate_modifier(0, _ry_nan());
+    assert(rn == 0.0 && r2b == 1.0 && rfn == 1.0, "a NaN fraction is 0, one above 1 is 1, aerobic ignores it");
+    var mr: f64 = ry_met_from_power(0.0, 70.0);
+    var mj: f64 = ry_met_from_power(100.0, 70.0);
+    assert(near(mr, 1.0, 0.1) && mj > 5.0, "MET 1 at rest, above 5 at 100 W");
+    var mz: f64 = ry_met_from_power(100.0, 0.0);
+    assert(near(mz, 1.0, eps), "no mass: resting");
+    assert(near(mj, 6.496, 0.01), "ACSM: 100 W at 70 kg = 6.5 MET");
+    var m2: f64 = ry_met_from_power(200.0, 80.0);
+    var e2: f64 = (7.0 + 1.8 * 6.12 * 200.0 / 80.0) / 3.5;
+    assert(near(m2, e2, tol), "200 W at 80 kg");
+    assert(mr == 1.0, "no unloaded-cycling term at 0 W");
+    k = 0;
+    while (k < 3) {
+        var bp: f64 = -50.0;
+        var bm: f64 = -70.0;
+        if (k < 2) {
+            bp = nonfinite(k);
+            bm = nonfinite(k);
+        }
+        var x1: f64 = ry_met_from_power(bp, 70.0);
+        var x2: f64 = ry_met_from_power(100.0, bm);
+        assert(x1 == 1.0 && x2 == 1.0, "bad power or mass: resting");
+        k = k + 1;
+    }
+    return 0;
+}
+
+# rust src/energy.rs: test_validate_valid, test_validate_negative_phosphocreatine, test_validate_rejects_non_finite
+# rust src/energy.rs: test_tick_bad_dt_is_noop, test_set_exertion_sanitizes, test_tick_with_nan_met_stays_finite
+# rust tests/integration.rs: test_all_defaults_validate
+fn hardening() {
+    test_group("energy: validate and hardening");
+    var b: RyBioenergyState;
+    ry_bioenergy_state_default(&b);
+    assert(be_ok(&b) == 1, "the default validates");
+    var m: RyMetabolicState;
+    ry_metabolic_state_default(&m);
+    var t0, v0 = ry_metabolic_state_validate(&m);
+    var ep: RyEnzymeParams;
+    ep.vmax = 10.0;
+    ep.km = 1.0;
+    ep.hill_n = 1.0;
+    ep.kcat = 100.0;
+    var te, ve = ry_enzyme_params_validate(&ep);
+    assert(is_ok(t0) == 1 && is_ok(te) == 1, "and so do the default MetabolicState and an EnzymeParams");
+    var neg: f64 = -0.1;
+    b.phosphocreatine = neg;
+    assert(be_ok(&b) == 0, "negative PCr is refused");
+    var k = 0;
+    while (k < 3) {
+        var f = 0;
+        while (f < 4) {
+            ry_bioenergy_state_default(&b);
+            var v: f64 = nonfinite(k);
+            if (f == 0) { b.phosphocreatine = v; }
+            if (f == 1) { b.glycogen = v; }
+            if (f == 2) { b.met = v; }
+            if (f == 3) { b.anaerobic_threshold = v; }
+            assert(be_ok(&b) == 0, "a non-finite field is refused");
+            f = f + 1;
+        }
+        k = k + 1;
+    }
+    ry_bioenergy_state_default(&b);
+    b.met = 0.5;
+    assert(be_ok(&b) == 0, "MET below 1 is refused");
+    sakshi_set_emit_hook(&_ev_hook);
+    sakshi_set_level(SK_DEBUG);
+    var t1, c1 = ry_bioenergy_state_validate(&b);
+    assert_eq(c1, RY_ERR_INVALID_PARAMETER, "MET 0.5: InvalidParameter");
+    assert_eq(_ev_is("invalid parameter: met = 0.5 (must be >= 1)"), 1, "its Display text");
+    sakshi_set_level(SK_INFO);
+    sakshi_clear_emit_hook();
+    var before: RyBioenergyState;
+    k = 0;
+    while (k < 5) {
+        var dt: f64 = 0.0;
+        if (k == 1) { dt = -1.0; }
+        if (k > 1) { dt = nonfinite(k - 2); }
+        ry_bioenergy_state_default(&b);
+        ry_bioenergy_state_set_exertion(&b, 8.0);
+        memcpy(&before, &b, 32);
+        ry_bioenergy_state_tick(&b, dt);
+        assert(be_eq(&b, &before) == 1, "an invalid dt does nothing");
+        k = k + 1;
+    }
+    k = 0;
+    while (k < 5) {
+        var met: f64 = 0.5;
+        if (k < 3) { met = nonfinite(k); }
+        if (k == 3) { met = -3.0; }
+        ry_bioenergy_state_default(&b);
+        ry_bioenergy_state_set_exertion(&b, met);
+        var got: f64 = b.met;
+        assert(got == 1.0, "a bad or sub-resting MET is resting");
+        k = k + 1;
+    }
+    ry_bioenergy_state_set_exertion(&b, 7.5);
+    var kept: f64 = b.met;
+    assert(kept == 7.5, "7.5 MET is kept");
+    ry_bioenergy_state_default(&b);
+    b.met = _ry_nan();
+    ry_bioenergy_state_tick(&b, 1.0);
+    var pcr: f64 = b.phosphocreatine;
+    var gly: f64 = b.glycogen;
+    var fin = _ry_is_finite(pcr) + _ry_is_finite(gly);
+    assert(fin == 2 && reserves_in_unit(&b) == 1, "a NaN MET keeps the reserves finite, in [0, 1]");
+    return 0;
+}
+
+# Rust's two trace events, under the target `rasayan::energy`, their fields in Rust's order.
+fn events() {
+    test_group("energy: trace events");
+    sakshi_set_emit_hook(&_ev_hook);
+    sakshi_set_level(SK_TRACE);
+    var b: RyBioenergyState;
+    ry_bioenergy_state_default(&b);
+    ry_bioenergy_state_set_exertion(&b, 8.0);
+    assert_eq(_ev_is("rasayan::energy: set_exertion met=8"), 1, "set_exertion");
+    ry_bioenergy_state_tick(&b, 1.0);
+    assert_eq(_ev_is("rasayan::energy: bioenergy_tick dt_minutes=1 met=8 anaerobic_threshold=6"), 1, "bioenergy_tick");
+    _ev_len = 0;
+    ry_bioenergy_state_tick(&b, 0.0);
+    assert_eq(_ev_len, 0, "no event for an invalid dt");
+    sakshi_set_level(SK_INFO);
+    ry_bioenergy_state_set_exertion(&b, 3.0);
+    assert_eq(_ev_len, 0, "below TRACE, nothing");
+    sakshi_clear_emit_hook();
+    return 0;
+}
+
+# rust src/energy.rs: test_serde_roundtrip
+# rust tests/integration.rs: test_bioenergy_state_serde_roundtrip
+fn serde() {
+    test_group("energy: serde round trips");
+    var sb = str_builder_new();
+    var b: RyBioenergyState;
+    ry_bioenergy_state_default(&b);
+    var t1, v1 = ry_bioenergy_state_to_json(sb, &b);
+    var want = "{\"phosphocreatine\":0.9,\"glycogen\":0.8,\"met\":1.0,\"anaerobic_threshold\":6.0}";
+    assert_eq(load64(sb + 8), strlen(want), "serde_json's document: its length");
+    assert_eq(memeq(load64(sb), want, strlen(want)), 1, "serde_json's document");
+    var back: RyBioenergyState;
+    var t2, v2 = ry_bioenergy_state_from_json(load64(sb), load64(sb + 8), &back);
+    assert(is_ok(t2) == 1 && be_eq(&back, &b) == 1, "the default reads back");
+    ry_bioenergy_state_set_exertion(&b, 9.5);
+    ry_bioenergy_state_tick(&b, 3.7);
+    store64(sb + 8, 0);
+    var t3, v3 = ry_bioenergy_state_to_json(sb, &b);
+    var t4, v4 = ry_bioenergy_state_from_json(load64(sb), load64(sb + 8), &back);
+    assert(is_ok(t4) == 1 && memeq(&back, &b, 32) == 1, "a worked state, bit for bit");
+    var miss = "{\"phosphocreatine\":0.9,\"glycogen\":0.8,\"met\":1.0}";
+    var t5, v5 = ry_bioenergy_state_from_json(miss, strlen(miss), &back);
+    assert_eq(v5, RY_ERR_DESERIALIZE, "a missing field is refused");
+    return 0;
+}
+
+# Runs the energy suite.
+fn main() {
+    alloc_init();
+    basics();
+    calibration();
+    thresholds();
+    bridges();
+    hardening();
+    events();
+    serde();
+    return assert_summary();
+}
+
+var exit_code = main();
+# assert_summary() returns the failure count; a wait status is 8 bits, so any failure exits 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

@@ -468,8 +468,115 @@ METABOLISM = {
     "metabolism::MetabolicState::trajectory": _mt_trajectory,
 }
 
+# ── energy (M2 part 5) ──
+
+E_K_REC = 0.6931471805599453 / 0.5  # energy::PCR_RECOVERY_RATE = LN_2 / PCR_RECOVERY_HALF_TIME
+E_K_DEP = 0.25  # PCR_DEPLETION_RATE
+E_G_DEP, E_G_ANA, E_G_REC, E_G_REC_MET = 0.0006, 0.00025, 0.001, 1.5  # the GLYCOGEN_* constants
+E_MET_O2, E_KGM = 3.5, 6.12  # MET_O2_RATE, the private KGM_PER_MIN_PER_WATT
+
+
+def _activate_any(x, on, off, dt, P):
+    """`integrate::activate` on either branch of the step factors."""
+    total = on + off
+    if total <= 0.0:
+        return x
+    f, g = _factors_any(total * dt, P)
+    return _rust_min(x * f + on * dt * g, 1.0)
+
+
+def _take(a, pool):
+    return _rust_min(a, pool) if a > 0.0 and pool > 0.0 else 0.0
+
+
+def _shift(a, substrate, product):
+    return -_take(-a, product) if a < 0.0 else _take(a, substrate)
+
+
+def _rust_clamp(x, lo, hi):
+    """core's `f64::clamp`: a NaN x passes through."""
+    if x < lo:
+        x = lo
+    if x > hi:
+        x = hi
+    return x
+
+
+def _bio_tick(st, dt, P):
+    """`BioenergyState::tick` on [phosphocreatine, glycogen, met, anaerobic_threshold]."""
+    if not (math.isfinite(dt) and dt > 0.0):
+        return st
+    pcr, gly, met, thr = st
+    above_rest = _conc(met - 1.0)
+    m = 1.0 + above_rest
+    above = _conc(m - thr)
+    pcr = _activate_any(_unit(pcr), E_K_REC, E_K_DEP * above, dt, P)
+    net = E_G_DEP * above_rest + E_G_ANA * above * above
+    if m <= E_G_REC_MET:
+        net -= E_G_REC
+    g = _unit(gly)
+    return [pcr, g - _shift(net * dt, g, 1.0 - g), met, thr]
+
+
+def _met_from_power(power, mass):
+    if not (math.isfinite(mass) and mass > 0.0):
+        return 1.0
+    power = _conc(power)
+    vo2 = E_MET_O2
+    if power > 0.0:
+        vo2 += E_MET_O2 + 1.8 * E_KGM * power / mass
+    return _rust_max(vo2 / E_MET_O2, 1.0)
+
+
+def _sharira(st, power, mass, dt_s, amp, frac, P):
+    """sharira 1.1.0's `MetabolicCoupling::tick` call shape: the state, then (avail, fatigue, recovery)."""
+    st = list(st)
+    st[2] = _rust_max(_conc(_met_from_power(power, mass)), 1.0)
+    st = _bio_tick(st, dt_s / 60.0, P)
+    avail = _rust_clamp(st[0] * 0.3 + st[1] * 0.7, 0.0, 1.0)
+    fatigue = 1.0 + _conc(amp - 1.0) * (1.0 - _unit(avail))
+    recovery = _unit(frac) if st[2] > st[3] else 1.0
+    return st, [avail, fatigue, recovery]
+
+
+def _bio_trajectory(a, P):
+    """A class-T script: four fields, then `1 met`, `2 dt k`, `3 field x` and `4 power mass dt_s amp frac k`."""
+    st, k = list(a[:4]), 4
+    while k < len(a):
+        op = a[k]
+        if op == 1:
+            st[2] = _rust_max(_conc(a[k + 1]), 1.0)
+            k += 2
+        elif op == 2:
+            for _ in range(a[k + 2]):
+                st = _bio_tick(st, a[k + 1], P)
+            k += 3
+        elif op == 3:
+            st[a[k + 1]] = a[k + 2]
+            k += 3
+        elif op == 4:
+            for _ in range(a[k + 6]):
+                st, _o = _sharira(st, a[k + 1], a[k + 2], a[k + 3], a[k + 4], a[k + 5], P)
+            k += 7
+        else:
+            raise ValueError(f"no operation {op}")
+    return st
+
+
+def _sharira_row(a, P):
+    st, outs = _sharira(a[:4], a[4], a[5], a[6], a[7], a[8], P)
+    return st + outs
+
+
+ENERGY = {
+    "energy::BioenergyState::tick": lambda a, P: _bio_tick(a[:4], a[4], P),
+    "energy::BioenergyState::trajectory": _bio_trajectory,
+    "sharira::MetabolicCoupling::tick": _sharira_row,
+}
+
 # The modules with class-C (and class-T) rows beyond math, and their models.
-MODELS = {"integrate": INTEGRATE, "enzyme": ENZYME, "membrane": MEMBRANE, "signal": SIGNAL, "metabolism": METABOLISM}
+MODELS = {"integrate": INTEGRATE, "enzyme": ENZYME, "membrane": MEMBRANE, "signal": SIGNAL, "metabolism": METABOLISM,
+          "energy": ENERGY}
 
 
 def _arg(tok):

@@ -30,10 +30,10 @@ from pathlib import Path
 root = Path(sys.argv[1]).resolve()
 
 # The modules whose milestone has come.
-PORTED = ["constants", "error", "guard", "integrate", "logging", "enzyme", "membrane", "signal", "metabolism"]
+PORTED = ["constants", "error", "guard", "integrate", "logging", "enzyme", "membrane", "signal", "metabolism",
+          "energy"]
 # The rest, with their milestone (port plan §3.1).
 SCHEDULED = {
-    "energy": "M2",
     "protein": "M3", "alignment": "M3", "ptm": "M3", "domain": "M3",
     "glycolysis": "M4a", "tca": "M4a", "etc": "M4b", "beta_oxidation": "M4b", "amino_catabolism": "M4b",
     "pathway": "M5",
@@ -57,6 +57,7 @@ TYPES = {
     "IonicState": ("RyIonicState", "ionic_state"),
     "SecondMessenger": ("RySecondMessenger", "second_messenger"),
     "MetabolicState": ("RyMetabolicState", "metabolic_state"),
+    "BioenergyState": ("RyBioenergyState", "bioenergy_state"),
 }
 # Rust item -> the Cyrius names that carry it ("fn x", "const X", "enum X", "struct X"), where the rules give none.
 MAPPED = {

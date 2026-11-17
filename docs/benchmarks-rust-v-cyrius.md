@@ -87,3 +87,20 @@ Where the time goes: about 17 calls per tick to the guard and Rust-semantics hel
 into its loop. They are multi-statement, and `#inline` takes only a single expression at the pin, so the calls stay;
 rewriting the M1 foundation's helpers branch-free (with the bit-pattern proofs M2 part 1 gave `_ry_is_finite`) is the
 lever if a consumer's profile asks for it.
+
+## M2 part 5: energy
+
+| Benchmark | Rust 1.2.0 (ns) | Cyrius (ns) | Notes |
+|---|---|---|---|
+| bioenergy_tick | 27.22 | 152 | Rust's loop body: a default state, set_exertion(6), tick(1 min); `k·dt` = 1.39 takes the activation's correctly rounded `expm1` (~50 ns, ADR 0003) |
+
+Cyrius only:
+
+| Benchmark | Cyrius (ns) | Notes |
+|---|---|---|
+| met_from_power(150, 70) | 27 | the ACSM equation, two guards |
+| tick at 12 MET, 0.5 min | 129 | `expm1`, the glycogen shift |
+
+Measured with the machine quiet (load below 1.5; the reference rows, michaelis_menten 12 ns and nernst 79 ns, as
+before). The rest of the tick's gap is the same helper calls as metabolism's (`_ry_guard_conc`, `_ry_guard_unit`,
+`_ry_max`, the guards; M2 part 4).

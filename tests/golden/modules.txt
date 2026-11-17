@@ -3,6 +3,7 @@ ai
 alignment
 constants
 constants_private
+energy
 enzyme
 guard
 integrate
