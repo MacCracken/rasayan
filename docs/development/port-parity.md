@@ -858,3 +858,56 @@ same day in cyrius's working tree (`2026-11-16-must-use-warns-on-question-mark-p
 No Rust twin: in Rust these are crate-private and inlined into every tick, so they are measured inside the ticks'
 benchmarks from M2 on. `#inline` takes a single-expression function only, so none of these qualifies as written; the
 tick benches will show whether a branch-free form pays.
+
+### 4b. Part 2: logging, the failure events, the parity gates (2026-11-16)
+
+**What is compared.** `logging::init_with_level` builds `EnvFilter::try_from_env("RASAYAN_LOG").unwrap_or_else(|_|
+EnvFilter::new(default_level))` and installs it in a global subscriber, which a process can do once. The generator
+compiles that statement verbatim (`scripts/oracle/src/v_logging.rs`, checked by `verbatim.rs`) in a function that
+returns the filter, sets the real `RASAYAN_LOG` for each row (or removes it), and asks the filter through
+`Subscriber::enabled` which levels an event of each of the 20 targets rasayan's events carry (`rasayan::<module>`)
+passes. rasayan opens no span, so only the static directives decide.
+
+**What Rust does** (196 rows; the grid is every class of form):
+
+| Form | Rust's level for rasayan |
+|---|---|
+| a level name, any case; `0`–`5` (leading zeros too) | that level (`0` OFF, `5` TRACE) |
+| `rasayan`, `rasayan=` | TRACE (a target with no level enables every level) |
+| `rasayan=<level>`, `rasayan=+3` | that level (`usize` parse takes a `+`) |
+| lists | the last `rasayan` directive, else the last bare level (`rasayan=debug,warn` → DEBUG) |
+| `""`, `","`, `",,"` | **OFF**: the filter parses, with no directive |
+| `" debug"`, `"debug "`, `verbose`, `deb`, `6`, `-1`, `debug info` | **OFF**: a bare word that is not a level is a target |
+| `rasaya=debug`, `r=trace`, `rasayan::=trace` | that level: a directive's target matches as a prefix |
+| `rasayan::pathway=debug`, `rasayan::signal=trace` | that module (and, for `signal`, `signaling`) only |
+| `other=debug`, `Rasayan=debug`, span and field directives | OFF (nothing matches an event outside a span) |
+| `=debug`, `rasayan=verbose`, `" rasayan=debug"`, `[`, non-UTF-8 bytes | the default: Rust rejects the value |
+| a default: `""` → ERROR (`EnvFilter::new`'s directive), `" debug"` / `nonsense` → OFF (targets) | |
+
+**The port** reads exactly the first four rows (ADR 0002 row 8's grammar, as amended) and the empty list, and refuses
+everything else with a warning, applying the default (ERROR for a refused default).
+
+| Check | Result |
+|---|---|
+| rows | 135 identical; 61 accepted (ADR 0002 row 8: refused by the port where Rust reads a directive it doesn't carry) |
+| `validate.py` | the 20 targets match its own scan; the 100 rows in the grammar re-derived from the rule; 96 outside it counted |
+| `tests/logging.tcyr` | every form the port reads pinned one by one (so a wrongly refused form can't pass as an accepted row) |
+| fuzz (`tests/rasayan.fcyr`, `--poison --bounds`) | 50,000 inputs, 12,011 read as levels, 0 out-of-range answers |
+| three targets (`scripts/gates.sh`, 151 s, every step exit 0) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64 (31,736 ok, 196 accepted: ADR 3 135, ADR 0002 row 8 61); coverage 6 of 6 public fns executed |
+
+**Events** (ADR 0002 row 7). A ported event is a block behind an inlined gate that builds Rust's fmt-layer text after
+the level, `<target>: <message> <key>=<value> …`, in a stack buffer and emits one sakshi event. `tests/logging.tcyr`
+compares the text of a `calcium_tick`-shaped trace, an `ai` debug with string, integer and bool fields, and an MCP
+warn; and that each gate follows the level, off included (sakshi below FATAL). The failure events of ADR row 1 now
+cover every variant (`_ry_fail_f`, `_ry_fail_text`): Rust's four `test_error_display_*` integration tests port as
+checks of their text.
+
+| Benchmark (x86_64) | ns |
+|---|---|
+| a trace event behind its gate, TRACE filtered out | 4 |
+| the same, built (three f64 fields, Display form) and written to sakshi's ring buffer | 5,070 |
+
+**Parity bookkeeping.** `scripts/surface_parity.py`: constants 6/6, error 7/7, logging 2/2 public items, and the 61
+public scalar constants of the scheduled modules; 0 missing. `scripts/rust_test_ledger.py`: 723 Rust tests (628 unit,
+70 integration, 25 validation), 13 ported, 0 due and unported. Each caught its tamper (a renamed function, a misnamed
+marker).

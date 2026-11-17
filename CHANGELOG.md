@@ -12,10 +12,37 @@ part 2a (steps 4–5, first part), part 2b (step 6), part 2c-1 (step 7 and the c
 part 2c-2 (the correctly rounded primitives), part 2c-3 (their dense MPFR sweep), part 3a (step 8's
 three-target baselines and `scripts/gates.sh`, step 9's probes 1–4, 8 and 12) and part 3b (probes 6, 7, 10 and 11,
 the profiles, and step 10's upstream drafts). M0 is complete. M1 part 1 (the foundation's error codes, guard layer
-and integrators) follows.
+and integrators) and part 2 (logging, the failure events, the surface-parity and Rust-test gates) follow.
 
 ### Added
 
+- **src/logging.cyr** (M1 part 2) — `ry_log_init` / `ry_log_init_with_level` (Rust's `logging::init` /
+  `init_with_level`), `ry_log_parse` and `ry_log_level_of`: `RASAYAN_LOG` read exactly as Rust's `EnvFilter` reads ADR
+  0002 row 8's grammar (lists of level words, digits 0–5, `rasayan[=<level>]`; an empty value is OFF), anything else
+  refused with a warning and the default applied; `RY_LOG_OFF`. The event helpers Rust's 31 events port through:
+  the inlined gates `_ry_trace_on` / `_ry_debug_on` / `_ry_warn_on` and a stack-buffer builder (`_ry_ev`,
+  `_ry_ev_f` / `_i` / `_b` / `_s`, `_ry_trace` / `_ry_debug` / `_ry_warn`) writing Rust's fmt-layer text
+- **src/error.cyr** (M1 part 2) — the failure events: `_ry_fail_f` (NonFinite, NegativeConcentration,
+  InvalidParameter with any reason) and `_ry_fail_text` (UnknownAminoAcid, UnknownPathway) emit Rust's Display text of
+  the error at DEBUG; `_ry_sb_on` and the guard's refusals moved here from `src/guard.cyr`
+- **tests/golden/logging.tsv** (M1 part 2, 196 rows, class A) — for each `RASAYAN_LOG` form (level names in three
+  cases, digits, blanks, misspellings, `rasayan=` variants, other, prefix and per-module targets, lists, span and
+  field directives, non-ASCII and non-UTF-8 bytes) and each default, the level Rust's own filter gives each of the 20
+  event targets: the generator compiles `logging.rs`'s `EnvFilter` statement verbatim (`v_logging.rs`) and sets the
+  real variable per row. 135 rows identical, 61 accepted under ADR 0002 row 8. `validate.py` re-derives the 100 rows in
+  the grammar from the rule and checks the targets against its own scan (34,346 independent checks)
+- **tests/logging.tcyr** (87 checks: every form the port reads, pinned; the refused ones; the default; init; each
+  helper's text and gate through sakshi's hook) and 4 more in **tests/guard.tcyr** (98): Rust's
+  `test_error_display_*` integration tests, as the failure events' text
+- **scripts/surface_parity.py** (M1 part 2; ushma's, adapted) — every public Rust item of a ported module has its
+  Cyrius name: constants 6/6, error 7/7, logging 2/2, and all 61 public scalar constants of the scheduled modules;
+  0 missing. **scripts/rust_test_ledger.py** and `docs/development/rust-test-ledger.md` — 723 Rust tests (628 unit,
+  70 integration, 25 validation), 13 ported, 0 due and unported, 710 counted under their milestones; an integration
+  test is due when the modules its body names or imports are ported. Both run in `scripts/gates.sh`
+- **tests/rasayan.fcyr** (M1 part 2) — 50,000 seeded inputs (ushma's mutator) through `ry_log_parse` and
+  `ry_log_level_of` under `--poison --bounds`: 0 out-of-range answers
+- **benchmarks** (M1 part 2) — a trace event behind its gate: 4 ns filtered out; 5.07 µs built (three f64 fields) and
+  written to sakshi's ring buffer
 - **src/error.cyr** (M1 part 1) — `RY_ERR_*` codes in `RasayanError`'s variant order, append-only (`RY_ERR_NONE` 0,
   `NEGATIVE_CONCENTRATION`, `INVALID_PARAMETER`, `UNKNOWN_AMINO_ACID`, `UNKNOWN_PATHWAY`, `NON_FINITE` 5;
   `RY_ERR_COUNT`), `ry_error_name` (the Rust variant name the corpus uses) and `ry_error_message`
@@ -221,6 +248,14 @@ and integrators) follows.
 
 ### Changed
 
+- **cyrius.cyml** (M1 part 2) — `src/logging.cyr` in `[lib]`, `[lib.mcp]` and `[lib.ai]` after `src/integrate.cyr`;
+  the sidecars add `log` and `io`
+- **ADR 0002** (M1 part 2) — row 8 records the grammar as built and what Rust does outside it (a misspelled or
+  blank-padded level is a target there, so rasayan goes silent; an empty `RASAYAN_LOG` is OFF); row 7 the event
+  helpers and the failure events
+- **scripts/oracle** (M1 part 2) — `tracing` 0.1.44 and `tracing-subscriber` 0.3.23 as direct dependencies, at the
+  versions and features `rust-old/` resolves (the lockfile only lists them on the oracle's own entry); `Tok::B`, an
+  `s:` token of raw bytes
 - **cyrius.cyml** (M1 part 1) — `[lib]`, `[lib.mcp]` and `[lib.ai]` bundle `src/error.cyr`, `src/guard.cyr` and
   `src/integrate.cyr` after `src/fmtf.cyr`; the bundles' sidecars now require `sakshi` and `result`. `result` is listed
   in `[deps] stdlib` (it was vendored and locked already, through `io`)

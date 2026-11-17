@@ -49,6 +49,8 @@ pub enum Tok {
     E(&'static str, String),
     /// `s:<percent-encoded UTF-8>`.
     S(String),
+    /// `s:<percent-encoded bytes>`: an `s:` token whose text need not be UTF-8 (an environment variable's value).
+    B(Vec<u8>),
     /// `n:` — `Option::None`.
     None,
     /// `E:<Variant>` — `Err(RasayanError::<Variant>)`. The payload is not compared here; its
@@ -74,6 +76,11 @@ pub fn s(x: impl Into<String>) -> Tok {
     Tok::S(x.into())
 }
 
+/// An `s:` token of raw bytes, UTF-8 or not.
+pub fn sb(x: &[u8]) -> Tok {
+    Tok::B(x.to_vec())
+}
+
 /// `e:<Enum>.<Variant>`, the variant named by its `Debug` text.
 #[allow(dead_code)] // from M1
 pub fn e(name: &'static str, v: impl std::fmt::Debug) -> Tok {
@@ -94,8 +101,13 @@ pub fn err(x: &rasayan::RasayanError) -> Tok {
 
 /// Percent-encode every byte that is not printable ASCII, plus `%`.
 fn pct(x: &str) -> String {
+    pct_bytes(x.as_bytes())
+}
+
+/// `pct` over raw bytes.
+fn pct_bytes(x: &[u8]) -> String {
     let mut out = String::with_capacity(x.len());
-    for &byte in x.as_bytes() {
+    for &byte in x {
         if (0x21..=0x7e).contains(&byte) && byte != b'%' {
             out.push(char::from(byte));
         } else {
@@ -112,6 +124,7 @@ impl Tok {
             Self::I(x) => format!("i:{x}"),
             Self::E(name, v) => format!("e:{name}.{v}"),
             Self::S(x) => format!("s:{}", pct(x)),
+            Self::B(x) => format!("s:{}", pct_bytes(x)),
             Self::None => "n:".to_string(),
             Self::Err(v) => format!("E:{v}"),
             Self::V(n) => format!("v:{n}"),
@@ -124,6 +137,7 @@ impl Tok {
             Self::I(x) => format!("{x}"),
             Self::E(name, v) => format!("{name}::{v}"),
             Self::S(x) => format!("{x:?}"),
+            Self::B(x) => format!("{:?}", String::from_utf8_lossy(x)),
             Self::None => "None".to_string(),
             Self::Err(v) => format!("Err({v})"),
             Self::V(n) => format!("[{n}]"),

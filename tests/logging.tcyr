@@ -1,0 +1,233 @@
+# rasayan — src/logging.cyr: RASAYAN_LOG, init, and the event helpers
+# Stdlib auto-included via cyrius.cyml
+#
+# tests/golden/logging.tsv compares every RASAYAN_LOG form with Rust's own filter; a form the port refuses is accepted
+# there under ADR 0002 row 8 when Rust's level differs. So the forms the port must READ are pinned here one by one: a
+# reader that wrongly refused one would otherwise pass as an accepted row. Rust's logging.rs has no unit test of its
+# own. The events' text and their gates are checked through sakshi's subscriber hook.
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+include "src/logging.cyr"
+
+# ry_log_parse of a C string.
+fn lp(s) {
+    return ry_log_parse(s, strlen(s));
+}
+
+# The forms the port reads, each with the level Rust's filter gives every rasayan target (tests/golden/logging.tsv).
+fn read_forms() {
+    test_group("logging: the forms the port reads");
+    assert_eq(lp("trace"), LOG_TRACE, "trace");
+    assert_eq(lp("DEBUG"), LOG_DEBUG, "DEBUG");
+    assert_eq(lp("Info"), LOG_INFO, "Info");
+    assert_eq(lp("warn"), LOG_WARN, "warn");
+    assert_eq(lp("ERROR"), LOG_ERROR, "ERROR");
+    assert_eq(lp("off"), RY_LOG_OFF, "off");
+    assert_eq(lp("0"), RY_LOG_OFF, "0 is off");
+    assert_eq(lp("1"), LOG_ERROR, "1 is error");
+    assert_eq(lp("3"), LOG_INFO, "3 is info");
+    assert_eq(lp("5"), LOG_TRACE, "5 is trace");
+    assert_eq(lp("05"), LOG_TRACE, "leading zeros");
+    assert_eq(lp("0000000000000000000005"), LOG_TRACE, "many leading zeros");
+    assert_eq(lp(""), RY_LOG_OFF, "an empty value has no directive: off");
+    assert_eq(lp(","), RY_LOG_OFF, "nor has a lone comma");
+    assert_eq(lp(",,"), RY_LOG_OFF, "nor two");
+    assert_eq(lp("rasayan"), LOG_TRACE, "rasayan alone enables every level");
+    assert_eq(lp("rasayan="), LOG_TRACE, "so does rasayan=");
+    assert_eq(lp("rasayan=debug"), LOG_DEBUG, "rasayan=debug");
+    assert_eq(lp("rasayan=Warn"), LOG_WARN, "rasayan=Warn");
+    assert_eq(lp("rasayan=3"), LOG_INFO, "rasayan=3");
+    assert_eq(lp("rasayan=+3"), LOG_INFO, "rasayan=+3 (usize's +)");
+    assert_eq(lp("rasayan=03"), LOG_INFO, "rasayan=03");
+    assert_eq(lp("rasayan=0"), RY_LOG_OFF, "rasayan=0");
+    assert_eq(lp("debug,info"), LOG_INFO, "the last level word wins");
+    assert_eq(lp("info,debug"), LOG_DEBUG, "in either order");
+    assert_eq(lp("rasayan=debug,warn"), LOG_DEBUG, "a rasayan item beats a level word after it");
+    assert_eq(lp("warn,rasayan=trace"), LOG_TRACE, "and before it");
+    assert_eq(lp("rasayan=debug,rasayan=warn"), LOG_WARN, "the last rasayan item wins");
+    assert_eq(lp("debug,rasayan=off"), RY_LOG_OFF, "rasayan=off silences rasayan");
+    assert_eq(lp("rasayan=OFF,debug"), RY_LOG_OFF, "whatever follows it");
+    assert_eq(lp("rasayan,warn"), LOG_TRACE, "rasayan alone in a list");
+    assert_eq(lp("rasayan=,info"), LOG_TRACE, "rasayan= in a list");
+    assert_eq(lp("debug,"), LOG_DEBUG, "a trailing empty item");
+    assert_eq(lp(",debug"), LOG_DEBUG, "a leading one");
+    assert_eq(lp("debug,,info"), LOG_INFO, "an inner one");
+    return 0;
+}
+
+# Forms the port refuses: Rust either refuses them too (the default applies on both sides) or reads a directive the
+# port doesn't carry (ADR 0002 row 8).
+fn refused_forms() {
+    test_group("logging: the forms the port refuses");
+    assert_eq(lp(" debug"), 0 - 1, "a blank (Rust: the target ` debug`)");
+    assert_eq(lp("debug "), 0 - 1, "a trailing blank");
+    assert_eq(lp("verbose"), 0 - 1, "a misspelled level (Rust: a target)");
+    assert_eq(lp("6"), 0 - 1, "6");
+    assert_eq(lp("+3"), 0 - 1, "a bare + (Rust refuses it)");
+    assert_eq(lp("-1"), 0 - 1, "-1");
+    assert_eq(lp("99999999999999999999999"), 0 - 1, "a number past usize");
+    assert_eq(lp("rasayan=verbose"), 0 - 1, "rasayan=<not a level> (Rust refuses it)");
+    assert_eq(lp("rasayan=+"), 0 - 1, "rasayan=+");
+    assert_eq(lp("rasayan=6"), 0 - 1, "rasayan=6");
+    assert_eq(lp("rasayanx=debug"), 0 - 1, "another target");
+    assert_eq(lp("Rasayan=debug"), 0 - 1, "targets are case-sensitive");
+    assert_eq(lp("rasayan::pathway=debug"), 0 - 1, "a per-module target");
+    assert_eq(lp("rasayan[span]=debug"), 0 - 1, "a span directive");
+    assert_eq(lp("other=debug"), 0 - 1, "another crate");
+    assert_eq(lp("rasayan=debug,other=trace"), 0 - 1, "a list with one refused item");
+    assert_eq(lp("=debug"), 0 - 1, "=debug");
+    assert_eq(lp("débug"), 0 - 1, "non-ASCII");
+    assert_eq(ry_log_parse("debug\xff", 6), 0 - 1, "not UTF-8");
+    return 0;
+}
+
+# ry_log_level_of: the variable when the port reads it, else the default (ERROR for one with no item or refused).
+fn level_of() {
+    test_group("logging: the variable and the default");
+    assert_eq(ry_log_level_of(0, 0, "info"), LOG_INFO, "unset: the default");
+    assert_eq(ry_log_level_of("debug", 5, "info"), LOG_DEBUG, "set: the variable");
+    assert_eq(ry_log_level_of("", 0, "info"), RY_LOG_OFF, "set and empty: off, whatever the default");
+    assert_eq(ry_log_level_of("verbose", 7, "warn"), LOG_WARN, "refused: the default");
+    assert_eq(ry_log_level_of(0, 0, ""), LOG_ERROR, "a default with no item: error (EnvFilter::new)");
+    assert_eq(ry_log_level_of(0, 0, ","), LOG_ERROR, "a comma-only default: error");
+    assert_eq(ry_log_level_of(0, 0, "nonsense"), LOG_ERROR, "a refused default: error");
+    assert_eq(ry_log_level_of(0, 0, "debug,info"), LOG_INFO, "a default list");
+    assert_eq(ry_log_level_of("rasayan=off", 11, "trace"), RY_LOG_OFF, "rasayan=off over a default");
+    return 0;
+}
+
+# init applies the level it returns, and is safe to call twice.
+fn init() {
+    test_group("logging: init");
+    var env = getenv("RASAYAN_LOG");
+    var en = 0;
+    if (env != 0) { en = strlen(env); }
+    var want = ry_log_level_of(env, en, "info");
+    assert_eq(ry_log_init(), want, "ry_log_init applies RASAYAN_LOG or info");
+    assert_eq(ry_log_init(), want, "and again");
+    var wd = ry_log_level_of(env, en, "debug");
+    assert_eq(ry_log_init_with_level("debug"), wd, "ry_log_init_with_level");
+    assert_eq(log_level(), wd, "lib/log.cyr has the level");
+    if (wd < RY_LOG_OFF) {
+        var sk = SK_ERROR;
+        if (wd == LOG_TRACE) { sk = SK_TRACE; }
+        if (wd == LOG_DEBUG) { sk = SK_DEBUG; }
+        if (wd == LOG_INFO) { sk = SK_INFO; }
+        if (wd == LOG_WARN) { sk = SK_WARN; }
+        assert_eq(sakshi_get_level(), sk, "and so has sakshi");
+    }
+    _ry_log_apply(RY_LOG_OFF);
+    assert_eq(sakshi_get_level(), SK_FATAL - 1, "off puts sakshi below FATAL");
+    assert_eq(log_level(), RY_LOG_OFF, "and lib/log.cyr past FATAL");
+    return 0;
+}
+
+# ── captured events ──
+var _ev_buf[512];
+var _ev_len = 0;
+var _ev_count = 0;
+var _ev_level = 0 - 1;
+
+# sakshi's subscriber: keeps the last event's level and message.
+fn _ev_hook(ts, level, category, msg, msg_len, extra) {
+    var n = msg_len;
+    if (n > 512) { n = 512; }
+    memcpy(&_ev_buf, msg, n);
+    _ev_len = msg_len;
+    _ev_level = level;
+    _ev_count = _ev_count + 1;
+    return 0;
+}
+
+# 1 if the last captured event is the C string `want`.
+fn _ev_is(want) {
+    var n = strlen(want);
+    if (_ev_len != n) { return 0; }
+    return memeq(&_ev_buf, want, n);
+}
+
+# A calcium_tick-shaped trace event (Rust: `trace!(dt, ip3, ca = self.cytoplasmic_ca, "calcium_tick")`), built only
+# past its gate. Returns 1 if it was built.
+fn calcium_event(dt: f64, ip3: f64, ca: f64) {
+    if (_ry_trace_on() == 1) {
+        var h[24];
+        var b[256];
+        var e = _ry_ev(&h, &b, 256, "rasayan::calcium", "calcium_tick");
+        _ry_ev_f(e, "dt", dt);
+        _ry_ev_f(e, "ip3", ip3);
+        _ry_ev_f(e, "ca", ca);
+        _ry_trace(e);
+        return 1;
+    }
+    return 0;
+}
+
+# The helpers' text, as Rust's fmt layer prints it after the level, and their gates.
+fn events() {
+    test_group("logging: event helpers");
+    sakshi_set_emit_hook(&_ev_hook);
+    _ry_log_apply(LOG_TRACE);
+    assert_eq(_ry_trace_on(), 1, "TRACE on");
+    assert_eq(calcium_event(0.01, 0.25, 0.1), 1, "built at TRACE");
+    assert_eq(_ev_is("rasayan::calcium: calcium_tick dt=0.01 ip3=0.25 ca=0.1"), 1, "the trace text");
+    assert_eq(_ev_level, SK_TRACE, "at sakshi's TRACE");
+    var h[24];
+    var b[256];
+    var e = _ry_ev(&h, &b, 256, "rasayan::ai", "rasayan::ai query");
+    _ry_ev_s(e, "model", "llama3", 6);
+    _ry_ev_i(e, "prompt_len", 42);
+    _ry_ev_b(e, "installed", 1);
+    _ry_debug(e);
+    var dtext = "rasayan::ai: rasayan::ai query model=llama3 prompt_len=42 installed=true";
+    assert_eq(_ev_is(dtext), 1, "the debug text");
+    assert_eq(_ev_level, SK_DEBUG, "at DEBUG");
+    var h2[24];
+    var b2[256];
+    var w = _ry_ev(&h2, &b2, 256, "rasayan::mcp", "failed to register MCP tool");
+    _ry_ev_s(w, "tool", "rasayan_kinetics", 16);
+    _ry_ev_b(w, "retry", 0);
+    _ry_warn(w);
+    var wtext = "rasayan::mcp: failed to register MCP tool tool=rasayan_kinetics retry=false";
+    assert_eq(_ev_is(wtext), 1, "the warn text");
+    assert_eq(_ev_level, SK_WARN, "at WARN");
+    # The gates follow the level, and a filtered event builds nothing.
+    _ry_log_apply(LOG_INFO);
+    assert_eq(_ry_trace_on(), 0, "TRACE off at INFO");
+    assert_eq(_ry_debug_on(), 0, "DEBUG off at INFO");
+    assert_eq(_ry_warn_on(), 1, "WARN on at INFO");
+    var before = _ev_count;
+    assert_eq(calcium_event(0.01, 0.25, 0.1), 0, "not built at INFO");
+    assert_eq(_ev_count, before, "nothing emitted");
+    _ry_log_apply(LOG_DEBUG);
+    assert_eq(_ry_debug_on(), 1, "DEBUG on at DEBUG");
+    assert_eq(_ry_trace_on(), 0, "TRACE still off");
+    _ry_log_apply(RY_LOG_OFF);
+    assert_eq(_ry_warn_on(), 0, "off: even WARN is off");
+    _ry_warn(w);
+    assert_eq(_ev_count, before, "and a warn emitted anyway is dropped");
+    sakshi_clear_emit_hook();
+    _ry_log_apply(LOG_INFO);
+    return 0;
+}
+
+# Runs the logging suite.
+fn main() {
+    alloc_init();
+    read_forms();
+    refused_forms();
+    level_of();
+    init();
+    events();
+    return assert_summary();
+}
+
+var exit_code = main();
+# assert_summary() returns the failure count; a wait status is 8 bits, so any failure exits 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

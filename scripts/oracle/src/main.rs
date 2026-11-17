@@ -31,6 +31,7 @@ mod grids;
 mod m_constants;
 mod m_guard;
 mod m_integrate;
+mod m_logging;
 mod m_math;
 mod rustsrc;
 mod t_ai;
@@ -43,6 +44,7 @@ mod t_protein;
 mod tsv;
 mod v_guard;
 mod v_integrate;
+mod v_logging;
 mod verbatim;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -68,6 +70,7 @@ fn golden_modules(root: &Path) -> Result<Vec<tsv::Module>, String> {
         m_constants::emit(),
         m_guard::emit(),
         m_integrate::emit(),
+        m_logging::emit(),
         m_math::emit(),
         t_private::golden(root)?,
         t_protein::golden(&read("protein")?)?,

@@ -11,6 +11,7 @@ include "src/mathx.cyr"
 include "src/integrate.cyr"
 
 # Rust's `relax_matches_analytic_and_is_stable`.
+# rust src/integrate.rs: relax_matches_analytic_and_is_stable
 fn relax_matches_analytic_and_is_stable() {
     test_group("integrate: relax_matches_analytic_and_is_stable");
     var x: f64 = _ry_integrate_relax(1.0, 0.0, 2.0, 0.5);
@@ -27,6 +28,7 @@ fn relax_matches_analytic_and_is_stable() {
 }
 
 # Rust's `produce_decay_steady_state_and_degenerate`.
+# rust src/integrate.rs: produce_decay_steady_state_and_degenerate
 fn produce_decay_steady_state_and_degenerate() {
     test_group("integrate: produce_decay_steady_state_and_degenerate");
     # Steady state p/k.
@@ -43,6 +45,7 @@ fn produce_decay_steady_state_and_degenerate() {
 }
 
 # Rust's `step_factors_match_exp_across_the_series_boundary`, against the correctly rounded exp and expm1.
+# rust src/integrate.rs: step_factors_match_exp_across_the_series_boundary
 fn step_factors_match_exp_across_the_series_boundary() {
     test_group("integrate: step_factors_match_exp_across_the_series_boundary");
     var bad_f = 0;
@@ -91,6 +94,7 @@ fn step_factors_match_exp_across_the_series_boundary() {
 }
 
 # Rust's `activate_saturated_on_stays_at_most_one`.
+# rust src/integrate.rs: activate_saturated_on_stays_at_most_one
 fn activate_saturated_on_stays_at_most_one() {
     test_group("integrate: activate_saturated_on_stays_at_most_one");
     # off = 0, x = 1: must stay exactly in range for small and large steps.
@@ -130,6 +134,7 @@ fn activate_saturated_on_stays_at_most_one() {
 }
 
 # Rust's `activate_stays_in_unit_interval`.
+# rust src/integrate.rs: activate_stays_in_unit_interval
 fn activate_stays_in_unit_interval() {
     test_group("integrate: activate_stays_in_unit_interval");
     var y: f64 = _ry_integrate_activate(0.0, 1.0, 0.1, 10000.0);

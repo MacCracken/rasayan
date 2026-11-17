@@ -33,6 +33,8 @@ compares bit for bit:
 - `guard.tsv` and `integrate.tsv` (M1 part 1): every row against a Python model of guard.rs / integrate.rs whose
   modelled lines are pinned in the Rust text; integrate's class-B rows exactly, its class-C rows with this machine's
   expm1 on the recorded platform, and `integrate.cr.tsv` against the same MPFR binding as `math.cr.tsv`'s check;
+- `logging.tsv` (M1 part 2): the 20 targets against its own scan of rust-old/src for tracing events, and every row in
+  ADR 0002 row 8's grammar re-derived from the rule (the rest are counted: Rust's filter alone answers them);
 - the table data (M0 part 2b), with its own reader of the Rust source (regular expressions over
   rustfmt's layout and Python's binary64 arithmetic, nothing shared with the generator's
   tokenizer): every row of `protein`, `alignment`, `enzyme`, `membrane`, `ai` and
@@ -1655,6 +1657,121 @@ def check_integrate(root, rows, rep):
     return counts, per
 
 
+# ── logging (M1 part 2): the level RASAYAN_LOG gives each event target ──
+#
+# The generator asks Rust's own filter (logging.rs's statement, compiled verbatim). Here: the targets a row lists are
+# rasayan's event targets, found by this scan of rust-old/src; and every row whose variable (or, where Rust falls back
+# to it, default) is in ADR 0002 row 8's grammar is re-derived from the rule alone — a list of level words (a name in
+# any ASCII case, or a decimal 0-5; after `rasayan=` an optional `+`) and `rasayan`, `rasayan=`, `rasayan=<word>`
+# items, the last rasayan item winning over the last word, no item at all giving OFF (ERROR for the default) — and
+# must give that level to every target. A non-UTF-8 variable is Rust's `env::var` error: the default applies. Rows
+# outside the grammar are Rust's alone (the port refuses them; ADR 0002 row 8) and are counted.
+
+LOG_NAMES = {b"trace": "TRACE", b"debug": "DEBUG", b"info": "INFO", b"warn": "WARN", b"error": "ERROR", b"off": "OFF"}
+LOG_DIGITS = {0: "OFF", 1: "ERROR", 2: "WARN", 3: "INFO", 4: "DEBUG", 5: "TRACE"}
+
+
+def event_targets(root):
+    """`rasayan::<module>` for each module whose library code emits a tracing event, sorted."""
+    out = []
+    for path in sorted((root / "rust-old/src").glob("*.rs")):
+        text = path.read_text()
+        cut = text.find("#[cfg(test)]")
+        lib = text if cut < 0 else text[:cut]
+        if re.search(r"tracing::(trace|debug|info|warn|error)!", lib):
+            out.append(f"rasayan::{path.stem}")
+    return out
+
+
+def log_word(t, plus):
+    if plus and t.startswith(b"+"):
+        t = t[1:]
+    if re.fullmatch(rb"[0-9]+", t):
+        return LOG_DIGITS.get(int(t))
+    return LOG_NAMES.get(t.lower()) if t.isascii() else None
+
+
+def log_list(text, empty):
+    """The level of a list in the grammar, or None outside it."""
+    target = word = None
+    for item in text.split(b","):
+        if not item:
+            continue
+        if item.startswith(b"rasayan"):
+            rest = item[len(b"rasayan"):]
+            if rest in (b"", b"="):
+                target = "TRACE"
+            elif rest.startswith(b"="):
+                target = log_word(rest[1:], True)
+                if target is None:
+                    return None
+            else:
+                return None
+        else:
+            word = log_word(item, False)
+            if word is None:
+                return None
+    return target or word or empty
+
+
+def tok_bytes(tok):
+    """The bytes of an `s:` token."""
+    body = tok[2:]
+    out = bytearray()
+    i = 0
+    while i < len(body):
+        if body[i] == "%":
+            out.append(int(body[i + 1:i + 3], 16))
+            i += 3
+        else:
+            out.append(ord(body[i]))
+            i += 1
+    return bytes(out)
+
+
+def check_logging(root, rows, rep):
+    """Every logging.tsv row: class A, one level per event target; the grammar's rows re-derived. Returns the rows
+    re-derived and the rows outside the grammar."""
+    targets = event_targets(root)
+    if len(targets) != 20:
+        rep.fail("rust-old/src", f"{len(targets)} modules emit tracing events, the corpus lists 20 targets")
+    modelled = outside = 0
+    for n, fn, cls, ins, outs in rows:
+        where = f"logging.tsv:{n}"
+        if cls != "A" or fn not in ("logging::init", "logging::init_with_level"):
+            rep.fail(where, f"{fn} class {cls}: the logging rows are init / init_with_level, class A")
+            continue
+        levels = [o[len("e:LevelFilter."):] for o in outs if o.startswith("e:LevelFilter.")]
+        if len(levels) != len(outs) or len(outs) != len(targets):
+            rep.fail(where, f"{len(outs)} outputs, expected a LevelFilter for each of the {len(targets)} targets")
+            continue
+        env = None if ins[0] == "n:" else tok_bytes(ins[0])
+        default = b"info" if fn == "logging::init" else tok_bytes(ins[1])
+        want = None
+        if env is not None:
+            try:
+                env.decode("utf-8")
+                utf8 = True
+            except UnicodeDecodeError:
+                utf8 = False
+            if utf8:
+                want = log_list(env, "OFF")
+                if want is None:
+                    outside += 1
+                    continue
+        if want is None:
+            want = log_list(default, "ERROR")
+            if want is None:
+                outside += 1
+                continue
+        modelled += 1
+        if levels == [want] * len(targets):
+            rep.ok()
+        else:
+            rep.fail(where, f"{fn}{tuple(ins)}: golden {sorted(set(levels))}, the rule gives {want}")
+    return modelled, outside
+
+
 def main():
     root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
     rep = Report()
@@ -1674,6 +1791,7 @@ def main():
     per, evaluated, mpfr_version = check_corrections(root, tables, rep)
     guard_per = check_guard(root, tables.get("guard.tsv", []), rep)
     int_counts, int_per = check_integrate(root, tables.get("integrate.tsv", []), rep)
+    log_modelled, log_outside = check_logging(root, tables.get("logging.tsv", []), rep)
     total = sum(len(v) for v in tables.values())
     n_items, n_excused = extras.get("_counts", (0, 0))
     print(f"files: {len(files)}; rows: {total}; math classes: {dict(sorted(counts.items()))}")
@@ -1688,9 +1806,13 @@ def main():
         f"{sum(int_per.values())} {dict(sorted(int_per.items()))} (tests/golden/integrate.cr.tsv)"
     )
     print(
+        f"logging: {log_modelled} rows re-derived from ADR 0002 row 8's grammar; {log_outside} outside it (Rust's "
+        f"filter alone)"
+    )
+    print(
         f"independently checked: {rep.checked} (constants, src/constants.cyr, math classes A and B, the table rows, "
         f"every cell of the generated data files, every class-C math row against MPFR, guard, integrate and its "
-        f"corrections)"
+        f"corrections, logging)"
     )
     print(f"FAILURES: {rep.failures}")
     return 1 if rep.failures else 0

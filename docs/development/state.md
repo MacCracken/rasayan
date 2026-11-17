@@ -29,7 +29,8 @@ milestone (M9) sets 2.0.0.
 
 | Milestone | Status |
 |---|---|
-| M1 part 1 — error, guard, integrate | ✅ `src/error.cyr` (`RY_ERR_*`, `ry_error_name` / `_message`), `src/guard.cyr` (`_ry_guard_*`: validators returning a value-form Result, each refusal's DEBUG event Rust's Display text; the sanitizers), `src/integrate.cyr` (`_ry_integrate_*`, Rust's operation order); `_ry_clamp` / `_ry_f64_to_u32` into `src/mathx.cyr`. Golden `guard.tsv` 5,575 (A), `integrate.tsv` 5,998 (B 2,963, C 3,035), `integrate.cr.tsv` 39 (glibc's expm1 misrounds; ADR 3), through verbatim copies of the crate-private Rust checked on every run; all exact or accepted on the parity harness; `validate.py` 34,246 independent checks; `tests/guard.tcyr` 86, `tests/integrate.tcyr` 16 (Rust's 9 unit tests ported); benches (`port-parity.md` §4a); `scripts/gates.sh` green (147 s; the same parity summary on ELF, `--bounds`, PE and aarch64); coverage 2 of 2 public fns executed. Next: part 2, `src/logging.cyr` |
+| M1 part 1 — error, guard, integrate | ✅ `src/error.cyr` (`RY_ERR_*`, `ry_error_name` / `_message`), `src/guard.cyr` (`_ry_guard_*`: validators returning a value-form Result, each refusal's DEBUG event Rust's Display text; the sanitizers), `src/integrate.cyr` (`_ry_integrate_*`, Rust's operation order); `_ry_clamp` / `_ry_f64_to_u32` into `src/mathx.cyr`. Golden `guard.tsv` 5,575 (A), `integrate.tsv` 5,998 (B 2,963, C 3,035), `integrate.cr.tsv` 39 (glibc's expm1 misrounds; ADR 3), through verbatim copies of the crate-private Rust checked on every run; all exact or accepted on the parity harness; `validate.py` 34,246 independent checks; `tests/guard.tcyr` 86, `tests/integrate.tcyr` 16 (Rust's 9 unit tests ported); benches (`port-parity.md` §4a); `scripts/gates.sh` green (147 s; the same parity summary on ELF, `--bounds`, PE and aarch64); coverage 2 of 2 public fns executed |
+| M1 part 2 — logging, failure events, parity gates | ✅ `src/logging.cyr`: `ry_log_init` / `_with_level`, `ry_log_parse`, `ry_log_level_of` (`RASAYAN_LOG` as Rust's `EnvFilter` reads ADR 0002 row 8's grammar; refusals warn and take the default) and the event helpers (inlined gates, 4 ns filtered; a stack-buffer builder of Rust's fmt-layer text); `_ry_fail_f` / `_ry_fail_text` in `src/error.cyr` (every variant's Display text at its failure site). Golden `logging.tsv` 196 rows from Rust's own filter (verbatim statement, real environment): 135 identical, 61 accepted (row 8); `validate.py` 34,346. `tests/logging.tcyr` 87, `tests/guard.tcyr` 98 (+ Rust's 4 `test_error_display_*`); fuzz 50,000 inputs; `scripts/surface_parity.py` 0 missing; `scripts/rust_test_ledger.py`: 723 Rust tests, 13 ported, 0 due; `scripts/gates.sh` green (151 s, the same summary on ELF, `--bounds`, PE and aarch64); coverage 6 of 6 public fns. Next: part 3, `src/json.cyr` |
 
 ## Golden corpus
 
@@ -47,8 +48,9 @@ milestone (M9) sets 2.0.0.
 | `tests/golden/guard.tsv` | 5,575 (M1 part 1) | A |
 | `tests/golden/integrate.tsv` | 5,998 (M1 part 1) | B 2,963 · C 3,035 |
 | `tests/golden/integrate.cr.tsv` | 39 corrections (ADR 0003: glibc's expm1; written by `mpfr_ref.py`) | — |
+| `tests/golden/logging.tsv` | 196 (M1 part 2: each `RASAYAN_LOG` form × 20 event targets) | A |
 
-31,736 rows (20,163 at M0, 11,573 from M1 part 1). Recorded with rustc 1.100.0 on glibc 2.44 x86_64 fma (rasayan 1.2.0). `--check`,
+31,932 rows (20,163 at M0, 11,573 from M1 part 1, 196 from part 2). Recorded with rustc 1.100.0 on glibc 2.44 x86_64 fma (rasayan 1.2.0). `--check`,
 `validate.py` (22,634 checks: part 2b's 11,540 and the 11,094 class-C rows against MPFR),
 `mpfr_ref.py --check` and `probe_tables.py --all-targets` (2,470 compiled values) are clean. Generated: `src/constants.cyr` (67 constants, 333 lines), `src/constants_private.cyr` (16,
 74 lines), `src/protein_data.cyr` (721 lines), `src/alignment_data.cyr` (129),
@@ -85,12 +87,15 @@ Raised by the M0 probes; each is decided when its milestone starts.
 
 `cyrius test` runs `tests/parity.tcyr`, warning-free (the same on `--bounds` and aarch64):
 
-`=== parity summary: 10 modules, 0 failing | rows: 31601 ok, 0 failed, 0 measured, 0 pending, 135 accepted (ADR 3: 135), 0 glibc-matching (failed) ===`
+`=== parity summary: 11 modules, 0 failing | rows: 31736 ok, 0 failed, 0 measured, 0 pending, 196 accepted (ADR 3: 135), 0 glibc-matching (failed) ===`
 
 - **ok:** the 108 `const` rows, the 1,229 table rows (from the generated data, index constants
   included), the 7,732 class A/B math rows (`src/mathx.cyr`'s helpers and the builtins), 10,998 class-C math rows at
   0 ulp on `_ry_cr_pow`, `_ry_cr_exp`, `_ry_cr_ln` and `_ry_cr_expm1`, the 5,575 guard rows and 5,959 integrate rows
-  (the series branch and the early returns exact; the `exp_m1` branch at 0 ulp against the corrected oracle).
+  (the series branch and the early returns exact; the `exp_m1` branch at 0 ulp against the corrected oracle), and
+  135 logging rows.
+- **accepted (ADR 2):** 61 logging rows: `RASAYAN_LOG` forms the port refuses (the default applies, with a warning)
+  where Rust reads a directive the port doesn't carry (ADR 0002 row 8; counted on one summary line).
 - **accepted (ADR 3):** the 96 class-C math rows glibc misrounds (`math.cr.tsv`: exp_m1 94, exp 1,
   powf 1) and the 39 integrate rows where glibc's expm1 does (`integrate.cr.tsv`: step_factors 16, activate 13,
   produce_decay 7, relax 3), where the port gives the correctly rounded value.
@@ -103,8 +108,9 @@ Raised by the M0 probes; each is decided when its milestone starts.
 - Cyrius: scaffold smoke test, `tests/constants.tcyr` (19 checks of `src/constants.cyr` against the
   golden bits), `tests/tables.tcyr` (77 checks: every generated file compiled together, `src/mathx_data.cyr`
   included, a sample of cells bit for bit), `tests/parity.tcyr` (the golden corpus, above), `tests/guard.tcyr`
-  (86: Rust's guard tests, the error codes, each refusal's event text), `tests/integrate.tcyr` (16: Rust's
-  integrate tests), a fuzz stub;
+  (98: Rust's guard tests and its 4 error-display integration tests, the error codes, each refusal's event text),
+  `tests/integrate.tcyr` (16: Rust's integrate tests), `tests/logging.tcyr` (87), the fuzz harness (50,000
+  `RASAYAN_LOG` inputs);
   `cyrius test` warning-free, `--bounds` and `cyrius audit` pass
 - MPFR sweep: `scripts/oracle/cr_verify.py` checks the four primitives on 5,314,811 arguments per target
   (`--quick`: 542,062), both paths, ELF, aarch64 and PE: 0 mismatches (`port-parity.md` §2e)
@@ -121,7 +127,8 @@ Raised by the M0 probes; each is decided when its milestone starts.
 `f64_exp` 17), `_ry_cr_ln` 56 (`f64_ln` 38), `_ry_cr_expm1` 54 (`_gn_expm1` 85), `_ry_cr_pow` 149
 (`ganita_f64_pow` 209), and the loop floor (`noop`, 3 ns). M1 part 1: an integrator step 21–27 ns on the series
 branch and 70–75 ns on `expm1`; `conc` / `take` 9, `shift` 16, an accepted `positive` 18 ns (no Rust twin: crate-private
-and inlined in Rust). The Rust twins arrive with each milestone.
+and inlined in Rust). M1 part 2: a trace event 4 ns filtered out, 5.07 µs written (three f64 fields, ring buffer).
+The Rust twins arrive with each milestone.
 Probe measurements (`port-parity.md` §3, measured not gated): the implicit NADH solves 582 / 259 ns
 (`balanced_nad_ratio` / `end_of_step_nadh`; Rust 155 / 98 ns); the network's 264-byte probe copy 11 ns; a
 level-gated trace event around MM +11 ns filtered out (a raw sakshi span +204 ns); a bote `tools/call` round trip
@@ -146,6 +153,8 @@ Rust crate (crates.io): mastishk 1.1.0, sharira 1.1.0, kiran 1.0.0. No Cyrius co
 
 ## Next
 
-M1 part 2: `src/logging.cyr` — `ry_log_init` / `ry_log_init_with_level` (`RASAYAN_LOG`: level names and
-`rasayan=<level>`, ADR 0002 row 8) and the level-gated event helpers `_ry_trace` / `_ry_debug` / `_ry_warn` (row 7).
-Part 3: `src/json.cyr` on bayan and `src/fmtf.cyr`.
+M1 part 3: `src/json.cyr` on bayan and `src/fmtf.cyr` (ADR 0004).
+
+Parity bookkeeping: `scripts/surface_parity.py` (every Rust public item of a ported module has its Cyrius name) and
+`scripts/rust_test_ledger.py` (`docs/development/rust-test-ledger.md`: 723 Rust tests, 13 ported, 0 due and unported)
+run in `scripts/gates.sh` since M1 part 2.

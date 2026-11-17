@@ -57,7 +57,8 @@ in `scripts/oracle/target/` (gitignored).
 | `tests/golden/ai.tsv` | 1 | `SYSTEM_PROMPT`'s text, class A |
 | `tests/golden/guard.tsv` | 5,575 | M1 part 1: crate-private `guard.rs` through its verbatim copy (below): the validators (no output for `Ok(())`, `E:<Variant>` for an error), `valid_dt`, `conc`, `unit`, `take`, `shift`; class A |
 | `tests/golden/integrate.tsv` | 5,998 | M1 part 1: crate-private `integrate.rs` through its verbatim copy: `step_factors` (two outputs) and the three integrators across `SERIES_MAX` to `k·dt` = 1e6; B 2,963 (series branch, early returns) · C 3,035 (`exp_m1` branch) |
-| `tests/golden/modules.txt` | 10 | the module list the harness reads |
+| `tests/golden/logging.tsv` | 196 | M1 part 2: `logging::init` and `init_with_level` over every `RASAYAN_LOG` form and default: for each of the 20 targets rasayan's events carry, the most verbose level Rust's own filter passes (`logging.rs`'s `EnvFilter` statement through its verbatim copy, the real environment variable set per row); class A |
+| `tests/golden/modules.txt` | 11 | the module list the harness reads |
 | `src/constants.cyr` | 333 lines | the 67 public constants as `RY_` consts, under the first paragraph of their Rust doc comments |
 | `src/constants_private.cyr` | 74 lines | the 16 private constants as `_RY_<MODULE>_<NAME>` (`t_private.rs`) |
 | `src/protein_data.cyr` | 721 lines | `RY_AMINO_ACID_*` columns and index constants; `_RY_PROTEIN_*`: the lookup index, the side chains, the pKa-set table, the Bjellqvist termini, the Chou-Fasman columns, 23 scalars (`t_protein.rs`) |
@@ -139,7 +140,10 @@ Pending, at their milestones (port plan §4 step 6, §6):
 must pin is compiled from a verbatim copy: `src/v_guard.rs` and `src/v_integrate.rs` each hold one block between
 `// @verbatim <file>` and `// @end` that is a byte-for-byte span of `rust-old/src/<file>` (from the first item to the
 test module), plus, outside the block, only a `use` naming a type by its public path and the accessors the emitter
-needs (`v_integrate::factors` for the private `step_factors`). `src/verbatim.rs` checks every block against the
+needs (`v_integrate::factors` for the private `step_factors`). `src/v_logging.rs` holds `logging.rs`'s `EnvFilter`
+statement (and the `use` lines before it) inside a function that returns the filter instead of installing it, so
+`m_logging.rs` can build Rust's filter once per row; it sets `RASAYAN_LOG` for real (`std::env::set_var`, sound in this
+single-threaded generator) and restores it afterwards. `src/verbatim.rs` checks every block against the
 `include_str!` of the oracle's file before any row is made, in both modes, so a copy that drifts can never write or
 pass a golden file. probe 4's `probe_solver` checks its copies the same way.
 

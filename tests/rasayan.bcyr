@@ -24,6 +24,7 @@ include "src/fmtf.cyr"
 include "src/error.cyr"
 include "src/guard.cyr"
 include "src/integrate.cyr"
+include "src/logging.cyr"
 
 # Keeps the loops' results observable.
 var _bn_sink = 0;
@@ -214,6 +215,41 @@ fn _bn_g(name, kind, n): i64 {
     return 0;
 }
 
+# n calcium_tick-shaped trace events (three f64 fields), each built only past its gate: the cost an event adds to a
+# tick, filtered out or written (to sakshi's ring buffer). Rust's filtered `trace!` is a load and a compare.
+fn _bn_event(n): i64 {
+    var x: f64 = 0.01;
+    var built = 0;
+    var i = 0;
+    while (i < n) {
+        if (_ry_trace_on() == 1) {
+            var h[24];
+            var b[256];
+            var e = _ry_ev(&h, &b, 256, "rasayan::calcium", "calcium_tick");
+            _ry_ev_f(e, "dt", x);
+            _ry_ev_f(e, "ip3", 0.25);
+            _ry_ev_f(e, "ca", 0.1);
+            _ry_trace(e);
+            built = built + 1;
+        }
+        x = x + 0.0000001;
+        i = i + 1;
+    }
+    _bn_keep(x);
+    _bn_sink = _bn_sink ^ built;
+    return 0;
+}
+
+# One benchmark of `n` events at the current level.
+fn _bn_ev(name, n): i64 {
+    var b = bench_new(name);
+    bench_batch_start(b);
+    _bn_event(n);
+    bench_batch_stop(b, n);
+    bench_report(b);
+    return 0;
+}
+
 # Runs the benchmark suite (Rust twins arrive with each milestone).
 fn main(): i64 {
     alloc_init();
@@ -241,6 +277,12 @@ fn main(): i64 {
     _bn_g("guard/take", 1, 1000000);
     _bn_g("guard/shift", 2, 1000000);
     _bn_g("guard/positive ok", 3, 1000000);
+    sakshi_output_buffer();
+    _ry_log_apply(LOG_INFO);
+    _bn_ev("logging/trace event, filtered out", 1000000);
+    _ry_log_apply(LOG_TRACE);
+    _bn_ev("logging/trace event, 3 f64 fields, to the ring buffer", 100000);
+    _ry_log_apply(LOG_INFO);
     if (_bn_sink == 1) { println(""); }
     return 0;
 }

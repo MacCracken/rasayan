@@ -1,16 +1,18 @@
-//! The check behind `v_guard.rs` and `v_integrate.rs`: every `// @verbatim <file>` … `// @end` block in them must be
+//! The check behind `v_guard.rs`, `v_integrate.rs` and `v_logging.rs`: every `// @verbatim <file>` … `// @end` block in them must be
 //! a byte-for-byte span of `rust-old/src/<file>` (both read with `include_str!`, so the check is of the text that was
 //! compiled). The generator runs it before it makes any row, in both modes, so a copy that drifts from the oracle can
 //! never write or pass a golden file. `probe_solver` (M0 probe 4) checks its own copies the same way.
 
 /// The copies, by file name, and the oracle files their blocks come from.
-const COPIES: [(&str, &str); 2] = [
+const COPIES: [(&str, &str); 3] = [
     ("v_guard.rs", include_str!("v_guard.rs")),
     ("v_integrate.rs", include_str!("v_integrate.rs")),
+    ("v_logging.rs", include_str!("v_logging.rs")),
 ];
-const SOURCES: [(&str, &str); 2] = [
+const SOURCES: [(&str, &str); 3] = [
     ("guard.rs", include_str!("../../../rust-old/src/guard.rs")),
     ("integrate.rs", include_str!("../../../rust-old/src/integrate.rs")),
+    ("logging.rs", include_str!("../../../rust-old/src/logging.rs")),
 ];
 
 /// Every block of every copy checked: the number of blocks and their lines, or the first one that is not a span of

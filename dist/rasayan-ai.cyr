@@ -7,7 +7,9 @@
 # Requires (compile-verified; the leaves of dist/rasayan-ai.deps):
 include "lib/str.cyr"
 include "lib/sakshi.cyr"
+include "lib/log.cyr"
 include "lib/result.cyr"
+include "lib/io.cyr"
 
 # --- constants.cyr ---
 
@@ -3252,9 +3254,9 @@ fn _ry_fmt_f64_json(sb, x: f64) {
 # `var t, v = ry_f(..); if (is_err_result(t) == 1) { .. v is the code .. }`. The values follow the order of Rust
 # 1.2.0's `RasayanError` variants and are append-only (the Cyrius form of #[non_exhaustive]); codes Cyrius needs that
 # Rust has no variant for are appended after them, each with the milestone that first returns it. Each code has a
-# fixed message. The values that made a call fail (the parameter's name and value, the reason) are not carried in the
-# error: the failing guard reports them as Rust's Display text in a level-gated sakshi event at DEBUG
-# (`_ry_guard_fail`, src/guard.cyr), so they cost nothing unless asked for.
+# fixed message. The values that made a call fail (the parameter's name and value, the reason, the unknown code) are
+# not carried in the error: the failure site reports them as Rust's Display text of the error in a level-gated sakshi
+# event at DEBUG (`_ry_fail_f`, `_ry_fail_text`, below), so they cost nothing unless asked for.
 #
 # The golden corpus names an error by its Rust variant (`E:NonFinite`), so ry_error_name gives that name and the
 # parity is on the code.
@@ -3306,6 +3308,82 @@ fn ry_error_message(code): cstring {
     return "unknown error";
 }
 
+# ── the failure events (Rust's Display, ADR 0002 row 1) ──
+
+# A str_builder over a caller's stack buffer: header `hdr` (24 bytes: buf, len, cap) on `buf` of `cap` bytes. It grows
+# onto the heap only past `cap`, as any str_builder does.
+fn _ry_sb_on(hdr, buf, cap): i64 {
+    store64(hdr, buf);
+    store64(hdr + 8, 0);
+    store64(hdr + 16, cap);
+    return hdr;
+}
+
+# Writes Rust's Display text of an error with a name and an f64 payload into `sb`: `non-finite value: <name> = <value>`
+# (RY_ERR_NON_FINITE), `concentration out of range: <name> = <value> (must be >= 0)` (RY_ERR_NEGATIVE_CONCENTRATION),
+# or `invalid parameter: <name> = <value> (<reason><min>)` (RY_ERR_INVALID_PARAMETER), where `<min>` is the bound in
+# Display form when `has_min` is 1 (guard's `must be >= {min}`) and nothing otherwise. `name` and `reason` are C
+# strings; a value is written as Rust's `{}` writes it (`_ry_fmt_f64_display`).
+fn _ry_error_display_f(sb, code, name, value: f64, reason, has_min, min: f64) {
+    if (code == RY_ERR_NEGATIVE_CONCENTRATION) {
+        str_builder_add_cstr(sb, "concentration out of range: ");
+    } elif (code == RY_ERR_INVALID_PARAMETER) {
+        str_builder_add_cstr(sb, "invalid parameter: ");
+    } else {
+        str_builder_add_cstr(sb, "non-finite value: ");
+    }
+    str_builder_add_cstr(sb, name);
+    str_builder_add_cstr(sb, " = ");
+    _ry_fmt_f64_display(sb, value);
+    if (code == RY_ERR_NEGATIVE_CONCENTRATION) {
+        str_builder_add_cstr(sb, " (must be >= 0)");
+    } elif (code == RY_ERR_INVALID_PARAMETER) {
+        str_builder_add_cstr(sb, " (");
+        str_builder_add_cstr(sb, reason);
+        if (has_min == 1) { _ry_fmt_f64_display(sb, min); }
+        str_builder_putc(sb, 41);
+    }
+    return 0;
+}
+
+# The refusal `code` of the value `value` named `name`, for `return Err(..)`: with DEBUG on it first emits the error's
+# Display text (_ry_error_display_f) as one DEBUG event, built in a 512-byte stack buffer (a value's Display text is
+# at most 327 bytes, −5e-324's), so it never allocates. Rust's `Err(RasayanError::InvalidParameter { name, value,
+# reason })` at a validate() is `return Err(_ry_fail_f(RY_ERR_INVALID_PARAMETER, name, value, reason, 0, 0.0));`.
+#must_use
+fn _ry_fail_f(code, name, value: f64, reason, has_min, min: f64): i64 {
+    if (sakshi_get_level() >= SK_DEBUG) {
+        var hdr[24];
+        var buf[512];
+        var sb = _ry_sb_on(&hdr, &buf, 512);
+        _ry_error_display_f(sb, code, name, value, reason, has_min, min);
+        sakshi_debug(load64(sb), load64(sb + 8));
+    }
+    return code;
+}
+
+# The refusal `code` of the text [p, p + n): with DEBUG on it first emits Rust's Display text, `unknown amino acid:
+# <the code's UTF-8 bytes>` (RY_ERR_UNKNOWN_AMINO_ACID) or `unknown metabolic pathway: <the name>`
+# (RY_ERR_UNKNOWN_PATHWAY), as one DEBUG event in a stack buffer (a longer text grows it onto the heap). Returns
+# `code`.
+#must_use
+fn _ry_fail_text(code, p, n): i64 {
+    if (sakshi_get_level() >= SK_DEBUG) {
+        var hdr[24];
+        var buf[256];
+        var sb = _ry_sb_on(&hdr, &buf, 256);
+        str_builder_add_cstr(sb, ry_error_message(code));
+        str_builder_add_cstr(sb, ": ");
+        var i = 0;
+        while (i < n) {
+            str_builder_putc(sb, load8(p + i));
+            i = i + 1;
+        }
+        sakshi_debug(load64(sb), load64(sb + 8));
+    }
+    return code;
+}
+
 # --- guard.cyr ---
 
 # guard.cyr — shared numeric guards: parameter validation and input sanitization (Rust 1.2.0's crate-private
@@ -3326,58 +3404,14 @@ fn ry_error_message(code): cstring {
 # is written out (`var t, v = ..; if (is_err_result(t) == 1) { return Err(v); }`): at 6.7.18 `f()?` on a #must_use
 # function warns that the result is discarded, and `cyrius test` must be warning-free. A refusal costs one level test
 # unless DEBUG is on; then it first reports Rust's Display text of the error it stands for (`invalid parameter: km = 0
-# (must be > 0)`) as one sakshi event (ADR 0002 row 1). The text is built in a stack buffer, so a refusal never
-# allocates.
-
-# A str_builder over a caller's stack buffer: header `hdr` (24 bytes: buf, len, cap) on `buf` of `cap` bytes. It grows
-# onto the heap only past `cap`, as any str_builder does.
-fn _ry_sb_on(hdr, buf, cap): i64 {
-    store64(hdr, buf);
-    store64(hdr + 8, 0);
-    store64(hdr + 16, cap);
-    return hdr;
-}
-
-# The refusal `code` of the value `value` named `name` (a C string), for `return Err(..)`. With DEBUG on it first emits
-# Rust's Display text of the error as a DEBUG event: `non-finite value: <name> = <value>` (RY_ERR_NON_FINITE),
-# `concentration out of range: <name> = <value> (must be >= 0)` (RY_ERR_NEGATIVE_CONCENTRATION), or `invalid
-# parameter: <name> = <value> (<reason><min>)` (RY_ERR_INVALID_PARAMETER), where `<min>` is the bound in Display form
-# when `has_min` is 1 (`must be >= 1`) and nothing otherwise. A value is written as Rust's `{}` writes it
-# (`_ry_fmt_f64_display`: positional, at most 330 bytes for 5e-324), so 512 bytes hold every event.
-#must_use
-fn _ry_guard_fail(code, name, value: f64, reason, has_min, min: f64): i64 {
-    if (sakshi_get_level() >= SK_DEBUG) {
-        var hdr[24];
-        var buf[512];
-        var sb = _ry_sb_on(&hdr, &buf, 512);
-        if (code == RY_ERR_NEGATIVE_CONCENTRATION) {
-            str_builder_add_cstr(sb, "concentration out of range: ");
-        } elif (code == RY_ERR_INVALID_PARAMETER) {
-            str_builder_add_cstr(sb, "invalid parameter: ");
-        } else {
-            str_builder_add_cstr(sb, "non-finite value: ");
-        }
-        str_builder_add_cstr(sb, name);
-        str_builder_add_cstr(sb, " = ");
-        _ry_fmt_f64_display(sb, value);
-        if (code == RY_ERR_NEGATIVE_CONCENTRATION) {
-            str_builder_add_cstr(sb, " (must be >= 0)");
-        } elif (code == RY_ERR_INVALID_PARAMETER) {
-            str_builder_add_cstr(sb, " (");
-            str_builder_add_cstr(sb, reason);
-            if (has_min == 1) { _ry_fmt_f64_display(sb, min); }
-            str_builder_putc(sb, 41);
-        }
-        sakshi_debug(load64(sb), load64(sb + 8));
-    }
-    return code;
-}
+# (must be > 0)`) as one sakshi event (ADR 0002 row 1; `_ry_fail_f`, src/error.cyr). The text is built in a stack
+# buffer, so a refusal never allocates.
 
 # Rejects NaN and ±inf: Ok(0), or Err(RY_ERR_NON_FINITE). Mirrors `guard::finite`.
 #must_use
 fn _ry_guard_finite(name, value: f64): Result {
     if (_ry_is_finite(value) == 1) { return Ok(0); }
-    return Err(_ry_guard_fail(RY_ERR_NON_FINITE, name, value, 0, 0, 0.0));
+    return Err(_ry_fail_f(RY_ERR_NON_FINITE, name, value, 0, 0, 0.0));
 }
 
 # Requires a finite value `>= 0` (concentrations, rates, Vmax): Ok(0), Err(RY_ERR_NON_FINITE) for NaN or ±inf, or
@@ -3387,7 +3421,7 @@ fn _ry_guard_non_negative(name, value: f64): Result {
     var ft, fv = _ry_guard_finite(name, value);
     if (is_err_result(ft) == 1) { return Err(fv); }
     if (value < 0.0) {
-        return Err(_ry_guard_fail(RY_ERR_NEGATIVE_CONCENTRATION, name, value, 0, 0, 0.0));
+        return Err(_ry_fail_f(RY_ERR_NEGATIVE_CONCENTRATION, name, value, 0, 0, 0.0));
     }
     return Ok(0);
 }
@@ -3399,7 +3433,7 @@ fn _ry_guard_positive(name, value: f64): Result {
     var ft, fv = _ry_guard_finite(name, value);
     if (is_err_result(ft) == 1) { return Err(fv); }
     if (value <= 0.0) {
-        return Err(_ry_guard_fail(RY_ERR_INVALID_PARAMETER, name, value, "must be > 0", 0, 0.0));
+        return Err(_ry_fail_f(RY_ERR_INVALID_PARAMETER, name, value, "must be > 0", 0, 0.0));
     }
     return Ok(0);
 }
@@ -3412,7 +3446,7 @@ fn _ry_guard_fraction(name, value: f64): Result {
     var ft, fv = _ry_guard_finite(name, value);
     if (is_err_result(ft) == 1) { return Err(fv); }
     if (value < 0.0 || value > 1.0) {
-        return Err(_ry_guard_fail(RY_ERR_INVALID_PARAMETER, name, value, "must be in [0, 1]", 0, 0.0));
+        return Err(_ry_fail_f(RY_ERR_INVALID_PARAMETER, name, value, "must be in [0, 1]", 0, 0.0));
     }
     return Ok(0);
 }
@@ -3424,7 +3458,7 @@ fn _ry_guard_at_least(name, value: f64, min: f64): Result {
     var ft, fv = _ry_guard_finite(name, value);
     if (is_err_result(ft) == 1) { return Err(fv); }
     if (value < min) {
-        return Err(_ry_guard_fail(RY_ERR_INVALID_PARAMETER, name, value, "must be >= ", 1, min));
+        return Err(_ry_fail_f(RY_ERR_INVALID_PARAMETER, name, value, "must be >= ", 1, min));
     }
     return Ok(0);
 }
@@ -3570,6 +3604,293 @@ fn _ry_integrate_activate(x: f64, on: f64, off: f64, dt: f64): f64 {
     var a: f64 = x * f + on * dt * g;
     var r: f64 = _ry_min(a, 1.0);
     return r;
+}
+
+# --- logging.cyr ---
+
+# logging.cyr — rasayan's logging setup (Rust 1.2.0's `logging.rs`) and the helpers its 31 `tracing` events port
+# through (ADR 0002 rows 7–8), on lib/log.cyr and sakshi.
+#
+# ── RASAYAN_LOG ──
+# ry_log_init / ry_log_init_with_level set the level from the RASAYAN_LOG environment variable, as Rust's
+# `EnvFilter::try_from_env("RASAYAN_LOG").unwrap_or_else(|_| EnvFilter::new(default_level))` does, for the directives
+# whose effect is one level for every rasayan target (ADR 0002 row 8). A value is a comma-separated list of items, each
+# empty, a level word, or `rasayan` / `rasayan=` / `rasayan=<level word>`. A level word is a level name in any case
+# (`trace` `debug` `info` `warn` `error` `off`) or a decimal 0–5 (`0` off … `5` trace, leading zeros allowed; after
+# `rasayan=` a leading `+` too, as Rust's `usize` parse takes it). `rasayan` and `rasayan=` enable every level, as Rust
+# reads a target with no level. The level is the last `rasayan` item's when there is one, else the last level word's;
+# a list with no item at all (`""`, `","`) is OFF, as Rust's filter with no directive enables nothing.
+#
+# Anything else — blanks, another or a per-module target (`rasayan::pathway=debug`), span and field directives,
+# misspelled levels — is refused with one warning, and the default applies. Rust reads some of those as directives the
+# port doesn't carry (a misspelled level is a target there, so rasayan goes silent), and refuses the rest itself; the
+# parity rows (tests/golden/logging.tsv) compare every form, and the refused ones whose Rust level differs are ADR 0002
+# row 8's.
+#
+# The default (`"info"` for ry_log_init) is read by the same rules, except that a list with no item is ERROR, as Rust's
+# `EnvFilter::new` uses its ERROR default directive then; a default the rules refuse is ERROR, with a warning.
+#
+# Levels are lib/log.cyr's LOG_TRACE … LOG_ERROR, and RY_LOG_OFF for off. Rust's filter is the process's; so is
+# sakshi's level, which every library on sakshi shares.
+#
+# ── events ──
+# Rust emits 31 events (25 `trace!`, 5 `debug!`, 1 `warn!`) and opens no span. Each ports as a block that tests the
+# level first and builds the event only when it passes (M0 probe 8: ~11 ns filtered out), in a stack buffer:
+#
+#     if (_ry_trace_on() == 1) {
+#         var h[24];
+#         var b[256];
+#         var e = _ry_ev(&h, &b, 256, "rasayan::calcium", "calcium_tick");
+#         _ry_ev_f(e, "dt", dt);
+#         _ry_ev_f(e, "ca", ca);
+#         _ry_trace(e);
+#     }
+#
+# The text is what Rust's fmt layer prints after the level: `<target>: <message> <key>=<value> …`, an f64 in Display
+# form (`src/fmtf.cyr`; Rust's layer writes Debug, `1.0` for `1`: the log format is sakshi's and is not compared). No
+# sakshi span is used: sakshi's span calls never test the level (probe 8: 204 ns filtered out).
+
+# The level that lets no event through: lib/log.cyr's LOG_FATAL + 1 (Rust's LevelFilter::OFF).
+const RY_LOG_OFF = 6;
+
+# ── RASAYAN_LOG ──
+
+# Rust's `LevelFilter::from_str` on the non-empty text [p, p + n): a level name in any case or a decimal 0–5, with a
+# leading `+` only when `plus` is 1. The LOG_* level (RY_LOG_OFF for `off` and 0), or -1.
+#must_use
+fn _ry_log_word(p, n, plus): i64 {
+    if (n <= 0) { return 0 - 1; }
+    var k = 0;
+    if (plus == 1 && load8(p) == 43) { k = 1; }
+    if (k < n) {
+        var digits = 1;
+        var v = 0;
+        var j = k;
+        while (j < n) {
+            var c = load8(p + j);
+            if (c < 48 || c > 57) { digits = 0; break; }
+            if (v <= 5) { v = v * 10 + (c - 48); }
+            j = j + 1;
+        }
+        if (digits == 1) {
+            if (v == 0) { return RY_LOG_OFF; }
+            if (v == 1) { return LOG_ERROR; }
+            if (v == 2) { return LOG_WARN; }
+            if (v == 3) { return LOG_INFO; }
+            if (v == 4) { return LOG_DEBUG; }
+            if (v == 5) { return LOG_TRACE; }
+            return 0 - 1;
+        }
+    }
+    if (n < 3 || n > 5) { return 0 - 1; }
+    var buf[8];
+    var i = 0;
+    while (i < n) {
+        var ch = load8(p + i);
+        if (ch >= 65 && ch <= 90) { ch = ch + 32; }
+        store8(&buf + i, ch);
+        i = i + 1;
+    }
+    if (n == 5 && memeq(&buf, "trace", 5) == 1) { return LOG_TRACE; }
+    if (n == 5 && memeq(&buf, "debug", 5) == 1) { return LOG_DEBUG; }
+    if (n == 4 && memeq(&buf, "info", 4) == 1) { return LOG_INFO; }
+    if (n == 4 && memeq(&buf, "warn", 4) == 1) { return LOG_WARN; }
+    if (n == 5 && memeq(&buf, "error", 5) == 1) { return LOG_ERROR; }
+    if (n == 3 && memeq(&buf, "off", 3) == 1) { return RY_LOG_OFF; }
+    return 0 - 1;
+}
+
+# The level a RASAYAN_LOG-style list [p, p + n) names (the header's rules), `empty` for a list with no item, or -1
+# when an item is refused.
+#must_use
+fn _ry_log_list(p, n, empty): i64 {
+    var global = 0 - 1;
+    var target = 0 - 1;
+    var at = 0;
+    while (at <= n) {
+        var end = at;
+        while (end < n && load8(p + end) != 44) { end = end + 1; }
+        var len = end - at;
+        if (len > 0) {
+            var q = p + at;
+            if (len >= 7 && memeq(q, "rasayan", 7) == 1) {
+                # `rasayan` and `rasayan=` enable every level; `rasayan=<level word>` sets one; any other text after
+                # `rasayan` is another target (`rasayanx`, `rasayan::pathway`, `rasayan[span]`), refused.
+                if (len == 7) {
+                    target = LOG_TRACE;
+                } elif (load8(q + 7) != 61) {
+                    return 0 - 1;
+                } elif (len == 8) {
+                    target = LOG_TRACE;
+                } else {
+                    var lv = _ry_log_word(q + 8, len - 8, 1);
+                    if (lv < 0) { return 0 - 1; }
+                    target = lv;
+                }
+            } else {
+                var gl = _ry_log_word(q, len, 0);
+                if (gl < 0) { return 0 - 1; }
+                global = gl;
+            }
+        }
+        at = end + 1;
+    }
+    if (target >= 0) { return target; }
+    if (global >= 0) { return global; }
+    return empty;
+}
+
+# The level a RASAYAN_LOG value [p, p + n) names: LOG_TRACE … LOG_ERROR or RY_LOG_OFF (also for a value with no
+# item, `""` or `","`), or -1 when the port refuses it (the header's rules).
+#must_use
+fn ry_log_parse(p, n): i64 {
+    return _ry_log_list(p, n, RY_LOG_OFF);
+}
+
+# The level logging gets from a RASAYAN_LOG value [env, env + env_len) (env 0: the variable is unset) and the default
+# `default_level` (a C string): the value's when the port reads it, else the default's (ERROR for a default with no
+# item, or one the port refuses). Mirrors the filter `logging::init_with_level` builds; changes nothing.
+#must_use
+fn ry_log_level_of(env, env_len, default_level): i64 {
+    if (env != 0) {
+        var lv = _ry_log_list(env, env_len, RY_LOG_OFF);
+        if (lv >= 0) { return lv; }
+    }
+    var dl = _ry_log_list(default_level, strlen(default_level), LOG_ERROR);
+    if (dl >= 0) { return dl; }
+    return LOG_ERROR;
+}
+
+# Applies a level to lib/log.cyr and sakshi. RY_LOG_OFF sets sakshi below its FATAL level, so no event passes.
+fn _ry_log_apply(level): i64 {
+    if (level >= RY_LOG_OFF) {
+        log_set_level(RY_LOG_OFF);
+        sakshi_set_level(SK_FATAL - 1);
+        return level;
+    }
+    log_init(level);
+    return level;
+}
+
+# Sets rasayan's log level from RASAYAN_LOG, or from `default_level` (a C string) when the variable is unset or names
+# what the port refuses; a default the port refuses is ERROR. Each refusal warns once (after the level is applied, so
+# a level above WARN hides it). Returns the level applied: LOG_TRACE … LOG_ERROR or RY_LOG_OFF. Safe to call again: the
+# later call's level replaces the earlier one (Rust keeps the first subscriber; its level never changes). Mirrors
+# `logging::init_with_level`.
+fn ry_log_init_with_level(default_level): i64 {
+    var env = getenv("RASAYAN_LOG");
+    var en = 0;
+    if (env != 0) { en = strlen(env); }
+    var lv = ry_log_level_of(env, en, default_level);
+    _ry_log_apply(lv);
+    var env_refused = 0;
+    if (env != 0 && ry_log_parse(env, en) < 0) {
+        env_refused = 1;
+        log_warn("rasayan: RASAYAN_LOG refused (not a list of levels or rasayan=<level>): default used");
+    }
+    if ((env == 0 || env_refused == 1) && _ry_log_list(default_level, strlen(default_level), LOG_ERROR) < 0) {
+        log_warn("rasayan: default log level refused: error used");
+    }
+    return lv;
+}
+
+# Sets rasayan's log level from RASAYAN_LOG, defaulting to `info`. Returns the level applied. Mirrors `logging::init`.
+fn ry_log_init(): i64 {
+    return ry_log_init_with_level("info");
+}
+
+# ── events ──
+
+# 1 when TRACE events pass: the gate a `trace!` block tests before it builds anything.
+#must_use
+#inline
+fn _ry_trace_on(): i64 {
+    return sakshi_get_level() >= SK_TRACE;
+}
+
+# 1 when DEBUG events pass.
+#must_use
+#inline
+fn _ry_debug_on(): i64 {
+    return sakshi_get_level() >= SK_DEBUG;
+}
+
+# 1 when WARN events pass.
+#must_use
+#inline
+fn _ry_warn_on(): i64 {
+    return sakshi_get_level() >= SK_WARN;
+}
+
+# Starts an event's text, `<target>: <message>` (C strings), in a str_builder over the caller's buffer: header `hdr`
+# (24 bytes) on `buf` of `cap` bytes. Returns the builder.
+fn _ry_ev(hdr, buf, cap, target, msg): i64 {
+    var sb = _ry_sb_on(hdr, buf, cap);
+    str_builder_add_cstr(sb, target);
+    str_builder_add_cstr(sb, ": ");
+    str_builder_add_cstr(sb, msg);
+    return sb;
+}
+
+# Appends the field ` <key>=<x>`, x in Display form (Rust's `dt`, `atp = self.atp`).
+fn _ry_ev_f(sb, key, x: f64) {
+    str_builder_putc(sb, 32);
+    str_builder_add_cstr(sb, key);
+    str_builder_putc(sb, 61);
+    _ry_fmt_f64_display(sb, x);
+    return 0;
+}
+
+# Appends the field ` <key>=<n>`, an integer (Rust's `prompt_len = question.len()`, `max_steps`).
+fn _ry_ev_i(sb, key, n) {
+    str_builder_putc(sb, 32);
+    str_builder_add_cstr(sb, key);
+    str_builder_putc(sb, 61);
+    str_builder_add_int(sb, n);
+    return 0;
+}
+
+# Appends the field ` <key>=true` or ` <key>=false` (Rust's `installed`).
+fn _ry_ev_b(sb, key, b) {
+    str_builder_putc(sb, 32);
+    str_builder_add_cstr(sb, key);
+    if (b != 0) {
+        str_builder_add_cstr(sb, "=true");
+    } else {
+        str_builder_add_cstr(sb, "=false");
+    }
+    return 0;
+}
+
+# Appends the field ` <key>=<text>`, the `n` bytes at `p` (Rust's `%` Display of a string: `model = %self.model`).
+fn _ry_ev_s(sb, key, p, n) {
+    str_builder_putc(sb, 32);
+    str_builder_add_cstr(sb, key);
+    str_builder_putc(sb, 61);
+    var i = 0;
+    while (i < n) {
+        str_builder_putc(sb, load8(p + i));
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Emits the event built in `sb` at TRACE (Rust's `tracing::trace!`).
+fn _ry_trace(sb) {
+    sakshi_trace(load64(sb), load64(sb + 8));
+    return 0;
+}
+
+# Emits the event built in `sb` at DEBUG (Rust's `tracing::debug!`).
+fn _ry_debug(sb) {
+    sakshi_debug(load64(sb), load64(sb + 8));
+    return 0;
+}
+
+# Emits the event built in `sb` at WARN (Rust's `tracing::warn!`).
+fn _ry_warn(sb) {
+    sakshi_warn(load64(sb), load64(sb + 8));
+    return 0;
 }
 
 # --- protein_data.cyr ---

@@ -72,6 +72,7 @@ fn rejects(v: f64, what) {
 }
 
 # Rust's `validators_reject_non_finite`: NaN, +inf and -inf, each refused by every validator.
+# rust src/guard.rs: validators_reject_non_finite
 fn validators_reject_non_finite() {
     test_group("guard: validators_reject_non_finite");
     var nan: f64 = _ry_nan();
@@ -84,6 +85,7 @@ fn validators_reject_non_finite() {
 }
 
 # Rust's `validators_ranges`, plus the code each kind of refusal returns.
+# rust src/guard.rs: validators_ranges
 fn validators_ranges() {
     test_group("guard: validators_ranges");
     var t, c = _ry_guard_non_negative("x", 0.0);
@@ -117,6 +119,7 @@ fn validators_ranges() {
 }
 
 # Rust's `take_and_shift_cap_at_pool`, plus the signs of the zeros take and shift return.
+# rust src/guard.rs: take_and_shift_cap_at_pool
 fn take_and_shift_cap_at_pool() {
     test_group("guard: take_and_shift_cap_at_pool");
     var r: f64 = _ry_guard_take(2.0, 1.5);
@@ -149,6 +152,7 @@ fn take_and_shift_cap_at_pool() {
 }
 
 # Rust's `dt_and_sanitizers`.
+# rust src/guard.rs: dt_and_sanitizers
 fn dt_and_sanitizers() {
     test_group("guard: dt_and_sanitizers");
     assert_eq(_ry_guard_valid_dt(0.01), 1, "valid_dt(0.01)");
@@ -252,6 +256,41 @@ fn refusal_events() {
     return 0;
 }
 
+# The four `test_error_display_*` integration tests: Rust's `err.to_string()` carries the payload, and the port's
+# failure event (ADR 0002 row 1) is that text. Each refusal is raised as its failure site raises it.
+# rust tests/integration.rs: test_error_display_negative_concentration, test_error_display_invalid_parameter
+# rust tests/integration.rs: test_error_display_unknown_amino_acid, test_error_display_unknown_pathway
+fn error_display() {
+    test_group("error: the failure events are Rust's Display text");
+    sakshi_set_emit_hook(&_ev_hook);
+    sakshi_set_level(SK_DEBUG);
+    var m15: f64 = -1.5;
+    var c1 = _ry_fail_f(RY_ERR_NEGATIVE_CONCENTRATION, "ATP", m15, 0, 0, 0.0);
+    assert_eq(c1, RY_ERR_NEGATIVE_CONCENTRATION, "NegativeConcentration's code");
+    assert_eq(_ev_is("concentration out of range: ATP = -1.5 (must be >= 0)"), 1, "names ATP, -1.5, concentration");
+    var m001: f64 = -0.01;
+    var c2 = _ry_fail_f(RY_ERR_INVALID_PARAMETER, "Km", m001, "must be positive", 0, 0.0);
+    assert_eq(c2, RY_ERR_INVALID_PARAMETER, "InvalidParameter's code");
+    assert_eq(_ev_is("invalid parameter: Km = -0.01 (must be positive)"), 1, "names Km, -0.01 and the reason");
+    var c3 = _ry_fail_text(RY_ERR_UNKNOWN_AMINO_ACID, "X", 1);
+    assert_eq(c3, RY_ERR_UNKNOWN_AMINO_ACID, "UnknownAminoAcid's code");
+    assert_eq(_ev_is("unknown amino acid: X"), 1, "names X");
+    var c4 = _ry_fail_text(RY_ERR_UNKNOWN_PATHWAY, "pentose phosphate", 17);
+    assert_eq(c4, RY_ERR_UNKNOWN_PATHWAY, "UnknownPathway's code");
+    assert_eq(_ev_is("unknown metabolic pathway: pentose phosphate"), 1, "names the pathway");
+    var nan: f64 = _ry_nan();
+    var c5 = _ry_fail_f(RY_ERR_NON_FINITE, "dt", nan, 0, 0, 0.0);
+    assert_eq(c5, RY_ERR_NON_FINITE, "NonFinite's code");
+    assert_eq(_ev_is("non-finite value: dt = NaN"), 1, "names dt and NaN");
+    sakshi_set_level(SK_INFO);
+    var before = _ev_count;
+    var c6 = _ry_fail_text(RY_ERR_UNKNOWN_PATHWAY, "x", 1);
+    assert_eq(_ev_count, before, "below DEBUG a failure emits nothing");
+    assert_eq(c6, RY_ERR_UNKNOWN_PATHWAY, "and still returns its code");
+    sakshi_clear_emit_hook();
+    return 0;
+}
+
 # Runs the guard and error suites.
 fn main() {
     alloc_init();
@@ -261,6 +300,7 @@ fn main() {
     dt_and_sanitizers();
     error_codes();
     refusal_events();
+    error_display();
     return assert_summary();
 }
 

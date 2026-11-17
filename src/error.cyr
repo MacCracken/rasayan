@@ -4,9 +4,9 @@
 # `var t, v = ry_f(..); if (is_err_result(t) == 1) { .. v is the code .. }`. The values follow the order of Rust
 # 1.2.0's `RasayanError` variants and are append-only (the Cyrius form of #[non_exhaustive]); codes Cyrius needs that
 # Rust has no variant for are appended after them, each with the milestone that first returns it. Each code has a
-# fixed message. The values that made a call fail (the parameter's name and value, the reason) are not carried in the
-# error: the failing guard reports them as Rust's Display text in a level-gated sakshi event at DEBUG
-# (`_ry_guard_fail`, src/guard.cyr), so they cost nothing unless asked for.
+# fixed message. The values that made a call fail (the parameter's name and value, the reason, the unknown code) are
+# not carried in the error: the failure site reports them as Rust's Display text of the error in a level-gated sakshi
+# event at DEBUG (`_ry_fail_f`, `_ry_fail_text`, below), so they cost nothing unless asked for.
 #
 # The golden corpus names an error by its Rust variant (`E:NonFinite`), so ry_error_name gives that name and the
 # parity is on the code.
@@ -56,4 +56,80 @@ fn ry_error_message(code): cstring {
         _ => { return "unknown error"; }
     }
     return "unknown error";
+}
+
+# ── the failure events (Rust's Display, ADR 0002 row 1) ──
+
+# A str_builder over a caller's stack buffer: header `hdr` (24 bytes: buf, len, cap) on `buf` of `cap` bytes. It grows
+# onto the heap only past `cap`, as any str_builder does.
+fn _ry_sb_on(hdr, buf, cap): i64 {
+    store64(hdr, buf);
+    store64(hdr + 8, 0);
+    store64(hdr + 16, cap);
+    return hdr;
+}
+
+# Writes Rust's Display text of an error with a name and an f64 payload into `sb`: `non-finite value: <name> = <value>`
+# (RY_ERR_NON_FINITE), `concentration out of range: <name> = <value> (must be >= 0)` (RY_ERR_NEGATIVE_CONCENTRATION),
+# or `invalid parameter: <name> = <value> (<reason><min>)` (RY_ERR_INVALID_PARAMETER), where `<min>` is the bound in
+# Display form when `has_min` is 1 (guard's `must be >= {min}`) and nothing otherwise. `name` and `reason` are C
+# strings; a value is written as Rust's `{}` writes it (`_ry_fmt_f64_display`).
+fn _ry_error_display_f(sb, code, name, value: f64, reason, has_min, min: f64) {
+    if (code == RY_ERR_NEGATIVE_CONCENTRATION) {
+        str_builder_add_cstr(sb, "concentration out of range: ");
+    } elif (code == RY_ERR_INVALID_PARAMETER) {
+        str_builder_add_cstr(sb, "invalid parameter: ");
+    } else {
+        str_builder_add_cstr(sb, "non-finite value: ");
+    }
+    str_builder_add_cstr(sb, name);
+    str_builder_add_cstr(sb, " = ");
+    _ry_fmt_f64_display(sb, value);
+    if (code == RY_ERR_NEGATIVE_CONCENTRATION) {
+        str_builder_add_cstr(sb, " (must be >= 0)");
+    } elif (code == RY_ERR_INVALID_PARAMETER) {
+        str_builder_add_cstr(sb, " (");
+        str_builder_add_cstr(sb, reason);
+        if (has_min == 1) { _ry_fmt_f64_display(sb, min); }
+        str_builder_putc(sb, 41);
+    }
+    return 0;
+}
+
+# The refusal `code` of the value `value` named `name`, for `return Err(..)`: with DEBUG on it first emits the error's
+# Display text (_ry_error_display_f) as one DEBUG event, built in a 512-byte stack buffer (a value's Display text is
+# at most 327 bytes, −5e-324's), so it never allocates. Rust's `Err(RasayanError::InvalidParameter { name, value,
+# reason })` at a validate() is `return Err(_ry_fail_f(RY_ERR_INVALID_PARAMETER, name, value, reason, 0, 0.0));`.
+#must_use
+fn _ry_fail_f(code, name, value: f64, reason, has_min, min: f64): i64 {
+    if (sakshi_get_level() >= SK_DEBUG) {
+        var hdr[24];
+        var buf[512];
+        var sb = _ry_sb_on(&hdr, &buf, 512);
+        _ry_error_display_f(sb, code, name, value, reason, has_min, min);
+        sakshi_debug(load64(sb), load64(sb + 8));
+    }
+    return code;
+}
+
+# The refusal `code` of the text [p, p + n): with DEBUG on it first emits Rust's Display text, `unknown amino acid:
+# <the code's UTF-8 bytes>` (RY_ERR_UNKNOWN_AMINO_ACID) or `unknown metabolic pathway: <the name>`
+# (RY_ERR_UNKNOWN_PATHWAY), as one DEBUG event in a stack buffer (a longer text grows it onto the heap). Returns
+# `code`.
+#must_use
+fn _ry_fail_text(code, p, n): i64 {
+    if (sakshi_get_level() >= SK_DEBUG) {
+        var hdr[24];
+        var buf[256];
+        var sb = _ry_sb_on(&hdr, &buf, 256);
+        str_builder_add_cstr(sb, ry_error_message(code));
+        str_builder_add_cstr(sb, ": ");
+        var i = 0;
+        while (i < n) {
+            str_builder_putc(sb, load8(p + i));
+            i = i + 1;
+        }
+        sakshi_debug(load64(sb), load64(sb + 8));
+    }
+    return code;
 }

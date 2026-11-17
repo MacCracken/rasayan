@@ -6,6 +6,7 @@ constants_private
 enzyme
 guard
 integrate
+logging
 math
 membrane
 protein

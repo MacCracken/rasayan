@@ -35,7 +35,10 @@
 # - `guard` rows (M1): src/guard.cyr's validators (the error code, by Rust variant name, through src/error.cyr) and
 #   sanitizers, class A;
 # - `integrate` rows (M1): src/integrate.cyr, class B on the series branch and class C on the exp_m1 branch, at 0 ulp
-#   against the corrected oracle (tests/golden/integrate.cr.tsv).
+#   against the corrected oracle (tests/golden/integrate.cr.tsv);
+# - `logging` rows (M1 part 2): the level each rasayan event target gets from RASAYAN_LOG and the default
+#   (src/logging.cyr's ry_log_level_of), class A; a form the port refuses takes the default, and where Rust's level
+#   differs the row is accepted under ADR 0002 row 8.
 
 include "tests/ulp.cyr"
 include "src/constants.cyr"
@@ -51,6 +54,7 @@ include "src/fmtf.cyr"
 include "src/error.cyr"
 include "src/guard.cyr"
 include "src/integrate.cyr"
+include "src/logging.cyr"
 
 alloc_init();
 
@@ -734,6 +738,69 @@ fn _par_integrate(fp, fl): i64 {
     return 0;
 }
 
+# ── logging ─────────────────────────────────────────────────────────────────────────
+# src/logging.cyr (M1 part 2). A row gives the level of each of the 20 targets rasayan's events carry; the port has one
+# level for all of them.
+
+# The number of event targets a logging row lists (scripts/oracle/src/m_logging.rs, TARGETS).
+var _PAR_LOG_TARGETS = 20;
+
+# The logging rows accepted under ADR 0002 row 8, for the module's summary line.
+var _par_log_acc = 0;
+
+# 1 when the current logging row's RASAYAN_LOG value (or, unset or refused, its default) is a form the port refuses.
+var _par_log_refused = 0;
+
+# The golden name of a level (`LevelFilter.<NAME>`).
+#must_use
+fn _par_level_name(level): i64 {
+    if (level == LOG_TRACE) { return "LevelFilter.TRACE"; }
+    if (level == LOG_DEBUG) { return "LevelFilter.DEBUG"; }
+    if (level == LOG_INFO) { return "LevelFilter.INFO"; }
+    if (level == LOG_WARN) { return "LevelFilter.WARN"; }
+    if (level == LOG_ERROR) { return "LevelFilter.ERROR"; }
+    return "LevelFilter.OFF";
+}
+
+# The logging rows: `logging::init` (the variable: `n:` unset, else `s:`) and `logging::init_with_level` (the variable,
+# then `s:<default>`).
+fn _par_logging(fp, fl): i64 {
+    var dflt = "info";
+    if (_par_eq(fp, fl, "logging::init_with_level") == 1) {
+        if (_par_in_n != 2) { return 0 - 1; }
+        dflt = _par_in_cstr(1);
+        if (dflt == 0) { return 0 - 1; }
+    } elif (_par_eq(fp, fl, "logging::init") != 1 || _par_in_n != 1) {
+        return 0;
+    }
+    var env = 0;
+    var lw[8];
+    store64(&lw, 0);
+    if (load64(_par_in_k) == 115) {
+        env = _par_in_bytes(0, &lw);
+        if (env == 0) { return 0 - 1; }
+    } elif (load64(_par_in_k) != 110) {
+        return 0 - 1;
+    }
+    var en = load64(&lw);
+    var lv = ry_log_level_of(env, en, dflt);
+    _par_log_refused = 0;
+    if (env != 0 && ry_log_parse(env, en) >= 0) {
+        _par_log_refused = 0;
+    } elif (env != 0) {
+        _par_log_refused = 1;
+    } elif (_par_eq(fp, fl, "logging::init_with_level") == 1) {
+        if (_ry_log_list(dflt, strlen(dflt), LOG_ERROR) < 0) { _par_log_refused = 1; }
+    }
+    var name = _par_level_name(lv);
+    var k = 0;
+    while (k < _PAR_LOG_TARGETS) {
+        _par_got_e(name);
+        k = k + 1;
+    }
+    return 1;
+}
+
 # ── math ────────────────────────────────────────────────────────────────────────────
 # `f64::` rows: the port's counterpart of each Rust std method rasayan calls (port plan §7.1, port-parity.md §0, §2d).
 # - Class A: abs and ceil (builtins); min, max, is_finite, is_nan (src/mathx.cyr), clamp and the `as u32` cast
@@ -788,6 +855,7 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
     if (_par_eq(mp, ml, "membrane") == 1) { return _par_membrane(fp, fl); }
     if (_par_eq(mp, ml, "guard") == 1) { return _par_guard(fp, fl); }
     if (_par_eq(mp, ml, "integrate") == 1) { return _par_integrate(fp, fl); }
+    if (_par_eq(mp, ml, "logging") == 1) { return _par_logging(fp, fl); }
     return 0;
 }
 
@@ -888,15 +956,22 @@ fn _par_c_bound(fp, fl): i64 {
 }
 
 # The ADR accepting a divergent row (function and raw input field), or 0. The ADR 0002 rows arrive with their
-# modules (port plan §3.3).
+# modules (port plan §3.3). Row 8: a RASAYAN_LOG form (or default) the port refuses takes the default, with a warning,
+# where Rust reads it as a directive the port doesn't carry.
 #must_use
 fn _par_accepted(fp, fl, ip, il): i64 {
+    if (_par_log_refused == 1 && fl > 9 && memeq(fp, "logging::", 9) == 1) {
+        _par_log_acc = _par_log_acc + 1;
+        return 2;
+    }
     return 0;
 }
 
-# No ADR's accepted rows are summarised quietly yet.
+# ADR 0002's accepted rows (the refused RASAYAN_LOG forms, each 20 tokens) are counted on their function's line and
+# summed after the module, not printed one by one.
 #must_use
 fn _par_accepted_quiet(adr): i64 {
+    if (adr == 2) { return 1; }
     return 0;
 }
 
@@ -906,8 +981,12 @@ fn _par_accepted_bits(adr): i64 {
     return 1;
 }
 
-# No module-specific summary lines yet.
+# After the logging module: how many refused forms ADR 0002 row 8 accepts.
 fn _par_module_done(mp, ml) {
+    if (_par_eq(mp, ml, "logging") != 1) { return 0; }
+    print("  ADR 0002 row 8: ", 18);
+    fmt_int(_par_log_acc);
+    println(" forms the port refuses (the default applies) where Rust reads a directive it doesn't carry");
     return 0;
 }
 
