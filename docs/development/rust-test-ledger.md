@@ -6,7 +6,7 @@
 > milestone hasn't come. The golden corpus (`tests/golden/`) checks every ported function on its grid besides.
 > The 2 doc tests and the example are M9's.
 
-**723 Rust tests:** 597 ported; 29 at M6, 62 at M7, 35 at M8.
+**723 Rust tests:** 610 ported; 16 at M6, 62 at M7, 35 at M8.
 
 | Rust file | Tests | Ported | Due, unported | Later (milestone) |
 |---|---:|---:|---:|---|
@@ -29,7 +29,7 @@
 | `src/membrane.rs` | 19 | 19 | 0 | — |
 | `src/metabolism.rs` | 26 | 26 | 0 | — |
 | `src/neurotransmitter.rs` | 31 | 0 | 0 | 31 (M7) |
-| `src/nuclear_receptor.rs` | 11 | 0 | 0 | 11 (M6) |
+| `src/nuclear_receptor.rs` | 11 | 11 | 0 | — |
 | `src/pathway.rs` | 34 | 34 | 0 | — |
 | `src/pi3k.rs` | 11 | 11 | 0 | — |
 | `src/protein.rs` | 68 | 68 | 0 | — |
@@ -38,9 +38,9 @@
 | `src/signal.rs` | 21 | 21 | 0 | — |
 | `src/signaling.rs` | 13 | 0 | 0 | 13 (M6) |
 | `src/tca.rs` | 26 | 26 | 0 | — |
-| `tests/integration.rs` | 70 | 59 | 0 | 5 (M6), 6 (M7) |
+| `tests/integration.rs` | 70 | 61 | 0 | 3 (M6), 6 (M7) |
 | `tests/validation.rs` | 25 | 25 | 0 | — |
-| **Total** | **723** | **597** | **0** | |
+| **Total** | **723** | **610** | **0** | |
 
 ## Where each is ported
 
@@ -371,6 +371,17 @@
 | `src/metabolism.rs` `test_validate_negative_atp` | `tests/metabolism.tcyr` `validation` |
 | `src/metabolism.rs` `test_validate_rejects_non_finite` | `tests/metabolism.tcyr` `validation` |
 | `src/metabolism.rs` `test_validate_valid` | `tests/metabolism.tcyr` `validation` |
+| `src/nuclear_receptor.rs` `test_bounded` | `tests/nuclear_receptor.tcyr` `response` |
+| `src/nuclear_receptor.rs` `test_default_valid` | `tests/nuclear_receptor.tcyr` `validation` |
+| `src/nuclear_receptor.rs` `test_delayed_response` | `tests/nuclear_receptor.tcyr` `response` |
+| `src/nuclear_receptor.rs` `test_export_returns_to_free_pool` | `tests/nuclear_receptor.tcyr` `conservation` |
+| `src/nuclear_receptor.rs` `test_hormone_induces_expression` | `tests/nuclear_receptor.tcyr` `response` |
+| `src/nuclear_receptor.rs` `test_invalid_dt_is_noop` | `tests/nuclear_receptor.tcyr` `hardening` |
+| `src/nuclear_receptor.rs` `test_nan_and_negative_hormone` | `tests/nuclear_receptor.tcyr` `hardening` |
+| `src/nuclear_receptor.rs` `test_no_hormone_decays` | `tests/nuclear_receptor.tcyr` `response` |
+| `src/nuclear_receptor.rs` `test_receptor_conserved_long_run` | `tests/nuclear_receptor.tcyr` `conservation` |
+| `src/nuclear_receptor.rs` `test_serde_roundtrip` | `tests/nuclear_receptor.tcyr` `serde` |
+| `src/nuclear_receptor.rs` `test_validate_rejects_nan_and_zero_km` | `tests/nuclear_receptor.tcyr` `validation` |
 | `src/pathway.rs` `test_amino_pyruvate_is_kept` | `tests/pathway.tcyr` `bookkeeping` |
 | `src/pathway.rs` `test_anoxia_pasteur_effect_and_recovery` | `tests/pathway.tcyr` `physiology` |
 | `src/pathway.rs` `test_atp_maintained` | `tests/pathway.tcyr` `ticking` |
@@ -611,6 +622,8 @@
 | `tests/integration.rs` `test_network_long_run_stability` | `tests/pathway.tcyr` `ticking` |
 | `tests/integration.rs` `test_network_zero_glucose_graceful` | `tests/pathway.tcyr` `oxygen` |
 | `tests/integration.rs` `test_network_zero_oxygen_graceful` | `tests/pathway.tcyr` `oxygen` |
+| `tests/integration.rs` `test_nuclear_receptor_config_serde_roundtrip` | `tests/nuclear_receptor.tcyr` `serde` |
+| `tests/integration.rs` `test_nuclear_receptor_flux_serde_roundtrip` | `tests/nuclear_receptor.tcyr` `serde` |
 | `tests/integration.rs` `test_pi3k_config_serde_roundtrip` | `tests/pi3k.tcyr` `serde` |
 | `tests/integration.rs` `test_pi3k_flux_serde_roundtrip` | `tests/pi3k.tcyr` `serde` |
 | `tests/integration.rs` `test_receptor_config_serde_roundtrip` | `tests/receptor.tcyr` `serde` |

@@ -1,0 +1,287 @@
+# rasayan — src/nuclear_receptor.cyr: Rust 1.2.0's nuclear receptor tests, ported
+# Stdlib auto-included via cyrius.cyml
+#
+# The 11 unit tests of `nuclear_receptor.rs` and the 2 integration tests (tests/integration.rs) that call only the
+# nuclear receptor model, as they are written; tests/golden/nuclear_receptor.tsv checks every method, single tick and
+# trajectory besides. Beyond them: the trace event and every codec's round trip.
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+include "src/integrate.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
+include "src/enzyme_data.cyr"
+include "src/enzyme.cyr"
+include "src/nuclear_receptor_data.cyr"
+include "src/nuclear_receptor.cyr"
+
+# 1 when the state validates.
+fn ns_ok(p: *RyNuclearReceptorState) {
+    var t, v = ry_nuclear_receptor_state_validate(p);
+    return is_ok(t);
+}
+
+# 1 when the config validates.
+fn nc_ok(c: *RyNuclearReceptorConfig) {
+    var t, v = ry_nuclear_receptor_config_validate(c);
+    return is_ok(t);
+}
+
+# Rust's test helper `receptor_total`: bound + nuclear.
+fn receptor_total(s: *RyNuclearReceptorState): f64 {
+    var t: f64 = s.bound_cytoplasmic + s.nuclear_active;
+    return t;
+}
+
+# `n` ticks at hormone `h` and step `dt`.
+fn ticks(s: *RyNuclearReceptorState, c: *RyNuclearReceptorConfig, n, h: f64, dt: f64) {
+    var f: RyNuclearReceptorFlux;
+    var k = 0;
+    while (k < n) {
+        ry_nuclear_receptor_state_tick(s, c, h, dt, &f);
+        k = k + 1;
+    }
+    return 0;
+}
+
+# ── the captured events ──
+var _ev_buf[1024];
+var _ev_len = 0;
+
+# sakshi's subscriber: keeps the last event's message.
+fn _ev_hook(ts, level, category, msg, msg_len, extra) {
+    var n = msg_len;
+    if (n > 1024) { n = 1024; }
+    memcpy(&_ev_buf, msg, n);
+    _ev_len = msg_len;
+    return 0;
+}
+
+# 1 if the last captured event is the C string `want`.
+fn _ev_is(want) {
+    var n = strlen(want);
+    if (_ev_len != n) { return 0; }
+    return memeq(&_ev_buf, want, n);
+}
+
+# rust src/nuclear_receptor.rs: test_default_valid, test_validate_rejects_nan_and_zero_km
+fn validation() {
+    test_group("nuclear_receptor: defaults and validation");
+    var s: RyNuclearReceptorState;
+    var c: RyNuclearReceptorConfig;
+    ry_nuclear_receptor_state_default(&s);
+    ry_nuclear_receptor_config_default(&c);
+    assert(ns_ok(&s) == 1 && nc_ok(&c) == 1, "the defaults validate");
+    var nan: f64 = _ry_nan();
+    c.binding_km = 0.0;
+    var bad1 = nc_ok(&c);
+    ry_nuclear_receptor_config_default(&c);
+    c.export_rate = nan;
+    var bad2 = nc_ok(&c);
+    s.nuclear_active = 1.5;
+    var bad3 = ns_ok(&s);
+    ry_nuclear_receptor_state_default(&s);
+    s.bound_cytoplasmic = nan;
+    var bad4 = ns_ok(&s);
+    assert(bad1 == 0 && bad2 == 0 && bad3 == 0 && bad4 == 0, "Rust's four bad configs and states are refused");
+    return 0;
+}
+
+# rust src/nuclear_receptor.rs: test_hormone_induces_expression, test_delayed_response, test_no_hormone_decays
+# rust src/nuclear_receptor.rs: test_bounded
+fn response() {
+    test_group("nuclear_receptor: the response");
+    var s: RyNuclearReceptorState;
+    var c: RyNuclearReceptorConfig;
+    var f: RyNuclearReceptorFlux;
+    ry_nuclear_receptor_config_default(&c);
+    ry_nuclear_receptor_state_default(&s);
+    var initial: f64 = s.gene_expression;
+    ticks(&s, &c, 500, 1.0, 0.1);
+    var induced: f64 = s.gene_expression;
+    assert(induced > initial, "the hormone induces gene expression");
+    ry_nuclear_receptor_state_default(&s);
+    ry_nuclear_receptor_state_tick(&s, &c, 1.0, 0.1, &f);
+    var early: f64 = f.transcription;
+    ticks(&s, &c, 100, 1.0, 0.1);
+    ry_nuclear_receptor_state_tick(&s, &c, 1.0, 0.1, &f);
+    var later: f64 = f.transcription;
+    assert(later > early, "the response builds over time");
+    s.bound_cytoplasmic = 0.5;
+    s.nuclear_active = 0.5;
+    s.gene_expression = 1.0;
+    ticks(&s, &c, 500, 0.0, 0.1);
+    var nuclear: f64 = s.nuclear_active;
+    assert(nuclear < 0.3, "without hormone the nuclear complex decays");
+    ry_nuclear_receptor_state_default(&s);
+    ticks(&s, &c, 1000, 1.0, 0.01);
+    assert_eq(ns_ok(&s), 1, "1000 steps of 0.01 s stay valid");
+    return 0;
+}
+
+# rust src/nuclear_receptor.rs: test_receptor_conserved_long_run, test_export_returns_to_free_pool
+fn conservation() {
+    test_group("nuclear_receptor: the receptor pool");
+    var c: RyNuclearReceptorConfig;
+    var s: RyNuclearReceptorState;
+    var f: RyNuclearReceptorFlux;
+    ry_nuclear_receptor_config_default(&c);
+    var held = 0;
+    var r = 0;
+    while (r < 4) {
+        var dt: f64 = 0.1;
+        if (r == 1) { dt = 1.0; }
+        if (r == 2) { dt = 5.0; }
+        if (r == 3) { dt = 100.0; }
+        ry_nuclear_receptor_state_default(&s);
+        var q: f64 = 36000.0 / dt;
+        var steps = _ry_f64_to_u32(q);
+        var ok = 1;
+        var k = 0;
+        while (k < steps) {
+            ry_nuclear_receptor_state_tick(&s, &c, 1.0, dt, &f);
+            var total: f64 = receptor_total(&s);
+            if (total > 1.0 + 0.000000001 || ns_ok(&s) == 0) { ok = 0; }
+            k = k + 1;
+        }
+        var bound: f64 = s.bound_cytoplasmic;
+        var nuclear: f64 = s.nuclear_active;
+        if (r < 2) {
+            # The analytic steady state (no transfer capped at these dt): k_bind = 0.25, bound = 0.25 / 1.025,
+            # nuclear = 2.5 · bound.
+            var want: f64 = 0.25 / 1.025;
+            var db: f64 = bound - want;
+            var dn: f64 = nuclear - 2.5 * want;
+            if (f64_abs(db) >= 0.001 || f64_abs(dn) >= 0.001) { ok = 0; }
+        }
+        if (nuclear >= 0.99) { ok = 0; }
+        held = held + ok;
+        r = r + 1;
+    }
+    assert_eq(held, 4, "ten hours at 0.1, 1, 5 and 100 s: total <= 1, valid, the steady state where uncapped");
+    var ec: RyNuclearReceptorConfig;
+    ry_nuclear_receptor_config_default(&ec);
+    ec.translocation_rate = 0.0;
+    ec.dissociation_rate = 0.0;
+    s.bound_cytoplasmic = 0.0;
+    s.nuclear_active = 0.8;
+    s.gene_expression = 0.0;
+    var free_before: f64 = ry_nuclear_receptor_state_free_receptor(&s);
+    ry_nuclear_receptor_state_tick(&s, &ec, 0.0, 10.0, &f);
+    var exported: f64 = 0.8 - s.nuclear_active;
+    var free_after: f64 = ry_nuclear_receptor_state_free_receptor(&s);
+    var gap: f64 = free_after - (free_before + exported);
+    assert(exported > 0.0 && f64_abs(gap) < 0.000000000001, "export returns receptor to the free pool");
+    return 0;
+}
+
+# rust src/nuclear_receptor.rs: test_invalid_dt_is_noop, test_nan_and_negative_hormone
+fn hardening() {
+    test_group("nuclear_receptor: hardening");
+    var s: RyNuclearReceptorState;
+    var d: RyNuclearReceptorState;
+    var c: RyNuclearReceptorConfig;
+    var f: RyNuclearReceptorFlux;
+    var zero: RyNuclearReceptorFlux;
+    ry_nuclear_receptor_config_default(&c);
+    ry_nuclear_receptor_state_default(&d);
+    ry_nuclear_receptor_flux_default(&zero);
+    var inf: f64 = _RY_INF;
+    var nan: f64 = _ry_nan();
+    var k = 0;
+    while (k < 4) {
+        var dt: f64 = 0.0;
+        if (k == 1) { dt = -0.1; }
+        if (k == 2) { dt = nan; }
+        if (k == 3) { dt = inf; }
+        ry_nuclear_receptor_state_default(&s);
+        memset(&f, 255, 24);
+        ry_nuclear_receptor_state_tick(&s, &c, 1.0, dt, &f);
+        assert(memeq(&s, &d, 24) == 1 && memeq(&f, &zero, 24) == 1, "an invalid dt changes nothing, a zero flux");
+        k = k + 1;
+    }
+    var a: RyNuclearReceptorState;
+    var b: RyNuclearReceptorState;
+    ry_nuclear_receptor_state_default(&a);
+    ry_nuclear_receptor_state_default(&b);
+    ry_nuclear_receptor_state_tick(&a, &c, nan, 0.1, &f);
+    ry_nuclear_receptor_state_tick(&b, &c, 0.0, 0.1, &f);
+    var same1 = memeq(&a, &b, 24);
+    ry_nuclear_receptor_state_tick(&a, &c, 0.0 - 1.0, 0.1, &f);
+    ry_nuclear_receptor_state_tick(&b, &c, 0.0, 0.1, &f);
+    assert(same1 == 1 && memeq(&a, &b, 24) == 1 && ns_ok(&a) == 1, "a NaN or negative hormone is no hormone");
+    return 0;
+}
+
+# Rust's trace event, under the target `rasayan::nuclear_receptor`, its fields in Rust's order (the hormone sanitized).
+fn events() {
+    test_group("nuclear_receptor: trace event");
+    sakshi_set_emit_hook(&_ev_hook);
+    sakshi_set_level(SK_TRACE);
+    var s: RyNuclearReceptorState;
+    var c: RyNuclearReceptorConfig;
+    var f: RyNuclearReceptorFlux;
+    ry_nuclear_receptor_state_default(&s);
+    ry_nuclear_receptor_config_default(&c);
+    ry_nuclear_receptor_state_tick(&s, &c, 0.0 - 2.0, 0.01, &f);
+    assert_eq(_ev_is("rasayan::nuclear_receptor: nuclear_receptor_tick dt=0.01 hormone=0 nuclear=0.02"), 1,
+      "nuclear_receptor_tick");
+    _ev_len = 0;
+    ry_nuclear_receptor_state_tick(&s, &c, 0.5, 0.0, &f);
+    assert_eq(_ev_len, 0, "no event for an invalid dt");
+    sakshi_set_level(SK_INFO);
+    ry_nuclear_receptor_state_tick(&s, &c, 0.5, 0.01, &f);
+    assert_eq(_ev_len, 0, "below TRACE, nothing");
+    sakshi_clear_emit_hook();
+    return 0;
+}
+
+# rust src/nuclear_receptor.rs: test_serde_roundtrip
+# rust tests/integration.rs: test_nuclear_receptor_config_serde_roundtrip, test_nuclear_receptor_flux_serde_roundtrip
+fn serde() {
+    test_group("nuclear_receptor: serde round trips");
+    var sb = str_builder_new();
+    var s: RyNuclearReceptorState;
+    var sb2: RyNuclearReceptorState;
+    ry_nuclear_receptor_state_default(&s);
+    var t1, v1 = ry_nuclear_receptor_state_to_json(sb, &s);
+    var t2, v2 = ry_nuclear_receptor_state_from_json(load64(sb), load64(sb + 8), &sb2);
+    assert(is_ok(t2) == 1 && memeq(&sb2, &s, 24) == 1, "the state reads back");
+    var c: RyNuclearReceptorConfig;
+    var cb: RyNuclearReceptorConfig;
+    ry_nuclear_receptor_config_default(&c);
+    store64(sb + 8, 0);
+    var t3, v3 = ry_nuclear_receptor_config_to_json(sb, &c);
+    var t4, v4 = ry_nuclear_receptor_config_from_json(load64(sb), load64(sb + 8), &cb);
+    assert(is_ok(t4) == 1 && memeq(&cb, &c, 56) == 1, "the config reads back");
+    var f: RyNuclearReceptorFlux;
+    var fb: RyNuclearReceptorFlux;
+    ry_nuclear_receptor_state_tick(&s, &c, 0.5, 0.01, &f);
+    store64(sb + 8, 0);
+    var t5, v5 = ry_nuclear_receptor_flux_to_json(sb, &f);
+    var t6, v6 = ry_nuclear_receptor_flux_from_json(load64(sb), load64(sb + 8), &fb);
+    assert(is_ok(t6) == 1 && memeq(&fb, &f, 24) == 1, "a tick's flux reads back, bit for bit");
+    return 0;
+}
+
+# Runs the nuclear receptor suite.
+fn main() {
+    alloc_init();
+    validation();
+    response();
+    conservation();
+    hardening();
+    events();
+    serde();
+    return assert_summary();
+}
+
+var exit_code = main();
+# assert_summary() returns the failure count; a wait status is 8 bits, so any failure exits 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

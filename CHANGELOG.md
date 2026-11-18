@@ -25,6 +25,23 @@ part 5 (receptor) is the first module its Python generator writes.
 
 ### Added
 
+- **src/nuclear_receptor.cyr**, **src/nuclear_receptor_data.cyr** (M6 part 6) — `nuclear_receptor.rs` transcribed:
+  `RyNuclearReceptorState`, `RyNuclearReceptorConfig`, `RyNuclearReceptorFlux`; the defaults and field-name blobs (written by
+  `gen.py`); both validators; `ry_nuclear_receptor_state_free_receptor`; `ry_nuclear_receptor_state_tick` (binding from
+  the free pool, dissociation and translocation capped together at the bound complex, export capped at the nucleus,
+  gene expression by `produce_decay` from the start-of-step nuclear level); the serde codecs of all three, with node
+  readers. Rust's `nuclear_receptor_tick` trace event under `rasayan::nuclear_receptor`
+- **tests/golden/nuclear_receptor.tsv** (M6 part 6, 628 rows: A 178, B 370, C 57, T 23) — `gen.py`'s `stateful()`
+  generator, the shared form for the modules from here on: the defaults, both validators, `free_receptor` (50), 377
+  single ticks (26 step lengths across `produce_decay`'s series cutoff at 6.25 s; the edges; Rust's cases — the delayed
+  response, decay without hormone, export back to the free pool), 23 trajectories (Rust's ten-hour runs at 0.1, 1, 5
+  and 100 s among them) and the serde documents; class C where the expression's `produce_decay` takes `exp_m1`. All 628
+  match the port on the first run
+- **tests/nuclear_receptor.tcyr** (M6 part 6, 19 checks) — the 11 `nuclear_receptor.rs` unit tests (the ten-hour
+  conservation runs with the analytic steady state) and its 2 integration tests, and the trace event: the ledger at
+  610 of 723. The fuzz harness reads the three documents (1,858 read and written back) and ticks every valid state of
+  bound + nuclear <= 1 and every valid config
+- **benchmarks** (M6 part 6) — nuclear_receptor_tick, Rust → Cyrius: 9.2 → 82 ns
 - **src/receptor.cyr**, **src/receptor_data.cyr** (M6 part 5) — `receptor.rs` transcribed: `RyReceptorState`,
   `RyReceptorConfig`, `RyReceptorFlux`; the defaults and field-name blobs (`src/receptor_data.cyr`, written by
   `gen.py`); both validators; `ry_receptor_state_total`; the private `outflow` (capped at the pool) and `outflow_pair`

@@ -543,7 +543,548 @@ def receptor():
     return m, {"src/receptor_data.cyr": data}
 
 
-MODULES = {"receptor": receptor}
+# ── the integrators (integrate.rs), on MPFR's expm1 past the series cutoff ──
+
+def factors(y):
+    """`step_factors(y)`: (f, g, took the exp_m1 branch)."""
+    (fy, gy), cls = validate.integrate_factors(y, mpfr_ref.expm1)
+    return fy, gy, cls == "C"
+
+
+def produce_decay(x, production, decay, dt):
+    """`integrate::produce_decay`: (value, took exp_m1)."""
+    if decay <= 0.0:
+        return x + production * dt, False
+    fy, gy, c = factors(decay * dt)
+    return x * fy + production * dt * gy, c
+
+
+def relax(x, target, rate, dt):
+    if rate <= 0.0:
+        return x, False
+    fy, _gy, c = factors(rate * dt)
+    return target + (x - target) * fy, c
+
+
+def activate(x, on, off, dt):
+    total = on + off
+    if total <= 0.0:
+        return x, False
+    fy, gy, c = factors(total * dt)
+    return rmin(x * fy + on * dt * gy, 1.0), c
+
+
+def michaelis_menten(s, vmax, km):
+    """`enzyme::michaelis_menten`."""
+    s = conc(s)
+    denom = km + s
+    return div(vmax * s, denom) if denom > 0.0 else 0.0
+
+
+# ── a stateful module: State, Config and Flux, validate, tick, trajectories, serde ──
+
+class Spec:
+    """What a stateful module's generator needs. `tick(st, c, x, dt)` -> (state after, flux, took exp_m1)."""
+
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+def stateful(sp):
+    mod = sp.mod
+    S = struct_names(mod, sp.state)
+    C = struct_names(mod, sp.config)
+    F = struct_names(mod, sp.flux)
+    sd = [x for _, x in defaults(mod, sp.state)]
+    cd = [x for _, x in defaults(mod, sp.config)]
+    s_guards = guards_of(mod, sp.state)
+    c_guards = guards_of(mod, sp.config)
+    if [n for n, _ in s_guards] != S or [n for n, _ in c_guards] != C:
+        raise SystemExit(f"gen: {mod}'s validators do not guard every field in declaration order")
+    s_kinds = [k for _, k in s_guards]
+    c_kinds = [k for _, k in c_guards]
+    ns, nc = len(S), len(C)
+    m = g.Module(mod)
+    rng = Rng(sp.seed)
+    m.row(f"{mod}::{sp.state}::default", "A", [], toks(sd))
+    m.row(f"{mod}::{sp.config}::default", "A", [], toks(cd))
+
+    def seeded_cfg():
+        return [(k, cd[k] * rng.log_uniform(-1.0, 1.0) if cd[k] != 0.0 else rng.log_uniform(-2.0, 0.0))
+                for k in range(nc)]
+
+    states = [list(sd)]
+    for k in range(ns):
+        for e in EDGES + [1.0000000000000002, -SUB]:
+            a = list(sd)
+            a[k] = e
+            states.append(a)
+    for x, y in [(0, ns - 1), (0, 1)] + ([(1, 2)] if ns > 2 else []):
+        for u, v in ((NAN, -1.0), (-1.0, NAN), (INF, 2.0), (2.0, -1.0)):
+            a = list(sd)
+            a[x], a[y] = u, v
+            states.append(a)
+    states += [list(a) for a in sp.extra_states]
+    for _ in range(15):
+        states.append(sp.seeded_state(rng))
+    for a in states:
+        m.row(f"{mod}::{sp.state}::validate", "A", toks(a), outcome(validate_fields(s_kinds, a)))
+    cases = [[]]
+    for k in range(nc):
+        for e in CFG_EDGES:
+            cases.append([(k, e)])
+    cases += [list(ov) for ov in sp.extra_cfgs]
+    for _ in range(10):
+        cases.append(seeded_cfg())
+    for ov in cases:
+        m.row(f"{mod}::{sp.config}::validate", "A", cfg_toks(ov), outcome(validate_fields(c_kinds, cfg_of(cd, ov))))
+    sp.helper_rows(m, rng, states, sd)
+
+    def tick_row(st, ov, x, dt):
+        after, flux, exp = sp.tick(st, cfg_of(cd, ov), x, dt)
+        m.row(f"{mod}::{sp.state}::tick", "C" if exp else "B", toks(st) + cfg_toks(ov) + toks([x, dt]),
+              toks(after + flux))
+
+    for dt in sp.dts:
+        for x in sp.drives:
+            tick_row(sd, [], x, dt)
+    for k in range(ns):
+        for e in EDGES:
+            a = list(sd)
+            a[k] = e
+            tick_row(a, [], sp.drives[0], 0.01)
+            tick_row(a, [], sp.drives[-1], 2.0)
+    for x in sp.inputs:
+        for dt in (0.01, 1.0, 100.0):
+            tick_row(sd, [], x, dt)
+    for k in range(nc):
+        for e in (0.0, -1.0, 1e300, INF, NAN, 10.0, SUB):
+            tick_row(sd, [(k, e)], sp.drives[0], 0.1)
+    for st, ov, x, dt in sp.extra_ticks:
+        tick_row(st, ov, x, dt)
+    for _ in range(60):
+        st = sp.seeded_state(rng)
+        tick_row(st, seeded_cfg(), sp.seeded_input(rng), rng.log_uniform(-3.0, 1.5))
+        tick_row(st, [], sp.seeded_input(rng), 0.01)
+
+    def traj(start, ov, ops):
+        c = cfg_of(cd, ov)
+        st = list(start)
+        flux = [0.0] * len(F)
+        ins = toks(start) + cfg_toks(ov)
+        for op in ops:
+            if op[0] == "tick":
+                _, x, dt, k = op
+                for _ in range(k):
+                    st, flux, _e = sp.tick(st, c, x, dt)
+                ins += [i(1), f(x), f(dt), i(k)]
+            else:
+                _, field, x = op
+                st[field] = x
+                ins += [i(3), i(field), f(x)]
+        m.row(f"{mod}::{sp.state}::trajectory", "T", ins, toks(st + flux))
+
+    for start, ov, ops in sp.trajectories:
+        traj(start, ov, ops)
+    for x in sp.sweep:
+        traj(sd, [], [("tick", x, 0.5, 400)])
+    traj(sd, [], [("tick", sp.drives[-1], 0.01, 6000)])
+    traj(sd, [], [("tick", sp.drives[-1], 5.0, 12)])
+    traj(sd, [], [("set", 0, NAN), ("tick", sp.drives[0], 0.1, 50)])
+    traj(sd, [], [("set", ns - 1, INF), ("tick", sp.drives[0], 0.1, 50)])
+    for _ in range(4):
+        traj(sp.seeded_state(rng), seeded_cfg(), [("tick", sp.seeded_input(rng), rng.log_uniform(-2.0, 0.5), 300)])
+
+    worked = list(sd)
+    flux = [0.0] * len(F)
+    for _ in range(100):
+        worked, flux, _e = sp.tick(worked, cd, 0.7, 0.1)
+    odd = [NAN, -0.0, 1e300, SUB, 0.1 + 0.2, 1e21, 1e-7, -1.0, INF, 2.5e-8, 123456.789, 7e-310, 0.5]
+    js, jc, jf = json_struct(S, worked), json_struct(C, cd), json_struct(F, flux)
+    arr = "[" + ",".join(validate.json_f64(x) for x in sd) + "]"
+    short = "[" + ",".join(validate.json_f64(x) for x in sd[:-1]) + "]"
+    rev = "{" + ",".join(f'"{n}":{validate.json_f64(x)}' for n, x in reversed(list(zip(S, sd)))) + ',"z":[1,{"a":null}]}'
+    missing = "{" + ",".join(f'"{n}":{validate.json_f64(x)}' for n, x in list(zip(S, sd))[:-1]) + "}"
+    wrong = json_struct(S, sd).replace(f'"{S[0]}":', f'"{S[0]}":"', 1).replace(",", '",', 1)
+    dup = json_struct(S, sd)[:-1] + f',"{S[0]}":0.5}}'
+    edge = json_struct(S, sd).replace(f'"{S[0]}":{validate.json_f64(sd[0])}', f'"{S[0]}":-0.0', 1)
+    edge = edge.replace(f'"{S[1]}":{validate.json_f64(sd[1])}', f'"{S[1]}":1e-400', 1)
+    serde_rows(m, sp.state, S, [sd, worked, odd[:ns], odd[ns:2 * ns]], [js, arr, short, rev, missing, wrong, edge, dup])
+    serde_rows(m, sp.config, C, [cd, (odd * 2)[:nc]],
+               [jc, "[" + ",".join(validate.json_f64(x) for x in cd) + "]",
+                jc.replace(f',"{C[-1]}":{validate.json_f64(cd[-1])}', "", 1),
+                jc.replace(f'"{C[1]}":{validate.json_f64(cd[1])}', f'"{C[1]}":null', 1)])
+    serde_rows(m, sp.flux, F, [[0.0] * len(F), flux, odd[:len(F)]],
+               [jf, "[" + ",".join(str(k + 1) for k in range(len(F))) + "]",
+                "[" + ",".join(str(k + 1) for k in range(len(F) - 1)) + "]",
+                "[" + ",".join(str(k + 1) for k in range(len(F) + 1)) + "]"])
+    data = defaults_data(mod, sp.title, sp.prefix,
+                         [(sp.state, sp.infix + "_STATE", True), (sp.config, sp.infix + "_CONFIG", True),
+                          (sp.flux, sp.infix + "_FLUX", False)])
+    return m, {f"src/{mod}_data.cyr": data}
+
+
+# ── nuclear_receptor (M6 part 6) ──
+
+def nuclear_receptor():
+    def free(st):
+        return rmax(1.0 - st[0] - st[1], 0.0)
+
+    def tick(st, c, hormone, dt):
+        if not valid_dt(dt):
+            return list(st), [0.0, 0.0, 0.0], False
+        hormone = conc(hormone)
+        bound_c, nuclear, expr = st
+        k_bind = michaelis_menten(hormone, c[0], c[1])
+        bind = free(st) * rmin(k_bind * dt, 1.0)
+        bound = bound_c
+        dissoc = c[2] * bound * dt
+        translocate = c[3] * bound * dt
+        out = dissoc + translocate
+        if out > bound and out > 0.0:
+            s_ = div(rmax(bound, 0.0), out)
+            dissoc = dissoc * s_
+            translocate = translocate * s_
+        export = nuclear * rmin(c[4] * dt, 1.0)
+        v_transcribe = c[5] * nuclear
+        bound_c = bound_c + (bind - dissoc - translocate)
+        nuclear = nuclear + (translocate - export)
+        expr, exp = produce_decay(expr, v_transcribe, c[6], dt)
+        return [bound_c, nuclear, expr], [div(bind, dt), div(translocate, dt), v_transcribe], exp
+
+    def seeded_state(rng):
+        tot = rng.unit()
+        w = rng.unit()
+        return [tot * w, tot * (1.0 - w), rng.log_uniform(-2.0, 0.5)]
+
+    def helper_rows(m, rng, states, sd):
+        for a in states[:40] + [seeded_state(rng) for _ in range(10)]:
+            m.row("nuclear_receptor::NuclearReceptorState::free_receptor", "B", toks(a), [f(free(a))])
+
+    sd0 = [0.05, 0.02, 0.1]
+    return stateful(Spec(
+        mod="nuclear_receptor", state="NuclearReceptorState", config="NuclearReceptorConfig",
+        flux="NuclearReceptorFlux", prefix="NUCLEAR_RECEPTOR", infix="NUCLEAR_RECEPTOR", seed=0x6E75_636C,
+        title="nuclear_receptor data: the default receptor pools, expression and kinetic parameters",
+        tick=tick, seeded_state=seeded_state, seeded_input=lambda rng: rng.log_uniform(-2.0, 0.5),
+        helper_rows=helper_rows,
+        extra_states=[[0.5, 0.5, 1.0], [0.0, 1.5, 0.1], [0.6, 0.6, 0.0]],
+        extra_cfgs=[[(1, 0.0)], [(4, NAN)], [(0, NAN), (1, 0.0)], [(1, 0.0), (0, -1.0)], [(6, -1.0), (5, NAN)]],
+        dts=[0.0, -0.0, -0.1, NAN, INF, -INF, SUB, 1e-300, 0.001, 0.01, 0.1, 0.5, 1.0, 2.0, 5.0, 6.0, 6.25, 6.5, 7.0,
+             10.0, 20.0, 50.0, 100.0, 1000.0, 1e300, MAX],
+        drives=[0.5, 1.0, 10.0],
+        inputs=[0.0, -0.0, 0.2, 0.5, 1.0, 10.0, 1e-300, 1e300, -1.0, NAN, INF, -INF, MAX],
+        extra_ticks=[(sd0, [], 1.0, 0.1), ([0.5, 0.5, 1.0], [], 0.0, 0.1), ([0.0, 0.8, 0.0], [(3, 0.0), (2, 0.0)], 0.0, 10.0),
+                     ([0.6, 0.6, 0.0], [], 1.0, 1.0), ([0.3, 0.2, 0.0], [(2, 50.0), (3, 50.0)], 1.0, 1.0),
+                     ([0.0, 0.0, 0.0], [], 10.0, 100.0), (sd0, [(6, 10.0)], 0.5, 0.01)],
+        trajectories=[(sd0, [], [("tick", 1.0, 0.1, 500)]),
+                      (sd0, [], [("tick", 1.0, 0.1, 1), ("tick", 1.0, 0.1, 100), ("tick", 1.0, 0.1, 1)]),
+                      ([0.5, 0.5, 1.0], [], [("tick", 0.0, 0.1, 500)]),
+                      (sd0, [], [("tick", 1.0, 0.01, 1000)]),
+                      (sd0, [], [("tick", 1.0, 0.1, 36_000)]),
+                      (sd0, [], [("tick", 1.0, 1.0, 36_000)]),
+                      (sd0, [], [("tick", 1.0, 5.0, 7200)]),
+                      (sd0, [], [("tick", 1.0, 100.0, 360)]),
+                      ([0.0, 0.8, 0.0], [(3, 0.0), (2, 0.0)], [("tick", 0.0, 10.0, 1)])],
+        sweep=[0.05, 0.1, 0.2, 0.5, 1.0, 5.0]))
+
+
+# ── signaling (M6 part 7): the four M6 pathways together, with crosstalk ──
+
+class _Count(mpfr_ref.Prims):
+    """MPFR's primitives, noting whether any was called (a step that reaches a transcendental is class C)."""
+
+    def __init__(self):
+        super().__init__(True)
+        self.hit = False
+
+    def expm1(self, x):
+        self.hit = True
+        return super().expm1(x)
+
+    def pow(self, x, y):
+        self.hit = True
+        return super().pow(x, y)
+
+    def exp(self, x):
+        self.hit = True
+        return super().exp(x)
+
+    def log(self, x):
+        self.hit = True
+        return super().log(x)
+
+
+SIG_PATHWAYS = [("mapk", "Mapk"), ("pi3k", "Pi3k"), ("jak_stat", "JakStat"), ("calcium", "Calcium")]
+
+
+def json_tree(shape, vals):
+    """serde_json's text of a nested all-f64 struct: `shape` is [(name, None | sub-shape)], `vals` the flat leaves."""
+    out = []
+    k = 0
+    for name, sub in shape:
+        if sub is None:
+            out.append(f'"{name}":{validate.json_f64(vals[k])}')
+            k += 1
+        else:
+            n = shape_len(sub)
+            out.append(f'"{name}":{json_tree(sub, vals[k:k + n])}')
+            k += n
+    return "{" + ",".join(out) + "}"
+
+
+def shape_len(shape):
+    return sum(1 if sub is None else shape_len(sub) for _, sub in shape)
+
+
+def read_tree(v, shape):
+    """serde's derive rules on a nested all-f64 struct: an object (named fields, unknown ones ignored, a repeated known
+    one refused) or a sequence of exactly its fields, recursively; the flat leaves, or raises ValueError."""
+    if isinstance(v, tuple) and v[0] == "OBJ":
+        got = {}
+        for key, val in v[1]:
+            if not validate.utf8_ok(key):
+                raise ValueError("key not UTF-8")
+            if key in dict(shape):
+                if key in got:
+                    raise ValueError(f"duplicate field {key}")
+                got[key] = val
+        parts = [got[n] if n in got else None for n, _ in shape]
+        if any(n not in got for n, _ in shape):
+            raise ValueError("missing field")
+    elif isinstance(v, list) and len(v) == len(shape):
+        parts = v
+    else:
+        raise ValueError("not a struct")
+    out = []
+    for (_n, sub), val in zip(shape, parts, strict=True):
+        if sub is None:
+            out.append(validate.serde_f64(val))
+        else:
+            out += read_tree(val, sub)
+    return out
+
+
+def signaling():
+    mod = "signaling"
+    st_shape = [(name, [(n, None) for n in struct_names(name, f"{Ty}State")]) for name, Ty in SIG_PATHWAYS]
+    cf_shape = [(name, [(n, None) for n in struct_names(name, f"{Ty}Config")]) for name, Ty in SIG_PATHWAYS]
+    fx_shape = [(name, [(n, None) for n in struct_names(name, f"{Ty}Flux")]) for name, Ty in SIG_PATHWAYS]
+    gains = struct_names(mod, "SignalingConfig")[4:]
+    cf_shape += [(n, None) for n in gains]
+    in_names = struct_names(mod, "SignalingInput")
+    if [n for n, _ in st_shape] != struct_names(mod, "SignalingNetwork") or \
+            [n for n, _ in fx_shape] != struct_names(mod, "SignalingFlux") or len(gains) != 3:
+        raise SystemExit("gen: signaling.rs's structs are not the modelled shape")
+    sd = []
+    for name, Ty in SIG_PATHWAYS:
+        sd += [x for _, x in defaults(name, f"{Ty}State")]
+    cd = []
+    for name, Ty in SIG_PATHWAYS:
+        cd += [x for _, x in defaults(name, f"{Ty}Config")]
+    cd += [0.0, 0.0, 0.0]  # #[derive(Default)]: the gains are f64's default
+    ind = [x for _, x in defaults(mod, "SignalingInput")]
+    s_len = [len(sub) for _, sub in st_shape]
+    c_len = [len(sub) for _, sub in cf_shape[:4]]
+    s_at = [sum(s_len[:k]) for k in range(4)]
+    c_at = [sum(c_len[:k]) for k in range(4)]
+    G = c_at[3] + c_len[3]  # the gains' first index
+    kinds_s = []
+    for name, Ty in SIG_PATHWAYS:
+        kinds_s += [k for _, k in guards_of(name, f"{Ty}State")]
+    kinds_c = []
+    for name, Ty in SIG_PATHWAYS:
+        kinds_c += [k for _, k in guards_of(name, f"{Ty}Config")]
+    kinds_c += [k for _, k in guards_of(mod, "SignalingConfig")]
+    ns, nc, nf = len(sd), len(cd), shape_len(fx_shape)
+
+    def tick(net, c, inp, dt):
+        if not valid_dt(dt):
+            return list(net), [0.0] * nf, False
+        gf, cyt, ip3 = unit(inp[0]), unit(inp[1]), conc(inp[2])
+        mk, pk, js, ca = (net[s_at[k]:s_at[k] + s_len[k]] for k in range(4))
+        cm, cp, cj, cc = (c[c_at[k]:c_at[k] + c_len[k]] for k in range(4))
+        pi3k_input = unit(gf + mk[0] * c[G])
+        ca_boost = unit(ca[0]) * c[G + 2]
+        mapk_input = unit(gf + ca_boost)
+        raf_inhibition = unit(pk[1]) * c[G + 1]
+        P = _Count()
+        mk, mkf = mpfr_ref._mk_tick(mk, cm, mapk_input, raf_inhibition, dt, P)
+        pk, pkf = mpfr_ref._pk_tick(pk, cp, pi3k_input, dt, P)
+        js, jsf = mpfr_ref._js_tick(js, cj, cyt, dt, P)
+        ca, caf = mpfr_ref._ca_tick(ca, cc, ip3, dt, P)
+        return mk + pk + js + ca, mkf + pkf + jsf + caf, P.hit
+
+    m = g.Module(mod)
+    rng = Rng(0x7369_676E)
+    m.row("signaling::SignalingNetwork::default", "A", [], toks(sd))
+    m.row("signaling::SignalingConfig::default", "A", [], toks(cd))
+    m.row("signaling::SignalingInput::default", "A", [], toks(ind))
+
+    def seeded_net():
+        a = []
+        for name, Ty in SIG_PATHWAYS:
+            if name == "jak_stat":
+                p_ = rng.unit()
+                a += [rng.unit(), p_, rng.unit() * (1.0 - p_) * 0.5, rng.log_uniform(-2.0, 0.5)]
+            elif name == "calcium":
+                a += [rng.log_uniform(-2.0, 1.0), rng.log_uniform(0.0, 3.0), rng.unit()]
+            else:
+                a += [rng.unit() for _ in range(len(struct_names(name, f"{Ty}State")))]
+        return a
+
+    def seeded_cfg():
+        ov = [(k, cd[k] * rng.log_uniform(-1.0, 1.0)) for k in range(G)]
+        return ov + [(G + j, rng.log_uniform(-2.0, 0.5)) for j in range(3)]
+
+    nets = [list(sd)]
+    for k in range(ns):
+        for e in (NAN, -1.0, 2.0, INF, 0.5):
+            a = list(sd)
+            a[k] = e
+            nets.append(a)
+    for _ in range(10):
+        nets.append(seeded_net())
+    for a in nets:
+        m.row("signaling::SignalingNetwork::validate", "A", toks(a), outcome(validate_fields(kinds_s, a)))
+    cases = [[]]
+    for k in range(nc):
+        for e in (NAN, -1.0, 0.0, INF):
+            cases.append([(k, e)])
+    cases += [[(G + 1, NAN)], [(G + 2, -1.0)], [(G, INF)], [(c_at[2] + 10, 0.0)], [(c_at[3] + 8, 0.0)],
+              [(G, NAN), (0, -1.0)], [(G + 2, -1.0), (c_at[1] + 1, 0.0)]]
+    for _ in range(10):
+        cases.append(seeded_cfg())
+    for ov in cases:
+        m.row("signaling::SignalingConfig::validate", "A", cfg_toks(ov), outcome(validate_fields(kinds_c,
+                                                                                                cfg_of(cd, ov))))
+
+    def tick_row(net, ov, inp, dt):
+        after, flux, exp = tick(net, cfg_of(cd, ov), inp, dt)
+        m.row("signaling::SignalingNetwork::tick", "C" if exp else "B", toks(net) + cfg_toks(ov) + toks(inp + [dt]),
+              toks(after + flux))
+
+    full = [1.0, 1.0, 1.0]
+    for dt in (0.0, -0.0, -0.1, NAN, INF, -INF, SUB, 0.001, 0.01, 0.05, 0.1, 0.15, 0.3, 0.5, 0.6, 1.0, 5.0, 10.0,
+               100.0, 1000.0, 1e300, MAX):
+        for inp in ([0.5, 0.3, 0.2], full):
+            tick_row(sd, [], inp, dt)
+    for inp in ([0.0, 0.0, 0.0], [NAN, NAN, NAN], [-1.0, -1.0, -1.0], [2.0, 2.0, 2.0], [INF, INF, INF], [-INF, 0.5, 0.5],
+                [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.3, 0.0, 0.0], [0.1, 0.0, 1.0], [1e-300, 0.5, 1e300]):
+        for dt in (0.01, 1.0, 100.0):
+            tick_row(sd, [], inp, dt)
+    for k in range(ns):
+        for e in (NAN, 0.0, 1.0, 2.0, -1.0, 1e300):
+            a = list(sd)
+            a[k] = e
+            tick_row(a, [], [0.5, 0.3, 0.2], 0.1)
+    for gain in range(3):
+        for e in (0.0, 0.5, 2.0, 1e6, NAN, INF):
+            for inp, dt in (([0.3, 0.0, 0.0], 0.1), ([0.1, 0.0, 1.0], 0.1), ([1.0, 0.0, 0.0], 100.0)):
+                tick_row(sd, [(G + gain, e)], inp, dt)
+    for k in range(G):
+        tick_row(sd, [(k, 0.0)], full, 0.1)
+    for _ in range(40):
+        net = seeded_net()
+        tick_row(net, seeded_cfg(), [rng.unit(), rng.unit(), rng.log_uniform(-2.0, 0.5)], rng.log_uniform(-3.0, 1.5))
+        tick_row(net, [], [rng.unit(), rng.unit(), rng.unit()], 0.01)
+
+    def traj(start, ov, ops):
+        c = cfg_of(cd, ov)
+        net = list(start)
+        flux = [0.0] * nf
+        ins = toks(start) + cfg_toks(ov)
+        for op in ops:
+            if op[0] == "tick":
+                _, inp, dt, k = op
+                for _ in range(k):
+                    net, flux, _e = tick(net, c, inp, dt)
+                ins += [i(1)] + toks(inp + [dt]) + [i(k)]
+            else:
+                _, field, x = op
+                net[field] = x
+                ins += [i(3), i(field), f(x)]
+        m.row("signaling::SignalingNetwork::trajectory", "T", ins, toks(net + flux))
+
+    traj(sd, [], [("tick", [1.0, 0.0, 0.0], 0.1, 100)])
+    traj(sd, [], [("tick", [0.0, 1.0, 0.0], 0.1, 100)])
+    traj(sd, [], [("tick", [0.0, 0.0, 1.0], 0.01, 100)])
+    traj(sd, [], [("tick", [0.3, 0.0, 0.0], 0.1, 100)])
+    traj(sd, [(G, 2.0)], [("tick", [0.3, 0.0, 0.0], 0.1, 100)])
+    traj(sd, [], [("tick", [1.0, 0.0, 0.0], 0.1, 300)])
+    traj(sd, [(G + 1, 1.0)], [("tick", [1.0, 0.0, 0.0], 0.1, 300)])
+    traj(sd, [(G + 1, 1.0)], [("tick", [1.0, 0.0, 0.0], 0.1, 300)])
+    traj(sd, [(G + 1, 1e6)], [("tick", [1.0, 0.0, 0.0], 0.1, 300), ("tick", [1.0, 0.0, 0.0], 100.0, 1)])
+    traj(sd, [], [("tick", [0.1, 0.0, 1.0], 0.1, 100)])
+    traj(sd, [(G + 2, 1.0)], [("tick", [0.1, 0.0, 1.0], 0.1, 100)])
+    traj(sd, [(G + 2, 1.0), (G, 1.0)], [("tick", [NAN, NAN, NAN], 0.1, 50)])
+    traj(sd, [(G + 2, 1.0), (G, 1.0)], [("tick", [0.0, 0.0, 0.0], 0.1, 50)])
+    traj(sd, [], [("tick", [1.0, 0.5, 0.5], 0.01, 1000)])
+    traj(sd, [(G, 0.5), (G + 1, 0.5), (G + 2, 0.5)], [("tick", [0.5, 0.3, 0.2], 0.05, 2000)])
+    traj(sd, [], [("tick", [0.5, 0.3, 0.2], 5.0, 12)])
+    traj(sd, [], [("set", 0, NAN), ("tick", [0.5, 0.3, 0.2], 0.1, 50)])
+    for _ in range(4):
+        traj(seeded_net(), seeded_cfg(), [("tick", [rng.unit(), rng.unit(), rng.unit()], rng.log_uniform(-2.0, 0.0), 200)])
+
+    worked = list(sd)
+    flux = [0.0] * nf
+    for _ in range(100):
+        worked, flux, _e = tick(worked, cd, [0.5, 0.3, 0.2], 0.1)
+    odd = [NAN, -0.0, 1e300, SUB, 0.1 + 0.2, 1e21, 1e-7, -1.0, INF, 2.5e-8, 123456.789, 7e-310, 0.5]
+    for vals in (sd, worked, (odd * 2)[:ns]):
+        m.row("serde_json::to_string<SignalingNetwork>", "A", toks(vals), [g.s(json_tree(st_shape, vals))])
+    for vals in (cd, (odd * 4)[:nc]):
+        m.row("serde_json::to_string<SignalingConfig>", "A", toks(vals), [g.s(json_tree(cf_shape, vals))])
+    for vals in ([0.0] * nf, flux, (odd * 2)[:nf]):
+        m.row("serde_json::to_string<SignalingFlux>", "A", toks(vals), [g.s(json_tree(fx_shape, vals))])
+    in_shape = [(n, None) for n in in_names]
+    for vals in (ind, [0.5, 0.3, 0.2], odd[:3]):
+        m.row("serde_json::to_string<SignalingInput>", "A", toks(vals), [g.s(json_tree(in_shape, vals))])
+    jn = json_tree(st_shape, sd)
+    seq = "[" + ",".join("[" + ",".join(validate.json_f64(x) for x in sd[s_at[k]:s_at[k] + s_len[k]]) + "]"
+                         for k in range(4)) + "]"
+    reads = {
+        "SignalingNetwork": (st_shape, [json_tree(st_shape, worked), jn, seq, jn.replace('"calcium":', '"z":{"q":1},"calcium":', 1),
+                                        jn.replace(',"calcium":{' + json_tree(st_shape[3][1], sd[s_at[3]:])[1:], "", 1),
+                                        jn.replace('"ras_gtp":0.05', '"ras_gtp":"0.05"', 1),
+                                        jn[:-1] + ',"mapk":' + json_tree(st_shape[0][1], sd[:4]) + "}",
+                                        jn.replace('"socs":0.1', '"socs":1e-400', 1)]),
+        "SignalingConfig": (cf_shape, [json_tree(cf_shape, cd), json_tree(cf_shape, cd).replace(',"ca_ras_crosstalk":0.0', "", 1),
+                                       json_tree(cf_shape, cd).replace('"akt_raf_inhibition":0.0', '"akt_raf_inhibition":null', 1)]),
+        "SignalingFlux": (fx_shape, [json_tree(fx_shape, flux), json_tree(fx_shape, [0.0] * nf), "[[1,2,3,4],[1,2,3],[1,2,3,4],[1,2,3]]",
+                                     "[[1,2,3,4],[1,2,3],[1,2,3,4]]"]),
+        "SignalingInput": (in_shape, ['{"growth_factor":0.5,"cytokine":0.3,"ip3":0.2}', "[0.5,0.3,0.2]", "[0.5,0.3]",
+                                      '{"ip3":0.2,"growth_factor":-0.0,"cytokine":1}', '{"growth_factor":0.5,"cytokine":0.3}']),
+    }
+    for ty, (shape, docs) in reads.items():
+        for d in docs:
+            try:
+                got = read_tree(validate.py_json(d.encode("utf-8")), shape)
+                outs = toks(got)
+            except (ValueError, RecursionError, KeyError):
+                outs = [g.err("Deserialize")]
+            m.row(f"serde_json::from_slice<{ty}>", "A", [g.sb(d.encode("utf-8"))], outs)
+
+    text = rust_text(mod)
+    out = [data_header("signaling data: the network's, config's, flux's and input's field names, and the input's "
+                       "default", ["SignalingInput::default(), from rasayan 1.2.0's source: one f64 const per field. "
+                                   "SignalingNetwork's\nand SignalingConfig's defaults are their pathways' (the "
+                                   "#[derive(Default)] gains 0).\ntests/golden/signaling.tsv pins them."])]
+    for ty, infix in (("SignalingNetwork", "SIGNALING_NETWORK"), ("SignalingConfig", "SIGNALING_CONFIG"),
+                      ("SignalingFlux", "SIGNALING_FLUX"), ("SignalingInput", "SIGNALING_INPUT")):
+        anchor = f"pub struct {ty} {{"
+        out.append(doc_comment(text, anchor))
+        if ty == "SignalingInput":
+            out.append(f"# Rust: rasayan::signaling::{ty}::default()\n\n")
+            for n, x in defaults(mod, ty):
+                out.append(doc_comment_after(text, anchor, f"pub {n}:"))
+                out.append(f"# Rust: rasayan::signaling::{ty}::default().{n}\n")
+                out.append(f"const RY_SIGNALING_{infix}_DEFAULT_{n.upper()} = {f64_lit(x)};\n\n")
+        out.append(name_blob(ty, infix, struct_names(mod, ty)))
+    return m, {"src/signaling_data.cyr": "".join(out).rstrip() + "\n"}
+
+
+MODULES = {"receptor": receptor, "nuclear_receptor": nuclear_receptor, "signaling": signaling}
 
 
 def outputs(root):

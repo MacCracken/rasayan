@@ -1854,3 +1854,24 @@ transcendental: B, T or A. The rows cover:
 | four targets (`scripts/gates.sh`, 487 s, every step green) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 119,892 ok, 81 accepted (ADR 3: 0), 0 failed; coverage 378 of 378 public fns executed |
 
 **Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): receptor_tick 10.2 → 83 ns.
+
+### 9g. Part 6: nuclear_receptor (2026-11-18)
+
+**What is compared.** `tests/golden/nuclear_receptor.tsv` (new, 628 rows), written by `gen.py`'s shared `stateful()`
+generator from its Python transcription of `nuclear_receptor.rs` (binary64, the source's order, MPFR's `expm1`), against
+the Cyrius port. The rows: the two defaults, both validators over every field's edges and order pairs, `free_receptor`
+(50); 377 single ticks — the default at 26 step lengths at hormone 0.5, 1 and 10 (the expression's `produce_decay`
+crosses the series cutoff at 6.25 s), each field's and each rate's edges, the hormone's edges, Rust's cases, 120
+seeded; 23 trajectories — Rust's runs (induction over 500 ticks, the delayed response, decay without hormone, the
+bounded run, the ten-hour runs at 0.1, 1, 5 and 100 s), a dose-response sweep, NaN and inf recovery, four seeded — and
+the serde documents. Classes: A 178, B 370, C 57 (an `exp_m1` step), T 23.
+
+| Check | Result |
+|---|---|
+| every row | 628 identical on the first run |
+| `gen.py --check` | the golden file and `src/nuclear_receptor_data.cyr` byte-identical on regeneration |
+| Rust tests | the 11 `nuclear_receptor.rs` tests and its 2 integration tests ported (`tests/nuclear_receptor.tcyr`, 19 checks); the ledger at 610 of 723; surface parity 15 of 15 |
+| fuzz | the three documents (1,858 accepted, each written and read back bit for bit); a valid state of bound + nuclear <= 1, and the default state on a valid config, ticked 0.1 s and 100 s stay valid with that total <= 1 + 10⁻⁹ |
+| four targets (`scripts/gates.sh`, 496 s) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 120,520 ok, 81 accepted (ADR 3: 0), 0 failed; coverage 397 of 397 public fns executed |
+
+**Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): nuclear_receptor_tick 9.2 → 82 ns.

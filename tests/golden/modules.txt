@@ -20,6 +20,7 @@ mapk
 math
 membrane
 metabolism
+nuclear_receptor
 pathway
 pi3k
 protein

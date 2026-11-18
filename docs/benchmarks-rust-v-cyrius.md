@@ -370,3 +370,12 @@ Measured at load 3.9–4.2 (two runs), with the reference rows at their quiet va
 glycolysis_tick 751–754 ns, calcium_tick 158–159 ns). A tick is five capped transfers, the total and the synthesis,
 and the four pool updates; no transcendental.
 
+## M6 part 6: nuclear_receptor
+
+| Benchmark | Rust 1.2.0 (ns) | Cyrius (ns) | Notes |
+|---|---|---|---|
+| nuclear_receptor_tick | 9.16 | 82 | Rust's loop body: a default state, one tick of 0.01 s at hormone 0.5 |
+
+Cyrius only: the state ticked on (no reset) 78 ns; a tick of 100 s 146 ns (the expression's `produce_decay` on the
+`exp_m1` branch). Measured at load 2.8, with the reference rows at their quiet values (michaelis_menten 12 ns,
+glycolysis_tick 731 ns, receptor_tick 79 ns).

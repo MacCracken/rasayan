@@ -90,6 +90,8 @@ modules = [
     "src/calcium.cyr",
     "src/receptor_data.cyr",
     "src/receptor.cyr",
+    "src/nuclear_receptor_data.cyr",
+    "src/nuclear_receptor.cyr",
 ]
 
 # [lib.mcp] (dist/rasayan-mcp.cyr): [lib] plus src/mcp.cyr, the eight bote tools, at M8. Its consumer declares bote
@@ -144,6 +146,8 @@ modules = [
     "src/calcium.cyr",
     "src/receptor_data.cyr",
     "src/receptor.cyr",
+    "src/nuclear_receptor_data.cyr",
+    "src/nuclear_receptor.cyr",
 ]
 
 # [lib.ai] (dist/rasayan-ai.cyr): [lib] plus the hoosh client's data (src/ai_data.cyr, the system prompt) and, at M8,
@@ -199,6 +203,8 @@ modules = [
     "src/calcium.cyr",
     "src/receptor_data.cyr",
     "src/receptor.cyr",
+    "src/nuclear_receptor_data.cyr",
+    "src/nuclear_receptor.cyr",
     "src/ai_data.cyr",
 ]
 
