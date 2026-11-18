@@ -318,3 +318,20 @@ Measured on a quiet machine (load 3.1–3.4, two runs), with the reference rows 
 12 ns, glycolysis_tick 752–757 ns, mapk_tick 233–234 ns). A tick is three Michaelis-Menten rates and three
 `activate` calls.
 
+## M6 part 3: JAK-STAT
+
+| Benchmark | Rust 1.2.0 (ns) | Cyrius (ns) | Notes |
+|---|---|---|---|
+| jak_stat_tick | 46.90 | 159–161 | Rust's loop body: a default state, one tick of 0.01 s at cytokine 0.5 (the series branch) |
+
+Cyrius only:
+
+| Benchmark | Cyrius (ns) | Notes |
+|---|---|---|
+| tick, the state ticked on (no reset) | 156 | |
+| tick of 5 s | 319–324 | one step, its three integrators on the `exp_m1` branch |
+
+Measured on a quiet machine (load 0.97–1.04, two runs), with the reference rows at their quiet values (michaelis_menten
+11 ns, glycolysis_tick 693–724 ns, mapk_tick 226 ns, pi3k_tick 148–150 ns). A tick is two Michaelis-Menten rates, SOCS's
+inhibition, the three integrators and the Patankar dimer step's division.
+

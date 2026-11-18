@@ -12,6 +12,7 @@ etc
 glycolysis
 guard
 integrate
+jak_stat
 json
 logging
 mapk

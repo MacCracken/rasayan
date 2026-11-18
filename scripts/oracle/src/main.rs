@@ -39,6 +39,7 @@ mod m_enzyme;
 mod m_glycolysis;
 mod m_guard;
 mod m_integrate;
+mod m_jak_stat;
 mod m_json;
 mod m_logging;
 mod m_mapk;
@@ -63,6 +64,7 @@ mod t_mapk;
 mod t_etc;
 mod t_enzyme;
 mod t_glycolysis;
+mod t_jak_stat;
 mod t_membrane;
 mod t_metabolism;
 mod t_pathway;
@@ -78,6 +80,7 @@ mod v_beta_oxidation;
 mod v_etc;
 mod v_guard;
 mod v_integrate;
+mod v_jak_stat;
 mod v_logging;
 mod v_mapk;
 mod v_pathway;
@@ -122,6 +125,7 @@ fn golden_modules(root: &Path) -> Result<Vec<tsv::Module>, String> {
         t_etc::golden(&read("etc")?)?,
         t_enzyme::golden(&read("enzyme")?)?,
         t_glycolysis::golden(&read("glycolysis")?)?,
+        t_jak_stat::golden(&read("jak_stat")?)?,
         t_membrane::golden(&read("membrane")?)?,
         t_mapk::golden(&read("mapk")?)?,
         t_metabolism::golden(&read("metabolism")?)?,
@@ -184,6 +188,10 @@ fn cyrius_outputs(root: &Path, prov: &str) -> Result<Vec<Output>, String> {
         (
             "src/glycolysis_data.cyr",
             t_glycolysis::emit_cyr(&read("glycolysis")?, prov)?,
+        ),
+        (
+            "src/jak_stat_data.cyr",
+            t_jak_stat::emit_cyr(&read("jak_stat")?, prov)?,
         ),
         (
             "src/membrane_data.cyr",

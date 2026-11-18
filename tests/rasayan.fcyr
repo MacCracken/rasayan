@@ -9,7 +9,7 @@
 # every protein function on the input as a sequence; part 2, alignment on its two halves; parts 3 and 4, the PTM and
 # domain scans. M4a: the glycolysis and TCA codecs, and steps of every state the readers accept; M4b, the
 # ETC's, β-oxidation's and amino-acid catabolism's. M5: the metabolic network's six codecs, and steps of every valid
-# network. M6 parts 1 and 2: the MAPK and PI3K codecs and steps.
+# network. M6 parts 1–3: the MAPK, PI3K and JAK-STAT codecs and steps.
 
 include "src/constants.cyr"
 include "src/constants_private.cyr"
@@ -53,6 +53,8 @@ include "src/mapk_data.cyr"
 include "src/mapk.cyr"
 include "src/pi3k_data.cyr"
 include "src/pi3k.cyr"
+include "src/jak_stat_data.cyr"
+include "src/jak_stat.cyr"
 
 var _fz_state = 0x2545F4914F6CDD1D;
 var _fz_bad = 0;
@@ -75,6 +77,7 @@ var _fz_network = 0;
 var _fz_net_stepped = 0;
 var _fz_mapk = 0;
 var _fz_pi3k = 0;
+var _fz_jak_stat = 0;
 
 # xorshift64*: the next pseudo-random word.
 fn fz_next(): i64 {
@@ -936,6 +939,77 @@ fn fuzz_pi3k(data, len) {
     return 0;
 }
 
+# Ticks JAK-STAT state *s on config *c at cytokine 0.5 for 0.1 s and then 100 s: a failure unless it still validates,
+# STAT-P + 2·dimer stays <= 1 (to 1e-9, Rust's bound) and every flux value is finite. The caller passes a state inside
+# the conservation law: one outside it (each pool in [0, 1], their sum past 1) may leave [0, 1] by design.
+fn fz_jak_stat_step(s: *RyJakStatState, c: *RyJakStatConfig) {
+    var f: RyJakStatFlux;
+    ry_jak_stat_state_tick(s, c, 0.5, 0.1, &f);
+    var ok = fz_all_finite(&f, 4);
+    ry_jak_stat_state_tick(s, c, 0.5, 100.0, &f);
+    if (fz_all_finite(&f, 4) == 0) { ok = 0; }
+    var total: f64 = s.stat_phosphorylated + 2.0 * s.stat_dimer;
+    if (total > 1.0 + 0.000000001) { ok = 0; }
+    var tv, vv = ry_jak_stat_state_validate(s);
+    if (is_ok(tv) == 0 || ok == 0) { _fz_bad = _fz_bad + 1; }
+    return 0;
+}
+
+# jak_stat: the three codecs on one input (an accepted value holds only finite f64s and reads back bit for bit from
+# what it writes); a valid state inside the conservation law stepped on the default config, and the default state on
+# an accepted config that validates (fz_jak_stat_step).
+fn fuzz_jak_stat(data, len) {
+    reset_via(_fz_arena);
+    var dc: RyJakStatConfig;
+    ry_jak_stat_config_default(&dc);
+    var s: RyJakStatState;
+    var sb2: RyJakStatState;
+    var t1, v1 = ry_jak_stat_state_from_json_a(_fz_arena, data, len, &s);
+    if (is_ok(t1) == 1) {
+        _fz_jak_stat = _fz_jak_stat + 1;
+        store64(_fz_sb + 8, 0);
+        var t2, v2 = ry_jak_stat_state_to_json(_fz_sb, &s);
+        var t3, v3 = ry_jak_stat_state_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &sb2);
+        if (fz_all_finite(&s, 4) == 0 || is_ok(t2) == 0 || is_ok(t3) == 0 || memeq(&sb2, &s, 32) == 0) {
+            _fz_bad = _fz_bad + 1;
+        }
+        var tv, vv = ry_jak_stat_state_validate(&s);
+        var held: f64 = s.stat_phosphorylated + 2.0 * s.stat_dimer;
+        if (is_ok(tv) == 1 && held <= 1.0) { fz_jak_stat_step(&s, &dc); }
+    }
+    var c2: RyJakStatConfig;
+    var cb: RyJakStatConfig;
+    var t4, v4 = ry_jak_stat_config_from_json_a(_fz_arena, data, len, &c2);
+    if (is_ok(t4) == 1) {
+        _fz_jak_stat = _fz_jak_stat + 1;
+        store64(_fz_sb + 8, 0);
+        var t5, v5 = ry_jak_stat_config_to_json(_fz_sb, &c2);
+        var t6, v6 = ry_jak_stat_config_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &cb);
+        if (fz_all_finite(&c2, 11) == 0 || is_ok(t5) == 0 || is_ok(t6) == 0 || memeq(&cb, &c2, 88) == 0) {
+            _fz_bad = _fz_bad + 1;
+        }
+        var tc, vc = ry_jak_stat_config_validate(&c2);
+        if (is_ok(tc) == 1) {
+            var d: RyJakStatState;
+            ry_jak_stat_state_default(&d);
+            fz_jak_stat_step(&d, &c2);
+        }
+    }
+    var fx: RyJakStatFlux;
+    var fb: RyJakStatFlux;
+    var t7, v7 = ry_jak_stat_flux_from_json_a(_fz_arena, data, len, &fx);
+    if (is_ok(t7) == 1) {
+        _fz_jak_stat = _fz_jak_stat + 1;
+        store64(_fz_sb + 8, 0);
+        var t8, v8 = ry_jak_stat_flux_to_json(_fz_sb, &fx);
+        var t9, v9 = ry_jak_stat_flux_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &fb);
+        if (fz_all_finite(&fx, 4) == 0 || is_ok(t8) == 0 || is_ok(t9) == 0 || memeq(&fb, &fx, 32) == 0) {
+            _fz_bad = _fz_bad + 1;
+        }
+    }
+    return 0;
+}
+
 # A NUL-terminated copy of the document builder `sb` holds (a seed).
 fn fz_seed_of(sb): i64 {
     var n = load64(sb + 8);
@@ -1086,7 +1160,7 @@ fn main() {
     var buf = alloc(cap + 1);
     _fz_arena = arena_allocator_growable(65536);
     _fz_sb = str_builder_new();
-    var seeds = alloc(8 * 67);
+    var seeds = alloc(8 * 70);
     store64(seeds, "trace");
     store64(seeds + 8, "DEBUG");
     store64(seeds + 16, "info,warn");
@@ -1260,6 +1334,20 @@ fn main() {
     store64(_fz_sb + 8, 0);
     var tp2, vp2 = ry_pi3k_flux_to_json(_fz_sb, &pkf);
     store64(seeds + 528, fz_seed_of(_fz_sb));
+    # The JAK-STAT documents: the default state in the sequence form, the default config and a tick's flux as written.
+    store64(seeds + 536, "[0.02,0.01,0.01,0.1]");
+    var jsc: RyJakStatConfig;
+    var jss: RyJakStatState;
+    var jsf: RyJakStatFlux;
+    ry_jak_stat_config_default(&jsc);
+    ry_jak_stat_state_default(&jss);
+    ry_jak_stat_state_tick(&jss, &jsc, 0.5, 0.1, &jsf);
+    store64(_fz_sb + 8, 0);
+    var tj1, vj1 = ry_jak_stat_config_to_json(_fz_sb, &jsc);
+    store64(seeds + 544, fz_seed_of(_fz_sb));
+    store64(_fz_sb + 8, 0);
+    var tj2, vj2 = ry_jak_stat_flux_to_json(_fz_sb, &jsf);
+    store64(seeds + 552, fz_seed_of(_fz_sb));
     var i = 0;
     while (i < 50000) {
         var n = 0;
@@ -1268,7 +1356,7 @@ fn main() {
             var k = 0;
             while (k < n) { store8(buf + k, fz_below(256)); k = k + 1; }
         } else {
-            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(67)));
+            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(70)));
         }
         fuzz_main(buf, n);
         fuzz_json(buf, n);
@@ -1285,6 +1373,7 @@ fn main() {
         fuzz_network(buf, n);
         fuzz_mapk(buf, n);
         fuzz_pi3k(buf, n);
+        fuzz_jak_stat(buf, n);
         i = i + 1;
     }
     if (_fz_bad != 0) {
@@ -1292,7 +1381,7 @@ fn main() {
         println_int(_fz_bad);
         return 1;
     }
-    print("fuzz: ok (50000 inputs; RASAYAN_LOG values read: ", 50);
+    print("fuzz: ok (50000 inputs; RASAYAN_LOG values read: ", 49);
     fmt_int(_fz_read);
     print(", JSON documents read as a struct: ", 35);
     fmt_int(_fz_json_read);
@@ -1324,6 +1413,8 @@ fn main() {
     fmt_int(_fz_mapk);
     print(", PI3K documents read: ", 23);
     fmt_int(_fz_pi3k);
+    print(", JAK-STAT documents read: ", 27);
+    fmt_int(_fz_jak_stat);
     println(")");
     return 0;
 }

@@ -1,0 +1,362 @@
+# rasayan — src/jak_stat.cyr: Rust 1.2.0's JAK-STAT tests, ported
+# Stdlib auto-included via cyrius.cyml
+#
+# The 12 unit tests of `jak_stat.rs` and the 2 integration tests (tests/integration.rs) that call only the pathway, as
+# they are written; tests/golden/jak_stat.tsv checks every method, single tick and trajectory besides. Beyond them:
+# the trace event and every codec's round trip.
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+include "src/integrate.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
+include "src/enzyme_data.cyr"
+include "src/enzyme.cyr"
+include "src/jak_stat_data.cyr"
+include "src/jak_stat.cyr"
+
+# 1 when the state validates.
+fn js_ok(p: *RyJakStatState) {
+    var t, v = ry_jak_stat_state_validate(p);
+    return is_ok(t);
+}
+
+# 1 when the config validates.
+fn jc_ok(c: *RyJakStatConfig) {
+    var t, v = ry_jak_stat_config_validate(c);
+    return is_ok(t);
+}
+
+# Rust's test helper `stat_total`: STAT-P + 2·dimer.
+fn stat_total(s: *RyJakStatState): f64 {
+    var t: f64 = s.stat_phosphorylated + 2.0 * s.stat_dimer;
+    return t;
+}
+
+# `n` ticks at cytokine `cyt` and step `dt`.
+fn ticks(s: *RyJakStatState, c: *RyJakStatConfig, n, cyt: f64, dt: f64) {
+    var f: RyJakStatFlux;
+    var k = 0;
+    while (k < n) {
+        ry_jak_stat_state_tick(s, c, cyt, dt, &f);
+        k = k + 1;
+    }
+    return 0;
+}
+
+# Rust's test helper `old_euler_tick`: the pre-hardening explicit-Euler step, the small-dt reference.
+fn old_euler_tick(s: *RyJakStatState, c: *RyJakStatConfig, cyt: f64, dt: f64) {
+    var inh: f64 = 1.0 / (1.0 + s.socs / c.socs_ki);
+    var v1: f64 = c.jak_vmax * (1.0 - s.jak_active) * inh;
+    var on1: f64 = ry_michaelis_menten(cyt, v1, c.jak_km);
+    var jak: f64 = s.jak_active + (on1 - c.jak_phosphatase_rate * s.jak_active) * dt;
+    s.jak_active = jak;
+    var v2: f64 = c.stat_vmax * (1.0 - s.stat_phosphorylated);
+    var on2: f64 = ry_michaelis_menten(jak, v2, c.stat_km);
+    var sp: f64 = s.stat_phosphorylated + (on2 - c.stat_phosphatase_rate * s.stat_phosphorylated) * dt;
+    s.stat_phosphorylated = sp;
+    var v_dimer: f64 = c.dimer_rate * sp * sp;
+    var d: f64 = s.stat_dimer + (v_dimer - c.dimer_decay_rate * s.stat_dimer) * dt;
+    s.stat_dimer = d;
+    var socs: f64 = s.socs + (c.socs_induction_rate * d - c.socs_degradation_rate * s.socs) * dt;
+    s.socs = socs;
+    return 0;
+}
+
+# ── the captured events ──
+var _ev_buf[1024];
+var _ev_len = 0;
+
+# sakshi's subscriber: keeps the last event's message.
+fn _ev_hook(ts, level, category, msg, msg_len, extra) {
+    var n = msg_len;
+    if (n > 1024) { n = 1024; }
+    memcpy(&_ev_buf, msg, n);
+    _ev_len = msg_len;
+    return 0;
+}
+
+# 1 if the last captured event is the C string `want`.
+fn _ev_is(want) {
+    var n = strlen(want);
+    if (_ev_len != n) { return 0; }
+    return memeq(&_ev_buf, want, n);
+}
+
+# rust src/jak_stat.rs: test_default_valid, test_validate_rejects_nan_zero_ki_and_out_of_range
+fn validation() {
+    test_group("jak_stat: defaults and validation");
+    var s: RyJakStatState;
+    var c: RyJakStatConfig;
+    ry_jak_stat_state_default(&s);
+    ry_jak_stat_config_default(&c);
+    assert(js_ok(&s) == 1 && jc_ok(&c) == 1, "the defaults validate");
+    var nan: f64 = _ry_nan();
+    var refused = 0;
+    var k = 0;
+    while (k < 3) {
+        ry_jak_stat_config_default(&c);
+        if (k == 0) { c.socs_ki = 0.0; }
+        if (k == 1) { c.jak_km = 0.0; }
+        if (k == 2) { c.dimer_rate = nan; }
+        if (jc_ok(&c) == 0) { refused = refused + 1; }
+        k = k + 1;
+    }
+    assert_eq(refused, 3, "each of Rust's three bad configs is refused");
+    var kinds = 0;
+    k = 0;
+    while (k < 2) {
+        ry_jak_stat_state_default(&s);
+        if (k == 0) { s.stat_dimer = 1.5; }
+        if (k == 1) { s.jak_active = nan; }
+        var t, v = ry_jak_stat_state_validate(&s);
+        if (is_err_result(t) == 1 && (v == RY_ERR_INVALID_PARAMETER || v == RY_ERR_NON_FINITE)) { kinds = kinds + 1; }
+        k = k + 1;
+    }
+    assert_eq(kinds, 2, "a dimer of 1.5 and a NaN JAK are refused as out of range or non-finite");
+    ry_jak_stat_state_default(&s);
+    s.socs = 0.0 - 1.0;
+    var t1, v1 = ry_jak_stat_state_validate(&s);
+    assert_eq(v1, RY_ERR_NEGATIVE_CONCENTRATION, "a negative SOCS is a negative concentration");
+    return 0;
+}
+
+# rust src/jak_stat.rs: test_cytokine_activates_stat, test_socs_negative_feedback, test_no_cytokine_decays
+# rust src/jak_stat.rs: test_bounded
+fn ticking() {
+    test_group("jak_stat: the pathway");
+    var s: RyJakStatState;
+    var c: RyJakStatConfig;
+    ry_jak_stat_config_default(&c);
+    ry_jak_stat_state_default(&s);
+    ticks(&s, &c, 200, 1.0, 0.1);
+    var dimer: f64 = s.stat_dimer;
+    assert(dimer > RY_JAK_STAT_JAK_STAT_STATE_DEFAULT_STAT_DIMER, "the cytokine drives STAT dimers");
+    var s1: RyJakStatState;
+    var s2: RyJakStatState;
+    var f1: RyJakStatFlux;
+    var f2: RyJakStatFlux;
+    ry_jak_stat_state_default(&s1);
+    ry_jak_stat_state_tick(&s1, &c, 1.0, 0.1, &f1);
+    ry_jak_stat_state_default(&s2);
+    s2.socs = 5.0;
+    ry_jak_stat_state_tick(&s2, &c, 1.0, 0.1, &f2);
+    var j1: f64 = f1.jak_phosphorylation;
+    var j2: f64 = f2.jak_phosphorylation;
+    assert(j2 < j1, "high SOCS suppresses JAK");
+    s.jak_active = 0.5;
+    s.stat_phosphorylated = 0.5;
+    s.stat_dimer = 0.5;
+    s.socs = 0.5;
+    ticks(&s, &c, 200, 0.0, 0.1);
+    var jak: f64 = s.jak_active;
+    assert(jak < 0.1, "JAK decays without cytokine");
+    ry_jak_stat_state_default(&s);
+    ticks(&s, &c, 1000, 1.0, 0.01);
+    assert_eq(js_ok(&s), 1, "1000 steps of 0.01 s stay valid");
+    return 0;
+}
+
+# rust src/jak_stat.rs: test_stat_conserved_long_run, test_dimerization_conserves_phospho_stat
+fn conservation() {
+    test_group("jak_stat: STAT conservation");
+    var c: RyJakStatConfig;
+    var s: RyJakStatState;
+    var f: RyJakStatFlux;
+    ry_jak_stat_config_default(&c);
+    var held = 0;
+    var r = 0;
+    while (r < 3) {
+        var dt: f64 = 0.01;
+        if (r == 1) { dt = 0.5; }
+        if (r == 2) { dt = 100.0; }
+        ry_jak_stat_state_default(&s);
+        var q: f64 = 3600.0 / dt;
+        var steps = _ry_f64_to_u32(q);
+        var ok = 1;
+        var k = 0;
+        while (k < steps) {
+            ry_jak_stat_state_tick(&s, &c, 1.0, dt, &f);
+            var total: f64 = stat_total(&s);
+            if (total > 1.0 + 0.000000001 || js_ok(&s) == 0) { ok = 0; }
+            k = k + 1;
+        }
+        var dimer: f64 = s.stat_dimer;
+        if (ok == 1 && dimer <= 0.5 + 0.000000000001 && dimer > 0.05) { held = held + 1; }
+        r = r + 1;
+    }
+    assert_eq(held, 3, "an hour at 0.01, 0.5 and 100 s: STAT-P + 2·dimer <= 1, valid, dimers in (0.05, 0.5]");
+    var dc: RyJakStatConfig;
+    ry_jak_stat_config_default(&dc);
+    dc.stat_vmax = 0.0;
+    dc.stat_phosphatase_rate = 0.0;
+    ry_jak_stat_state_default(&s);
+    s.stat_phosphorylated = 0.6;
+    s.stat_dimer = 0.0;
+    var kept = 0;
+    r = 0;
+    while (r < 3) {
+        var dt2: f64 = 0.01;
+        if (r == 1) { dt2 = 1.0; }
+        if (r == 2) { dt2 = 100.0; }
+        ry_jak_stat_state_tick(&s, &dc, 0.0, dt2, &f);
+        var drift: f64 = stat_total(&s) - 0.6;
+        if (f64_abs(drift) < 0.000000000001) { kept = kept + 1; }
+        r = r + 1;
+    }
+    assert_eq(kept, 3, "without STAT turnover, STAT-P + 2·dimer stays 0.6 to 1e-12");
+    ticks(&s, &dc, 100, 0.0, 10.0);
+    var p: f64 = s.stat_phosphorylated;
+    var gap: f64 = dc.dimer_rate * p * p - dc.dimer_decay_rate * s.stat_dimer;
+    assert(f64_abs(gap) < 0.000001, "the dimers reach kf·P² = kd·D");
+    return 0;
+}
+
+# rust src/jak_stat.rs: test_small_dt_matches_old_euler_without_dimers
+fn integration() {
+    test_group("jak_stat: the exact steps");
+    var c: RyJakStatConfig;
+    var n: RyJakStatState;
+    var o: RyJakStatState;
+    var f: RyJakStatFlux;
+    ry_jak_stat_config_default(&c);
+    c.dimer_rate = 0.0;
+    ry_jak_stat_state_default(&n);
+    n.stat_dimer = 0.0;
+    ry_jak_stat_state_default(&o);
+    o.stat_dimer = 0.0;
+    var k = 0;
+    while (k < 20000) {
+        ry_jak_stat_state_tick(&n, &c, 0.8, 0.001, &f);
+        old_euler_tick(&o, &c, 0.8, 0.001);
+        k = k + 1;
+    }
+    var close = 1;
+    var wn = &n;
+    var wo = &o;
+    var j = 0;
+    while (j < 4) {
+        if (j != 2) {                            # JAK, STAT-P and SOCS; the dimer pool is empty in both
+            var x: f64 = load64(wn + 8 * j);
+            var y: f64 = load64(wo + 8 * j);
+            var scale: f64 = _ry_max(f64_abs(y), 0.000001);
+            if (f64_abs(x - y) > 0.01 * scale) { close = 0; }
+        }
+        j = j + 1;
+    }
+    assert_eq(close, 1, "small steps match the old explicit Euler to 1 % without dimers");
+    return 0;
+}
+
+# rust src/jak_stat.rs: test_invalid_dt_is_noop, test_nan_input_treated_as_zero
+fn hardening() {
+    test_group("jak_stat: hardening");
+    var s: RyJakStatState;
+    var d: RyJakStatState;
+    var c: RyJakStatConfig;
+    var f: RyJakStatFlux;
+    var zero: RyJakStatFlux;
+    ry_jak_stat_config_default(&c);
+    ry_jak_stat_state_default(&d);
+    ry_jak_stat_flux_default(&zero);
+    var inf: f64 = _RY_INF;
+    var nan: f64 = _ry_nan();
+    var k = 0;
+    while (k < 4) {
+        var dt: f64 = 0.0;
+        if (k == 1) { dt = -0.1; }
+        if (k == 2) { dt = nan; }
+        if (k == 3) { dt = inf; }
+        ry_jak_stat_state_default(&s);
+        memset(&f, 255, 32);
+        ry_jak_stat_state_tick(&s, &c, 1.0, dt, &f);
+        assert(memeq(&s, &d, 32) == 1 && memeq(&f, &zero, 32) == 1, "an invalid dt changes nothing, a zero flux");
+        k = k + 1;
+    }
+    var a: RyJakStatState;
+    var b: RyJakStatState;
+    ry_jak_stat_state_default(&a);
+    ry_jak_stat_state_default(&b);
+    ry_jak_stat_state_tick(&a, &c, nan, 0.1, &f);
+    ry_jak_stat_state_tick(&b, &c, 0.0, 0.1, &f);
+    assert(memeq(&a, &b, 32) == 1 && js_ok(&a) == 1, "a NaN cytokine is no stimulus");
+    return 0;
+}
+
+# Rust's trace event, under the target `rasayan::jak_stat`, its fields in Rust's order (the cytokine sanitized).
+fn events() {
+    test_group("jak_stat: trace event");
+    sakshi_set_emit_hook(&_ev_hook);
+    sakshi_set_level(SK_TRACE);
+    var s: RyJakStatState;
+    var c: RyJakStatConfig;
+    var f: RyJakStatFlux;
+    ry_jak_stat_state_default(&s);
+    ry_jak_stat_config_default(&c);
+    ry_jak_stat_state_tick(&s, &c, 2.0, 0.01, &f);
+    assert_eq(_ev_is("rasayan::jak_stat: jak_stat_tick dt=0.01 cytokine=1 stat_dimer=0.01"), 1, "jak_stat_tick");
+    _ev_len = 0;
+    ry_jak_stat_state_tick(&s, &c, 0.5, 0.0, &f);
+    assert_eq(_ev_len, 0, "no event for an invalid dt");
+    sakshi_set_level(SK_INFO);
+    ry_jak_stat_state_tick(&s, &c, 0.5, 0.01, &f);
+    assert_eq(_ev_len, 0, "below TRACE, nothing");
+    sakshi_clear_emit_hook();
+    return 0;
+}
+
+# rust src/jak_stat.rs: test_serde_roundtrip
+# rust tests/integration.rs: test_jak_stat_config_serde_roundtrip, test_jak_stat_flux_serde_roundtrip
+fn serde() {
+    test_group("jak_stat: serde round trips");
+    var sb = str_builder_new();
+    var s: RyJakStatState;
+    var sb2: RyJakStatState;
+    ry_jak_stat_state_default(&s);
+    var t1, v1 = ry_jak_stat_state_to_json(sb, &s);
+    var t2, v2 = ry_jak_stat_state_from_json(load64(sb), load64(sb + 8), &sb2);
+    assert(is_ok(t2) == 1 && memeq(&sb2, &s, 32) == 1, "the state reads back");
+    var c: RyJakStatConfig;
+    var cb: RyJakStatConfig;
+    ry_jak_stat_config_default(&c);
+    store64(sb + 8, 0);
+    var t3, v3 = ry_jak_stat_config_to_json(sb, &c);
+    var t4, v4 = ry_jak_stat_config_from_json(load64(sb), load64(sb + 8), &cb);
+    assert(is_ok(t4) == 1 && memeq(&cb, &c, 88) == 1, "the config reads back");
+    var f: RyJakStatFlux;
+    var fb: RyJakStatFlux;
+    ry_jak_stat_state_tick(&s, &c, 0.5, 0.01, &f);
+    store64(sb + 8, 0);
+    var t5, v5 = ry_jak_stat_flux_to_json(sb, &f);
+    var t6, v6 = ry_jak_stat_flux_from_json(load64(sb), load64(sb + 8), &fb);
+    assert(is_ok(t6) == 1 && memeq(&fb, &f, 32) == 1, "a tick's flux reads back, bit for bit");
+    var d: RyJakStatState;
+    ry_jak_stat_state_default(&d);
+    var bad = "{\"jak_active\":0.02,\"stat_phosphorylated\":0.01,\"stat_dimer\":0.01}";
+    var t7, v7 = ry_jak_stat_state_from_json(bad, strlen(bad), &sb2);
+    assert(is_err_result(t7) == 1 && memeq(&sb2, &d, 32) == 1, "a missing field is refused, *out untouched");
+    return 0;
+}
+
+# Runs the JAK-STAT suite.
+fn main() {
+    alloc_init();
+    validation();
+    ticking();
+    conservation();
+    integration();
+    hardening();
+    events();
+    serde();
+    return assert_summary();
+}
+
+var exit_code = main();
+# assert_summary() returns the failure count; a wait status is 8 bits, so any failure exits 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

@@ -1,31 +1,34 @@
 //! The check behind the verbatim copies (`v_guard.rs`, `v_integrate.rs`, `v_logging.rs`, `v_glycolysis.rs`,
-//! `v_tca.rs`, `v_etc.rs`, `v_beta_oxidation.rs`, `v_amino_catabolism.rs`, `v_pathway.rs`, `v_mapk.rs`, `v_pi3k.rs`):
-//! every `// @verbatim <file>` … `// @end` block in them must be a byte-for-byte span of `rust-old/src/<file>` (both
-//! read with `include_str!`, so the check is of the text that was compiled). The generator runs it before it makes
-//! any row, in both modes, so a copy that drifts from the oracle can never write or pass a golden file.
+//! `v_tca.rs`, `v_etc.rs`, `v_beta_oxidation.rs`, `v_amino_catabolism.rs`, `v_pathway.rs`, `v_mapk.rs`, `v_pi3k.rs`,
+//! `v_jak_stat.rs`): every `// @verbatim <file>` … `// @end` block in them must be a byte-for-byte span of
+//! `rust-old/src/<file>` (both read with `include_str!`, so the check is of the text that was compiled). The generator
+//! runs it before it makes any row, in both modes, so a copy that drifts from the oracle can never write or pass a
+//! golden file.
 //! `probe_solver` (M0 probe 4) checks its own copies the same way.
 
 /// The copies, by file name, and the oracle files their blocks come from.
-const COPIES: [(&str, &str); 11] = [
+const COPIES: [(&str, &str); 12] = [
     ("v_amino_catabolism.rs", include_str!("v_amino_catabolism.rs")),
     ("v_beta_oxidation.rs", include_str!("v_beta_oxidation.rs")),
     ("v_etc.rs", include_str!("v_etc.rs")),
     ("v_glycolysis.rs", include_str!("v_glycolysis.rs")),
     ("v_guard.rs", include_str!("v_guard.rs")),
     ("v_integrate.rs", include_str!("v_integrate.rs")),
+    ("v_jak_stat.rs", include_str!("v_jak_stat.rs")),
     ("v_logging.rs", include_str!("v_logging.rs")),
     ("v_mapk.rs", include_str!("v_mapk.rs")),
     ("v_pathway.rs", include_str!("v_pathway.rs")),
     ("v_pi3k.rs", include_str!("v_pi3k.rs")),
     ("v_tca.rs", include_str!("v_tca.rs")),
 ];
-const SOURCES: [(&str, &str); 11] = [
+const SOURCES: [(&str, &str); 12] = [
     ("amino_catabolism.rs", include_str!("../../../rust-old/src/amino_catabolism.rs")),
     ("beta_oxidation.rs", include_str!("../../../rust-old/src/beta_oxidation.rs")),
     ("etc.rs", include_str!("../../../rust-old/src/etc.rs")),
     ("glycolysis.rs", include_str!("../../../rust-old/src/glycolysis.rs")),
     ("guard.rs", include_str!("../../../rust-old/src/guard.rs")),
     ("integrate.rs", include_str!("../../../rust-old/src/integrate.rs")),
+    ("jak_stat.rs", include_str!("../../../rust-old/src/jak_stat.rs")),
     ("logging.rs", include_str!("../../../rust-old/src/logging.rs")),
     ("mapk.rs", include_str!("../../../rust-old/src/mapk.rs")),
     ("pathway.rs", include_str!("../../../rust-old/src/pathway.rs")),

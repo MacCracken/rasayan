@@ -1649,12 +1649,92 @@ PI3K = {
     "pi3k::Pi3kState::trajectory": _pk_trajectory,
 }
 
+# ── jak_stat (M6 part 3) ──
+# JakStatState::tick in Rust's order: JAK by `activate` (SOCS's inhibition a division), STAT-P by `relax` toward its
+# share of the free pool (skipped unless the total rate is > 0), the modified Patankar dimer step (arithmetic), SOCS by
+# `produce_decay`; each integrator's exp_m1 past the series cutoff.
+
+JS_DEFAULT = [0.5, 0.1, 0.3, 0.8, 0.1, 0.2, 1.0, 0.1, 0.3, 0.2, 0.3]  # JakStatConfig::default(), declaration order
+
+
+def _produce_decay_any(x, production, decay, dt, P):
+    """`integrate::produce_decay` on either branch of the step factors."""
+    if decay <= 0.0:
+        return x + production * dt
+    f, g = _factors_any(decay * dt, P)
+    return x * f + production * dt * g
+
+
+def _js_tick(st, c, cyt, dt, P):
+    if not (math.isfinite(dt) and dt > 0.0):
+        return list(st), [0.0] * 4
+    cyt = _unit(cyt)
+    jak, sp, sd, socs = st
+    inh = _fdiv(1.0, 1.0 + _fdiv(socs, c[10]))
+    k_jak_on = _mm(cyt, c[0], c[1]) * inh
+    v_jak_on = k_jak_on * (1.0 - jak)
+    jak = _activate_any(jak, k_jak_on, c[2], dt, P)
+    capacity = _rust_max(1.0 - 2.0 * sd, 0.0)
+    k_stat_on = _mm(jak, c[3], c[4])
+    k_stat_off = c[5]
+    v_stat_on = k_stat_on * _rust_max(capacity - sp, 0.0)
+    k_stat = k_stat_on + k_stat_off
+    if k_stat > 0.0:
+        sp = _relax_any(sp, _fdiv(capacity * k_stat_on, k_stat), k_stat, dt, P)
+    kf_dt = c[6] * sp * dt
+    kd_dt = c[7] * dt
+    total = sp + 2.0 * sd
+    d_new = _fdiv(sd + kf_dt * total, 1.0 + kd_dt + 2.0 * kf_dt)
+    p_new = _rust_max(total - 2.0 * d_new, 0.0)
+    v_dimer = c[6] * sp * p_new
+    v_socs_on = c[8] * d_new
+    socs = _produce_decay_any(socs, v_socs_on, c[9], dt, P)
+    return [jak, p_new, d_new, socs], [v_jak_on, v_stat_on, v_dimer, v_socs_on]
+
+
+def _js_config(a, at):
+    c = list(JS_DEFAULT)
+    n = a[at]
+    for j in range(n):
+        c[a[at + 1 + 2 * j]] = a[at + 2 + 2 * j]
+    return c, at + 1 + 2 * n
+
+
+def _js_tick_row(a, P):
+    c, k = _js_config(a, 4)
+    st, flux = _js_tick(a[:4], c, a[k], a[k + 1], P)
+    return st + flux
+
+
+def _js_trajectory(a, P):
+    st = list(a[:4])
+    c, k = _js_config(a, 4)
+    flux = [0.0] * 4
+    while k < len(a):
+        op = a[k]
+        if op == 1:
+            for _ in range(a[k + 3]):
+                st, flux = _js_tick(st, c, a[k + 1], a[k + 2], P)
+            k += 4
+        elif op == 3:
+            st[a[k + 1]] = a[k + 2]
+            k += 3
+        else:
+            raise ValueError(f"no operation {op}")
+    return st + flux
+
+
+JAK_STAT = {
+    "jak_stat::JakStatState::tick": _js_tick_row,
+    "jak_stat::JakStatState::trajectory": _js_trajectory,
+}
+
 # The modules with class-C (and class-T) rows beyond math, and their models.
 MODELS = {"integrate": INTEGRATE, "enzyme": ENZYME, "membrane": MEMBRANE, "signal": SIGNAL, "metabolism": METABOLISM,
           "energy": ENERGY, "protein": PROTEIN, "glycolysis": GLYCOLYSIS, "tca": TCA,
           "etc": ETC, "beta_oxidation": BETA_OXIDATION,
           "amino_catabolism": AMINO_CATABOLISM, "pathway": PATHWAY, "mapk": MAPK,
-          "pi3k": PI3K}
+          "pi3k": PI3K, "jak_stat": JAK_STAT}
 
 
 def _arg(tok):

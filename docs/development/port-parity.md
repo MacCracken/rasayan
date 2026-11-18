@@ -1741,3 +1741,35 @@ Classes: A 182, B 162, C 186 (an `exp_m1` step), T 19.
 | four targets (`scripts/gates.sh`, 455 s, every step green) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 117,428 ok, 295 accepted (ADR 3: 214), 0 failed; coverage 321 of 321 public fns executed |
 
 **Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): pi3k_tick 39.6 → 154 ns.
+
+### 9c. Part 3: JAK-STAT (2026-11-17)
+
+**What is compared.** `tests/golden/jak_stat.tsv` (new, 677 rows), through the oracle's public API and a verbatim
+copy of `JakStatState::tick` (`scripts/oracle/src/v_jak_stat.rs`, on a mirror of the state), which must agree on every
+tick. The copy's `integrate` is `v_integrate::noted`: all three integrators (`activate` for JAK, `relax` for STAT-P,
+`produce_decay` for SOCS) note the `exp_m1` branch. The rows cover:
+- the two defaults, both validators over every field's edges, pairs where the order picks the error, Rust's own
+  cases, seeded values, and a state in range whose pools sum past 1 (validate checks each pool alone);
+- 423 single ticks: the default at 25 step lengths (the three switches cross the series cutoff one at a time between
+  0.1 and 0.32 s at the default rates) at two cytokine levels; each state field over its edges at 0.01 s and 2 s; the
+  cytokine's edges at three step lengths; each config field over its edges; Rust's SOCS-feedback, decay and
+  dimerization-only cases; STAT's relax skipped by a zero and a NaN total; the Patankar denominator at 0 (a negative
+  decay rate cancelling 1) and below it; the capacity at 0 and clamped; 120 seeded runs inside the conservation law;
+- 23 trajectories: Rust's runs (cytokine on for 20 s, the decay from every pool at 0.5, the bounded run, the hour at
+  0.5 s and 100 s and six minutes of it at 0.01 s, the conservation and equilibrium runs, the small-dt comparison's
+  20,000 steps), a six-point dose-response sweep, cytokine on then off, the same minute at 0.01 s and 5 s, NaN
+  recovery from a JAK and a SOCS, four seeded;
+- the serde documents, among them a duplicated field (serde's "duplicate field", bayan's "duplicate key": both refuse).
+
+Classes: A 231, B 240, C 183 (an `exp_m1` step), T 23.
+
+| Check | Result |
+|---|---|
+| every row | 673 identical on the first run; 3 ticks and 1 trajectory differ by 1–5 ulp, each the corrected oracle's row |
+| corrected oracle | `mpfr_ref.py`'s JAK-STAT model reproduces all 206 class-C and -T rows with glibc's `exp_m1`; MPFR's changes 4 (`jak_stat.cr.tsv`); the port equals the corrected row on all 4 (ADR 3) |
+| `validate.py` | every row re-derived from its own transcription of `jak_stat.rs` (its spans pinned), with MPFR's `exp_m1` and the recorded libm; 123,961 checks in all; one flipped value per function (an f64's last bit, an Ok made an error, a document byte) is reported, 12 of 12 |
+| Rust tests | the 12 `jak_stat.rs` tests and its 2 integration tests ported (`tests/jak_stat.tcyr`, 24 checks); the ledger at 564 of 723; surface parity 14 of 14 |
+| fuzz | every input also read as the three documents (1,266 accepted, each written and read back bit for bit); a valid state inside the conservation law, and the default state on a valid config, ticked 0.1 s and 100 s stay valid with STAT-P + 2·dimer <= 1 + 10⁻⁹ |
+| four targets (`scripts/gates.sh`, 471 s, every step green) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 118,101 ok, 299 accepted (ADR 3: 218), 0 failed; coverage 339 of 339 public fns executed |
+
+**Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): jak_stat_tick 46.9 → 160 ns.

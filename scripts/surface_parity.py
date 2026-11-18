@@ -32,10 +32,10 @@ root = Path(sys.argv[1]).resolve()
 # The modules whose milestone has come.
 PORTED = ["constants", "error", "guard", "integrate", "logging", "enzyme", "membrane", "signal", "metabolism",
           "energy", "protein", "alignment", "ptm", "domain", "glycolysis", "tca", "etc", "beta_oxidation",
-          "amino_catabolism", "pathway", "mapk", "pi3k"]
+          "amino_catabolism", "pathway", "mapk", "pi3k", "jak_stat"]
 # The rest, with their milestone (port plan §3.1).
 SCHEDULED = {
-    "jak_stat": "M6", "calcium": "M6", "receptor": "M6", "nuclear_receptor": "M6",
+    "calcium": "M6", "receptor": "M6", "nuclear_receptor": "M6",
     "signaling": "M6",
     "neurotransmitter": "M7", "hormonal": "M7",
     "mcp": "M8", "ai": "M8",
@@ -94,6 +94,9 @@ TYPES = {
     "Pi3kState": ("RyPi3kState", "pi3k_state"),
     "Pi3kConfig": ("RyPi3kConfig", "pi3k_config"),
     "Pi3kFlux": ("RyPi3kFlux", "pi3k_flux"),
+    "JakStatState": ("RyJakStatState", "jak_stat_state"),
+    "JakStatConfig": ("RyJakStatConfig", "jak_stat_config"),
+    "JakStatFlux": ("RyJakStatFlux", "jak_stat_flux"),
 }
 # Rust item -> the Cyrius names that carry it ("fn x", "const X", "enum X", "struct X"), where the rules give none.
 MAPPED = {

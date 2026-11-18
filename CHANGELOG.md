@@ -19,10 +19,35 @@ JSON writers and readers) follow: M1 is complete. M2 part 1 (enzyme), part 2 (me
 complete. M4b part 1 (the electron transport chain), part 2 (β-oxidation) and part 3 (amino-acid catabolism)
 follow: M4b is complete, and with it M4. M5 part 1 (the metabolic network's types, validators, solve layer and
 codecs), part 2 (its step) and part 3 (the steady-state run, the long runs, the soak) follow: M5 is complete.
-M6 part 1 (the MAPK cascade) and part 2 (PI3K/Akt/mTOR) follow.
+M6 part 1 (the MAPK cascade), part 2 (PI3K/Akt/mTOR) and part 3 (JAK-STAT) follow.
 
 ### Added
 
+- **src/jak_stat.cyr**, **src/jak_stat_data.cyr** (M6 part 3) — `jak_stat.rs` transcribed: `RyJakStatState`,
+  `RyJakStatConfig`, `RyJakStatFlux`; the defaults from the generated consts and the three types' field-name blobs;
+  both validators (SOCS non-negative, the three pools fractions); `ry_jak_stat_state_tick` (JAK by `activate` under
+  SOCS's inhibition; STAT-P by `relax` toward its share of the free pool, skipped unless the total rate is > 0; the
+  modified Patankar–Euler dimer step, STAT-P + 2·dimer conserved; SOCS by `produce_decay` from the new dimers); the
+  serde codecs of all three, with node readers for the signaling network. Rust's `jak_stat_tick` trace event is a
+  level-gated sakshi event under `rasayan::jak_stat`
+- **tests/golden/jak_stat.tsv** (M6 part 3, 677 rows, a new module: A 231, B 240, C 183, T 23) — the defaults, both
+  validators over every field's edges (pairs where the order picks the error, Rust's own cases), 423 single ticks
+  (the default at 25 step lengths across the three switches' series cutoffs; each state field over its edges; the
+  cytokine's edges; each config field over its edges; Rust's SOCS-feedback, decay and dimerization-only cases; STAT's
+  relax skipped by a zero and a NaN total; the dimer step's denominator at and below 0; the capacity at 0 and clamped;
+  seeded states inside the conservation law), 23 trajectories (Rust's runs, among them the hour at 0.5 s and 100 s and
+  six minutes of it at 0.01 s, the conservation and equilibrium runs, the small-dt comparison; a dose-response sweep,
+  cytokine on and off, NaN recovery, seeded runs) and the serde documents (a duplicated field refused). Every tick runs
+  through the oracle's API and a verbatim copy (`v_jak_stat.rs`) that must agree; it is class C where an integrator
+  takes the `exp_m1` branch. `jak_stat.cr.tsv` holds 4 rows (3 ticks, 1 trajectory), 1 ulp in glibc's `exp_m1`; the
+  port gives the correctly rounded rows (ADR 3). `validate.py` re-derives every row (123,961 independent checks) and
+  catches each flipped value
+- **tests/jak_stat.tcyr** (M6 part 3, 24 checks) — the 12 `jak_stat.rs` unit tests (the hour-long conservation runs
+  at three step lengths, the dimerization equilibrium, the explicit-Euler reference) and the 2 JAK-STAT integration
+  tests, as they are written, the trace event and a refused document: the Rust-test ledger at 564 of 723. The fuzz
+  harness reads every input as the three documents (1,266 read and written back bit for bit) and ticks every valid
+  state inside the conservation law and every valid config, which stay valid with STAT-P + 2·dimer <= 1
+- **benchmarks** (M6 part 3) — jak_stat_tick, Rust → Cyrius: 46.9 → 160 ns
 - **src/pi3k.cyr**, **src/pi3k_data.cyr** (M6 part 2) — `pi3k.rs` transcribed: `RyPi3kState`, `RyPi3kConfig`,
   `RyPi3kFlux`; the defaults from the generated consts and the three types' field-name blobs; both validators;
   `ry_pi3k_state_tick` (PIP3 by PI3K against PTEN, then Akt, then mTOR, each by integrate's `activate` from the level
@@ -890,6 +915,8 @@ M6 part 1 (the MAPK cascade) and part 2 (PI3K/Akt/mTOR) follow.
 
 ### Fixed
 
+- **tests/rasayan.fcyr** (M6 part 3) — the fuzz harness's summary line printed 50 bytes of a 49-byte string, a NUL
+  that made `grep` read its output, and the gate log, as binary
 - **tests/rasayan.bcyr** (M2 part 2) — the Display-form JSON bench discarded `_ry_jw_reserve`'s `#must_use` result,
   a build warning since M1 part 3a; it writes only after a successful reserve now
 - **scripts/probes/p10_manifest.sh** (M2 part 2) — the scratch copy found where to add its `[lib.mcp]` stand-in by

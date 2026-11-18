@@ -6,7 +6,7 @@
 > milestone hasn't come. The golden corpus (`tests/golden/`) checks every ported function on its grid besides.
 > The 2 doc tests and the example are M9's.
 
-**723 Rust tests:** 550 ported; 76 at M6, 62 at M7, 35 at M8.
+**723 Rust tests:** 564 ported; 62 at M6, 62 at M7, 35 at M8.
 
 | Rust file | Tests | Ported | Due, unported | Later (milestone) |
 |---|---:|---:|---:|---|
@@ -23,7 +23,7 @@
 | `src/guard.rs` | 4 | 4 | 0 | — |
 | `src/hormonal.rs` | 25 | 0 | 0 | 25 (M7) |
 | `src/integrate.rs` | 5 | 5 | 0 | — |
-| `src/jak_stat.rs` | 12 | 0 | 0 | 12 (M6) |
+| `src/jak_stat.rs` | 12 | 12 | 0 | — |
 | `src/mapk.rs` | 17 | 17 | 0 | — |
 | `src/mcp.rs` | 31 | 0 | 0 | 31 (M8) |
 | `src/membrane.rs` | 19 | 19 | 0 | — |
@@ -38,9 +38,9 @@
 | `src/signal.rs` | 21 | 21 | 0 | — |
 | `src/signaling.rs` | 13 | 0 | 0 | 13 (M6) |
 | `src/tca.rs` | 26 | 26 | 0 | — |
-| `tests/integration.rs` | 70 | 53 | 0 | 11 (M6), 6 (M7) |
+| `tests/integration.rs` | 70 | 55 | 0 | 9 (M6), 6 (M7) |
 | `tests/validation.rs` | 25 | 25 | 0 | — |
-| **Total** | **723** | **550** | **0** | |
+| **Total** | **723** | **564** | **0** | |
 
 ## Where each is ported
 
@@ -280,6 +280,18 @@
 | `src/integrate.rs` `produce_decay_steady_state_and_degenerate` | `tests/integrate.tcyr` `produce_decay_steady_state_and_degenerate` |
 | `src/integrate.rs` `relax_matches_analytic_and_is_stable` | `tests/integrate.tcyr` `relax_matches_analytic_and_is_stable` |
 | `src/integrate.rs` `step_factors_match_exp_across_the_series_boundary` | `tests/integrate.tcyr` `step_factors_match_exp_across_the_series_boundary` |
+| `src/jak_stat.rs` `test_bounded` | `tests/jak_stat.tcyr` `ticking` |
+| `src/jak_stat.rs` `test_cytokine_activates_stat` | `tests/jak_stat.tcyr` `ticking` |
+| `src/jak_stat.rs` `test_default_valid` | `tests/jak_stat.tcyr` `validation` |
+| `src/jak_stat.rs` `test_dimerization_conserves_phospho_stat` | `tests/jak_stat.tcyr` `conservation` |
+| `src/jak_stat.rs` `test_invalid_dt_is_noop` | `tests/jak_stat.tcyr` `hardening` |
+| `src/jak_stat.rs` `test_nan_input_treated_as_zero` | `tests/jak_stat.tcyr` `hardening` |
+| `src/jak_stat.rs` `test_no_cytokine_decays` | `tests/jak_stat.tcyr` `ticking` |
+| `src/jak_stat.rs` `test_serde_roundtrip` | `tests/jak_stat.tcyr` `serde` |
+| `src/jak_stat.rs` `test_small_dt_matches_old_euler_without_dimers` | `tests/jak_stat.tcyr` `integration` |
+| `src/jak_stat.rs` `test_socs_negative_feedback` | `tests/jak_stat.tcyr` `ticking` |
+| `src/jak_stat.rs` `test_stat_conserved_long_run` | `tests/jak_stat.tcyr` `conservation` |
+| `src/jak_stat.rs` `test_validate_rejects_nan_zero_ki_and_out_of_range` | `tests/jak_stat.tcyr` `validation` |
 | `src/mapk.rs` `test_bounded` | `tests/mapk.tcyr` `ticking` |
 | `src/mapk.rs` `test_default_valid` | `tests/mapk.tcyr` `validation` |
 | `src/mapk.rs` `test_dual_phospho_steady_state` | `tests/mapk.tcyr` `ultrasensitivity` |
@@ -547,6 +559,8 @@
 | `tests/integration.rs` `test_goldman_with_custom_permeability` | `tests/membrane.tcyr` `goldman` |
 | `tests/integration.rs` `test_inhibition_hierarchy` | `tests/enzyme.tcyr` `reference_values` |
 | `tests/integration.rs` `test_ionic_state_serde_roundtrip` | `tests/membrane.tcyr` `serde` |
+| `tests/integration.rs` `test_jak_stat_config_serde_roundtrip` | `tests/jak_stat.tcyr` `serde` |
+| `tests/integration.rs` `test_jak_stat_flux_serde_roundtrip` | `tests/jak_stat.tcyr` `serde` |
 | `tests/integration.rs` `test_kinetic_fit_serde_roundtrip` | `tests/enzyme.tcyr` `serde` |
 | `tests/integration.rs` `test_known_enzyme_serialize` | `tests/enzyme.tcyr` `serde` |
 | `tests/integration.rs` `test_lineweaver_burk_and_eadie_hofstee_agree` | `tests/enzyme.tcyr` `fits` |
