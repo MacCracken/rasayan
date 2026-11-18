@@ -966,12 +966,15 @@ fn _bn_amino(name, kind, n): i64 {
     return 0;
 }
 
-# n calls of metabolic-network benchmark `kind` (M5 part 1; Rust's network_tick joins with the step at part 2):
-# 0 balanced_nad_ratio and 1 end_of_step_nadh on a resting step's inputs (h 0.02 s: the pool at ratio 700, the
-# producers' NADH, Complex I's and LDH's capacities), 2 MetabolicNetwork::validate on the default network.
+# n calls of metabolic-network benchmark `kind`: 0 balanced_nad_ratio and 1 end_of_step_nadh on a resting step's
+# inputs (h 0.02 s: the pool at ratio 700, the producers' NADH, Complex I's and LDH's capacities), 2
+# MetabolicNetwork::validate on the default network, 3 network_tick and 4 network_tick_1s (Rust's bodies).
 fn _bn_pathway(name, kind, n): i64 {
     var net: RyMetabolicNetwork;
+    var cfg: RyNetworkConfig;
+    var fl: RyNetworkFlux;
     ry_metabolic_network_default(&net);
+    ry_network_config_default(&cfg);
     var pool: f64 = 1.0 / 701.0;
     var acc: f64 = 0.0;
     var b = bench_new(name);
@@ -984,9 +987,17 @@ fn _bn_pathway(name, kind, n): i64 {
         } elif (kind == 1) {
             var e: f64 = _ry_pathway_end_of_step_nadh(0.0094, 0.016, 0.0005, 0);
             acc = acc + e;
-        } else {
+        } elif (kind == 2) {
             var t, v = ry_metabolic_network_validate(&net);
             acc = acc + f64_from(t);
+        } else {
+            # Rust's body: a default network, one tick (3: 0.01 s, one step; 4: 1 s, 50 sub-steps).
+            var dt: f64 = 0.01;
+            if (kind == 4) { dt = 1.0; }
+            ry_metabolic_network_default(&net);
+            ry_metabolic_network_tick(&net, &cfg, dt, &fl);
+            var net_atp: f64 = fl.net_atp;
+            acc = acc + net_atp;
         }
         i = i + 1;
     }
@@ -1086,6 +1097,8 @@ fn main(): i64 {
     _bn_pathway("pathway/balanced_nad_ratio", 0, 1000000);
     _bn_pathway("pathway/end_of_step_nadh", 1, 1000000);
     _bn_pathway("pathway/MetabolicNetwork::validate", 2, 1000000);
+    _bn_pathway("network_tick", 3, 200000);
+    _bn_pathway("network_tick_1s", 4, 5000);
     var br = bench_new("json/read MembranePermeability (3 f64)");
     bench_batch_start(br);
     _bn_read("{\"p_na\":0.04,\"p_k\":1.0,\"p_cl\":0.45}", 3, "p_na\0p_k\0p_cl\0", 100000);

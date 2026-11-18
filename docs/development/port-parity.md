@@ -1594,3 +1594,44 @@ nested values; the five modules' rows are unchanged.
 
 **Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): the two solves and `validate`, Cyrius only; Rust's
 `network_tick` joins at part 2.
+
+### 8b. Part 2: the step (2026-11-17)
+
+**What is compared.** `tests/golden/pathway.tsv` +930 rows (2,846 in all), through the oracle's public `tick_in` and
+`tick`. A single-step row (`pathway::MetabolicNetwork::step`: one sub-step, `0 < h <= 0.02`, so `tick_in` runs one
+`step`) also records both solves' iteration counts and exits. The oracle's `step` is private and its solves' inputs
+are not visible, so the generator transcribes `produce` and `step` line for line (on the verbatim copies' mirrors where
+they call crate-private methods: glycolysis's `tick_regulated`, the ETC's `complex_i_capacity` and `step`; on the
+counting solves) and requires its network and tick to be the oracle's `tick_in`'s bit for bit on every row, the
+multi-step rows through a transcribed `tick_in` too. The rows cover:
+- 890 single steps: the default at nine step lengths (the subnormal to 0.02 s), each of the 33 network fields and the
+  environment's 4 over their 14 edges, exercise, fasting and no supply, each of the 104 config fields at 0 and
+  doubled and the chain lengths, Rust's tests' states (no oxygen, almost no ADP, NaN cofactors), worked states (rest
+  at 10, 60 and 300 s, 30 s of anoxia, exercise, fasting) at four step lengths, and 60 seeded networks at two;
+- 36 `tick_in` rows: the invalid steps, 1, 2, 3, 5, 7 and 10 sub-steps' exact multiples and an ulp either side, the
+  cap (99.98 s, 100 s and 1000 s: 5000 sub-steps), worked states at 0.05–5 s, exercise, anoxia, a NaN environment,
+  Rust's pool-limit test; and 4 `tick` rows.
+
+Every step reaches glycolysis's or TCA's Hill `powf` (class C), but the 7 with no time passing (class B).
+`mpfr_ref.py` composes the five pathway models into the network's and reproduces all 923 class-C rows with glibc's
+`pow`; with the correctly rounded one, 1 row moves: the 1000 s tick, whose 5000 sub-steps of 0.2 s include one PFK-1
+`pow(0.1146…, 2.5)` that glibc rounds up an ulp, and the trajectory carries it (`pathway.cr.tsv`). The port gives the
+corrected row.
+
+| Check | Result |
+|---|---|
+| every row | the 890 steps and 4 ticks at 0 ulp (every count and exit equal), 35 `tick_in` rows at 0 ulp and the 1000 s one equal to the corrected oracle (ADR 3) |
+| corrected oracle | `mpfr_ref.py`'s network model: the 923 class-C rows reproduced with glibc's `pow`, 1 changed by MPFR's |
+| `validate.py` | every row re-derived by its own network model (each pathway's model from its own check, the solve re-transcribed, relax's model), MPFR's `pow` and `exp_m1` there and glibc's on the recorded platform; 121,051 checks in all; a flipped value in 6 sampled step, `tick_in` and `tick` rows (an f64's last bit, an iteration count) is reported, 6 of 6 |
+| Rust tests | the 22 unit tests that tick the network and its 4 integration tests ported (`tests/pathway.tcyr`, 73 checks), the 3 of `run_to_steady_state` at part 3; the ledger at 515 of 723 |
+| fuzz | every accepted valid network (188) stepped 0.1 s and 2 s: it stays valid, its ticks finite, ATP + ADP conserved to 1e-12 |
+| four targets (`scripts/gates.sh`, 1,008 s under a load of about 20, every step green) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 116,031 ok, 235 accepted (ADR 3: 154), 0 failed; coverage 284 of 284 public fns executed |
+
+**The Cyrius forms.** The producer probe is a frame copy of the network (`var probe: RyMetabolicNetwork = *p`, probe
+2), so the step allocates nothing. The production's fluxes reach the tick by struct assignment and the tick is zeroed
+by a word loop: the stdlib's `memcpy` and `memset` move a byte at a time, and with them the 392 bytes of nested fluxes
+and the 496-byte flux `tick` returns cost more than the network's two solves (a 496-byte copy 1.9 µs by `memcpy`, 65
+ns by assignment). The count out-pointer `st` is an `*i64`, so the end-of-step solve's half is `st + 2`.
+
+**Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): network_tick 1.02 → ≈ 4.8 µs, network_tick_1s 55.8 → ≈ 250
+µs, provisional (measured at a load of about 20, scaled by the reference rows).

@@ -8,7 +8,8 @@
 # MembranePermeability's; part 3, SecondMessenger's; part 4, MetabolicState's; part 5, BioenergyState's. M3 part 1:
 # every protein function on the input as a sequence; part 2, alignment on its two halves; parts 3 and 4, the PTM and
 # domain scans. M4a: the glycolysis and TCA codecs, and steps of every state the readers accept; M4b, the
-# ETC's, β-oxidation's and amino-acid catabolism's. M5 part 1: the metabolic network's six codecs.
+# ETC's, β-oxidation's and amino-acid catabolism's. M5: the metabolic network's six codecs, and steps of every valid
+# network.
 
 include "src/constants.cyr"
 include "src/constants_private.cyr"
@@ -67,6 +68,7 @@ var _fz_etc = 0;
 var _fz_beta_ox = 0;
 var _fz_amino = 0;
 var _fz_network = 0;
+var _fz_net_stepped = 0;
 
 # xorshift64*: the next pseudo-random word.
 fn fz_next(): i64 {
@@ -701,8 +703,41 @@ fn fz_both(t1, t2) {
     return 0;
 }
 
+# Steps network *w 0.1 s, then 2 s, on the default config in the resting environment when it validates with pools
+# under 1e300: a failure unless it still validates, every tick value is finite, and ATP + ADP is conserved to 1e-12.
+fn fz_net_step(w: *RyMetabolicNetwork) {
+    var tv, vv = ry_metabolic_network_validate(w);
+    if (is_ok(tv) == 0) { return 0; }
+    var huge: f64 = 0x7E37E43C8800759C;     # 1e300
+    var wb = w;                                  # a plain address: `w + n` would step n networks
+    var k = 0;
+    while (k < 33) {
+        var x: f64 = load64(wb + 8 * k);
+        if (x >= huge) { return 0; }
+        k = k + 1;
+    }
+    _fz_net_stepped = _fz_net_stepped + 1;
+    var c: RyNetworkConfig;
+    var e: RyNetworkEnvironment;
+    var tk: RyNetworkTick;
+    ry_network_config_default(&c);
+    ry_network_environment_default(&e);
+    var before: f64 = w.atp + w.adp;
+    ry_metabolic_network_tick_in(w, &c, &e, 0.1, &tk);
+    var ok = fz_all_finite(&tk, 67);
+    ry_metabolic_network_tick_in(w, &c, &e, 2.0, &tk);
+    if (fz_all_finite(&tk, 67) == 0) { ok = 0; }
+    var after: f64 = w.atp + w.adp;
+    var drift: f64 = f64_abs(after - before);
+    var bound: f64 = 0.000000000001 * before;
+    var ta, va = ry_metabolic_network_validate(w);
+    if (is_ok(ta) == 0 || ok == 0 || drift > bound) { _fz_bad = _fz_bad + 1; }
+    return 0;
+}
+
 # pathway: the six network codecs on one input; each accepted value holds only finite f64s (the config's chain length
-# an integer in u32's range) and reads back bit for bit from what it writes.
+# an integer in u32's range) and reads back bit for bit from what it writes, and an accepted network is stepped
+# (fz_net_step).
 fn fuzz_network(data, len) {
     reset_via(_fz_arena);
     var w[832];
@@ -714,6 +749,7 @@ fn fuzz_network(data, len) {
         var a1, b1 = ry_metabolic_network_to_json(_fz_sb, &w);
         var c1, d1 = ry_metabolic_network_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &back);
         fz_net_check(&w, 33, 0 - 1, fz_both(a1, c1), &back, 264);
+        fz_net_step(&w);
     }
     var t2, v2 = ry_network_config_from_json_a(_fz_arena, data, len, &w);
     if (is_ok(t2) == 1) {
@@ -1112,6 +1148,8 @@ fn main() {
     fmt_int(_fz_amino);
     print(", network documents read: ", 26);
     fmt_int(_fz_network);
+    print(", networks stepped: ", 20);
+    fmt_int(_fz_net_stepped);
     println(")");
     return 0;
 }

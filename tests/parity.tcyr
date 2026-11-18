@@ -3742,6 +3742,8 @@ fn _par_const_excess(p: *_ParLin, x: f64): f64 {
 
 # The pathway rows: the defaults, the validators, the RQ, the solve layer, the sums, the serde rows.
 fn _par_pathway(fp, fl): i64 {
+    var stepped = _par_pathway_step(fp, fl);
+    if (stepped != 0) { return stepped; }
     var n: RyMetabolicNetwork;
     var c: RyNetworkConfig;
     var e: RyNetworkEnvironment;
@@ -3910,6 +3912,53 @@ fn _par_pathway(fp, fl): i64 {
         }
     }
     return _par_pathway_json(fp, fl);
+}
+
+# The step rows (M5 part 2): a network (33), a config (the default with overrides), then an environment (4) and `f:h`
+# (`step`, `tick_in`) or `f:dt` alone (`tick`, the resting environment). A step gives the network after, the tick (67)
+# and the two solves' `i:iterations i:exit`; tick_in the network and the tick; tick the network and the flux (62).
+fn _par_pathway_step(fp, fl): i64 {
+    var n: RyMetabolicNetwork;
+    var c: RyNetworkConfig;
+    var e: RyNetworkEnvironment;
+    var tk: RyNetworkTick;
+    var st[32];
+    var kind = 0;
+    if (_par_eq(fp, fl, "pathway::MetabolicNetwork::step") == 1) { kind = 1; }
+    if (_par_eq(fp, fl, "pathway::MetabolicNetwork::tick_in") == 1) { kind = 2; }
+    if (_par_eq(fp, fl, "pathway::MetabolicNetwork::tick") == 1) { kind = 3; }
+    if (kind == 0) { return 0; }
+    if (_par_in_n < 35 || _par_all_f_from(0, 33) == 0) { return 0 - 1; }
+    _par_fields_in(0, &n, 33);
+    var at = _par_nc_in(33, &c);
+    if (at < 0) { return 0 - 1; }
+    if (kind == 3) {
+        if (_par_in_n != at + 1 || _par_is_f(at) == 0) { return 0 - 1; }
+        var fx: RyNetworkFlux;
+        var dt3: f64 = _par_f(at);
+        ry_metabolic_network_tick(&n, &c, dt3, &fx);
+        _par_got_fields(&n, 33);
+        _par_got_fields(&fx, 62);
+        return 1;
+    }
+    if (_par_in_n != at + 5 || _par_all_f_from(at, 5) == 0) { return 0 - 1; }
+    _par_fields_in(at, &e, 4);
+    var h: f64 = _par_f(at + 4);
+    if (kind == 1) {
+        _ry_metabolic_network_step(&n, &c, &e, h, &tk, &st);
+    } else {
+        ry_metabolic_network_tick_in(&n, &c, &e, h, &tk);
+    }
+    _par_got_fields(&n, 33);
+    _par_got_fields(&tk, 67);
+    if (kind == 1) {
+        var j = 0;
+        while (j < 4) {
+            _par_got_i(load64(&st + 8 * j));
+            j = j + 1;
+        }
+    }
+    return 1;
 }
 
 # The serde rows of the six network types.
@@ -4136,6 +4185,9 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "glycolysis::GlycolysisState::tick") == 1) { return 0; }
     if (_par_eq(fp, fl, "glycolysis::GlycolysisState::tick_regulated") == 1) { return 0; }
     if (_par_eq(fp, fl, "tca::TcaState::tick") == 1) { return 0; }
+    if (_par_eq(fp, fl, "pathway::MetabolicNetwork::step") == 1) { return 0; }
+    if (_par_eq(fp, fl, "pathway::MetabolicNetwork::tick_in") == 1) { return 0; }
+    if (_par_eq(fp, fl, "pathway::MetabolicNetwork::tick") == 1) { return 0; }
     return 0 - 1;
 }
 

@@ -172,6 +172,20 @@ def _ftok(x):
     return f"f:{bits(x):016x}"
 
 
+def _tok(x):
+    """A model output as its token: an integer (a solve's count) as `i:`, an f64 as `f:`."""
+    if isinstance(x, int) and not isinstance(x, bool):
+        return f"i:{x}"
+    return _ftok(x)
+
+
+def _same_tok(a, b):
+    """Two output tokens agree: identical integers, or f64s as _same compares them."""
+    if a.startswith("f:") and b.startswith("f:"):
+        return _same(_f(a), _f(b))
+    return a == b
+
+
 def _same(x, y):
     """Identical bits, or both NaN (a NaN's payload is not a rounding)."""
     return (math.isnan(x) and math.isnan(y)) or bits(x) == bits(y)
@@ -1203,11 +1217,227 @@ AMINO_CATABOLISM = {
     "amino_catabolism::feeds_tca": _a_feeds_tca,
 }
 
+# ── pathway (M5 part 2) ──
+# MetabolicNetwork::step and tick_in in Rust's order, composed from the pathway models above: substrate supply (integrate's
+# relax), the producers probed at the resting ratio on a copy, the implicit ratio solve (Illinois regula falsi, P9),
+# the producers for real, the end-of-step NADH solve, LDH, the ETC step, the ATP/ADP pool. Its primitives are
+# glycolysis's and TCA's Hill `powf` and relax's `exp_m1`; the solves are arithmetic. A step row's outputs end with
+# the two solves' iteration counts and exits (integers).
+
+N_CFG_DEFAULT = G_DEFAULT + T_DEFAULT + E_DEFAULT + B_DEFAULT + A_DEFAULT + [50.0]  # NetworkConfig, flattened
+N_RATES = (0.1, 0.2, 0.05)  # GLUCOSE_, FATTY_ACID_, AMINO_ACID_TRANSPORT_RATE
+N_SPLIT = ((5, 10), (5, 9), (5, 5), (6, 2), (10, 2))  # each pathway flux's (amounts, weighted rates)
+
+
+def _n_clamp(x, lo, hi):
+    r = x
+    if r < lo:
+        r = lo
+    if r > hi:
+        r = hi
+    return r
+
+
+def _n_ratio_of(n):
+    return _n_clamp(_fdiv(1.0 - n, n), 1.0, 2000.0)
+
+
+def _n_oxidized(n, a, b):
+    return _fdiv(a * n, E_KM_NADH + n) + _fdiv(b * n, 0.01 + n)
+
+
+def _n_solve(lo, hi, f):
+    f_lo = f(lo)
+    if f_lo <= 0.0:
+        return lo, 0, 0
+    f_hi = f(hi)
+    if f_hi >= 0.0:
+        return hi, 0, 1
+    last, it = 0, 0
+    for _ in range(100):
+        it += 1
+        x = _fdiv(lo * f_hi - hi * f_lo, f_hi - f_lo)
+        if not (lo < x < hi) or hi - lo <= 1e-14 * hi:
+            return 0.5 * (lo + hi), it, 3
+        fx = f(x)
+        if fx > 0.0:
+            lo, f_lo = x, fx
+            if last == -1:
+                f_hi *= 0.5
+            last = -1
+        elif fx < 0.0:
+            hi, f_hi = x, fx
+            if last == 1:
+                f_lo *= 0.5
+            last = 1
+        else:
+            return x, it, 2
+    return 0.5 * (lo + hi), it, 4
+
+
+def _n_balanced(pool, gly, mito, a, b):
+    g, m = _conc(gly), _conc(mito)
+
+    def f(n):
+        r = _n_ratio_of(n)
+        return pool + g * _gapdh(r) + m * _rust_min(r / RESTING_NAD_RATIO, MAX_NAD_FACTOR) - _n_oxidized(n, a, b) - n
+    x, it, ex = _n_solve(1.0 / 2001.0, 1.0 / 2.0, f)
+    return _n_ratio_of(x), it, ex
+
+
+def _n_ldh(p, h):
+    p = _conc(p)
+    return _fdiv(2.0 * p, 0.2 + p) * h
+
+
+def _n_produce(net, c, atp, adp, ratio, h, P):
+    """`produce` on the network dict (in place): the five fluxes and the cataplerosis."""
+    t = net["t"]
+    pfk = 1.0 / (1.0 + _conc(t[1]) / 0.3)
+    net["g"], gf = _g_tick(net["g"], c[0:38], atp, adp, ratio, pfk, h, P)
+    malonyl = _conc(net["pools"][4]) + 0.1 * _conc(t[0])
+    net["b"], bf = _b_tick(net["b"], c[84:90], malonyl, ratio, h)
+    net["a"], af = _a_tick(net["a"], c[90:103], t[3], ratio, h)
+    t = list(t)
+    t[3] = _conc(t[3] - af[0] + af[2])
+    t[0] += bf[2] + af[5]
+    t[3] += af[6]
+    t[4] += af[7]
+    t[6] += af[8]
+    t[8] += af[9]
+    g = net["g"]
+    g[10] += af[4]
+    t, tf = _t_tick(t, c[38:70], g[10], atp, adp, ratio, h, P)
+    g[10] = _conc(g[10] - tf[0])
+    excess = t[1] + t[2] + t[3] + t[4] + t[5] + t[6] + t[7] + t[8] - 1.63
+    drained = _take(0.5 * excess * h, t[7])
+    t[7] -= drained
+    g[10] += drained
+    net["t"] = t
+    return gf, bf, af, tf, drained
+
+
+def _n_of(a):
+    return {"g": list(a[0:11]), "t": list(a[11:20]), "e": list(a[20:23]), "b": list(a[23:25]), "a": list(a[25:28]),
+            "pools": list(a[28:33])}
+
+
+def _n_vals(net):
+    return net["g"] + net["t"] + net["e"] + net["b"] + net["a"] + net["pools"]
+
+
+def _n_step(a, c, env, h, P):
+    """One network step: (the network's 33 values after, the tick's 67, the four solve integers)."""
+    net = _n_of(a)
+    pools = net["pools"]
+    atp, adp = _conc(pools[0]), _conc(pools[1])
+    nad_ratio = _n_clamp(_conc(pools[2]), 1.0, 2000.0)
+    g, b, am = net["g"], net["b"], net["a"]
+    glucose = _conc(g[0])
+    g[0] = _relax_any(glucose, _conc(env[1]), N_RATES[0], h, P)
+    ffa = _conc(b[1])
+    b[1] = _relax_any(ffa, _conc(env[2]), N_RATES[1], h, P)
+    amino = _conc(am[0])
+    am[0] = _relax_any(amino, _conc(env[3]), N_RATES[2], h, P)
+    ex = [g[0] - glucose, b[1] - ffa, am[0] - amino, 0.0, 0.0]
+    nadh_pool = 1.0 / (1.0 + nad_ratio)
+    ce = c[70:84]
+    e = net["e"]
+    c_ci = _conc(ce[0]) * (1.0 - _unit(e[1])) * (1.0 - _unit(e[0])) * h
+    probe = {k: list(v) for k, v in net.items()}
+    pgf, pbf, paf, ptf, _ = _n_produce(probe, c, atp, adp, RESTING_NAD_RATIO, h, P)
+    ratio, it1, ex1 = _n_balanced(nadh_pool, pgf[3], ptf[1] + pbf[3] + paf[1], c_ci, _n_ldh(net["g"][10], h))
+    gf, bf, af, tf, drained = _n_produce(net, c, atp, adp, ratio, h, P)
+    g = net["g"]
+    made = gf[3] + tf[1] + bf[3] + af[1]
+    avail = _n_clamp(nadh_pool + made, 0.0, 1.0)
+    c_ldh = _n_ldh(g[10], h)
+    if avail <= 0.0:
+        n_end, it2, ex2 = 0.0, 0, 5
+    else:
+        n_end, it2, ex2 = _n_solve(0.0, avail, lambda n: avail - _n_oxidized(n, c_ci, c_ldh) - n)
+    lactate = _take(_fdiv(c_ldh * n_end, 0.01 + n_end), _rust_min(g[10], avail))
+    g[10] -= lactate
+    ex[3] = lactate
+    net["e"], ef = _e_step(e, ce, n_end, avail - lactate, tf[2] + bf[4], pools[3], adp, h)
+    left = avail - lactate - ef[0]
+    pools[2] = _n_ratio_of(left) if left > 0.0 else 2000.0
+    produced = gf[1] + tf[3] + ef[3]
+    demand = _fdiv(_conc(env[0]) * atp, 0.5 + atp) * h
+    consumed = gf[0] + bf[5] + demand
+    raw = produced - consumed
+    net_atp = _n_clamp(raw, -atp, adp) if math.isfinite(raw) else 0.0
+    total = atp + adp
+    pools[0] = atp + net_atp
+    pools[1] = _rust_max(total - pools[0], 0.0)
+    ex[4] = _rust_max(demand - (-atp - raw), 0.0) if raw < -atp else demand
+    tick = gf + tf + ef + bf + af + [net_atp, ef[2], tf[4] + drained] + ex
+    return _n_vals(net), tick, [it1, ex1, it2, ex2]
+
+
+def _n_tick_in(a, c, env, dt, P):
+    if not (math.isfinite(dt) and dt > 0.0):
+        return list(a), [0.0] * 67
+    wanted = math.ceil(dt / 0.02)
+    steps = max(int(wanted), 1) if wanted < 5000 else 5000
+    if steps == 1:
+        s2, tick, _ = _n_step(a, c, env, dt, P)
+        return s2, tick
+    h = dt / float(steps)
+    w = h / dt
+    total = [0.0] * 67
+    s = list(a)
+    for _ in range(steps):
+        s, sub = _n_step(s, c, env, h, P)[:2]
+        at = 0
+        for ns, nr in N_SPLIT:
+            for j in range(ns):
+                total[at + j] = total[at + j] + sub[at + j]
+            for j in range(ns, ns + nr):
+                total[at + j] = total[at + j] + sub[at + j] * w
+            at += ns + nr
+        for j in range(at, 67):
+            total[j] = total[j] + sub[j]
+    return s, total
+
+
+def _n_config(a, at):
+    c = list(N_CFG_DEFAULT)
+    n = a[at]
+    for j in range(n):
+        c[a[at + 1 + 2 * j]] = a[at + 2 + 2 * j]
+    return c, at + 1 + 2 * n
+
+
+def _n_step_row(a, P):
+    c, k = _n_config(a, 33)
+    s2, tick, counts = _n_step(a[:33], c, a[k:k + 4], a[k + 4], P)
+    return s2 + tick + counts
+
+
+def _n_tick_in_row(a, P):
+    c, k = _n_config(a, 33)
+    s2, tick = _n_tick_in(a[:33], c, a[k:k + 4], a[k + 4], P)
+    return s2 + tick
+
+
+def _n_tick_row(a, P):
+    c, k = _n_config(a, 33)
+    s2, tick = _n_tick_in(a[:33], c, [1.2, 5.0, 0.3, 2.0], a[k], P)
+    return s2 + tick[:62]
+
+
+PATHWAY = {
+    "pathway::MetabolicNetwork::step": _n_step_row,
+    "pathway::MetabolicNetwork::tick_in": _n_tick_in_row,
+    "pathway::MetabolicNetwork::tick": _n_tick_row,
+}
+
 # The modules with class-C (and class-T) rows beyond math, and their models.
 MODELS = {"integrate": INTEGRATE, "enzyme": ENZYME, "membrane": MEMBRANE, "signal": SIGNAL, "metabolism": METABOLISM,
           "energy": ENERGY, "protein": PROTEIN, "glycolysis": GLYCOLYSIS, "tca": TCA,
           "etc": ETC, "beta_oxidation": BETA_OXIDATION,
-          "amino_catabolism": AMINO_CATABOLISM}
+          "amino_catabolism": AMINO_CATABOLISM, "pathway": PATHWAY}
 
 
 def _arg(tok):
@@ -1242,13 +1472,13 @@ def model_corrections(module, golden_text):
             raise ValueError(f"{module}.tsv:{n}: class-{cls} {fn} has no operation model here")
         args = [_arg(t) for t in ins.split(" ")]
         want = outs.split(" ")
-        glibc = [_ftok(v) for v in models[fn](args, Prims(False))]
-        if not all(_same(_f(a), _f(b)) for a, b in zip(glibc, want, strict=True)):
+        glibc = [_tok(v) for v in models[fn](args, Prims(False))]
+        if not all(_same_tok(a, b) for a, b in zip(glibc, want, strict=True)):
             raise ValueError(f"{module}.tsv:{n}: the model with glibc's primitives gives {glibc}, the oracle {want}")
         pc = Prims(True)
-        c = [_ftok(v) for v in models[fn](args, pc)]
+        c = [_tok(v) for v in models[fn](args, pc)]
         evaluated += 1
-        if all(_same(_f(a), _f(b)) for a, b in zip(c, want, strict=True)):
+        if all(_same_tok(a, b) for a, b in zip(c, want, strict=True)):
             continue
         calls = [
             f"{name}({', '.join(_ftok(x) for x in cargs)}) glibc {_ftok(g)} correctly rounded {_ftok(cv)}"

@@ -1,10 +1,10 @@
 # rasayan — src/pathway.cyr: Rust 1.2.0's metabolic network tests, ported
 # Stdlib auto-included via cyrius.cyml
 #
-# M5 part 1: the 9 `pathway.rs` unit tests that need no network step (the defaults, the validators, the codecs, the
-# solve layer, the RQ's sentinel), as they are written; tests/golden/pathway.tsv checks every function of part 1 on its
-# grid besides. The step's tests join at part 2. Beyond them: the nested layout, the sums, every codec's round trip,
-# and the solve's count.
+# The `pathway.rs` unit tests and the 4 integration tests (tests/integration.rs) that call the network, as they are
+# written: M5 part 1's 9 that need no step, part 2's 22 that tick it; the 3 of `run_to_steady_state` join at part 3.
+# tests/golden/pathway.tsv checks every function, single step and tick on its grid besides. Beyond them: the nested
+# layout, the sums, every codec's round trip, the solve's count and the trace event.
 
 include "src/constants.cyr"
 include "src/constants_private.cyr"
@@ -77,6 +77,82 @@ fn curve_excess(p: *SolveCurve, n: f64): f64 {
 fn const_excess(p: *SolveLin, x: f64): f64 {
     var v: f64 = p.a;
     return v;
+}
+
+# Rust's test helper `network_carbon`: the carbon in glycolysis, TCA, β-oxidation and glutamate (mM C).
+fn network_carbon(n: *RyMetabolicNetwork, c: *RyNetworkConfig): f64 {
+    var w = n;
+    var g: f64 = ry_glycolysis_state_total_carbon(w);
+    var six: f64 = n.tca.citrate + n.tca.isocitrate;
+    var four: f64 = (((n.tca.succinyl_coa + n.tca.succinate) + n.tca.fumarate) + n.tca.malate) + n.tca.oxaloacetate;
+    var chain: f64 = f64_from(c.beta_ox.chain_length);
+    var fat: f64 = n.beta_ox.acyl_coa + n.beta_ox.free_fatty_acid;
+    var s: f64 = ((((g + 2.0 * n.tca.acetyl_coa) + 6.0 * six) + 5.0 * n.tca.alpha_kg) + 4.0 * four) + chain * fat;
+    var r: f64 = s + 5.0 * n.amino_catab.glutamate;
+    return r;
+}
+
+# Rust's test helper `skeleton_carbon`: the carbon a tick's amino-acid skeletons delivered (mM C).
+fn skeleton_carbon(a: *RyAminoCatabFlux): f64 {
+    var four: f64 = (a.to_succinyl_coa + a.to_fumarate) + a.to_oxaloacetate;
+    var s: f64 = ((3.0 * a.to_pyruvate + 2.0 * a.to_acetyl_coa) + 5.0 * a.to_alpha_kg) + 4.0 * four;
+    return s;
+}
+
+# `n` ticks of `dt` on network *net in the resting environment; *f the last flux.
+fn ticks(net: *RyMetabolicNetwork, c: *RyNetworkConfig, n, dt: f64, f: *RyNetworkFlux) {
+    var k = 0;
+    while (k < n) {
+        ry_metabolic_network_tick(net, c, dt, f);
+        k = k + 1;
+    }
+    return 0;
+}
+
+# `n` ticks of `dt` in environment *env.
+fn ticks_in(net: *RyMetabolicNetwork, c: *RyNetworkConfig, e: *RyNetworkEnvironment, n, dt: f64) {
+    var t: RyNetworkTick;
+    var k = 0;
+    while (k < n) {
+        ry_metabolic_network_tick_in(net, c, e, dt, &t);
+        k = k + 1;
+    }
+    return 0;
+}
+
+# |(a − b) / b|.
+fn rel(a: f64, b: f64): f64 {
+    var d: f64 = (a - b) / b;
+    var r: f64 = f64_abs(d);
+    return r;
+}
+
+# The ticks Rust's `(secs / dt) as usize` takes.
+fn count_of(secs: f64, dt: f64): i64 {
+    var q: f64 = secs / dt;
+    return _ry_f64_to_u32(q);
+}
+
+# ── the captured events ──
+var _ev_buf[1024];
+var _ev_len = 0;
+
+# sakshi's subscriber: keeps the first event's message since _ev_len was reset (the network's own; the pathways' ticks
+# inside it emit theirs after).
+fn _ev_hook(ts, level, category, msg, msg_len, extra) {
+    if (_ev_len != 0) { return 0; }
+    var n = msg_len;
+    if (n > 1024) { n = 1024; }
+    memcpy(&_ev_buf, msg, n);
+    _ev_len = msg_len;
+    return 0;
+}
+
+# 1 if the last captured event is the C string `want`.
+fn _ev_is(want) {
+    var n = strlen(want);
+    if (_ev_len != n) { return 0; }
+    return memeq(&_ev_buf, want, n);
 }
 
 # rust src/pathway.rs: test_default_valid, test_validate_rejects_bad_cofactors, test_network_config_validate
@@ -247,7 +323,459 @@ fn sums() {
     return 0;
 }
 
+# rust src/pathway.rs: test_single_tick, test_atp_maintained, test_glucose_consumed, test_o2_consumed
+# rust src/pathway.rs: test_co2_produced, test_respiratory_quotient_range, test_cofactor_pools_bounded
+# rust tests/integration.rs: test_network_long_run_stability
+fn ticking() {
+    test_group("pathway: ticking at rest");
+    var n: RyMetabolicNetwork;
+    var c: RyNetworkConfig;
+    var f: RyNetworkFlux;
+    ry_network_config_default(&c);
+    ry_metabolic_network_default(&n);
+    ry_metabolic_network_tick(&n, &c, 0.1, &f);
+    var hk: f64 = f.glycolysis.rate_hk;
+    assert(hk >= 0.0, "glycolysis runs");
+    ry_metabolic_network_default(&n);
+    var glucose0: f64 = n.glycolysis.glucose;
+    var o2: f64 = 0.0;
+    var co2: f64 = 0.0;
+    var k = 0;
+    while (k < 100) {
+        ry_metabolic_network_tick(&n, &c, 0.1, &f);
+        o2 = o2 + f.o2_consumed;
+        co2 = co2 + f.co2_produced;
+        k = k + 1;
+    }
+    var atp: f64 = n.atp;
+    var glucose: f64 = n.glycolysis.glucose;
+    assert(atp > 0.0 && glucose < glucose0, "ATP maintained over 10 s, glucose consumed");
+    assert(o2 > 0.0 && co2 > 0.0, "O2 consumed, CO2 produced");
+    ry_metabolic_network_default(&n);
+    ticks(&n, &c, 51, 0.1, &f);
+    var rq: f64 = ry_metabolic_network_respiratory_quotient(&n, &f);
+    var o2last: f64 = f.o2_consumed;
+    assert(o2last <= 0.0000000001 || (rq > 0.0 && rq < 2.0), "the RQ of mixed fuel");
+    ry_metabolic_network_default(&n);
+    ticks(&n, &c, 1000, 0.01, &f);
+    var a1: f64 = n.atp;
+    var d1: f64 = n.adp;
+    var r1: f64 = n.nad_ratio;
+    assert(a1 >= 0.0 && d1 >= 0.0 && r1 >= 1.0, "the cofactor pools stay bounded over 1000 steps of 0.01 s");
+    ry_metabolic_network_default(&n);
+    ticks(&n, &c, 1000, 0.1, &f);
+    var a2: f64 = n.atp;
+    var d2: f64 = n.adp;
+    var r2: f64 = n.nad_ratio;
+    var w = &n;
+    var t1, v1 = ry_glycolysis_state_validate(w);
+    var t2, v2 = ry_tca_state_validate(w + _RY_NET_TCA);
+    var t3, v3 = ry_etc_state_validate(w + _RY_NET_ETC);
+    assert(a2 >= 0.0 && d2 >= 0.0 && r2 >= 1.0 && is_ok(t1) == 1 && is_ok(t2) == 1 && is_ok(t3) == 1,
+      "100 s stays stable");
+    return 0;
+}
+
+# rust src/pathway.rs: test_no_oxygen_limits_etc
+# rust tests/integration.rs: test_network_zero_oxygen_graceful, test_network_zero_glucose_graceful
+fn oxygen() {
+    test_group("pathway: no oxygen, no glucose");
+    var n: RyMetabolicNetwork;
+    var c: RyNetworkConfig;
+    var f: RyNetworkFlux;
+    ry_network_config_default(&c);
+    ry_metabolic_network_default(&n);
+    n.oxygen = 0.0;
+    ticks(&n, &c, 101, 0.1, &f);
+    var civ: f64 = f.etc.rate_civ;
+    assert(civ < 0.0000000001, "Complex IV cannot run without O2");
+    ry_metabolic_network_default(&n);
+    n.oxygen = 0.0;
+    ticks(&n, &c, 500, 0.1, &f);
+    var atp: f64 = n.atp;
+    var pmf: f64 = n.etc.pmf;
+    assert(_ry_is_finite(atp) == 1 && pmf < 0.5, "50 s without O2: ATP finite, the PMF collapsed");
+    ry_metabolic_network_default(&n);
+    n.glycolysis.glucose = 0.0;
+    ticks(&n, &c, 500, 0.1, &f);
+    var a2: f64 = n.atp;
+    var d2: f64 = n.adp;
+    assert(_ry_is_finite(a2) == 1 && _ry_is_finite(d2) == 1, "no glucose: the pools stay finite");
+    return 0;
+}
+
+# rust src/pathway.rs: test_invalid_dt_is_noop, test_nan_cofactors_sanitized, test_net_atp_limited_to_pools
+# rust src/pathway.rs: test_nan_environment_is_sanitized
+fn hardening() {
+    test_group("pathway: hardening");
+    var n: RyMetabolicNetwork;
+    var d: RyMetabolicNetwork;
+    var c: RyNetworkConfig;
+    var e: RyNetworkEnvironment;
+    var f: RyNetworkFlux;
+    var zero: RyNetworkFlux;
+    ry_network_config_default(&c);
+    ry_metabolic_network_default(&d);
+    ry_network_flux_default(&zero);
+    var inf: f64 = _RY_INF;
+    var nan: f64 = _ry_nan();
+    var k = 0;
+    while (k < 5) {
+        var dt: f64 = 0.0;
+        if (k == 1) { dt = -0.1; }
+        if (k == 2) { dt = nan; }
+        if (k == 3) { dt = inf; }
+        if (k == 4) { dt = -inf; }
+        ry_metabolic_network_default(&n);
+        memset(&f, 255, 496);
+        ry_metabolic_network_tick(&n, &c, dt, &f);
+        assert(memeq(&n, &d, 264) == 1 && memeq(&f, &zero, 496) == 1, "an invalid dt changes nothing, a zero flux");
+        k = k + 1;
+    }
+    ry_metabolic_network_default(&n);
+    n.atp = nan;
+    n.nad_ratio = nan;
+    n.oxygen = nan;
+    n.malonyl_coa = nan;
+    ry_metabolic_network_tick(&n, &c, 0.1, &f);
+    var atp: f64 = n.atp;
+    var adp: f64 = n.adp;
+    var ratio: f64 = n.nad_ratio;
+    var net: f64 = f.net_atp;
+    var w = &n;
+    var t1, v1 = ry_glycolysis_state_validate(w);
+    var t2, v2 = ry_tca_state_validate(w + _RY_NET_TCA);
+    var t3, v3 = ry_etc_state_validate(w + _RY_NET_ETC);
+    assert(_ry_is_finite(atp) == 1 && _ry_is_finite(adp) == 1 && _ry_is_finite(ratio) == 1 && _ry_is_finite(net) == 1,
+      "NaN cofactors are sanitized");
+    assert(is_ok(t1) == 1 && is_ok(t2) == 1 && is_ok(t3) == 1, "the pathway states stay valid");
+    ry_metabolic_network_default(&n);
+    n.adp = 0.001;
+    ry_metabolic_network_tick(&n, &c, 5.0, &f);
+    var up: f64 = f.net_atp;
+    var total: f64 = n.atp + n.adp;
+    assert(up <= 0.001 && near(total, 6.001, 0.000000000001), "ATP rises by at most the ADP there is");
+    ry_network_environment_default(&e);
+    e.atp_demand = nan;
+    e.plasma_glucose = inf;
+    ry_metabolic_network_default(&n);
+    ticks_in(&n, &c, &e, 100, 0.05);
+    assert_eq(net_ok(&n), 1, "a NaN and an infinite environment are sanitized");
+    return 0;
+}
+
+# rust src/pathway.rs: test_amino_pyruvate_is_kept, test_nadh_pool_bookkeeping, test_substeps_match_manual_steps
+# rust src/pathway.rs: test_tick_is_tick_in_resting
+fn bookkeeping() {
+    test_group("pathway: the pools' bookkeeping");
+    var n: RyMetabolicNetwork;
+    var c: RyNetworkConfig;
+    var e: RyNetworkEnvironment;
+    var t: RyNetworkTick;
+    ry_network_config_default(&c);
+    ry_network_environment_default(&e);
+    c.tca.pdh_vmax = 0.0;
+    ry_metabolic_network_default(&n);
+    var kept = 1;
+    var k = 0;
+    while (k < 50) {
+        var before: f64 = n.glycolysis.pyruvate;
+        ry_metabolic_network_tick_in(&n, &c, &e, 0.02, &t);
+        var skel: f64 = t.flux.amino_catab.to_pyruvate;
+        var cat: f64 = t.flux.co2_produced - t.flux.tca.co2_produced;
+        var want: f64 = ((before + t.flux.glycolysis.pyruvate_produced) + skel + cat) - t.exchange.lactate_export;
+        var pyr: f64 = n.glycolysis.pyruvate;
+        if (skel <= 0.0 || near(pyr, want, 0.000000000001) == 0) { kept = 0; }
+        k = k + 1;
+    }
+    assert_eq(kept, 1, "with PDH off every pyruvate stays in the pool unless LDH exports it");
+    ry_network_config_default(&c);
+    ry_metabolic_network_default(&n);
+    ticks_in(&n, &c, &e, 200, 0.02);
+    var exact = 1;
+    k = 0;
+    while (k < 20) {
+        var r0: f64 = n.nad_ratio;
+        var pool0: f64 = RY_PATHWAY_NAD_POOL_TOTAL / (1.0 + r0);
+        ry_metabolic_network_tick_in(&n, &c, &e, 0.02, &t);
+        var r1: f64 = n.nad_ratio;
+        var pool1: f64 = RY_PATHWAY_NAD_POOL_TOTAL / (1.0 + r1);
+        var made: f64 = ((t.flux.glycolysis.nadh_produced + t.flux.tca.nadh_produced) + t.flux.beta_ox.nadh_produced)
+        + t.flux.amino_catab.nadh_produced;
+        var ox: f64 = t.flux.etc.nadh_consumed + t.exchange.lactate_export;
+        var fadh2: f64 = t.flux.etc.fadh2_consumed;
+        var change: f64 = pool1 - pool0;
+        if (r1 <= RY_PATHWAY_NAD_RATIO_MIN || r1 >= RY_PATHWAY_NAD_RATIO_MAX || fadh2 <= 0.0
+          || near(change, made - ox, 0.000000000001) == 0) {
+            exact = 0;
+        }
+        k = k + 1;
+    }
+    assert_eq(exact, 1, "the NADH pool changes by production − Complex I − LDH; FADH2 never enters it");
+    var one: RyMetabolicNetwork;
+    var many: RyMetabolicNetwork;
+    var big: RyNetworkTick;
+    ry_metabolic_network_default(&one);
+    ry_metabolic_network_default(&many);
+    var five: f64 = 5.0 * RY_PATHWAY_NETWORK_MAX_SUBSTEP;
+    ry_metabolic_network_tick_in(&one, &c, &e, five, &big);
+    var lactate: f64 = 0.0;
+    var o2: f64 = 0.0;
+    k = 0;
+    while (k < 5) {
+        ry_metabolic_network_tick_in(&many, &c, &e, RY_PATHWAY_NETWORK_MAX_SUBSTEP, &t);
+        lactate = lactate + t.exchange.lactate_export;
+        o2 = o2 + t.flux.o2_consumed;
+        k = k + 1;
+    }
+    var big_lac: f64 = big.exchange.lactate_export;
+    var big_o2: f64 = big.flux.o2_consumed;
+    var tiny: f64 = 0.000000000000001;
+    assert(memeq(&one, &many, 264) == 1 && near(big_lac, lactate, tiny) && near(big_o2, o2, tiny),
+      "a long tick is exactly its sub-ticks");
+    var a: RyMetabolicNetwork;
+    var b: RyMetabolicNetwork;
+    var fa: RyNetworkFlux;
+    ry_metabolic_network_default(&a);
+    ry_metabolic_network_default(&b);
+    var same = 1;
+    k = 0;
+    while (k < 50) {
+        ry_metabolic_network_tick(&a, &c, 0.05, &fa);
+        ry_metabolic_network_tick_in(&b, &c, &e, 0.05, &t);
+        if (memeq(&fa, &t, 496) == 0) { same = 0; }
+        k = k + 1;
+    }
+    assert(same == 1 && memeq(&a, &b, 264) == 1, "tick is tick_in in the resting environment");
+    return 0;
+}
+
+# rust src/pathway.rs: test_atp_plus_adp_conserved, test_carbon_balance_any_dt
+fn conservation() {
+    test_group("pathway: ATP + ADP and carbon at any dt");
+    var n: RyMetabolicNetwork;
+    var c: RyNetworkConfig;
+    var e: RyNetworkEnvironment;
+    var f: RyNetworkFlux;
+    var t: RyNetworkTick;
+    ry_network_config_default(&c);
+    ry_network_environment_default(&e);
+    var r = 0;
+    while (r < 4) {
+        var dt: f64 = 0.01;
+        if (r == 1) { dt = 0.1; }
+        if (r == 2) { dt = 1.0; }
+        if (r == 3) { dt = 5.0; }
+        ry_metabolic_network_default(&n);
+        var total: f64 = n.atp + n.adp;
+        var ok = 1;
+        var k = 0;
+        while (k < 2000) {
+            ry_metabolic_network_tick(&n, &c, dt, &f);
+            var a: f64 = n.atp;
+            var d: f64 = n.adp;
+            var net: f64 = f.net_atp;
+            if (a < 0.0 || d < 0.0 || _ry_is_finite(net) == 0) { ok = 0; }
+            k = k + 1;
+        }
+        var now: f64 = n.atp + n.adp;
+        var drift: f64 = f64_abs(now - total);
+        assert(ok == 1 && drift < 0.000000000001 * total, "ATP + ADP conserved over 2000 ticks");
+        r = r + 1;
+    }
+    var chain: f64 = f64_from(c.beta_ox.chain_length);
+    r = 0;
+    while (r < 4) {
+        var h: f64 = 0.01;
+        if (r == 1) { h = 0.1; }
+        if (r == 2) { h = 1.0; }
+        if (r == 3) { h = 5.0; }
+        ry_metabolic_network_default(&n);
+        var c0: f64 = network_carbon(&n, &c);
+        var out: f64 = 0.0;
+        var inflow: f64 = 0.0;
+        var valid = 1;
+        var steps = count_of(300.0, h);
+        var j = 0;
+        while (j < steps) {
+            ry_metabolic_network_tick_in(&n, &c, &e, h, &t);
+            out = out + (t.flux.co2_produced + 3.0 * t.exchange.lactate_export);
+            var wt = &t;
+            var sk: f64 = skeleton_carbon(wt + _RY_NETFLUX_AMINO);
+            var gain: f64 = (sk + 6.0 * t.exchange.glucose_uptake) + chain * t.exchange.fatty_acid_uptake;
+            inflow = inflow + gain;
+            if (net_ok(&n) == 0) { valid = 0; }
+            j = j + 1;
+        }
+        var held: f64 = network_carbon(&n, &c);
+        var balance: f64 = (held + out) - (c0 + inflow);
+        var bound: f64 = 0.000000001 * (c0 + inflow);
+        assert(valid == 1 && f64_abs(balance) < bound, "carbon balanced over 300 s");
+        r = r + 1;
+    }
+    return 0;
+}
+
+# The network after `secs` of `dt` ticks from the default in *e (Rust's `settle` closures).
+fn settle(n: *RyMetabolicNetwork, c: *RyNetworkConfig, e: *RyNetworkEnvironment, secs: f64, dt: f64) {
+    ry_metabolic_network_default(n);
+    var q: f64 = secs / dt;
+    var r: f64 = f64_round(q);
+    ticks_in(n, c, e, _ry_f64_to_u32(r), dt);
+    return 0;
+}
+
+# Rust's anoxia test's `run`: `secs` of 0.02 s ticks; *rates gets the lactate export and glycolytic NADH per second.
+fn run_rates(n: *RyMetabolicNetwork, c: *RyNetworkConfig, e: *RyNetworkEnvironment, secs: f64, rates: *f64) {
+    var t: RyNetworkTick;
+    var lactate: f64 = 0.0;
+    var glycolytic: f64 = 0.0;
+    var steps = count_of(secs, 0.02);
+    var k = 0;
+    while (k < steps) {
+        ry_metabolic_network_tick_in(n, c, e, 0.02, &t);
+        lactate = lactate + t.exchange.lactate_export;
+        glycolytic = glycolytic + t.flux.glycolysis.nadh_produced;
+        k = k + 1;
+    }
+    var l: f64 = lactate / secs;
+    var g: f64 = glycolytic / secs;
+    rates[0] = l;
+    rates[1] = g;
+    return 0;
+}
+
+# rust src/pathway.rs: test_steady_state_is_dt_invariant, test_resting_steady_state_is_physiological
+# rust src/pathway.rs: test_anoxia_pasteur_effect_and_recovery, test_exercise_demand_raises_flux
+fn physiology() {
+    test_group("pathway: rest, anoxia, exercise");
+    var n: RyMetabolicNetwork;
+    var fine: RyMetabolicNetwork;
+    var c: RyNetworkConfig;
+    var e: RyNetworkEnvironment;
+    var t: RyNetworkTick;
+    ry_network_config_default(&c);
+    ry_network_environment_default(&e);
+    settle(&fine, &c, &e, 300.0, 0.005);
+    var invariant = 1;
+    var r = 0;
+    while (r < 4) {
+        var dt: f64 = 0.0167;
+        if (r == 1) { dt = 0.1; }
+        if (r == 2) { dt = 1.0; }
+        if (r == 3) { dt = 5.0; }
+        settle(&n, &c, &e, 300.0, dt);
+        var x1: f64 = rel(n.atp, fine.atp);
+        var x2: f64 = rel(n.nad_ratio, fine.nad_ratio);
+        var x3: f64 = rel(n.glycolysis.pyruvate, fine.glycolysis.pyruvate);
+        var x4: f64 = rel(n.tca.acetyl_coa, fine.tca.acetyl_coa);
+        var x5: f64 = rel(n.etc.pmf, fine.etc.pmf);
+        if (x1 >= 0.001 || x2 >= 0.01 || x3 >= 0.02 || x4 >= 0.01 || x5 >= 0.001) { invariant = 0; }
+        r = r + 1;
+    }
+    assert_eq(invariant, 1, "the resting state is the same for any step size");
+    ry_metabolic_network_default(&n);
+    ticks_in(&n, &c, &e, count_of(1740.0, 0.1), 0.1);
+    var before: RyMetabolicNetwork = n;
+    var co2: f64 = 0.0;
+    var o2: f64 = 0.0;
+    var work: f64 = 0.0;
+    var k = 0;
+    while (k < 600) {
+        ry_metabolic_network_tick_in(&n, &c, &e, 0.1, &t);
+        co2 = co2 + t.flux.co2_produced;
+        o2 = o2 + t.flux.o2_consumed;
+        work = work + t.exchange.atp_demand_met;
+        k = k + 1;
+    }
+    var floor: f64 = 0.000000001;
+    var b1: f64 = _ry_max(before.atp, floor);
+    var b2: f64 = _ry_max(before.glycolysis.pyruvate, floor);
+    var b3: f64 = _ry_max(before.tca.acetyl_coa, floor);
+    var b4: f64 = _ry_max(before.glycolysis.g6p, floor);
+    var d1: f64 = f64_abs((n.atp - before.atp) / b1);
+    var d2: f64 = f64_abs((n.glycolysis.pyruvate - before.glycolysis.pyruvate) / b2);
+    var d3: f64 = f64_abs((n.tca.acetyl_coa - before.tca.acetyl_coa) / b3);
+    var d4: f64 = f64_abs((n.glycolysis.g6p - before.glycolysis.g6p) / b4);
+    assert(d1 < 0.001 && d2 < 0.01 && d3 < 0.01 && d4 < 0.02, "30 minutes at rest: every pool settles");
+    var atp_adp: f64 = n.atp / n.adp;
+    var ratio: f64 = n.nad_ratio;
+    var pyr: f64 = n.glycolysis.pyruvate;
+    var accoa: f64 = n.tca.acetyl_coa;
+    var g6p: f64 = n.glycolysis.g6p;
+    assert(atp_adp > 3.0 && ratio >= 300.0 && ratio <= RY_PATHWAY_NAD_RATIO_MAX && pyr < 1.0 && accoa < 2.0
+      && g6p < 10.0, "and stays in its physiological range");
+    var rq: f64 = co2 / o2;
+    var expected: f64 = ((e.atp_demand * n.atp) / (RY_PATHWAY_ATP_DEMAND_KM + n.atp)) * 60.0;
+    assert(rq >= 0.7 && rq <= 1.0 && near(work, expected, 0.01 * expected), "the RQ, and the demand met in full");
+    var rest[16];
+    var anox[16];
+    ry_metabolic_network_default(&n);
+    run_rates(&n, &c, &e, 300.0, &rest);
+    run_rates(&n, &c, &e, 10.0, &rest);
+    var rest_atp: f64 = n.atp;
+    n.oxygen = 0.0;
+    run_rates(&n, &c, &e, 10.0, &anox);
+    var al: f64 = load64(&anox);
+    var ag: f64 = load64(&anox + 8);
+    var rl: f64 = load64(&rest);
+    var rg: f64 = load64(&rest + 8);
+    assert(ag > 1.3 * rg && al > 2.0 * rl, "without O2 glycolysis speeds up and dumps lactate");
+    run_rates(&n, &c, &e, 120.0, &anox);
+    var low: f64 = n.atp;
+    assert(low < 0.5 * rest_atp && net_ok(&n) == 1, "glucose-only glycolysis cannot cover demand");
+    n.oxygen = 1.0;
+    run_rates(&n, &c, &e, 120.0, &anox);
+    var back: f64 = rel(n.atp, rest_atp);
+    assert(back < 0.02, "reoxygenation restores the resting state");
+    var hard: RyNetworkEnvironment;
+    ry_network_environment_default(&hard);
+    hard.atp_demand = 3.0;
+    var ex: RyMetabolicNetwork;
+    var tr: RyNetworkTick;
+    var te: RyNetworkTick;
+    settle(&n, &c, &e, 300.0, 0.05);
+    ry_metabolic_network_tick_in(&n, &c, &e, 1.0, &tr);
+    settle(&ex, &c, &hard, 300.0, 0.05);
+    ry_metabolic_network_tick_in(&ex, &c, &hard, 1.0, &te);
+    var o2r: f64 = tr.flux.o2_consumed;
+    var o2e: f64 = te.flux.o2_consumed;
+    var lr: f64 = tr.exchange.lactate_export;
+    var le: f64 = te.exchange.lactate_export;
+    var wr: f64 = tr.exchange.atp_demand_met;
+    var we: f64 = te.exchange.atp_demand_met;
+    var ar: f64 = n.atp;
+    var ae: f64 = ex.atp;
+    assert(o2e > o2r && le > lr && we > wr && ae < ar && ae > 0.0 && net_ok(&ex) == 1,
+      "exercise raises O2 use, lactate and work, and lowers ATP");
+    return 0;
+}
+
+# Rust's trace event, under the target `rasayan::pathway`, its fields in Rust's order (the pools as passed in).
+fn events() {
+    test_group("pathway: trace event");
+    sakshi_set_emit_hook(&_ev_hook);
+    sakshi_set_level(SK_TRACE);
+    var n: RyMetabolicNetwork;
+    var c: RyNetworkConfig;
+    var f: RyNetworkFlux;
+    ry_metabolic_network_default(&n);
+    ry_network_config_default(&c);
+    _ev_len = 0;
+    ry_metabolic_network_tick(&n, &c, 0.01, &f);
+    assert_eq(_ev_is("rasayan::pathway: network_tick dt=0.01 atp=6 adp=0.5 nad_ratio=700"), 1, "network_tick");
+    _ev_len = 0;
+    ry_metabolic_network_tick(&n, &c, 0.0, &f);
+    assert_eq(_ev_len, 0, "no event for an invalid dt");
+    sakshi_set_level(SK_INFO);
+    ry_metabolic_network_tick(&n, &c, 0.01, &f);
+    assert_eq(_ev_len, 0, "below TRACE, nothing");
+    sakshi_clear_emit_hook();
+    return 0;
+}
+
 # rust src/pathway.rs: test_serde_roundtrip, test_serde_roundtrip_config
+# rust tests/integration.rs: test_network_flux_serde_roundtrip
 fn serde() {
     test_group("pathway: serde round trips");
     var sb = str_builder_new();
@@ -291,6 +819,15 @@ fn serde() {
     var ta, va = ry_network_flux_to_json(sb, &f);
     var tb2, vb2 = ry_network_flux_from_json(load64(sb), load64(sb + 8), &fb);
     assert(is_ok(tb2) == 1 && memeq(&fb, &f, 496) == 1, "a flux reads back");
+    var cn: RyNetworkConfig;
+    var nn: RyMetabolicNetwork;
+    ry_network_config_default(&cn);
+    ry_metabolic_network_default(&nn);
+    ry_metabolic_network_tick(&nn, &cn, 0.01, &f);
+    store64(sb + 8, 0);
+    var te1, ve1 = ry_network_flux_to_json(sb, &f);
+    var te2, ve2 = ry_network_flux_from_json(load64(sb), load64(sb + 8), &fb);
+    assert(is_ok(te2) == 1 && memeq(&fb, &f, 496) == 1, "a tick's flux reads back, bit for bit");
     var x: RyNetworkExchange;
     var xb: RyNetworkExchange;
     ry_network_exchange_default(&x);
@@ -315,6 +852,13 @@ fn main() {
     solving();
     quotient();
     sums();
+    ticking();
+    oxygen();
+    hardening();
+    bookkeeping();
+    conservation();
+    physiology();
+    events();
     serde();
     return assert_summary();
 }

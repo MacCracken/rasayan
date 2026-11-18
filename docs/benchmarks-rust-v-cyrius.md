@@ -268,3 +268,21 @@ ns on its own mix of inputs (fewer iterations on average); Rust's verbatim funct
 there. Part 2 re-measures them on a quiet machine with the whole step. Hoisting GAPDH's resting normaliser out of the
 balance's excess (an exact change, every row identical) gave no difference the load let through, so it was not kept.
 
+## M5 part 2: the metabolic network's step
+
+| Benchmark | Rust 1.2.0 (µs) | Cyrius (µs) | Notes |
+|---|---|---|---|
+| network_tick | 1.016 | ≈ 4.8 (11.3 measured) | Rust's loop body: a default network, one tick of 0.01 s (one step: two producer runs, two solves, the ETC) |
+| network_tick_1s | 55.76 | ≈ 250 (594 measured) | a default network, one tick of 1 s: 50 sub-steps of 0.02 s |
+
+**Provisional**: measured at a load of about 20 (other projects' builds), with the reference rows 2.3–3.4× their
+quiet values in the same run (glycolysis_tick 1.77 µs against 0.76, tca_tick 1.74 against 0.51, amino_catab_tick 260
+ns against 105); the ≈ figures scale by glycolysis_tick's factor, the step's largest part. Part 3 re-measures them on
+a quiet machine.
+
+The step is two producer runs (glycolysis, β-oxidation, amino-acid catabolism, TCA: about 1.5 µs quiet each), the
+two solves, the ETC step and the bookkeeping. Its fluxes first reached the tick through the stdlib's `memcpy`, which
+moves a byte at a time: 496 bytes cost 1.9 µs there and 65 ns by struct assignment, so the step's 392 bytes of nested
+fluxes and `tick`'s 496-byte copy were a quarter of a tick. They are struct assignments now, and the zeroing a word
+loop: `tick` went from 15.3 to 11.3 µs in the same loaded conditions, the same as one `step`.
+

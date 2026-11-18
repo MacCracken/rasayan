@@ -18,10 +18,40 @@ JSON writers and readers) follow: M1 is complete. M2 part 1 (enzyme), part 2 (me
 (ptm) and part 4 (domain) follow: M3 is complete. M4a part 1 (glycolysis) and part 2 (TCA) follow: M4a is
 complete. M4b part 1 (the electron transport chain), part 2 (β-oxidation) and part 3 (amino-acid catabolism)
 follow: M4b is complete, and with it M4. M5 part 1 (the metabolic network's types, validators, solve layer and
-codecs) follows.
+codecs) and part 2 (its step) follow.
 
 ### Added
 
+- **src/pathway.cyr** (M5 part 2) — the network's step, transcribed in Rust's operation order (P9): the private
+  `produce` (glycolysis's `tick_regulated` with citrate's Randle inhibition, β-oxidation with the ACC-derived
+  malonyl-CoA, amino-acid catabolism on TCA's α-KG, the skeletons into the cycle, TCA, cataplerosis) and `step`
+  (plasma supply through `relax`; the producer probe as a frame copy of the network, `var probe = *p`, probe 2; the
+  self-consistent ratio solve; the end-of-step NADH solve, LDH and the lactate export; the ETC's crate-private `step`
+  on the solved NADH; the ATP/ADP pool limited to [−atp, adp]); `ry_metabolic_network_tick_in` (sub-steps at
+  `ceil(dt / 0.02)` capped at 5000, by Rust's division, probe 1) and `ry_metabolic_network_tick` (the resting
+  environment). Rust's `network_tick` trace event is a level-gated sakshi event under `rasayan::pathway`. The step's
+  copies are struct assignments and its zeroing a word loop: the stdlib's `memcpy` and `memset` move a byte at a time
+  (a 496-byte copy 1.9 µs, the assignment 65 ns; an addendum to the open cyrius issue is drafted in
+  `docs/development/issues/`)
+- **tests/golden/pathway.tsv** (M5 part 2, +930 rows, 2,846 in all; classes C and B) — 890 single steps
+  (`pathway::MetabolicNetwork::step`, one sub-step): the default at nine step lengths, each of the 33 fields and the
+  environment's 4 over their edges, each of the 104 config fields at 0 and doubled, the chain lengths, Rust's tests'
+  states, worked states (rest at 10, 60 and 300 s, anoxia, exercise, fasting) at four step lengths, and seeded
+  networks. Each records the two solves' iteration counts and exits, from a transcription of `produce` and `step`
+  whose network and tick must be the oracle's `tick_in`'s bit for bit on every row. 36 `tick_in` rows (the invalid
+  steps, exact multiples of 0.02 s and an ulp either side, the 5000-step cap, worked states over longer ticks) and 4
+  `tick` rows. The steps reach glycolysis's and TCA's Hill `powf`: `pathway.cr.tsv` holds 1 row, the 5000 sub-steps of
+  0.2 s where glibc misrounds one PFK-1 `pow` and the trajectory moves; the port gives the correctly rounded row (ADR
+  3). `mpfr_ref.py` models the step (and reproduces all 923 class-C rows with glibc's `pow`), `validate.py` re-derives
+  every row with MPFR's and this machine's libm (121,051 independent checks) and catches each of 6 flipped values in
+  sampled step rows
+- **tests/pathway.tcyr** (M5 part 2, 73 checks) — the 22 `pathway.rs` unit tests that tick the network and the 4
+  network integration tests, as they are written (ATP + ADP conserved over 2000 ticks at dt 0.01–5, the carbon
+  balance over 300 s at any dt, the dt-invariant resting state, 30 minutes at rest, anoxia's Pasteur effect and
+  recovery, exercise), and the trace event: the Rust-test ledger at 515 of 723. The fuzz harness steps every accepted
+  valid network (188), which stays valid and conserves ATP + ADP to 1e-12
+- **benchmarks** (M5 part 2) — network_tick, Rust → Cyrius: 1.02 → ≈ 4.8 µs; network_tick_1s 55.8 → ≈ 250 µs
+  (provisional: measured under load and scaled by the reference rows)
 - **src/pathway.cyr**, **src/pathway_data.cyr** (M5 part 1) — `pathway.rs`'s types and everything but the step:
   `RyMetabolicNetwork` (the five pathway states nested in place, then the shared pools; 264 bytes),
   `RyNetworkConfig`, `RyNetworkFlux`, `RyNetworkEnvironment`, `RyNetworkExchange`, `RyNetworkTick`. The defaults

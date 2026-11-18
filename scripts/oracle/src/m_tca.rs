@@ -214,7 +214,7 @@ fn cfg_toks(ov: &[(usize, f64)]) -> Vec<Tok> {
 }
 
 /// C where a step reaches isocitrate dehydrogenase's `powf` (`enzyme::hill_fraction`'s branches).
-fn step_class(st: &[f64], cfg: &[f64], dt: f64) -> Class {
+pub fn step_class(st: &[f64], cfg: &[f64], dt: f64) -> Class {
     let s = if st[2].is_finite() && st[2] > 0.0 { st[2] } else { 0.0 };
     let (k, n) = (cfg[IDH_KM], cfg[IDH_N]);
     if dt.is_finite() && dt > 0.0 && s > 0.0 && !n.is_nan() && k != 0.0 && k > 0.0 && k < f64::INFINITY {

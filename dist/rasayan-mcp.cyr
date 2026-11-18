@@ -12856,8 +12856,8 @@ var _RY_NETWORK_TICK_FIELDS: u8[14] = {
 # rasayan — src/pathway.cyr: the metabolic network (rust-old/src/pathway.rs)
 #
 # M5 part 1: the six types, their defaults and validators, `respiratory_quotient`, the private NAD+/NADH solve layer
-# and the crate-private sub-step sums, and the serde codecs. The step (`tick`, `tick_in`, the producer probe) and the
-# steady-state run join at parts 2 and 3.
+# and the crate-private sub-step sums, and the serde codecs. Part 2: the step (`produce`, `step`, `tick_in`, `tick`;
+# the producer probe a frame copy of the network, probe 2). The steady-state run joins at part 3.
 #
 # The Cyrius forms (ADR 0002 rows 7, 10, 14):
 # - Each network type holds its pathways' values by value, nested in place, as Rust's does: RyMetabolicNetwork is
@@ -12959,6 +12959,17 @@ const _RY_NETTICK_SIZE = 536;
 
 # ── defaults ──
 
+# Zeroes the `words` 8-byte words at `w`: the stdlib's memset stores a byte at a time (a 536-byte tick 2 µs, this
+# 67-word loop about 70 ns), and every zeroed network value is a whole number of words.
+fn _ry_pathway_zero(w, words) {
+    var k = 0;
+    while (k < words) {
+        store64(w + 8 * k, 0);
+        k = k + 1;
+    }
+    return 0;
+}
+
 # Fills *out with Rust's MetabolicNetwork::default(): every pathway at its default, ATP 6, ADP 0.5, NAD+/NADH 700,
 # full oxygen and malonyl-CoA 0.01 mM (src/pathway_data.cyr).
 fn ry_metabolic_network_default(out: *RyMetabolicNetwork) {
@@ -13000,19 +13011,19 @@ fn ry_network_environment_default(out: *RyNetworkEnvironment) {
 
 # Fills *out with Rust's NetworkFlux::default(): every field 0.
 fn ry_network_flux_default(out: *RyNetworkFlux) {
-    memset(out, 0, _RY_NETFLUX_SIZE);
+    _ry_pathway_zero(out, 62);
     return 0;
 }
 
 # Fills *out with Rust's NetworkExchange::default(): every field 0.
 fn ry_network_exchange_default(out: *RyNetworkExchange) {
-    memset(out, 0, 40);
+    _ry_pathway_zero(out, 5);
     return 0;
 }
 
 # Fills *out with Rust's NetworkTick::default(): every field 0.
 fn ry_network_tick_default(out: *RyNetworkTick) {
-    memset(out, 0, _RY_NETTICK_SIZE);
+    _ry_pathway_zero(out, 67);
     return 0;
 }
 
@@ -13331,6 +13342,273 @@ fn _ry_network_exchange_accumulate(t: *RyNetworkExchange, o: *RyNetworkExchange)
         store64(wt + 8 * k, load64(&s));
         k = k + 1;
     }
+    return 0;
+}
+
+# ── the step ──
+
+# The fluxes of the producing half of a network step, and the malate carbon cataplerosis returned to pyruvate (mM;
+# also CO2). Mirrors the private `Production`.
+struct _RyPathwayProduction {
+    glycolysis: RyGlycolysisFlux;
+    beta_ox: RyBetaOxFlux;
+    amino_catab: RyAminoCatabFlux;
+    tca: RyTcaFlux;
+    cataplerosis: f64;
+}
+
+# The production's nested fluxes' offsets.
+const _RY_PROD_BETA_OX = 120;
+const _RY_PROD_AMINO = 184;
+const _RY_PROD_TCA = 280;
+
+# The producing half of a network step of length `h` at NAD+/NADH ratio `ratio`, into *out: glycolysis with PFK-1
+# inhibited by citrate (the Randle cycle), β-oxidation with CPT-I seeing the caller's malonyl-CoA plus the ACC-derived
+# part, amino-acid catabolism on TCA's α-KG (transamination takes it, GDH returns it), the carbon skeletons into the
+# cycle, the cycle on the shared pyruvate, then cataplerosis of malate carbon above TCA_POOL_REFERENCE. Mirrors the
+# private `MetabolicNetwork::produce`.
+fn _ry_metabolic_network_produce(p: *RyMetabolicNetwork, c: *RyNetworkConfig, atp: f64, adp: f64, ratio: f64, h: f64,
+  out: *_RyPathwayProduction) {
+    var w = p;
+    var wc = c;
+    var wo = out;
+    var citrate: f64 = _ry_guard_conc(p.tca.citrate);
+    var pfk_citrate: f64 = 1.0 / (1.0 + citrate / RY_PATHWAY_PFK_KI_CITRATE);
+    _ry_glycolysis_state_tick_regulated(w, wc, atp, adp, ratio, pfk_citrate, h, wo);
+    var hormonal: f64 = _ry_guard_conc(p.malonyl_coa);
+    var accoa: f64 = _ry_guard_conc(p.tca.acetyl_coa);
+    var malonyl: f64 = hormonal + RY_PATHWAY_MALONYL_PER_ACETYL_COA * accoa;
+    ry_beta_ox_state_tick(w + _RY_NET_BETA_OX, wc + _RY_NETCFG_BETA_OX, malonyl, ratio, h, wo + _RY_PROD_BETA_OX);
+    var akg_in: f64 = p.tca.alpha_kg;
+    ry_amino_catab_state_tick(w + _RY_NET_AMINO, wc + _RY_NETCFG_AMINO, akg_in, ratio, h, wo + _RY_PROD_AMINO);
+    # Transamination took α-KG (capped at the pool); GDH regenerates it.
+    var took: f64 = (p.tca.alpha_kg - out.amino_catab.amino_acids_consumed) + out.amino_catab.nh4_produced;
+    var akg: f64 = _ry_guard_conc(took);
+    p.tca.alpha_kg = akg;
+    # Carbon skeletons into the TCA cycle, then the cycle itself.
+    var into_accoa: f64 = out.beta_ox.acetyl_coa_produced + out.amino_catab.to_acetyl_coa;
+    var accoa2: f64 = p.tca.acetyl_coa + into_accoa;
+    var akg2: f64 = p.tca.alpha_kg + out.amino_catab.to_alpha_kg;
+    var succ: f64 = p.tca.succinyl_coa + out.amino_catab.to_succinyl_coa;
+    var fum: f64 = p.tca.fumarate + out.amino_catab.to_fumarate;
+    var oaa: f64 = p.tca.oxaloacetate + out.amino_catab.to_oxaloacetate;
+    var pyr: f64 = p.glycolysis.pyruvate + out.amino_catab.to_pyruvate;
+    p.tca.acetyl_coa = accoa2;
+    p.tca.alpha_kg = akg2;
+    p.tca.succinyl_coa = succ;
+    p.tca.fumarate = fum;
+    p.tca.oxaloacetate = oaa;
+    p.glycolysis.pyruvate = pyr;
+    ry_tca_state_tick(w + _RY_NET_TCA, wc + _RY_NETCFG_TCA, pyr, atp, adp, ratio, h, wo + _RY_PROD_TCA);
+    # PDH is capped at the pyruvate it was given; `conc` only recovers NaN.
+    var left: f64 = p.glycolysis.pyruvate - out.tca.pyruvate_consumed;
+    var pyr2: f64 = _ry_guard_conc(left);
+    p.glycolysis.pyruvate = pyr2;
+    # Cataplerosis: malate carbon above the reference pool → pyruvate + CO2.
+    var pool: f64 = ry_tca_state_total_pool(w + _RY_NET_TCA);
+    var excess: f64 = pool - RY_PATHWAY_TCA_POOL_REFERENCE;
+    var amount: f64 = (RY_PATHWAY_CATAPLEROSIS_RATE * excess) * h;
+    var drained: f64 = _ry_guard_take(amount, p.tca.malate);
+    var malate: f64 = p.tca.malate - drained;
+    var pyr3: f64 = p.glycolysis.pyruvate + drained;
+    p.tca.malate = malate;
+    p.glycolysis.pyruvate = pyr3;
+    out.cataplerosis = drained;
+    return 0;
+}
+
+# One network step of length `h` (already validated) in `env`, into *out: (1) cell glucose, free fatty acid and amino
+# acids relax toward the plasma levels; (2) the producers run at the self-consistent NAD+/NADH ratio, solved against
+# Complex I and LDH from a probe of the producers on a frame copy of the network at the resting ratio; (3) the NADH pool
+# plus the step's production is oxidized implicitly by Complex I and LDH, the lactate formed exported and the ratio
+# recomputed from the NADH left; (4) the ATP/ADP pool takes production − consumption − the saturable demand, limited to
+# [−atp, adp] so ATP + ADP is conserved exactly. When `st` is not 0, st[0..1] get the ratio solve's iterations and
+# exit and st[2..3] the end-of-step solve's. Mirrors the private `MetabolicNetwork::step`.
+fn _ry_metabolic_network_step(p: *RyMetabolicNetwork, c: *RyNetworkConfig, env: *RyNetworkEnvironment, h: f64,
+  out: *RyNetworkTick, st: *i64) {
+    var w = p;
+    var wc = c;
+    var wo = out;
+    # Shared pools, sanitized once; sub-ticks sanitize their own inputs.
+    var atp: f64 = _ry_guard_conc(p.atp);
+    var adp: f64 = _ry_guard_conc(p.adp);
+    var r0: f64 = _ry_guard_conc(p.nad_ratio);
+    var nad_ratio: f64 = _ry_clamp(r0, RY_PATHWAY_NAD_RATIO_MIN, RY_PATHWAY_NAD_RATIO_MAX);
+    # 1. Substrate supply from plasma.
+    var glucose: f64 = _ry_guard_conc(p.glycolysis.glucose);
+    var pg: f64 = _ry_guard_conc(env.plasma_glucose);
+    var g2: f64 = _ry_integrate_relax(glucose, pg, RY_PATHWAY_GLUCOSE_TRANSPORT_RATE, h);
+    p.glycolysis.glucose = g2;
+    out.exchange.glucose_uptake = g2 - glucose;
+    var ffa: f64 = _ry_guard_conc(p.beta_ox.free_fatty_acid);
+    var pf: f64 = _ry_guard_conc(env.plasma_fatty_acids);
+    var f2: f64 = _ry_integrate_relax(ffa, pf, RY_PATHWAY_FATTY_ACID_TRANSPORT_RATE, h);
+    p.beta_ox.free_fatty_acid = f2;
+    out.exchange.fatty_acid_uptake = f2 - ffa;
+    var amino: f64 = _ry_guard_conc(p.amino_catab.amino_acid_pool);
+    var pa: f64 = _ry_guard_conc(env.plasma_amino_acids);
+    var a2: f64 = _ry_integrate_relax(amino, pa, RY_PATHWAY_AMINO_ACID_TRANSPORT_RATE, h);
+    p.amino_catab.amino_acid_pool = a2;
+    out.exchange.amino_acid_uptake = a2 - amino;
+    # 2. Producers at the self-consistent ratio: probe a frame copy at the reference ratio (factor 1) for this step's
+    # NAD-dependent NADH output, solve for the ratio that balances it, then run the producers for real.
+    var nadh_pool: f64 = RY_PATHWAY_NAD_POOL_TOTAL / (1.0 + nad_ratio);
+    var cap: f64 = _ry_etc_state_complex_i_capacity(w + _RY_NET_ETC, wc + _RY_NETCFG_ETC);
+    var c_ci: f64 = cap * h;
+    var probe: RyMetabolicNetwork = *p;
+    var pr: _RyPathwayProduction;
+    _ry_metabolic_network_produce(&probe, c, atp, adp, RY_RESTING_NAD_RATIO, h, &pr);
+    var glycolytic_ref: f64 = pr.glycolysis.nadh_produced;
+    var mitochondrial_ref: f64 = (pr.tca.nadh_produced + pr.beta_ox.nadh_produced) + pr.amino_catab.nadh_produced;
+    var c_ldh_probe: f64 = _ry_pathway_ldh_capacity(p.glycolysis.pyruvate, h);
+    var st_end = 0;
+    if (st != 0) { st_end = st + 2; }               # st is an *i64: + 2 is two words on
+    var ratio: f64 = _ry_pathway_balanced_nad_ratio(nadh_pool, glycolytic_ref, mitochondrial_ref, c_ci, c_ldh_probe, st,
+      0);
+    var prod: _RyPathwayProduction;
+    _ry_metabolic_network_produce(p, c, atp, adp, ratio, h, &prod);
+    # 3. The NADH pool, oxidized implicitly by Complex I and LDH.
+    var made: f64 = ((prod.glycolysis.nadh_produced + prod.tca.nadh_produced) + prod.beta_ox.nadh_produced)
+    + prod.amino_catab.nadh_produced;
+    var avail_raw: f64 = nadh_pool + made;
+    var nadh_avail: f64 = _ry_clamp(avail_raw, 0.0, RY_PATHWAY_NAD_POOL_TOTAL);
+    var c_ldh: f64 = _ry_pathway_ldh_capacity(p.glycolysis.pyruvate, h);
+    var nadh_end: f64 = _ry_pathway_end_of_step_nadh(nadh_avail, c_ci, c_ldh, st_end);
+    var ldh_rate: f64 = (c_ldh * nadh_end) / (RY_PATHWAY_LDH_KM_NADH + nadh_end);
+    var pyr_cap: f64 = _ry_min(p.glycolysis.pyruvate, nadh_avail);
+    var lactate: f64 = _ry_guard_take(ldh_rate, pyr_cap);
+    var pyr: f64 = p.glycolysis.pyruvate - lactate;
+    p.glycolysis.pyruvate = pyr;
+    out.exchange.lactate_export = lactate;
+    var drive: _RyEtcDrive;
+    drive.nadh_conc = nadh_end;
+    drive.nadh_avail = nadh_avail - lactate;
+    var fadh2: f64 = prod.tca.fadh2_produced + prod.beta_ox.fadh2_produced;
+    drive.fadh2 = fadh2;
+    drive.oxygen = p.oxygen;
+    drive.adp = adp;
+    _ry_etc_state_step(w + _RY_NET_ETC, wc + _RY_NETCFG_ETC, &drive, h, wo + _RY_NETFLUX_ETC);
+    var nadh_left: f64 = (nadh_avail - lactate) - out.flux.etc.nadh_consumed;
+    if (nadh_left > 0.0) {
+        var r: f64 = _ry_pathway_ratio_of(nadh_left);
+        p.nad_ratio = r;
+    } else {
+        p.nad_ratio = RY_PATHWAY_NAD_RATIO_MAX;
+    }
+    # 4. The shared ATP/ADP pool, conserving ATP + ADP exactly.
+    var atp_produced: f64 = (prod.glycolysis.atp_produced + prod.tca.gtp_produced) + out.flux.etc.atp_produced;
+    var demand_in: f64 = _ry_guard_conc(env.atp_demand);
+    var demand: f64 = ((demand_in * atp) / (RY_PATHWAY_ATP_DEMAND_KM + atp)) * h;
+    var atp_consumed: f64 = (prod.glycolysis.atp_consumed + prod.beta_ox.atp_consumed) + demand;
+    var raw_net: f64 = atp_produced - atp_consumed;
+    var low: f64 = -atp;
+    var net: f64 = 0.0;
+    if (_ry_is_finite(raw_net) == 1) { net = _ry_clamp(raw_net, low, adp); }
+    var adenylate_total: f64 = atp + adp;
+    var atp2: f64 = atp + net;
+    p.atp = atp2;
+    var adp_left: f64 = adenylate_total - atp2;
+    var adp2: f64 = _ry_max(adp_left, 0.0);
+    p.adp = adp2;
+    # Demand is met in full unless the pool limit cut the net change.
+    if (raw_net < low) {
+        var shortfall: f64 = low - raw_net;
+        var met: f64 = _ry_max(demand - shortfall, 0.0);
+        out.exchange.atp_demand_met = met;
+    } else {
+        out.exchange.atp_demand_met = demand;
+    }
+    var o2: f64 = out.flux.etc.o2_consumed;
+    var co2: f64 = prod.tca.co2_produced + prod.cataplerosis;
+    out.flux.net_atp = net;
+    out.flux.o2_consumed = o2;
+    out.flux.co2_produced = co2;
+    # Struct assignments, the compiler's word copies: the stdlib's memcpy moves a byte at a time (390 bytes ≈ 1.5 µs).
+    out.flux.glycolysis = prod.glycolysis;
+    out.flux.tca = prod.tca;
+    out.flux.beta_ox = prod.beta_ox;
+    out.flux.amino_catab = prod.amino_catab;
+    return 0;
+}
+
+# The sub-steps a tick of `dt` takes: ceil(dt / NETWORK_MAX_SUBSTEP), at least 1, or NETWORK_MAX_SUBSTEPS when that
+# is not below the cap; Rust's division and saturating `as u32`, not `dt * 50` (probe 1).
+#must_use
+fn _ry_pathway_substeps(dt: f64): i64 {
+    var q: f64 = dt / RY_PATHWAY_NETWORK_MAX_SUBSTEP;
+    var wanted: f64 = f64_ceil(q);
+    var cap: f64 = f64_from(RY_PATHWAY_NETWORK_MAX_SUBSTEPS);
+    if (wanted < cap) {
+        var n = _ry_f64_to_u32(wanted);
+        if (n < 1) { n = 1; }
+        return n;
+    }
+    return RY_PATHWAY_NETWORK_MAX_SUBSTEPS;
+}
+
+# Advances every pathway by `dt` seconds in environment `env`, wiring outputs to inputs through the shared ATP/ADP
+# and NAD+/NADH pools, and fills *out with the tick's fluxes and exchange (each step as _ry_metabolic_network_step
+# describes). A dt longer than NETWORK_MAX_SUBSTEP is split into equal sub-steps (at most NETWORK_MAX_SUBSTEPS),
+# *out the tick total: amounts summed, rates weighted by the sub-step's share. A non-finite or non-positive dt is "no
+# time passed" (the network untouched, a zero tick); non-finite or negative environment values count as 0. Mirrors
+# `MetabolicNetwork::tick_in`.
+fn ry_metabolic_network_tick_in(p: *RyMetabolicNetwork, c: *RyNetworkConfig, env: *RyNetworkEnvironment, dt: f64,
+  out: *RyNetworkTick) {
+    if (_ry_guard_valid_dt(dt) == 0) {
+        _ry_pathway_zero(out, 67);
+        return 0;
+    }
+    if (_ry_trace_on() == 1) {
+        var hd[24];
+        var b[256];
+        var e = _ry_ev(&hd, &b, 256, "rasayan::pathway", "network_tick");
+        _ry_ev_f(e, "dt", dt);
+        _ry_ev_f(e, "atp", p.atp);
+        _ry_ev_f(e, "adp", p.adp);
+        _ry_ev_f(e, "nad_ratio", p.nad_ratio);
+        _ry_trace(e);
+    }
+    var steps = _ry_pathway_substeps(dt);
+    if (steps == 1) {
+        _ry_metabolic_network_step(p, c, env, dt, out, 0);
+        return 0;
+    }
+    var n: f64 = f64_from(steps);
+    var h: f64 = dt / n;
+    var weight: f64 = h / dt;
+    _ry_pathway_zero(out, 67);
+    var wo = out;
+    var sub: RyNetworkTick;
+    var ws = &sub;                               # a plain address: the flux and exchange inside it
+    var k = 0;
+    while (k < steps) {
+        _ry_metabolic_network_step(p, c, env, h, &sub, 0);
+        _ry_network_flux_accumulate(wo, ws, weight);
+        _ry_network_exchange_accumulate(wo + _RY_NETFLUX_SIZE, ws + _RY_NETFLUX_SIZE);
+        k = k + 1;
+    }
+    return 0;
+}
+
+# Advances every pathway by `dt` seconds in a resting environment (ry_network_environment_default: basal ATP demand
+# and plasma supply) and fills *out with the tick's fluxes: ry_metabolic_network_tick_in's flux. Mirrors
+# `MetabolicNetwork::tick`.
+fn ry_metabolic_network_tick(p: *RyMetabolicNetwork, c: *RyNetworkConfig, dt: f64, out: *RyNetworkFlux) {
+    var env: RyNetworkEnvironment;
+    var t: RyNetworkTick;
+    ry_network_environment_default(&env);
+    ry_metabolic_network_tick_in(p, c, &env, dt, &t);
+    out.glycolysis = t.flux.glycolysis;
+    out.tca = t.flux.tca;
+    out.etc = t.flux.etc;
+    out.beta_ox = t.flux.beta_ox;
+    out.amino_catab = t.flux.amino_catab;
+    var net: f64 = t.flux.net_atp;
+    var o2: f64 = t.flux.o2_consumed;
+    var co2: f64 = t.flux.co2_produced;
+    out.net_atp = net;
+    out.o2_consumed = o2;
+    out.co2_produced = co2;
     return 0;
 }
 

@@ -239,7 +239,7 @@ fn hill_pow(s: f64, k: f64, n: f64) -> bool {
 }
 
 /// C where a step reaches PFK-1's or pyruvate kinase's `powf`.
-fn step_class(st: &[f64], cfg: &[f64], dt: f64) -> Class {
+pub fn step_class(st: &[f64], cfg: &[f64], dt: f64) -> Class {
     let valid = dt.is_finite() && dt > 0.0;
     if valid && (hill_pow(st[2], cfg[PFK_KM], cfg[PFK_N]) || hill_pow(st[9], cfg[PK_KM], cfg[PK_N])) {
         Class::C
