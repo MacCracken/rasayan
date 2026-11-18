@@ -1248,6 +1248,650 @@ def private_rows(root, all_items):
     return {"const": value}, {}, {}
 
 
+# ── pathway (M5 part 1): the defaults, validators, RQ, the NAD+/NADH solve layer, the sums, serde ──
+#
+# Each function is transcribed from pathway.rs (its lines are pinned below, span by span) in Python's binary64
+# arithmetic; the nested types' shapes (each field an f64, a u32, an f64 array or a nested struct) are read from the
+# structs in the oracle's sources, and each pathway's validator from its own source as its module's check reads it.
+# Nothing in part 1 calls a transcendental.
+
+PW_SPANS = (
+    (
+        '    pub fn validate(&self) -> Result<(), RasayanError> {\n',
+        '        self.glycolysis.validate()?;\n',
+        '        self.tca.validate()?;\n',
+        '        self.etc.validate()?;\n',
+        '        self.beta_ox.validate()?;\n',
+        '        self.amino_catab.validate()?;\n',
+        '        guard::non_negative("atp", self.atp)?;\n',
+        '        guard::non_negative("adp", self.adp)?;\n',
+        '        guard::positive("nad_ratio", self.nad_ratio)?;\n',
+        '        guard::fraction("oxygen", self.oxygen)?;\n',
+        '        guard::non_negative("malonyl_coa", self.malonyl_coa)\n',
+        '    }\n',
+    ),
+    (
+        '    pub fn validate(&self) -> Result<(), RasayanError> {\n',
+        '        self.glycolysis.validate()?;\n',
+        '        self.tca.validate()?;\n',
+        '        self.etc.validate()?;\n',
+        '        self.beta_ox.validate()?;\n',
+        '        self.amino_catab.validate()?;\n',
+        '        guard::non_negative("nad_ratio_sensitivity", self.nad_ratio_sensitivity)\n',
+        '    }\n',
+    ),
+    (
+        '    pub fn validate(&self) -> Result<(), RasayanError> {\n',
+        '        guard::non_negative("atp_demand", self.atp_demand)?;\n',
+        '        guard::non_negative("plasma_glucose", self.plasma_glucose)?;\n',
+        '        guard::non_negative("plasma_fatty_acids", self.plasma_fatty_acids)?;\n',
+        '        guard::non_negative("plasma_amino_acids", self.plasma_amino_acids)\n',
+        '    }\n',
+    ),
+    (
+        '    fn accumulate(&mut self, other: &Self, weight: f64) {\n',
+        '        self.glycolysis.accumulate(&other.glycolysis, weight);\n',
+        '        self.tca.accumulate(&other.tca, weight);\n',
+        '        self.etc.accumulate(&other.etc, weight);\n',
+        '        self.beta_ox.accumulate(&other.beta_ox, weight);\n',
+        '        self.amino_catab.accumulate(&other.amino_catab, weight);\n',
+        '        self.net_atp += other.net_atp;\n',
+        '        self.o2_consumed += other.o2_consumed;\n',
+        '        self.co2_produced += other.co2_produced;\n',
+        '    }\n',
+    ),
+    (
+        '    fn accumulate(&mut self, other: &Self) {\n',
+        '        self.glucose_uptake += other.glucose_uptake;\n',
+        '        self.fatty_acid_uptake += other.fatty_acid_uptake;\n',
+        '        self.amino_acid_uptake += other.amino_acid_uptake;\n',
+        '        self.lactate_export += other.lactate_export;\n',
+        '        self.atp_demand_met += other.atp_demand_met;\n',
+        '    }\n',
+    ),
+    (
+        'fn nad_factor(ratio: f64) -> f64 {\n',
+        '    (ratio / RESTING_NAD_RATIO).min(MAX_NAD_FACTOR)\n',
+        '}\n',
+        '\n',
+        '/// NAD+/NADH ratio for an NADH concentration `n`, within the ratio bounds.\n',
+        '#[inline]\n',
+        'fn ratio_of(n: f64) -> f64 {\n',
+        '    ((NAD_POOL_TOTAL - n) / n).clamp(NAD_RATIO_MIN, NAD_RATIO_MAX)\n',
+        '}\n',
+        '\n',
+        '/// NADH oxidized over one step at end-of-step NADH `n`: Complex I (capacity\n',
+        '/// `c_ci`, Km [`COMPLEX_I_KM_NADH`]) plus LDH (capacity `c_ldh`, Km\n',
+        '/// [`LDH_KM_NADH`]); both capacities already multiplied by the step length.\n',
+        '#[inline]\n',
+        'fn nadh_oxidized(n: f64, c_ci: f64, c_ldh: f64) -> f64 {\n',
+        '    c_ci * n / (COMPLEX_I_KM_NADH + n) + c_ldh * n / (LDH_KM_NADH + n)\n',
+        '}\n',
+        '\n',
+        '/// Iteration cap for the implicit NADH solves (typically ~10 are used).\n',
+        'const SOLVE_MAX_ITERATIONS: u32 = 100;\n',
+        '\n',
+        '/// Relative bracket width at which the implicit NADH solves stop.\n',
+        'const SOLVE_RELATIVE_TOLERANCE: f64 = 1e-14;\n',
+        '\n',
+        '/// Root of a decreasing `excess` on `[lo, hi]`.\n',
+        '///\n',
+        '/// Illinois-modified regula falsi: the bracket always contains the root and\n',
+        '/// shrinks from both ends, converging superlinearly on these smooth,\n',
+        '/// monotone balances (~10 evaluations to 1e-14 instead of ~50 bisections).\n',
+        '/// Arithmetic only and a fixed iteration cap, so it is deterministic.\n',
+        '/// Returns `lo`/`hi` when the sign does not change across the bracket.\n',
+        'fn solve_decreasing(mut lo: f64, mut hi: f64, excess: impl Fn(f64) -> f64) -> f64 {\n',
+        '    let mut f_lo = excess(lo);\n',
+        '    if f_lo <= 0.0 {\n',
+        '        return lo;\n',
+        '    }\n',
+        '    let mut f_hi = excess(hi);\n',
+        '    if f_hi >= 0.0 {\n',
+        '        return hi;\n',
+        '    }\n',
+        '    // Which end moved last (−1 low, +1 high): a repeat halves the other\n',
+        "    // end's value so a one-sided approach cannot stall.\n",
+        '    let mut last = 0i8;\n',
+        '    for _ in 0..SOLVE_MAX_ITERATIONS {\n',
+        '        let x = (lo * f_hi - hi * f_lo) / (f_hi - f_lo);\n',
+        '        if !(x > lo && x < hi) || hi - lo <= SOLVE_RELATIVE_TOLERANCE * hi {\n',
+        '            break;\n',
+        '        }\n',
+        '        let f_x = excess(x);\n',
+        '        if f_x > 0.0 {\n',
+        '            lo = x;\n',
+        '            f_lo = f_x;\n',
+        '            if last == -1 {\n',
+        '                f_hi *= 0.5;\n',
+        '            }\n',
+        '            last = -1;\n',
+        '        } else if f_x < 0.0 {\n',
+        '            hi = x;\n',
+        '            f_hi = f_x;\n',
+        '            if last == 1 {\n',
+        '                f_lo *= 0.5;\n',
+        '            }\n',
+        '            last = 1;\n',
+        '        } else {\n',
+        '            return x;\n',
+        '        }\n',
+        '    }\n',
+        '    0.5 * (lo + hi)\n',
+        '}\n',
+        '\n',
+        '/// Self-consistent NAD+/NADH ratio for one step.\n',
+        '///\n',
+        "/// The producers' NAD-dependent steps scale linearly with their NAD\n",
+        '/// factors — [`gapdh_nad_factor`] for glycolysis, [`nad_factor`] for the\n',
+        '/// mitochondrial dehydrogenases — so with `glycolytic` and `mitochondrial`\n',
+        '/// = their NADH output this step at the resting ratio (both factors 1), the\n',
+        '/// end-of-step NADH `N` satisfies (backward Euler)\n',
+        '///\n',
+        '/// `pool + glycolytic·g(r(N)) + mitochondrial·f(r(N)) − oxidized(N) = N`,\n',
+        '/// with `r(N) = (T − N) / N`.\n',
+        '///\n',
+        '/// Both factors rise with the ratio, so the left side falls and the right\n',
+        '/// side rises with `N`: the root is unique ([`solve_decreasing`]).\n',
+        'fn balanced_nad_ratio(\n',
+        '    pool: f64,\n',
+        '    glycolytic: f64,\n',
+        '    mitochondrial: f64,\n',
+        '    c_ci: f64,\n',
+        '    c_ldh: f64,\n',
+        ') -> f64 {\n',
+        '    let glycolytic = guard::conc(glycolytic);\n',
+        '    let mitochondrial = guard::conc(mitochondrial);\n',
+        '    let n = solve_decreasing(\n',
+        '        NAD_POOL_TOTAL / (1.0 + NAD_RATIO_MAX),\n',
+        '        NAD_POOL_TOTAL / (1.0 + NAD_RATIO_MIN),\n',
+        '        |n| {\n',
+        '            let r = ratio_of(n);\n',
+        '            pool + glycolytic * gapdh_nad_factor(r) + mitochondrial * nad_factor(r)\n',
+        '                - nadh_oxidized(n, c_ci, c_ldh)\n',
+        '                - n\n',
+        '        },\n',
+        '    );\n',
+        '    ratio_of(n)\n',
+        '}\n',
+        '\n',
+        "/// End-of-step NADH when `avail` (pool + this step's production) is\n",
+        '/// oxidized by Complex I and LDH, solved implicitly: `N + oxidized(N) = avail`.\n',
+        'fn end_of_step_nadh(avail: f64, c_ci: f64, c_ldh: f64) -> f64 {\n',
+        '    if avail <= 0.0 {\n',
+        '        return 0.0;\n',
+        '    }\n',
+        '    solve_decreasing(0.0, avail, |n| avail - nadh_oxidized(n, c_ci, c_ldh) - n)\n',
+        '}\n',
+        '\n',
+        '/// LDH capacity over a step of length `h` at pyruvate `pyruvate` (mM).\n',
+        '#[inline]\n',
+        'fn ldh_capacity(pyruvate: f64, h: f64) -> f64 {\n',
+        '    let p = guard::conc(pyruvate);\n',
+        '    LDH_VMAX * p / (LDH_KM_PYRUVATE + p) * h\n',
+        '}\n',
+    ),
+    (
+        '    pub fn respiratory_quotient(&self, flux: &NetworkFlux) -> f64 {\n',
+        '        if flux.o2_consumed > f64::EPSILON {\n',
+        '            flux.co2_produced / flux.o2_consumed\n',
+        '        } else {\n',
+        '            0.0\n',
+        '        }\n',
+        '    }\n',
+    ),
+)
+PW_MODULE_OF = {}
+for _m, _tys in (("glycolysis", ("GlycolysisState", "GlycolysisConfig", "GlycolysisFlux")),
+                 ("tca", ("TcaState", "TcaConfig", "TcaFlux")), ("etc", ("EtcState", "EtcConfig", "EtcFlux")),
+                 ("beta_oxidation", ("BetaOxState", "BetaOxConfig", "BetaOxFlux")),
+                 ("amino_catabolism", ("AminoCatabState", "AminoCatabConfig", "AminoCatabFlux",
+                                       "CarbonSkeletonOutput")),
+                 ("pathway", ("MetabolicNetwork", "NetworkConfig", "NetworkFlux", "NetworkEnvironment",
+                              "NetworkExchange", "NetworkTick"))):
+    for _t in _tys:
+        PW_MODULE_OF[_t] = _m
+# Each pathway flux's split, from its own `accumulate`: the amounts summed, then the rates weighted.
+PW_FLUX_SPLIT = {"GlycolysisFlux": (5, 10), "TcaFlux": (5, 9), "EtcFlux": (5, 5), "BetaOxFlux": (6, 2),
+                 "AminoCatabFlux": (10, 2)}
+
+
+def pw_shape(root, ty):
+    """`ty`'s fields as [(name, shape)]: "F" an f64, ("I", lo, hi) an integer, ("A", n) an f64 array, or a nested
+    [(name, shape)] with its type's name as the list's `ty` attribute."""
+    src = module_src(root, PW_MODULE_OF[ty])
+    out = PwShape(ty)
+    for name, typ in re.findall(r"^\s*pub (\w+): ([^,\n]+),$", block(src, rf"pub struct {ty} \{{"), re.M):
+        typ = typ.strip()
+        arr = re.fullmatch(r"\[f64; (\d+)\]", typ)
+        if typ == "f64":
+            out.append((name, "F"))
+        elif typ == "u32":
+            out.append((name, ("I", 0, 2 ** 32 - 1)))
+        elif arr:
+            out.append((name, ("A", int(arr.group(1)))))
+        else:
+            out.append((name, pw_shape(root, typ)))
+    return out
+
+
+class PwShape(list):
+    def __init__(self, ty):
+        super().__init__()
+        self.ty = ty
+
+
+def pw_len(shape):
+    n = 0
+    for _, sub in shape:
+        n += 1 if sub == "F" or sub[0] == "I" else sub[1] if sub[0] == "A" else pw_len(sub)
+    return n
+
+
+def pw_leaf(x, sub):
+    if sub == "F":
+        return [serde_f64(x)]
+    if isinstance(sub, PwShape):
+        return pw_read(x, sub)
+    if sub[0] == "I":
+        return [float(serde_int(x, sub[1], sub[2]))]
+    if not isinstance(x, list) or len(x) != sub[1]:
+        raise ValueError(f"not an array of {sub[1]}")
+    return [serde_f64(r) for r in x]
+
+
+def pw_read(v, shape):
+    """serde's value of `shape` from a parsed document, flattened (an integer as its float), or raises ValueError."""
+    if isinstance(v, tuple) and v[0] == "OBJ":
+        names = [n for n, _ in shape]
+        got = {}
+        for k, val in v[1]:
+            if not utf8_ok(k):
+                raise ValueError("key not UTF-8")
+            if k in names:
+                if k in got:
+                    raise ValueError(f"duplicate field {k}")
+                got[k] = val
+        out = []
+        for n, sub in shape:
+            if n not in got:
+                raise ValueError(f"missing field {n}")
+            out += pw_leaf(got[n], sub)
+        return out
+    if isinstance(v, list) and len(v) == len(shape):
+        out = []
+        for x, (_, sub) in zip(v, shape):
+            out += pw_leaf(x, sub)
+        return out
+    raise ValueError("not a struct")
+
+
+def pw_write(vals, shape):
+    """serde_json's text of the flattened values of `shape`."""
+    it = iter(vals)
+
+    def emit(sh):
+        return "{" + ",".join(f'"{n}":' + leaf(sub) for n, sub in sh) + "}"
+
+    def leaf(sub):
+        if sub == "F":
+            return json_f64(next(it))
+        if isinstance(sub, PwShape):
+            return emit(sub)
+        if sub[0] == "I":
+            return str(int(next(it)))
+        return "[" + ",".join(json_f64(next(it)) for _ in range(sub[1])) + "]"
+
+    text = emit(shape)
+    if next(it, None) is not None:
+        raise ValueError("values left over")
+    return text
+
+
+def pw_solve(lo, hi, f, kmax, tol):
+    """`solve_decreasing`, counting: (x, iterations, exit)."""
+    f_lo = f(lo)
+    if f_lo <= 0.0:
+        return lo, 0, 0
+    f_hi = f(hi)
+    if f_hi >= 0.0:
+        return hi, 0, 1
+    last, it = 0, 0
+    for _ in range(kmax):
+        it += 1
+        x = fdiv(lo * f_hi - hi * f_lo, f_hi - f_lo)
+        if not (lo < x < hi) or hi - lo <= tol * hi:
+            return 0.5 * (lo + hi), it, 3
+        fx = f(x)
+        if fx > 0.0:
+            lo, f_lo = x, fx
+            if last == -1:
+                f_hi *= 0.5
+            last = -1
+        elif fx < 0.0:
+            hi, f_hi = x, fx
+            if last == 1:
+                f_lo *= 0.5
+            last = 1
+        else:
+            return x, it, 2
+    return 0.5 * (lo + hi), it, 4
+
+
+def check_pathway(root, rows, rep):
+    """Every validator, RQ, solve, sum and serde row of pathway.tsv against the model."""
+    text = (root / "rust-old/src/pathway.rs").read_text()
+    for span in PW_SPANS:
+        if "".join(span) not in text:
+            rep.fail("rust-old/src/pathway.rs", f"no longer holds the modelled text {span[0][:60]!r}")
+            return {}
+    k = {}
+    for name, mod in (("NAD_POOL_TOTAL", "pathway"), ("NAD_RATIO_MIN", "pathway"), ("NAD_RATIO_MAX", "pathway"),
+                      ("LDH_VMAX", "pathway"), ("LDH_KM_PYRUVATE", "pathway"), ("LDH_KM_NADH", "pathway"),
+                      ("COMPLEX_I_KM_NADH", "etc"), ("GAPDH_KM_NAD_FRACTION", "glycolysis"),
+                      ("RESTING_NAD_RATIO", "constants"), ("MAX_NAD_FACTOR", "constants")):
+        mm = re.search(rf"^pub const {name}: f64 = ([0-9.]+);$", (root / f"rust-old/src/{mod}.rs").read_text(), re.M)
+        if not mm:
+            rep.fail(f"rust-old/src/{mod}.rs", f"no `pub const {name}: f64` literal")
+            return {}
+        k[name] = float(mm.group(1))
+    mi = re.search(r"^const SOLVE_MAX_ITERATIONS: u32 = (\d+);$", text, re.M)
+    mt_ = re.search(r"^const SOLVE_RELATIVE_TOLERANCE: f64 = ([0-9.e-]+);$", text, re.M)
+    if not mi or not mt_:
+        rep.fail("rust-old/src/pathway.rs", "the solve's cap or tolerance is no longer a literal")
+        return {}
+    kmax, tol = int(mi.group(1)), float(mt_.group(1))
+    shapes = {t: pw_shape(root, t) for t in ("MetabolicNetwork", "NetworkConfig", "NetworkFlux",
+                                              "NetworkEnvironment", "NetworkExchange", "NetworkTick")}
+    lens = {t: pw_len(s) for t, s in shapes.items()}
+    if (lens["MetabolicNetwork"], lens["NetworkConfig"], lens["NetworkFlux"]) != (33, 104, 62):
+        rep.fail("rust-old/src/pathway.rs", f"the network types now flatten to {lens}")
+        return {}
+    cfg_shape = shapes["NetworkConfig"]
+    chain_at = 0
+    for n, sub in cfg_shape:
+        if n == "beta_ox":
+            break
+        chain_at += pw_len(sub) if isinstance(sub, PwShape) else 1
+    # Each pathway's validators, from its own source.
+    srcs = {m: module_src(root, m) for m in ("glycolysis", "tca", "etc")}
+    rules = {t: (gl_struct_names(srcs[m], t), gl_rules(srcs[m], t))
+             for m, t in (("glycolysis", "GlycolysisState"), ("glycolysis", "GlycolysisConfig"),
+                          ("tca", "TcaState"), ("tca", "TcaConfig"), ("etc", "EtcConfig"))}
+
+    def by_rules(t):
+        names, rl = rules[t]
+        return lambda a: gl_validate(a, names, rl)
+
+    def guard(x, kind):
+        if not math.isfinite(x):
+            return ["E:NonFinite"]
+        if kind == "nn" and x < 0.0:
+            return ["E:NegativeConcentration"]
+        if kind == "pos" and x <= 0.0:
+            return ["E:InvalidParameter"]
+        if kind == "frac" and not 0.0 <= x <= 1.0:
+            return ["E:InvalidParameter"]
+        return []
+
+    def each(kind):
+        def v(a):
+            for x in a:
+                out = guard(x, kind)
+                if out:
+                    return out
+            return []
+        return v
+
+    def etc_cfg(c):
+        names = rules["EtcConfig"][0]
+        out = by_rules("EtcConfig")(c)
+        if out:
+            return out
+        at = dict(zip(names, c))
+        th = at["atp_synthase_pmf_threshold"]
+        if not math.isfinite(th):
+            return ["E:NonFinite"]
+        if th < 0.0 or th >= 1.0:
+            return ["E:InvalidParameter"]
+        nadh, fadh2 = at["h_per_nadh"], at["h_per_fadh2"]
+        if not math.isfinite(nadh):
+            return ["E:NonFinite"]
+        return ["E:InvalidParameter"] if nadh < fadh2 else []
+
+    def bx_cfg_v(c):
+        if c[0] < 4 or c[0] % 2 != 0:
+            return ["E:InvalidParameter"]
+        for j, kind in ((1, "nn"), (3, "nn"), (2, "pos"), (4, "pos"), (5, "pos")):
+            out = guard(c[j], kind)
+            if out:
+                return out
+        return []
+
+    def ac_cfg_v(c):
+        for j, kind in ((0, "nn"), (2, "nn"), (11, "nn"), (1, "pos"), (3, "pos"), (10, "pos"), (12, "pos")):
+            out = guard(c[j], kind)
+            if out:
+                return out
+        return am_routing_validate(c[4:10])
+
+    state_v = [by_rules("GlycolysisState"), by_rules("TcaState"), each("frac"), each("nn"), each("nn")]
+    cfg_v = [by_rules("GlycolysisConfig"), by_rules("TcaConfig"), etc_cfg, bx_cfg_v, ac_cfg_v]
+
+    def split(a, shape):
+        parts, at = [], 0
+        for _, sub in shape:
+            n = pw_len(sub) if isinstance(sub, PwShape) else 1
+            parts.append(a[at:at + n])
+            at += n
+        return parts
+
+    def net_validate(a):
+        parts = split(a, shapes["MetabolicNetwork"])
+        for v, part in zip(state_v, parts[:5]):
+            out = v(part)
+            if out:
+                return out
+        for x, kind in zip(a[28:], ("nn", "nn", "pos", "frac", "nn")):
+            out = guard(x, kind)
+            if out:
+                return out
+        return []
+
+    def cfg_validate(c):
+        parts = split(c, cfg_shape)
+        for v, part in zip(cfg_v, parts[:5]):
+            out = v(part)
+            if out:
+                return out
+        return guard(c[103], "nn")
+
+    cfg_default = [tok_val(t) for t in PW_CFG_DEFAULT_TOKS(root)]
+
+    def cfg_of(ins):
+        c = list(cfg_default)
+        n = int(ins[0][2:])
+        if len(ins) != 1 + 2 * n:
+            raise ValueError("config tokens")
+        for j in range(n):
+            field, tok = int(ins[1 + 2 * j][2:]), ins[2 + 2 * j]
+            if (field == chain_at) != tok.startswith("i:"):
+                raise ValueError("chain_length takes an integer")
+            c[field] = float(int(tok[2:])) if tok.startswith("i:") else tok_f(tok)
+        return c
+
+    def ratio_of(n):
+        return rust_clamp(fdiv(k["NAD_POOL_TOTAL"] - n, n), k["NAD_RATIO_MIN"], k["NAD_RATIO_MAX"])
+
+    def nad_factor(r):
+        return rust_min(fdiv(r, k["RESTING_NAD_RATIO"]), k["MAX_NAD_FACTOR"])
+
+    def oxidized(n, a, b):
+        return fdiv(a * n, k["COMPLEX_I_KM_NADH"] + n) + fdiv(b * n, k["LDH_KM_NADH"] + n)
+
+    def balanced(pool, gly, mito, a, b):
+        g, m = e_conc(gly), e_conc(mito)
+
+        def f(n):
+            r = ratio_of(n)
+            return pool + g * gl_gapdh(r, k) + m * nad_factor(r) - oxidized(n, a, b) - n
+        t = k["NAD_POOL_TOTAL"]
+        x, it, ex = pw_solve(t / (1.0 + k["NAD_RATIO_MAX"]), t / (1.0 + k["NAD_RATIO_MIN"]), f, kmax, tol)
+        return ratio_of(x), x, it, ex
+
+    def end(avail, a, b):
+        if avail <= 0.0:
+            return 0.0, 0, 5
+        return pw_solve(0.0, avail, lambda n: avail - oxidized(n, a, b) - n, kmax, tol)
+
+    def accumulate(t, o, w):
+        out, at = [], 0
+        for _, sub in shapes["NetworkFlux"]:
+            if isinstance(sub, PwShape):
+                ns, nr = PW_FLUX_SPLIT[sub.ty]
+                out += [t[at + j] + o[at + j] for j in range(ns)]
+                out += [t[at + ns + j] + o[at + ns + j] * w for j in range(nr)]
+                at += ns + nr
+            else:
+                out.append(t[at] + o[at])
+                at += 1
+        return out
+
+    eps = 2.0 ** -52
+    per = {}
+    serde_types = {"MetabolicNetwork", "NetworkConfig", "NetworkFlux", "NetworkEnvironment", "NetworkExchange",
+                   "NetworkTick"}
+    for n, fn, cls, ins, outs in rows:
+        where = f"pathway.tsv:{n}"
+        want_cls = "B"
+        try:
+            a = [tok_f(x) for x in ins] if all(x.startswith("f:") for x in ins) else None
+            if fn == "pathway::MetabolicNetwork::validate":
+                want, want_cls = net_validate(a), "A"
+            elif fn == "pathway::NetworkConfig::validate":
+                want, want_cls = cfg_validate(cfg_of(ins)), "A"
+            elif fn == "pathway::NetworkEnvironment::validate":
+                want, want_cls = each("nn")(a), "A"
+            elif fn == "pathway::MetabolicNetwork::respiratory_quotient":
+                want = [fbits(fdiv(a[1], a[0]) if a[0] > eps else 0.0)]
+            elif fn == "pathway::nad_factor":
+                want = [fbits(nad_factor(a[0]))]
+            elif fn == "pathway::ratio_of":
+                want = [fbits(ratio_of(a[0]))]
+            elif fn == "pathway::nadh_oxidized":
+                want = [fbits(oxidized(*a))]
+            elif fn == "pathway::ldh_capacity":
+                p = e_conc(a[0])
+                want = [fbits(fdiv(k["LDH_VMAX"] * p, k["LDH_KM_PYRUVATE"] + p) * a[1])]
+            elif fn.startswith("pathway::solve_decreasing<"):
+                kind = fn[len("pathway::solve_decreasing<"):-1]
+                lo, hi = a[0], a[1]
+                if kind == "linear":
+                    f = (lambda c0: lambda x: c0 - x)(a[2])
+                elif kind == "curved":
+                    f = (lambda c0, kk: lambda x: c0 - fdiv(3.0 * x, kk + x) * c0 - x)(a[2], a[3])
+                else:
+                    f = (lambda c0: lambda x: c0)(a[2])
+                x, it, ex = pw_solve(lo, hi, f, kmax, tol)
+                want = [fbits(x), f"i:{it}", f"i:{ex}"]
+            elif fn == "pathway::balanced_nad_ratio":
+                r, x, it, ex = balanced(*a)
+                want = [fbits(r), fbits(x), f"i:{it}", f"i:{ex}"]
+            elif fn == "pathway::end_of_step_nadh":
+                x, it, ex = end(*a)
+                want = [fbits(x), f"i:{it}", f"i:{ex}"]
+            elif fn == "pathway::NetworkFlux::accumulate":
+                want = [fbits(x) for x in accumulate(a[:62], a[62:124], a[124])]
+            elif fn == "pathway::NetworkExchange::accumulate":
+                want = [fbits(a[j] + a[5 + j]) for j in range(5)]
+            elif fn.startswith("serde_json::to_string<") and fn[22:-1] in serde_types:
+                ty = fn[22:-1]
+                vals = cfg_of(ins) if ty == "NetworkConfig" else a
+                want, want_cls = [s_tok(pw_write(vals, shapes[ty]))], "A"
+            elif fn.startswith("serde_json::from_slice<") and fn[23:-1] in serde_types:
+                want_cls = "A"
+                try:
+                    want = [fbits(x) for x in pw_read(py_json(tok_bytes(ins[0])), shapes[fn[23:-1]])]
+                except (ValueError, RecursionError, KeyError):
+                    want = ["E:Deserialize"]
+            else:
+                rep.fail(where, f"{fn}: no model")
+                continue
+        except (ValueError, IndexError, KeyError, TypeError) as e:
+            rep.fail(where, f"{fn}{tuple(ins)}: {e}")
+            continue
+        if cls != want_cls:
+            rep.fail(where, f"{fn}: class {cls}, its branch gives {want_cls}")
+            continue
+        per[cls] = per.get(cls, 0) + 1
+        if same_toks(outs, want):
+            rep.ok()
+        else:
+            rep.fail(where, f"{fn}{tuple(ins)[:6]}: golden {outs[:6]}, model {want[:6]}")
+    return per
+
+
+def pw_defaults(root):
+    """The network types' defaults from the sources: (network tokens, config tokens, environment tokens, the three
+    literals' scalar (field, text) pairs). Each nested field must be its type's `default()`, whose tokens come from
+    that module's own default row model."""
+    g, t = glycolysis_rows(root, None)[0], tca_rows(root, None)[0]
+    e, b, a = etc_rows(root, None)[0], beta_oxidation_rows(root, None)[0], amino_catabolism_rows(root, None)[0]
+    src = module_src(root, "pathway")
+
+    def lit(ty):
+        imp = block(src, rf"impl Default for {ty} \{{")
+        return struct_fields(block(fn_body(imp, "default")[1:], r"Self \{"))
+
+    subs = {"glycolysis": ("Glycolysis", g, "glycolysis"), "tca": ("Tca", t, "tca"), "etc": ("Etc", e, "etc"),
+            "beta_ox": ("BetaOx", b, "beta_oxidation"), "amino_catab": ("AminoCatab", a, "amino_catabolism")}
+    out, scalars = [], {}
+    for ty, kind in (("MetabolicNetwork", "State"), ("NetworkConfig", "Config")):
+        toks, sc = [], []
+        for name, text in lit(ty):
+            if name in subs:
+                pre, rows_, mod = subs[name]
+                want = f"{pre}{kind}::default()"
+                if text != want:
+                    raise ValueError(f"{ty}::default().{name} is `{text}`, not `{want}`")
+                toks += rows_[f"{mod}::{pre}{kind}::default"]([])
+            else:
+                toks.append(tok_of(float(text)))
+                sc.append((name, text))
+        out.append(toks)
+        scalars[ty] = sc
+    env, sc = [], []
+    for name, text in lit("NetworkEnvironment"):
+        if name == "atp_demand":
+            if text != "RESTING_ATP_DEMAND":
+                raise ValueError(f"NetworkEnvironment::default().atp_demand is `{text}`")
+            mm = re.search(r"^pub const RESTING_ATP_DEMAND: f64 = ([0-9.]+);$", src, re.M)
+            text = mm.group(1)
+        env.append(tok_of(float(text)))
+        sc.append((name, text))
+    scalars["NetworkEnvironment"] = sc
+    return out[0], out[1], env, scalars
+
+
+def PW_CFG_DEFAULT_TOKS(root):
+    return pw_defaults(root)[1]
+
+
+def pathway_rows(root, items):
+    net, cfg, env, scalars = pw_defaults(root)
+    lens = {t: pw_len(pw_shape(root, t)) for t in ("NetworkFlux", "NetworkExchange", "NetworkTick")}
+    rows = {"pathway::MetabolicNetwork::default": lambda ins: net,
+            "pathway::NetworkConfig::default": lambda ins: cfg,
+            "pathway::NetworkEnvironment::default": lambda ins: env}
+    for t, n in lens.items():
+        rows[f"pathway::{t}::default"] = lambda ins, n=n: [tok_of(0.0)] * n
+    src = module_src(root, "pathway")
+    names = {t: [n for n, _ in pw_shape(root, t)] for t in ("MetabolicNetwork", "NetworkConfig", "NetworkFlux",
+                                                              "NetworkEnvironment", "NetworkExchange", "NetworkTick")}
+    if not src:
+        raise ValueError("no pathway source")
+    return rows, {}, {"scalars": scalars, "names": names}
+
 MODULES = {  # golden file -> its model
     "protein.tsv": protein_rows,
     "alignment.tsv": alignment_rows,
@@ -1261,6 +1905,7 @@ MODULES = {  # golden file -> its model
     "etc.tsv": etc_rows,
     "beta_oxidation.tsv": beta_oxidation_rows,
     "amino_catabolism.tsv": amino_catabolism_rows,
+    "pathway.tsv": pathway_rows,
     "ai.tsv": ai_rows,
 }
 
@@ -1274,7 +1919,7 @@ DATA_MODULES = ("protein", "alignment", "enzyme", "membrane", "ai")
 # Table files whose function rows (from their milestone on) a module check covers, not check_tables.
 FUNCTION_ROWS = {"enzyme.tsv", "membrane.tsv", "signal.tsv", "metabolism.tsv", "energy.tsv", "protein.tsv",
                  "alignment.tsv", "glycolysis.tsv", "tca.tsv", "etc.tsv",
-                 "beta_oxidation.tsv", "amino_catabolism.tsv"}
+                 "beta_oxidation.tsv", "amino_catabolism.tsv", "pathway.tsv"}
 
 
 def check_tables(root, tables, rep):
@@ -1601,6 +2246,20 @@ def expected_amino_catabolism(tables, extras):
     return exp
 
 
+def expected_pathway(tables, extras):
+    e = extras["pathway"]
+    exp = {}
+    for ty, infix in (("MetabolicNetwork", "METABOLIC_NETWORK"), ("NetworkConfig", "NETWORK_CONFIG"),
+                      ("NetworkEnvironment", "NETWORK_ENVIRONMENT")):
+        for n, text in e["scalars"][ty]:
+            exp[f"RY_PATHWAY_{infix}_DEFAULT_{n.upper()}"] = ("const", float(text))
+    for ty, infix in (("MetabolicNetwork", "METABOLIC_NETWORK"), ("NetworkConfig", "NETWORK_CONFIG"),
+                      ("NetworkFlux", "NETWORK_FLUX"), ("NetworkEnvironment", "NETWORK_ENVIRONMENT"),
+                      ("NetworkExchange", "NETWORK_EXCHANGE"), ("NetworkTick", "NETWORK_TICK")):
+        exp[f"_RY_{infix}_FIELDS"] = ("u8", list(b"".join(n.encode() + b"\0" for n in e["names"][ty])))
+    return exp
+
+
 def expected_ai(tables, extras):
     text = tok_val(golden_rows(tables, "ai.tsv", "const")[0][1][0])
     return {"_RY_AI_SYSTEM_PROMPT_LEN": ("const", len(text.encode())),
@@ -1627,6 +2286,7 @@ DATA_FILES = {
     "src/etc_data.cyr": expected_etc,
     "src/beta_oxidation_data.cyr": expected_beta_oxidation,
     "src/amino_catabolism_data.cyr": expected_amino_catabolism,
+    "src/pathway_data.cyr": expected_pathway,
     "src/signal_data.cyr": expected_signal,
     "src/ai_data.cyr": expected_ai,
     "src/constants_private.cyr": expected_private,
@@ -6153,6 +6813,8 @@ def main():
     bx_per = check_beta_oxidation(root, bx_rows, rep)
     am_rows = [r for r in tables.get("amino_catabolism.tsv", []) if not r[1].endswith("::default")]
     am_per = check_amino_catabolism(root, am_rows, rep)
+    pw_rows = [r for r in tables.get("pathway.tsv", []) if not r[1].endswith("::default")]
+    pw_per = check_pathway(root, pw_rows, rep)
     total = sum(len(v) for v in tables.values())
     n_items, n_excused = extras.get("_counts", (0, 0))
     print(f"files: {len(files)}; rows: {total}; math classes: {dict(sorted(counts.items()))}")
@@ -6193,10 +6855,11 @@ def main():
           f"{dict(sorted(bx_per.items()))}")
     print(f"amino_catabolism: {sum(am_per.values())} routing, validator, step, trajectory, coupling and serde rows "
           f"{dict(sorted(am_per.items()))}")
+    print(f"pathway: {sum(pw_per.values())} validator, RQ, solve, sum and serde rows {dict(sorted(pw_per.items()))}")
     print(
         f"independently checked: {rep.checked} (constants, src/constants.cyr, math classes A and B, the table rows, "
         f"every cell of the generated data files, every class-C math row against MPFR, guard, integrate and its "
-        f"corrections, logging, json, enzyme, membrane, signal, metabolism, energy, protein, alignment, ptm, domain, glycolysis, tca, etc, beta_oxidation, amino_catabolism)"
+        f"corrections, logging, json, enzyme, membrane, signal, metabolism, energy, protein, alignment, ptm, domain, glycolysis, tca, etc, beta_oxidation, amino_catabolism, pathway)"
     )
     print(f"FAILURES: {rep.failures}")
     return 1 if rep.failures else 0

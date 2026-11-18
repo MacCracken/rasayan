@@ -65,3 +65,159 @@ pub fn read_row(m: &mut Module, name: &str, d: &str, got: Option<Vec<f64>>, name
         }
     }
 }
+
+/// The shape of a document's value for the nested re-read (M5): an f64, an f64 array of fixed length, an integer
+/// (kept as serde read it), or a struct of named fields in declaration order, flattened in that order.
+pub enum Shape {
+    F,
+    Arr(usize),
+    I,
+    S(Vec<(&'static str, Shape)>),
+}
+
+/// A parsed JSON value, each number kept as its text.
+enum Node {
+    Obj(Vec<(String, Node)>),
+    Arr(Vec<Node>),
+    Num(String),
+    Other,
+}
+
+/// A minimal JSON reader for the re-read: enough for documents serde_json accepted (it never sees others).
+struct Parser<'a> {
+    b: &'a [u8],
+    at: usize,
+}
+
+impl Parser<'_> {
+    fn ws(&mut self) {
+        while self.at < self.b.len() && matches!(self.b[self.at], b' ' | b'\t' | b'\n' | b'\r') {
+            self.at += 1;
+        }
+    }
+
+    fn string(&mut self) -> String {
+        let start = self.at + 1;
+        let mut k = start;
+        while k < self.b.len() && self.b[k] != b'"' {
+            k += if self.b[k] == b'\\' { 2 } else { 1 };
+        }
+        self.at = k + 1;
+        String::from_utf8_lossy(&self.b[start..k.min(self.b.len())]).into_owned()
+    }
+
+    fn value(&mut self) -> Node {
+        self.ws();
+        let Some(&c) = self.b.get(self.at) else { return Node::Other };
+        match c {
+            b'{' => {
+                self.at += 1;
+                let mut fields = Vec::new();
+                loop {
+                    self.ws();
+                    match self.b.get(self.at) {
+                        Some(b'}') | None => {
+                            self.at += 1;
+                            return Node::Obj(fields);
+                        }
+                        Some(b',') => self.at += 1,
+                        _ => {
+                            let key = self.string();
+                            self.ws();
+                            self.at += 1; // ':'
+                            let v = self.value();
+                            fields.push((key, v));
+                        }
+                    }
+                }
+            }
+            b'[' => {
+                self.at += 1;
+                let mut items = Vec::new();
+                loop {
+                    self.ws();
+                    match self.b.get(self.at) {
+                        Some(b']') | None => {
+                            self.at += 1;
+                            return Node::Arr(items);
+                        }
+                        Some(b',') => self.at += 1,
+                        _ => items.push(self.value()),
+                    }
+                }
+            }
+            b'"' => {
+                let _ = self.string();
+                Node::Other
+            }
+            b'-' | b'0'..=b'9' => {
+                let start = self.at;
+                while self.at < self.b.len() && matches!(self.b[self.at], b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9') {
+                    self.at += 1;
+                }
+                Node::Num(String::from_utf8_lossy(&self.b[start..self.at]).into_owned())
+            }
+            _ => {
+                while self.at < self.b.len() && self.b[self.at].is_ascii_alphabetic() {
+                    self.at += 1;
+                }
+                Node::Other
+            }
+        }
+    }
+}
+
+/// Re-reads `got` (serde's values, flattened by `shape`) at each number's correctly rounded value, walking the
+/// document by field name or index. A path the document does not give keeps serde's value.
+fn reread_node(node: Option<&Node>, shape: &Shape, got: &[f64], out: &mut Vec<f64>) {
+    let at = out.len();
+    match shape {
+        Shape::F => {
+            let x = match node {
+                Some(Node::Num(t)) => t.parse::<f64>().unwrap_or(got[at]),
+                _ => got[at],
+            };
+            out.push(x);
+        }
+        Shape::I => out.push(got[at]),
+        Shape::Arr(n) => {
+            for k in 0..*n {
+                let item = match node {
+                    Some(Node::Arr(items)) => items.get(k),
+                    _ => None,
+                };
+                reread_node(item, &Shape::F, got, out);
+            }
+        }
+        Shape::S(fields) => {
+            for (k, (name, s)) in fields.iter().enumerate() {
+                let item = match node {
+                    Some(Node::Obj(kv)) => kv.iter().find(|(key, _)| key == name).map(|(_, v)| v),
+                    Some(Node::Arr(items)) => items.get(k),
+                    _ => None,
+                };
+                reread_node(item, s, got, out);
+            }
+        }
+    }
+}
+
+/// A `from_slice` row of a nested type (M5): as `read_row`, the numbers found through `shape`.
+pub fn read_row_tree(m: &mut Module, name: &str, d: &str, got: Option<Vec<f64>>, shape: &Shape) {
+    let ins = [sb(d.as_bytes())];
+    match got {
+        None => m.row(name, Class::A, &ins, &[Tok::Err("Deserialize".to_string())]),
+        Some(g) => {
+            let root = Parser { b: d.as_bytes(), at: 0 }.value();
+            let mut v = Vec::with_capacity(g.len());
+            reread_node(Some(&root), shape, &g, &mut v);
+            if same(&v, &g) {
+                m.row(name, Class::A, &ins, &toks(&g));
+            } else {
+                let read: Vec<String> = g.iter().map(|x| format!("{:016x}", x.to_bits())).collect();
+                let extra = format!("serde_json reads {}; the correctly rounded values are recorded", read.join(" "));
+                m.row_noted(name, Class::A, &ins, &toks(&v), &extra);
+            }
+        }
+    }
+}

@@ -325,13 +325,21 @@ fn ry_carbon_skeleton_output_to_json(sb, p: *RyCarbonSkeletonOutput): Result {
     return ry_carbon_skeleton_output_to_json_a(default_alloc(), sb, p);
 }
 
+# The CarbonSkeletonOutput at node `v` of a parsed document, by serde's rules (as ry_carbon_skeleton_output_from_json_a
+# reads it), into the 48 bytes at `w`: 1, or 0 for a refusal (what `w` holds then is unspecified). The metabolic
+# network's readers call it for their nested values.
+#must_use
+fn _ry_carbon_skeleton_output_from_node(v, w): i64 {
+    return _ry_jr_f64_fields(v, w, 6, &_RY_CARBON_SKELETON_OUTPUT_FIELDS);
+}
+
 # Reads a CarbonSkeletonOutput from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`): Ok(0)
 # with *out filled, or Err(RY_ERR_DESERIALIZE).
 #must_use
 fn ry_carbon_skeleton_output_from_json_a(a, buf, n, out: *RyCarbonSkeletonOutput): Result {
     var w[48];
     var v = _ry_jr_parse(a, buf, n);
-    if (_ry_jr_f64_fields(v, &w, 6, &_RY_CARBON_SKELETON_OUTPUT_FIELDS) == 0) {
+    if (_ry_carbon_skeleton_output_from_node(v, &w) == 0) {
         return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "CarbonSkeletonOutput", 20));
     }
     memcpy(out, &w, 48);
@@ -358,13 +366,21 @@ fn ry_amino_catab_state_to_json(sb, p: *RyAminoCatabState): Result {
     return ry_amino_catab_state_to_json_a(default_alloc(), sb, p);
 }
 
+# The AminoCatabState at node `v` of a parsed document, by serde's rules (as ry_amino_catab_state_from_json_a reads it),
+# into the 24 bytes at `w`: 1, or 0 for a refusal (what `w` holds then is unspecified). The metabolic network's readers
+# call it for their nested values.
+#must_use
+fn _ry_amino_catab_state_from_node(v, w): i64 {
+    return _ry_jr_f64_fields(v, w, 3, &_RY_AMINO_CATAB_STATE_FIELDS);
+}
+
 # Reads an AminoCatabState from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`): Ok(0) with
 # *out filled, or Err(RY_ERR_DESERIALIZE).
 #must_use
 fn ry_amino_catab_state_from_json_a(a, buf, n, out: *RyAminoCatabState): Result {
     var w[24];
     var v = _ry_jr_parse(a, buf, n);
-    if (_ry_jr_f64_fields(v, &w, 3, &_RY_AMINO_CATAB_STATE_FIELDS) == 0) {
+    if (_ry_amino_catab_state_from_node(v, &w) == 0) {
         return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "AminoCatabState", 15));
     }
     memcpy(out, &w, 24);
@@ -418,13 +434,11 @@ fn ry_amino_catab_config_to_json(sb, p: *RyAminoCatabConfig): Result {
     return ry_amino_catab_config_to_json_a(default_alloc(), sb, p);
 }
 
-# Reads an AminoCatabConfig from the `n`-byte document at `buf` by serde's rules (an object by field name, or an array
-# of its eight fields; `carbon_routing` itself an object or an array of six), its tree on allocator `a`: Ok(0) with
-# *out filled, or Err(RY_ERR_DESERIALIZE).
+# The AminoCatabConfig at node `v` of a parsed document, by serde's rules (as ry_amino_catab_config_from_json_a reads
+# it), into the 104 bytes at `w`: 1, or 0 for a refusal (what `w` holds then is unspecified). The metabolic network's
+# readers call it for their nested values.
 #must_use
-fn ry_amino_catab_config_from_json_a(a, buf, n, out: *RyAminoCatabConfig): Result {
-    var w[104];
-    var v = _ry_jr_parse(a, buf, n);
+fn _ry_amino_catab_config_from_node(v, w): i64 {
     var form = _ry_jr_form(v, 8);
     var ok = 0;
     if (form != 0) {
@@ -434,15 +448,27 @@ fn ry_amino_catab_config_from_json_a(a, buf, n, out: *RyAminoCatabConfig): Resul
         while (k < 8 && ok == 1) {
             var node = _ry_jr_at(v, form, k, name);
             if (k == 4) {
-                ok = _ry_jr_f64_fields(node, &w + 32, 6, &_RY_CARBON_SKELETON_OUTPUT_FIELDS);
-            } elif (_ry_jr_f64(node, &w + _ry_amino_catab_config_offset(k)) == 0) {
+                ok = _ry_jr_f64_fields(node, w + 32, 6, &_RY_CARBON_SKELETON_OUTPUT_FIELDS);
+            } elif (_ry_jr_f64(node, w + _ry_amino_catab_config_offset(k)) == 0) {
                 ok = 0;
             }
             name = name + strlen(name) + 1;
             k = k + 1;
         }
     }
-    if (ok == 0) { return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "AminoCatabConfig", 16)); }
+    return ok;
+}
+
+# Reads an AminoCatabConfig from the `n`-byte document at `buf` by serde's rules (an object by field name, or an array
+# of its eight fields; `carbon_routing` itself an object or an array of six), its tree on allocator `a`: Ok(0) with
+# *out filled, or Err(RY_ERR_DESERIALIZE).
+#must_use
+fn ry_amino_catab_config_from_json_a(a, buf, n, out: *RyAminoCatabConfig): Result {
+    var w[104];
+    var v = _ry_jr_parse(a, buf, n);
+    if (_ry_amino_catab_config_from_node(v, &w) == 0) {
+        return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "AminoCatabConfig", 16));
+    }
     memcpy(out, &w, 104);
     return Ok(0);
 }
@@ -467,13 +493,21 @@ fn ry_amino_catab_flux_to_json(sb, f: *RyAminoCatabFlux): Result {
     return ry_amino_catab_flux_to_json_a(default_alloc(), sb, f);
 }
 
+# The AminoCatabFlux at node `v` of a parsed document, by serde's rules (as ry_amino_catab_flux_from_json_a reads it),
+# into the 96 bytes at `w`: 1, or 0 for a refusal (what `w` holds then is unspecified). The metabolic network's readers
+# call it for their nested values.
+#must_use
+fn _ry_amino_catab_flux_from_node(v, w): i64 {
+    return _ry_jr_f64_fields(v, w, 12, &_RY_AMINO_CATAB_FLUX_FIELDS);
+}
+
 # Reads an AminoCatabFlux from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`): Ok(0) with
 # *out filled, or Err(RY_ERR_DESERIALIZE).
 #must_use
 fn ry_amino_catab_flux_from_json_a(a, buf, n, out: *RyAminoCatabFlux): Result {
     var w[96];
     var v = _ry_jr_parse(a, buf, n);
-    if (_ry_jr_f64_fields(v, &w, 12, &_RY_AMINO_CATAB_FLUX_FIELDS) == 0) {
+    if (_ry_amino_catab_flux_from_node(v, &w) == 0) {
         return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "AminoCatabFlux", 14));
     }
     memcpy(out, &w, 96);

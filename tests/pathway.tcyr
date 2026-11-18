@@ -1,0 +1,325 @@
+# rasayan — src/pathway.cyr: Rust 1.2.0's metabolic network tests, ported
+# Stdlib auto-included via cyrius.cyml
+#
+# M5 part 1: the 9 `pathway.rs` unit tests that need no network step (the defaults, the validators, the codecs, the
+# solve layer, the RQ's sentinel), as they are written; tests/golden/pathway.tsv checks every function of part 1 on its
+# grid besides. The step's tests join at part 2. Beyond them: the nested layout, the sums, every codec's round trip,
+# and the solve's count.
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+include "src/integrate.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
+include "src/enzyme_data.cyr"
+include "src/enzyme.cyr"
+include "src/glycolysis_data.cyr"
+include "src/glycolysis.cyr"
+include "src/tca_data.cyr"
+include "src/tca.cyr"
+include "src/etc_data.cyr"
+include "src/etc.cyr"
+include "src/beta_oxidation_data.cyr"
+include "src/beta_oxidation.cyr"
+include "src/amino_catabolism_data.cyr"
+include "src/amino_catabolism.cyr"
+include "src/pathway_data.cyr"
+include "src/pathway.cyr"
+
+# The Rust tests' closures' contexts: `a - x`, `c - 3·n/(k + n)·c - n`, a constant.
+struct SolveLin { a: f64; }
+struct SolveCurve { c: f64; k: f64; }
+
+# 1 when |a − b| < tol.
+fn near(a: f64, b: f64, tol: f64) {
+    var d: f64 = f64_abs(a - b);
+    return d < tol;
+}
+
+# 1 when the network validates.
+fn net_ok(p: *RyMetabolicNetwork) {
+    var t, v = ry_metabolic_network_validate(p);
+    return is_ok(t);
+}
+
+# 1 when the config validates.
+fn cfg_ok(c: *RyNetworkConfig) {
+    var t, v = ry_network_config_validate(c);
+    return is_ok(t);
+}
+
+# 1 when the environment validates.
+fn env_ok(e: *RyNetworkEnvironment) {
+    var t, v = ry_network_environment_validate(e);
+    return is_ok(t);
+}
+
+# The Rust test's `|x| 2.0 - x` and its kin: a - x.
+fn lin_excess(p: *SolveLin, x: f64): f64 {
+    var e: f64 = p.a - x;
+    return e;
+}
+
+# The Rust test's strongly curved balance: c - 3.0 * n / (k + n) * c - n.
+fn curve_excess(p: *SolveCurve, n: f64): f64 {
+    var c: f64 = p.c;
+    var k: f64 = p.k;
+    var e: f64 = (c - (((3.0 * n) / (k + n)) * c)) - n;
+    return e;
+}
+
+# The Rust test's `|_| v`.
+fn const_excess(p: *SolveLin, x: f64): f64 {
+    var v: f64 = p.a;
+    return v;
+}
+
+# rust src/pathway.rs: test_default_valid, test_validate_rejects_bad_cofactors, test_network_config_validate
+# rust src/pathway.rs: test_environment_validate
+fn validation() {
+    test_group("pathway: defaults and validation");
+    var n: RyMetabolicNetwork;
+    var c: RyNetworkConfig;
+    var e: RyNetworkEnvironment;
+    ry_metabolic_network_default(&n);
+    ry_network_config_default(&c);
+    ry_network_environment_default(&e);
+    assert(net_ok(&n) == 1 && cfg_ok(&c) == 1 && env_ok(&e) == 1, "the defaults validate");
+    # Rust's seven bad cofactors: ATP NaN, ADP -1, the ratio 0 and NaN, oxygen 1.5 and NaN, malonyl-CoA -0.01.
+    var nan: f64 = _ry_nan();
+    var refused = 0;
+    var k = 0;
+    while (k < 7) {
+        ry_metabolic_network_default(&n);
+        if (k == 0) { n.atp = nan; }
+        if (k == 1) { n.adp = -1.0; }
+        if (k == 2) { n.nad_ratio = 0.0; }
+        if (k == 3) { n.nad_ratio = nan; }
+        if (k == 4) { n.oxygen = 1.5; }
+        if (k == 5) { n.oxygen = nan; }
+        if (k == 6) { n.malonyl_coa = -0.01; }
+        if (net_ok(&n) == 0) { refused = refused + 1; }
+        k = k + 1;
+    }
+    assert_eq(refused, 7, "each of Rust's seven bad cofactors is refused");
+    ry_metabolic_network_default(&n);
+    n.tca.citrate = -1.0;
+    n.atp = nan;
+    var t1, v1 = ry_metabolic_network_validate(&n);
+    assert_eq(v1, RY_ERR_NEGATIVE_CONCENTRATION, "a pathway state is checked before the pools");
+    c.nad_ratio_sensitivity = nan;
+    assert_eq(cfg_ok(&c), 0, "a NaN sensitivity is refused");
+    ry_network_config_default(&c);
+    c.etc.pmf_capacity = 0.0;
+    assert_eq(cfg_ok(&c), 0, "a bad ETC config is refused");
+    ry_network_config_default(&c);
+    c.beta_ox.chain_length = 15;
+    var t2, v2 = ry_network_config_validate(&c);
+    assert_eq(v2, RY_ERR_INVALID_PARAMETER, "an odd chain is refused");
+    e.plasma_glucose = nan;
+    var t3, v3 = ry_network_environment_validate(&e);
+    assert_eq(v3, RY_ERR_NON_FINITE, "a NaN plasma glucose is refused");
+    ry_network_environment_default(&e);
+    e.atp_demand = -1.0;
+    var t4, v4 = ry_network_environment_validate(&e);
+    assert_eq(v4, RY_ERR_NEGATIVE_CONCENTRATION, "a negative demand is refused");
+    return 0;
+}
+
+# The nested values sit at the offsets the codecs and sums use: each one's first field read through the struct and
+# through its offset.
+fn layout() {
+    test_group("pathway: the nested layout");
+    var n: RyMetabolicNetwork;
+    ry_metabolic_network_default(&n);
+    var w = &n;
+    var t0: f64 = load64(w + _RY_NET_TCA);
+    var e0: f64 = load64(w + _RY_NET_ETC);
+    var b0: f64 = load64(w + _RY_NET_BETA_OX);
+    var a0: f64 = load64(w + _RY_NET_AMINO);
+    var atp: f64 = load64(w + _RY_NET_POOLS);
+    var tca: f64 = n.tca.acetyl_coa;
+    var etc: f64 = n.etc.pmf;
+    var box: f64 = n.beta_ox.acyl_coa;
+    var amino: f64 = n.amino_catab.amino_acid_pool;
+    assert(t0 == tca && e0 == etc && b0 == box && a0 == amino && atp == 6.0, "the network's nested states");
+    var c: RyNetworkConfig;
+    ry_network_config_default(&c);
+    var wc = &c;
+    var chain = load64(wc + _RY_NETCFG_BETA_OX);
+    var s: f64 = load64(wc + _RY_NETCFG_SIZE - 8);
+    var pdh: f64 = load64(wc + _RY_NETCFG_TCA);
+    var tv: f64 = load64(wc + _RY_NETCFG_AMINO);
+    var want_pdh: f64 = c.tca.pdh_vmax;
+    var want_tv: f64 = c.amino_catab.transaminase_vmax;
+    assert(chain == 16 && s == 50.0 && pdh == want_pdh && tv == want_tv, "the config's nested configs");
+    return 0;
+}
+
+# rust src/pathway.rs: test_solve_decreasing, test_balanced_ratio_monotone_in_supply
+fn solving() {
+    test_group("pathway: the implicit NADH solves");
+    var st[16];
+    var lin: SolveLin;
+    lin.a = 2.0;
+    var root: f64 = _ry_pathway_solve_decreasing(0.0, 5.0, &lin_excess, &lin, &st);
+    assert(near(root, 2.0, 0.000000000001), "the linear root");
+    var cur: SolveCurve;
+    cur.c = 0.01;
+    cur.k = 0.002;
+    var r2: f64 = _ry_pathway_solve_decreasing(0.0, 1.0, &curve_excess, &cur, &st);
+    var check: f64 = curve_excess(&cur, r2);
+    var tiny: f64 = 0.00000000000001;
+    assert(f64_abs(check) < tiny, "the curved balance is solved to 1e-14");
+    var iters = load64(&st);
+    assert(iters > 0 && iters < 100, "within the iteration cap");
+    lin.a = -1.0;
+    var lo: f64 = _ry_pathway_solve_decreasing(1.0, 2.0, &const_excess, &lin, &st);
+    var lo_exit = load64(&st + 8);
+    lin.a = 1.0;
+    var hi: f64 = _ry_pathway_solve_decreasing(1.0, 2.0, &const_excess, &lin, &st);
+    var hi_exit = load64(&st + 8);
+    assert(lo == 1.0 && hi == 2.0 && lo_exit == 0 && hi_exit == 1, "no sign change: the nearer end");
+    var nn: f64 = 0.0;
+    var base: f64 = _ry_pathway_balanced_nad_ratio(0.001, 0.002, 0.004, 0.02, 0.001, 0, &nn);
+    var more: f64 = _ry_pathway_balanced_nad_ratio(0.001, 0.004, 0.008, 0.02, 0.001, 0, 0);
+    var ci: f64 = _ry_pathway_balanced_nad_ratio(0.001, 0.002, 0.004, 0.04, 0.001, 0, 0);
+    assert(more < base && ci > base, "more supply lowers the ratio, more Complex I raises it");
+    assert(base >= RY_PATHWAY_NAD_RATIO_MIN && base <= RY_PATHWAY_NAD_RATIO_MAX, "the ratio within its bounds");
+    var back: f64 = _ry_pathway_ratio_of(nn);
+    assert(back == base, "the ratio is the solved NADH's");
+    var none: f64 = _ry_pathway_end_of_step_nadh(0.0, 0.02, 0.001, &st);
+    assert(none == 0.0 && load64(&st + 8) == 5, "no NADH, no solve");
+    var left: f64 = _ry_pathway_end_of_step_nadh(0.001, 0.02, 0.001, &st);
+    var ox: f64 = _ry_pathway_nadh_oxidized(left, 0.02, 0.001);
+    assert(left > 0.0 && left < 0.001 && near(left + ox, 0.001, 0.000000000000001), "N + oxidized(N) = avail");
+    return 0;
+}
+
+# rust src/pathway.rs: test_respiratory_quotient_undefined_without_o2
+fn quotient() {
+    test_group("pathway: the respiratory quotient");
+    var n: RyMetabolicNetwork;
+    var f: RyNetworkFlux;
+    ry_metabolic_network_default(&n);
+    ry_network_flux_default(&f);
+    var rq: f64 = ry_metabolic_network_respiratory_quotient(&n, &f);
+    assert(rq == 0.0, "no O2 consumed: the 0.0 sentinel");
+    f.o2_consumed = 0.5;
+    f.co2_produced = 0.4;
+    var r2: f64 = ry_metabolic_network_respiratory_quotient(&n, &f);
+    assert(r2 == 0.8, "CO2 / O2");
+    return 0;
+}
+
+# The crate-private sums the tick's sub-steps use (part 2).
+fn sums() {
+    test_group("pathway: the sub-step sums");
+    var t: RyNetworkFlux;
+    var o: RyNetworkFlux;
+    ry_network_flux_default(&t);
+    ry_network_flux_default(&o);
+    o.glycolysis.atp_produced = 1.0;
+    o.glycolysis.rate_hk = 2.0;
+    o.amino_catab.deamination_rate = 4.0;
+    o.net_atp = 0.5;
+    _ry_network_flux_accumulate(&t, &o, 0.25);
+    _ry_network_flux_accumulate(&t, &o, 0.25);
+    var atp: f64 = t.glycolysis.atp_produced;
+    var hk: f64 = t.glycolysis.rate_hk;
+    var de: f64 = t.amino_catab.deamination_rate;
+    var net: f64 = t.net_atp;
+    assert(atp == 2.0 && hk == 1.0 && de == 2.0 && net == 1.0, "amounts summed, rates weighted, totals summed");
+    var x: RyNetworkExchange;
+    var y: RyNetworkExchange;
+    ry_network_exchange_default(&x);
+    ry_network_exchange_default(&y);
+    y.lactate_export = 0.125;
+    _ry_network_exchange_accumulate(&x, &y);
+    _ry_network_exchange_accumulate(&x, &y);
+    var lac: f64 = x.lactate_export;
+    assert(lac == 0.25, "the exchange summed");
+    return 0;
+}
+
+# rust src/pathway.rs: test_serde_roundtrip, test_serde_roundtrip_config
+fn serde() {
+    test_group("pathway: serde round trips");
+    var sb = str_builder_new();
+    var n: RyMetabolicNetwork;
+    var nb: RyMetabolicNetwork;
+    ry_metabolic_network_default(&n);
+    var t1, v1 = ry_metabolic_network_to_json(sb, &n);
+    var want = "{\"glycolysis\":{\"glucose\":5.0,";
+    assert_eq(memeq(load64(sb), want, strlen(want)), 1, "each pathway state is a nested object");
+    var t2, v2 = ry_metabolic_network_from_json(load64(sb), load64(sb + 8), &nb);
+    assert(is_ok(t2) == 1 && memeq(&nb, &n, 264) == 1, "the network reads back");
+    var c: RyNetworkConfig;
+    var cb: RyNetworkConfig;
+    ry_network_config_default(&c);
+    store64(sb + 8, 0);
+    var t3, v3 = ry_network_config_to_json(sb, &c);
+    var t4, v4 = ry_network_config_from_json(load64(sb), load64(sb + 8), &cb);
+    assert(is_ok(t4) == 1 && memeq(&cb, &c, 832) == 1, "the config reads back");
+    var e: RyNetworkEnvironment;
+    var eb: RyNetworkEnvironment;
+    ry_network_environment_default(&e);
+    store64(sb + 8, 0);
+    var t5, v5 = ry_network_environment_to_json(sb, &e);
+    var t6, v6 = ry_network_environment_from_json(load64(sb), load64(sb + 8), &eb);
+    assert(is_ok(t6) == 1 && memeq(&eb, &e, 32) == 1, "the environment reads back");
+    var tk: RyNetworkTick;
+    var tb: RyNetworkTick;
+    ry_network_tick_default(&tk);
+    tk.flux.etc.rate_ci = 0.375;
+    tk.exchange.atp_demand_met = 0.012;
+    store64(sb + 8, 0);
+    var t7, v7 = ry_network_tick_to_json(sb, &tk);
+    var t8, v8 = ry_network_tick_from_json(load64(sb), load64(sb + 8), &tb);
+    assert(is_ok(t8) == 1 && memeq(&tb, &tk, 536) == 1, "a tick reads back");
+    var f: RyNetworkFlux;
+    var fb: RyNetworkFlux;
+    ry_network_flux_default(&f);
+    f.tca.rate_pdh = 0.25;
+    f.co2_produced = 0.5;
+    store64(sb + 8, 0);
+    var ta, va = ry_network_flux_to_json(sb, &f);
+    var tb2, vb2 = ry_network_flux_from_json(load64(sb), load64(sb + 8), &fb);
+    assert(is_ok(tb2) == 1 && memeq(&fb, &f, 496) == 1, "a flux reads back");
+    var x: RyNetworkExchange;
+    var xb: RyNetworkExchange;
+    ry_network_exchange_default(&x);
+    x.glucose_uptake = -0.125;
+    store64(sb + 8, 0);
+    var tc, vc = ry_network_exchange_to_json(sb, &x);
+    var td, vd = ry_network_exchange_from_json(load64(sb), load64(sb + 8), &xb);
+    assert(is_ok(td) == 1 && memeq(&xb, &x, 40) == 1, "an exchange reads back");
+    var bad = "{\"glycolysis\":[1,2,3]}";
+    memset(&nb, 0, 264);
+    var t9, v9 = ry_metabolic_network_from_json(bad, strlen(bad), &nb);
+    var untouched: f64 = nb.atp;
+    assert(v9 == RY_ERR_DESERIALIZE && untouched == 0.0, "a refusal leaves the output untouched");
+    return 0;
+}
+
+# Runs the metabolic network suite.
+fn main() {
+    alloc_init();
+    validation();
+    layout();
+    solving();
+    quotient();
+    sums();
+    serde();
+    return assert_summary();
+}
+
+var exit_code = main();
+# assert_summary() returns the failure count; a wait status is 8 bits, so any failure exits 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

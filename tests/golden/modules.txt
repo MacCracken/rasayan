@@ -17,6 +17,7 @@ logging
 math
 membrane
 metabolism
+pathway
 protein
 ptm
 signal

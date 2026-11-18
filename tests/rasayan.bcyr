@@ -54,6 +54,8 @@ include "src/beta_oxidation_data.cyr"
 include "src/beta_oxidation.cyr"
 include "src/amino_catabolism_data.cyr"
 include "src/amino_catabolism.cyr"
+include "src/pathway_data.cyr"
+include "src/pathway.cyr"
 
 # Keeps the loops' results observable.
 var _bn_sink = 0;
@@ -964,6 +966,36 @@ fn _bn_amino(name, kind, n): i64 {
     return 0;
 }
 
+# n calls of metabolic-network benchmark `kind` (M5 part 1; Rust's network_tick joins with the step at part 2):
+# 0 balanced_nad_ratio and 1 end_of_step_nadh on a resting step's inputs (h 0.02 s: the pool at ratio 700, the
+# producers' NADH, Complex I's and LDH's capacities), 2 MetabolicNetwork::validate on the default network.
+fn _bn_pathway(name, kind, n): i64 {
+    var net: RyMetabolicNetwork;
+    ry_metabolic_network_default(&net);
+    var pool: f64 = 1.0 / 701.0;
+    var acc: f64 = 0.0;
+    var b = bench_new(name);
+    bench_batch_start(b);
+    var i = 0;
+    while (i < n) {
+        if (kind == 0) {
+            var r: f64 = _ry_pathway_balanced_nad_ratio(pool, 0.0016, 0.0064, 0.016, 0.0005, 0, 0);
+            acc = acc + r;
+        } elif (kind == 1) {
+            var e: f64 = _ry_pathway_end_of_step_nadh(0.0094, 0.016, 0.0005, 0);
+            acc = acc + e;
+        } else {
+            var t, v = ry_metabolic_network_validate(&net);
+            acc = acc + f64_from(t);
+        }
+        i = i + 1;
+    }
+    bench_batch_stop(b, n);
+    bench_report(b);
+    _bn_keep(acc);
+    return 0;
+}
+
 # Runs the benchmark suite (Rust twins arrive with each milestone).
 fn main(): i64 {
     alloc_init();
@@ -1051,6 +1083,9 @@ fn main(): i64 {
     _bn_amino("amino_catab_tick", 0, 1000000);
     _bn_amino("amino_catab/tick, no reset", 1, 1000000);
     _bn_amino("amino_catab/feeding tca, one step", 2, 1000000);
+    _bn_pathway("pathway/balanced_nad_ratio", 0, 1000000);
+    _bn_pathway("pathway/end_of_step_nadh", 1, 1000000);
+    _bn_pathway("pathway/MetabolicNetwork::validate", 2, 1000000);
     var br = bench_new("json/read MembranePermeability (3 f64)");
     bench_batch_start(br);
     _bn_read("{\"p_na\":0.04,\"p_k\":1.0,\"p_cl\":0.45}", 3, "p_na\0p_k\0p_cl\0", 100000);

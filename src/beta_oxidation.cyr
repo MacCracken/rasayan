@@ -268,13 +268,21 @@ fn ry_beta_ox_state_to_json(sb, p: *RyBetaOxState): Result {
     return ry_beta_ox_state_to_json_a(default_alloc(), sb, p);
 }
 
+# The BetaOxState at node `v` of a parsed document, by serde's rules (as ry_beta_ox_state_from_json_a reads it), into
+# the 16 bytes at `w`: 1, or 0 for a refusal (what `w` holds then is unspecified). The metabolic network's readers call
+# it for their nested values.
+#must_use
+fn _ry_beta_ox_state_from_node(v, w): i64 {
+    return _ry_jr_f64_fields(v, w, 2, &_RY_BETA_OX_STATE_FIELDS);
+}
+
 # Reads a BetaOxState from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`, which the caller
 # resets): Ok(0) with *out filled, or Err(RY_ERR_DESERIALIZE).
 #must_use
 fn ry_beta_ox_state_from_json_a(a, buf, n, out: *RyBetaOxState): Result {
     var w[16];
     var v = _ry_jr_parse(a, buf, n);
-    if (_ry_jr_f64_fields(v, &w, 2, &_RY_BETA_OX_STATE_FIELDS) == 0) {
+    if (_ry_beta_ox_state_from_node(v, &w) == 0) {
         return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "BetaOxState", 11));
     }
     memcpy(out, &w, 16);
@@ -315,6 +323,26 @@ fn ry_beta_ox_config_to_json(sb, p: *RyBetaOxConfig): Result {
     return ry_beta_ox_config_to_json_a(default_alloc(), sb, p);
 }
 
+# The BetaOxConfig at node `v` of a parsed document, by serde's rules (as ry_beta_ox_config_from_json_a reads it), into
+# the 48 bytes at `w`: 1, or 0 for a refusal (what `w` holds then is unspecified). The metabolic network's readers call
+# it for their nested values.
+#must_use
+fn _ry_beta_ox_config_from_node(v, w): i64 {
+    var form = _ry_jr_form(v, 6);
+    var ok = 0;
+    if (form != 0) {
+        var name = &_RY_BETA_OX_CONFIG_FIELDS;
+        ok = _ry_jr_int(_ry_jr_at(v, form, 0, name), 0, 4294967295, w);
+        var k = 1;
+        while (k < 6 && ok == 1) {
+            name = name + strlen(name) + 1;
+            if (_ry_jr_f64(_ry_jr_at(v, form, k, name), w + 8 * k) == 0) { ok = 0; }
+            k = k + 1;
+        }
+    }
+    return ok;
+}
+
 # Reads a BetaOxConfig from the `n`-byte document at `buf` by serde's rules (an object by field name, or an array of its
 # six fields; `chain_length` a JSON integer in [0, 2^32), never a float), its tree on allocator `a`: Ok(0) with *out
 # filled, or Err(RY_ERR_DESERIALIZE). Serde reads any u32: an odd or short chain is validate's to refuse.
@@ -322,19 +350,9 @@ fn ry_beta_ox_config_to_json(sb, p: *RyBetaOxConfig): Result {
 fn ry_beta_ox_config_from_json_a(a, buf, n, out: *RyBetaOxConfig): Result {
     var w[48];
     var v = _ry_jr_parse(a, buf, n);
-    var form = _ry_jr_form(v, 6);
-    var ok = 0;
-    if (form != 0) {
-        var name = &_RY_BETA_OX_CONFIG_FIELDS;
-        ok = _ry_jr_int(_ry_jr_at(v, form, 0, name), 0, 4294967295, &w);
-        var k = 1;
-        while (k < 6 && ok == 1) {
-            name = name + strlen(name) + 1;
-            if (_ry_jr_f64(_ry_jr_at(v, form, k, name), &w + 8 * k) == 0) { ok = 0; }
-            k = k + 1;
-        }
+    if (_ry_beta_ox_config_from_node(v, &w) == 0) {
+        return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "BetaOxConfig", 12));
     }
-    if (ok == 0) { return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "BetaOxConfig", 12)); }
     memcpy(out, &w, 48);
     return Ok(0);
 }
@@ -359,13 +377,21 @@ fn ry_beta_ox_flux_to_json(sb, f: *RyBetaOxFlux): Result {
     return ry_beta_ox_flux_to_json_a(default_alloc(), sb, f);
 }
 
+# The BetaOxFlux at node `v` of a parsed document, by serde's rules (as ry_beta_ox_flux_from_json_a reads it), into the
+# 64 bytes at `w`: 1, or 0 for a refusal (what `w` holds then is unspecified). The metabolic network's readers call it
+# for their nested values.
+#must_use
+fn _ry_beta_ox_flux_from_node(v, w): i64 {
+    return _ry_jr_f64_fields(v, w, 8, &_RY_BETA_OX_FLUX_FIELDS);
+}
+
 # Reads a BetaOxFlux from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`): Ok(0) with *out
 # filled, or Err(RY_ERR_DESERIALIZE).
 #must_use
 fn ry_beta_ox_flux_from_json_a(a, buf, n, out: *RyBetaOxFlux): Result {
     var w[64];
     var v = _ry_jr_parse(a, buf, n);
-    if (_ry_jr_f64_fields(v, &w, 8, &_RY_BETA_OX_FLUX_FIELDS) == 0) {
+    if (_ry_beta_ox_flux_from_node(v, &w) == 0) {
         return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "BetaOxFlux", 10));
     }
     memcpy(out, &w, 64);

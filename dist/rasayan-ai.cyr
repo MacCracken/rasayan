@@ -9891,13 +9891,21 @@ fn ry_glycolysis_state_to_json(sb, p: *RyGlycolysisState): Result {
     return ry_glycolysis_state_to_json_a(default_alloc(), sb, p);
 }
 
+# The GlycolysisState at node `v` of a parsed document, by serde's rules (as ry_glycolysis_state_from_json_a reads it),
+# into the 88 bytes at `w`: 1, or 0 for a refusal (what `w` holds then is unspecified). The metabolic network's readers
+# call it for their nested values.
+#must_use
+fn _ry_glycolysis_state_from_node(v, w): i64 {
+    return _ry_jr_f64_fields(v, w, 11, &_RY_GLYCOLYSIS_STATE_FIELDS);
+}
+
 # Reads a GlycolysisState from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`, which the
 # caller resets): Ok(0) with *out filled, or Err(RY_ERR_DESERIALIZE).
 #must_use
 fn ry_glycolysis_state_from_json_a(a, buf, n, out: *RyGlycolysisState): Result {
     var w[88];
     var v = _ry_jr_parse(a, buf, n);
-    if (_ry_jr_f64_fields(v, &w, 11, &_RY_GLYCOLYSIS_STATE_FIELDS) == 0) {
+    if (_ry_glycolysis_state_from_node(v, &w) == 0) {
         return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "GlycolysisState", 15));
     }
     memcpy(out, &w, 88);
@@ -9924,13 +9932,21 @@ fn ry_glycolysis_config_to_json(sb, p: *RyGlycolysisConfig): Result {
     return ry_glycolysis_config_to_json_a(default_alloc(), sb, p);
 }
 
+# The GlycolysisConfig at node `v` of a parsed document, by serde's rules (as ry_glycolysis_config_from_json_a reads
+# it), into the 304 bytes at `w`: 1, or 0 for a refusal (what `w` holds then is unspecified). The metabolic network's
+# readers call it for their nested values.
+#must_use
+fn _ry_glycolysis_config_from_node(v, w): i64 {
+    return _ry_jr_f64_fields(v, w, 38, &_RY_GLYCOLYSIS_CONFIG_FIELDS);
+}
+
 # Reads a GlycolysisConfig from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`): Ok(0) with
 # *out filled, or Err(RY_ERR_DESERIALIZE).
 #must_use
 fn ry_glycolysis_config_from_json_a(a, buf, n, out: *RyGlycolysisConfig): Result {
     var w[304];
     var v = _ry_jr_parse(a, buf, n);
-    if (_ry_jr_f64_fields(v, &w, 38, &_RY_GLYCOLYSIS_CONFIG_FIELDS) == 0) {
+    if (_ry_glycolysis_config_from_node(v, &w) == 0) {
         return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "GlycolysisConfig", 16));
     }
     memcpy(out, &w, 304);
@@ -9973,13 +9989,11 @@ fn ry_glycolysis_flux_to_json(sb, f: *RyGlycolysisFlux): Result {
     return ry_glycolysis_flux_to_json_a(default_alloc(), sb, f);
 }
 
-# Reads a GlycolysisFlux from the `n`-byte document at `buf` by serde's rules (an object by field name, or an array of
-# its six fields; `step_rates` an array of exactly ten numbers), its tree on allocator `a`: Ok(0) with *out filled, or
-# Err(RY_ERR_DESERIALIZE).
+# The GlycolysisFlux at node `v` of a parsed document, by serde's rules (as ry_glycolysis_flux_from_json_a reads it),
+# into the 120 bytes at `w`: 1, or 0 for a refusal (what `w` holds then is unspecified). The metabolic network's readers
+# call it for their nested values.
 #must_use
-fn ry_glycolysis_flux_from_json_a(a, buf, n, out: *RyGlycolysisFlux): Result {
-    var w[120];
-    var v = _ry_jr_parse(a, buf, n);
+fn _ry_glycolysis_flux_from_node(v, w): i64 {
     var form = _ry_jr_form(v, 6);
     var ok = 0;
     if (form != 0) {
@@ -9987,13 +10001,25 @@ fn ry_glycolysis_flux_from_json_a(a, buf, n, out: *RyGlycolysisFlux): Result {
         var name = _RY_GLYCOLYSIS_FLUX_FIELDS;
         var k = 0;
         while (k < 5 && ok == 1) {
-            if (_ry_jr_f64(_ry_jr_at(v, form, k, name), &w + 8 * k) == 0) { ok = 0; }
+            if (_ry_jr_f64(_ry_jr_at(v, form, k, name), w + 8 * k) == 0) { ok = 0; }
             name = name + strlen(name) + 1;
             k = k + 1;
         }
-        if (ok == 1 && _ry_jr_f64_array(_ry_jr_at(v, form, 5, "step_rates"), &w + 40, 10) == 0) { ok = 0; }
+        if (ok == 1 && _ry_jr_f64_array(_ry_jr_at(v, form, 5, "step_rates"), w + 40, 10) == 0) { ok = 0; }
     }
-    if (ok == 0) { return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "GlycolysisFlux", 14)); }
+    return ok;
+}
+
+# Reads a GlycolysisFlux from the `n`-byte document at `buf` by serde's rules (an object by field name, or an array of
+# its six fields; `step_rates` an array of exactly ten numbers), its tree on allocator `a`: Ok(0) with *out filled, or
+# Err(RY_ERR_DESERIALIZE).
+#must_use
+fn ry_glycolysis_flux_from_json_a(a, buf, n, out: *RyGlycolysisFlux): Result {
+    var w[120];
+    var v = _ry_jr_parse(a, buf, n);
+    if (_ry_glycolysis_flux_from_node(v, &w) == 0) {
+        return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "GlycolysisFlux", 14));
+    }
     memcpy(out, &w, 120);
     return Ok(0);
 }
@@ -10686,13 +10712,21 @@ fn ry_tca_state_to_json(sb, p: *RyTcaState): Result {
     return ry_tca_state_to_json_a(default_alloc(), sb, p);
 }
 
+# The TcaState at node `v` of a parsed document, by serde's rules (as ry_tca_state_from_json_a reads it), into the 72
+# bytes at `w`: 1, or 0 for a refusal (what `w` holds then is unspecified). The metabolic network's readers call it for
+# their nested values.
+#must_use
+fn _ry_tca_state_from_node(v, w): i64 {
+    return _ry_jr_f64_fields(v, w, 9, &_RY_TCA_STATE_FIELDS);
+}
+
 # Reads a TcaState from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`, which the caller
 # resets): Ok(0) with *out filled, or Err(RY_ERR_DESERIALIZE).
 #must_use
 fn ry_tca_state_from_json_a(a, buf, n, out: *RyTcaState): Result {
     var w[72];
     var v = _ry_jr_parse(a, buf, n);
-    if (_ry_jr_f64_fields(v, &w, 9, &_RY_TCA_STATE_FIELDS) == 0) {
+    if (_ry_tca_state_from_node(v, &w) == 0) {
         return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "TcaState", 8));
     }
     memcpy(out, &w, 72);
@@ -10719,13 +10753,21 @@ fn ry_tca_config_to_json(sb, p: *RyTcaConfig): Result {
     return ry_tca_config_to_json_a(default_alloc(), sb, p);
 }
 
+# The TcaConfig at node `v` of a parsed document, by serde's rules (as ry_tca_config_from_json_a reads it), into the 256
+# bytes at `w`: 1, or 0 for a refusal (what `w` holds then is unspecified). The metabolic network's readers call it for
+# their nested values.
+#must_use
+fn _ry_tca_config_from_node(v, w): i64 {
+    return _ry_jr_f64_fields(v, w, 32, &_RY_TCA_CONFIG_FIELDS);
+}
+
 # Reads a TcaConfig from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`): Ok(0) with *out
 # filled, or Err(RY_ERR_DESERIALIZE).
 #must_use
 fn ry_tca_config_from_json_a(a, buf, n, out: *RyTcaConfig): Result {
     var w[256];
     var v = _ry_jr_parse(a, buf, n);
-    if (_ry_jr_f64_fields(v, &w, 32, &_RY_TCA_CONFIG_FIELDS) == 0) {
+    if (_ry_tca_config_from_node(v, &w) == 0) {
         return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "TcaConfig", 9));
     }
     memcpy(out, &w, 256);
@@ -10768,13 +10810,11 @@ fn ry_tca_flux_to_json(sb, f: *RyTcaFlux): Result {
     return ry_tca_flux_to_json_a(default_alloc(), sb, f);
 }
 
-# Reads a TcaFlux from the `n`-byte document at `buf` by serde's rules (an object by field name, or an array of its six
-# fields; `step_rates` an array of exactly nine numbers), its tree on allocator `a`: Ok(0) with *out filled, or
-# Err(RY_ERR_DESERIALIZE).
+# The TcaFlux at node `v` of a parsed document, by serde's rules (as ry_tca_flux_from_json_a reads it), into the 112
+# bytes at `w`: 1, or 0 for a refusal (what `w` holds then is unspecified). The metabolic network's readers call it for
+# their nested values.
 #must_use
-fn ry_tca_flux_from_json_a(a, buf, n, out: *RyTcaFlux): Result {
-    var w[112];
-    var v = _ry_jr_parse(a, buf, n);
+fn _ry_tca_flux_from_node(v, w): i64 {
     var form = _ry_jr_form(v, 6);
     var ok = 0;
     if (form != 0) {
@@ -10782,13 +10822,25 @@ fn ry_tca_flux_from_json_a(a, buf, n, out: *RyTcaFlux): Result {
         var name = _RY_TCA_FLUX_FIELDS;
         var k = 0;
         while (k < 5 && ok == 1) {
-            if (_ry_jr_f64(_ry_jr_at(v, form, k, name), &w + 8 * k) == 0) { ok = 0; }
+            if (_ry_jr_f64(_ry_jr_at(v, form, k, name), w + 8 * k) == 0) { ok = 0; }
             name = name + strlen(name) + 1;
             k = k + 1;
         }
-        if (ok == 1 && _ry_jr_f64_array(_ry_jr_at(v, form, 5, "step_rates"), &w + 40, 9) == 0) { ok = 0; }
+        if (ok == 1 && _ry_jr_f64_array(_ry_jr_at(v, form, 5, "step_rates"), w + 40, 9) == 0) { ok = 0; }
     }
-    if (ok == 0) { return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "TcaFlux", 7)); }
+    return ok;
+}
+
+# Reads a TcaFlux from the `n`-byte document at `buf` by serde's rules (an object by field name, or an array of its six
+# fields; `step_rates` an array of exactly nine numbers), its tree on allocator `a`: Ok(0) with *out filled, or
+# Err(RY_ERR_DESERIALIZE).
+#must_use
+fn ry_tca_flux_from_json_a(a, buf, n, out: *RyTcaFlux): Result {
+    var w[112];
+    var v = _ry_jr_parse(a, buf, n);
+    if (_ry_tca_flux_from_node(v, &w) == 0) {
+        return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "TcaFlux", 7));
+    }
     memcpy(out, &w, 112);
     return Ok(0);
 }
@@ -11358,6 +11410,14 @@ fn ry_etc_state_to_json(sb, p: *RyEtcState): Result {
     return ry_etc_state_to_json_a(default_alloc(), sb, p);
 }
 
+# The EtcState at node `v` of a parsed document, by serde's rules (as ry_etc_state_from_json_a reads it), into the 24
+# bytes at `w`: 1, or 0 for a refusal (what `w` holds then is unspecified). The metabolic network's readers call it for
+# their nested values.
+#must_use
+fn _ry_etc_state_from_node(v, w): i64 {
+    return _ry_jr_f64_fields(v, w, 3, &_RY_ETC_STATE_FIELDS);
+}
+
 # Reads an EtcState from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`, which the caller
 # resets): Ok(0) with *out filled, or Err(RY_ERR_DESERIALIZE). Serde reads any f64: a fraction outside [0, 1] is
 # validate's to refuse.
@@ -11365,7 +11425,7 @@ fn ry_etc_state_to_json(sb, p: *RyEtcState): Result {
 fn ry_etc_state_from_json_a(a, buf, n, out: *RyEtcState): Result {
     var w[24];
     var v = _ry_jr_parse(a, buf, n);
-    if (_ry_jr_f64_fields(v, &w, 3, &_RY_ETC_STATE_FIELDS) == 0) {
+    if (_ry_etc_state_from_node(v, &w) == 0) {
         return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "EtcState", 8));
     }
     memcpy(out, &w, 24);
@@ -11392,13 +11452,21 @@ fn ry_etc_config_to_json(sb, p: *RyEtcConfig): Result {
     return ry_etc_config_to_json_a(default_alloc(), sb, p);
 }
 
+# The EtcConfig at node `v` of a parsed document, by serde's rules (as ry_etc_config_from_json_a reads it), into the 112
+# bytes at `w`: 1, or 0 for a refusal (what `w` holds then is unspecified). The metabolic network's readers call it for
+# their nested values.
+#must_use
+fn _ry_etc_config_from_node(v, w): i64 {
+    return _ry_jr_f64_fields(v, w, 14, &_RY_ETC_CONFIG_FIELDS);
+}
+
 # Reads an EtcConfig from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`): Ok(0) with *out
 # filled, or Err(RY_ERR_DESERIALIZE).
 #must_use
 fn ry_etc_config_from_json_a(a, buf, n, out: *RyEtcConfig): Result {
     var w[112];
     var v = _ry_jr_parse(a, buf, n);
-    if (_ry_jr_f64_fields(v, &w, 14, &_RY_ETC_CONFIG_FIELDS) == 0) {
+    if (_ry_etc_config_from_node(v, &w) == 0) {
         return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "EtcConfig", 9));
     }
     memcpy(out, &w, 112);
@@ -11441,13 +11509,11 @@ fn ry_etc_flux_to_json(sb, f: *RyEtcFlux): Result {
     return ry_etc_flux_to_json_a(default_alloc(), sb, f);
 }
 
-# Reads an EtcFlux from the `n`-byte document at `buf` by serde's rules (an object by field name, or an array of its six
-# fields; `complex_rates` an array of exactly five numbers), its tree on allocator `a`: Ok(0) with *out filled, or
-# Err(RY_ERR_DESERIALIZE).
+# The EtcFlux at node `v` of a parsed document, by serde's rules (as ry_etc_flux_from_json_a reads it), into the 80
+# bytes at `w`: 1, or 0 for a refusal (what `w` holds then is unspecified). The metabolic network's readers call it for
+# their nested values.
 #must_use
-fn ry_etc_flux_from_json_a(a, buf, n, out: *RyEtcFlux): Result {
-    var w[80];
-    var v = _ry_jr_parse(a, buf, n);
+fn _ry_etc_flux_from_node(v, w): i64 {
     var form = _ry_jr_form(v, 6);
     var ok = 0;
     if (form != 0) {
@@ -11455,13 +11521,25 @@ fn ry_etc_flux_from_json_a(a, buf, n, out: *RyEtcFlux): Result {
         var name = _RY_ETC_FLUX_FIELDS;
         var k = 0;
         while (k < 5 && ok == 1) {
-            if (_ry_jr_f64(_ry_jr_at(v, form, k, name), &w + 8 * k) == 0) { ok = 0; }
+            if (_ry_jr_f64(_ry_jr_at(v, form, k, name), w + 8 * k) == 0) { ok = 0; }
             name = name + strlen(name) + 1;
             k = k + 1;
         }
-        if (ok == 1 && _ry_jr_f64_array(_ry_jr_at(v, form, 5, "complex_rates"), &w + 40, 5) == 0) { ok = 0; }
+        if (ok == 1 && _ry_jr_f64_array(_ry_jr_at(v, form, 5, "complex_rates"), w + 40, 5) == 0) { ok = 0; }
     }
-    if (ok == 0) { return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "EtcFlux", 7)); }
+    return ok;
+}
+
+# Reads an EtcFlux from the `n`-byte document at `buf` by serde's rules (an object by field name, or an array of its six
+# fields; `complex_rates` an array of exactly five numbers), its tree on allocator `a`: Ok(0) with *out filled, or
+# Err(RY_ERR_DESERIALIZE).
+#must_use
+fn ry_etc_flux_from_json_a(a, buf, n, out: *RyEtcFlux): Result {
+    var w[80];
+    var v = _ry_jr_parse(a, buf, n);
+    if (_ry_etc_flux_from_node(v, &w) == 0) {
+        return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "EtcFlux", 7));
+    }
     memcpy(out, &w, 80);
     return Ok(0);
 }
@@ -11835,13 +11913,21 @@ fn ry_beta_ox_state_to_json(sb, p: *RyBetaOxState): Result {
     return ry_beta_ox_state_to_json_a(default_alloc(), sb, p);
 }
 
+# The BetaOxState at node `v` of a parsed document, by serde's rules (as ry_beta_ox_state_from_json_a reads it), into
+# the 16 bytes at `w`: 1, or 0 for a refusal (what `w` holds then is unspecified). The metabolic network's readers call
+# it for their nested values.
+#must_use
+fn _ry_beta_ox_state_from_node(v, w): i64 {
+    return _ry_jr_f64_fields(v, w, 2, &_RY_BETA_OX_STATE_FIELDS);
+}
+
 # Reads a BetaOxState from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`, which the caller
 # resets): Ok(0) with *out filled, or Err(RY_ERR_DESERIALIZE).
 #must_use
 fn ry_beta_ox_state_from_json_a(a, buf, n, out: *RyBetaOxState): Result {
     var w[16];
     var v = _ry_jr_parse(a, buf, n);
-    if (_ry_jr_f64_fields(v, &w, 2, &_RY_BETA_OX_STATE_FIELDS) == 0) {
+    if (_ry_beta_ox_state_from_node(v, &w) == 0) {
         return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "BetaOxState", 11));
     }
     memcpy(out, &w, 16);
@@ -11882,6 +11968,26 @@ fn ry_beta_ox_config_to_json(sb, p: *RyBetaOxConfig): Result {
     return ry_beta_ox_config_to_json_a(default_alloc(), sb, p);
 }
 
+# The BetaOxConfig at node `v` of a parsed document, by serde's rules (as ry_beta_ox_config_from_json_a reads it), into
+# the 48 bytes at `w`: 1, or 0 for a refusal (what `w` holds then is unspecified). The metabolic network's readers call
+# it for their nested values.
+#must_use
+fn _ry_beta_ox_config_from_node(v, w): i64 {
+    var form = _ry_jr_form(v, 6);
+    var ok = 0;
+    if (form != 0) {
+        var name = &_RY_BETA_OX_CONFIG_FIELDS;
+        ok = _ry_jr_int(_ry_jr_at(v, form, 0, name), 0, 4294967295, w);
+        var k = 1;
+        while (k < 6 && ok == 1) {
+            name = name + strlen(name) + 1;
+            if (_ry_jr_f64(_ry_jr_at(v, form, k, name), w + 8 * k) == 0) { ok = 0; }
+            k = k + 1;
+        }
+    }
+    return ok;
+}
+
 # Reads a BetaOxConfig from the `n`-byte document at `buf` by serde's rules (an object by field name, or an array of its
 # six fields; `chain_length` a JSON integer in [0, 2^32), never a float), its tree on allocator `a`: Ok(0) with *out
 # filled, or Err(RY_ERR_DESERIALIZE). Serde reads any u32: an odd or short chain is validate's to refuse.
@@ -11889,19 +11995,9 @@ fn ry_beta_ox_config_to_json(sb, p: *RyBetaOxConfig): Result {
 fn ry_beta_ox_config_from_json_a(a, buf, n, out: *RyBetaOxConfig): Result {
     var w[48];
     var v = _ry_jr_parse(a, buf, n);
-    var form = _ry_jr_form(v, 6);
-    var ok = 0;
-    if (form != 0) {
-        var name = &_RY_BETA_OX_CONFIG_FIELDS;
-        ok = _ry_jr_int(_ry_jr_at(v, form, 0, name), 0, 4294967295, &w);
-        var k = 1;
-        while (k < 6 && ok == 1) {
-            name = name + strlen(name) + 1;
-            if (_ry_jr_f64(_ry_jr_at(v, form, k, name), &w + 8 * k) == 0) { ok = 0; }
-            k = k + 1;
-        }
+    if (_ry_beta_ox_config_from_node(v, &w) == 0) {
+        return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "BetaOxConfig", 12));
     }
-    if (ok == 0) { return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "BetaOxConfig", 12)); }
     memcpy(out, &w, 48);
     return Ok(0);
 }
@@ -11926,13 +12022,21 @@ fn ry_beta_ox_flux_to_json(sb, f: *RyBetaOxFlux): Result {
     return ry_beta_ox_flux_to_json_a(default_alloc(), sb, f);
 }
 
+# The BetaOxFlux at node `v` of a parsed document, by serde's rules (as ry_beta_ox_flux_from_json_a reads it), into the
+# 64 bytes at `w`: 1, or 0 for a refusal (what `w` holds then is unspecified). The metabolic network's readers call it
+# for their nested values.
+#must_use
+fn _ry_beta_ox_flux_from_node(v, w): i64 {
+    return _ry_jr_f64_fields(v, w, 8, &_RY_BETA_OX_FLUX_FIELDS);
+}
+
 # Reads a BetaOxFlux from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`): Ok(0) with *out
 # filled, or Err(RY_ERR_DESERIALIZE).
 #must_use
 fn ry_beta_ox_flux_from_json_a(a, buf, n, out: *RyBetaOxFlux): Result {
     var w[64];
     var v = _ry_jr_parse(a, buf, n);
-    if (_ry_jr_f64_fields(v, &w, 8, &_RY_BETA_OX_FLUX_FIELDS) == 0) {
+    if (_ry_beta_ox_flux_from_node(v, &w) == 0) {
         return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "BetaOxFlux", 10));
     }
     memcpy(out, &w, 64);
@@ -12414,13 +12518,21 @@ fn ry_carbon_skeleton_output_to_json(sb, p: *RyCarbonSkeletonOutput): Result {
     return ry_carbon_skeleton_output_to_json_a(default_alloc(), sb, p);
 }
 
+# The CarbonSkeletonOutput at node `v` of a parsed document, by serde's rules (as ry_carbon_skeleton_output_from_json_a
+# reads it), into the 48 bytes at `w`: 1, or 0 for a refusal (what `w` holds then is unspecified). The metabolic
+# network's readers call it for their nested values.
+#must_use
+fn _ry_carbon_skeleton_output_from_node(v, w): i64 {
+    return _ry_jr_f64_fields(v, w, 6, &_RY_CARBON_SKELETON_OUTPUT_FIELDS);
+}
+
 # Reads a CarbonSkeletonOutput from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`): Ok(0)
 # with *out filled, or Err(RY_ERR_DESERIALIZE).
 #must_use
 fn ry_carbon_skeleton_output_from_json_a(a, buf, n, out: *RyCarbonSkeletonOutput): Result {
     var w[48];
     var v = _ry_jr_parse(a, buf, n);
-    if (_ry_jr_f64_fields(v, &w, 6, &_RY_CARBON_SKELETON_OUTPUT_FIELDS) == 0) {
+    if (_ry_carbon_skeleton_output_from_node(v, &w) == 0) {
         return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "CarbonSkeletonOutput", 20));
     }
     memcpy(out, &w, 48);
@@ -12447,13 +12559,21 @@ fn ry_amino_catab_state_to_json(sb, p: *RyAminoCatabState): Result {
     return ry_amino_catab_state_to_json_a(default_alloc(), sb, p);
 }
 
+# The AminoCatabState at node `v` of a parsed document, by serde's rules (as ry_amino_catab_state_from_json_a reads it),
+# into the 24 bytes at `w`: 1, or 0 for a refusal (what `w` holds then is unspecified). The metabolic network's readers
+# call it for their nested values.
+#must_use
+fn _ry_amino_catab_state_from_node(v, w): i64 {
+    return _ry_jr_f64_fields(v, w, 3, &_RY_AMINO_CATAB_STATE_FIELDS);
+}
+
 # Reads an AminoCatabState from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`): Ok(0) with
 # *out filled, or Err(RY_ERR_DESERIALIZE).
 #must_use
 fn ry_amino_catab_state_from_json_a(a, buf, n, out: *RyAminoCatabState): Result {
     var w[24];
     var v = _ry_jr_parse(a, buf, n);
-    if (_ry_jr_f64_fields(v, &w, 3, &_RY_AMINO_CATAB_STATE_FIELDS) == 0) {
+    if (_ry_amino_catab_state_from_node(v, &w) == 0) {
         return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "AminoCatabState", 15));
     }
     memcpy(out, &w, 24);
@@ -12507,13 +12627,11 @@ fn ry_amino_catab_config_to_json(sb, p: *RyAminoCatabConfig): Result {
     return ry_amino_catab_config_to_json_a(default_alloc(), sb, p);
 }
 
-# Reads an AminoCatabConfig from the `n`-byte document at `buf` by serde's rules (an object by field name, or an array
-# of its eight fields; `carbon_routing` itself an object or an array of six), its tree on allocator `a`: Ok(0) with
-# *out filled, or Err(RY_ERR_DESERIALIZE).
+# The AminoCatabConfig at node `v` of a parsed document, by serde's rules (as ry_amino_catab_config_from_json_a reads
+# it), into the 104 bytes at `w`: 1, or 0 for a refusal (what `w` holds then is unspecified). The metabolic network's
+# readers call it for their nested values.
 #must_use
-fn ry_amino_catab_config_from_json_a(a, buf, n, out: *RyAminoCatabConfig): Result {
-    var w[104];
-    var v = _ry_jr_parse(a, buf, n);
+fn _ry_amino_catab_config_from_node(v, w): i64 {
     var form = _ry_jr_form(v, 8);
     var ok = 0;
     if (form != 0) {
@@ -12523,15 +12641,27 @@ fn ry_amino_catab_config_from_json_a(a, buf, n, out: *RyAminoCatabConfig): Resul
         while (k < 8 && ok == 1) {
             var node = _ry_jr_at(v, form, k, name);
             if (k == 4) {
-                ok = _ry_jr_f64_fields(node, &w + 32, 6, &_RY_CARBON_SKELETON_OUTPUT_FIELDS);
-            } elif (_ry_jr_f64(node, &w + _ry_amino_catab_config_offset(k)) == 0) {
+                ok = _ry_jr_f64_fields(node, w + 32, 6, &_RY_CARBON_SKELETON_OUTPUT_FIELDS);
+            } elif (_ry_jr_f64(node, w + _ry_amino_catab_config_offset(k)) == 0) {
                 ok = 0;
             }
             name = name + strlen(name) + 1;
             k = k + 1;
         }
     }
-    if (ok == 0) { return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "AminoCatabConfig", 16)); }
+    return ok;
+}
+
+# Reads an AminoCatabConfig from the `n`-byte document at `buf` by serde's rules (an object by field name, or an array
+# of its eight fields; `carbon_routing` itself an object or an array of six), its tree on allocator `a`: Ok(0) with
+# *out filled, or Err(RY_ERR_DESERIALIZE).
+#must_use
+fn ry_amino_catab_config_from_json_a(a, buf, n, out: *RyAminoCatabConfig): Result {
+    var w[104];
+    var v = _ry_jr_parse(a, buf, n);
+    if (_ry_amino_catab_config_from_node(v, &w) == 0) {
+        return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "AminoCatabConfig", 16));
+    }
     memcpy(out, &w, 104);
     return Ok(0);
 }
@@ -12556,13 +12686,21 @@ fn ry_amino_catab_flux_to_json(sb, f: *RyAminoCatabFlux): Result {
     return ry_amino_catab_flux_to_json_a(default_alloc(), sb, f);
 }
 
+# The AminoCatabFlux at node `v` of a parsed document, by serde's rules (as ry_amino_catab_flux_from_json_a reads it),
+# into the 96 bytes at `w`: 1, or 0 for a refusal (what `w` holds then is unspecified). The metabolic network's readers
+# call it for their nested values.
+#must_use
+fn _ry_amino_catab_flux_from_node(v, w): i64 {
+    return _ry_jr_f64_fields(v, w, 12, &_RY_AMINO_CATAB_FLUX_FIELDS);
+}
+
 # Reads an AminoCatabFlux from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`): Ok(0) with
 # *out filled, or Err(RY_ERR_DESERIALIZE).
 #must_use
 fn ry_amino_catab_flux_from_json_a(a, buf, n, out: *RyAminoCatabFlux): Result {
     var w[96];
     var v = _ry_jr_parse(a, buf, n);
-    if (_ry_jr_f64_fields(v, &w, 12, &_RY_AMINO_CATAB_FLUX_FIELDS) == 0) {
+    if (_ry_amino_catab_flux_from_node(v, &w) == 0) {
         return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "AminoCatabFlux", 14));
     }
     memcpy(out, &w, 96);
@@ -12573,6 +12711,1007 @@ fn ry_amino_catab_flux_from_json_a(a, buf, n, out: *RyAminoCatabFlux): Result {
 #must_use
 fn ry_amino_catab_flux_from_json(buf, n, out: *RyAminoCatabFlux): Result {
     return ry_amino_catab_flux_from_json_a(default_alloc(), buf, n, out);
+}
+
+# --- pathway_data.cyr ---
+
+# rasayan — pathway data: the network's default pools, config and environment
+#
+# GENERATED by scripts/oracle from rasayan 1.2.0 (rust-old/). Do not edit.
+# Regenerate: cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml
+#
+# MetabolicNetwork::default(), NetworkConfig::default() and NetworkEnvironment::default(), from the
+# oracle's API: one f64 const per scalar field, as a round-trip decimal, checked against the
+# `Self { … }` literals (each nested field its type's default(); the environment's atp_demand is
+# RESTING_ATP_DEMAND). tests/golden/pathway.tsv pins them. Then the six types' field names.
+
+# Unified metabolic network state.
+#
+# Holds all pathway states plus shared cofactor pools that connect them.
+# Rust: rasayan::pathway::MetabolicNetwork::default()
+
+# ATP concentration (mM).
+# Rust: rasayan::pathway::MetabolicNetwork::default().atp
+const RY_PATHWAY_METABOLIC_NETWORK_DEFAULT_ATP = 6.0;
+
+# ADP concentration (mM).
+# Rust: rasayan::pathway::MetabolicNetwork::default().adp
+const RY_PATHWAY_METABOLIC_NETWORK_DEFAULT_ADP = 0.5;
+
+# NAD+/NADH ratio.
+# Rust: rasayan::pathway::MetabolicNetwork::default().nad_ratio
+const RY_PATHWAY_METABOLIC_NETWORK_DEFAULT_NAD_RATIO = 700.0;
+
+# Oxygen availability (normalized 0.0-1.0).
+# Rust: rasayan::pathway::MetabolicNetwork::default().oxygen
+const RY_PATHWAY_METABOLIC_NETWORK_DEFAULT_OXYGEN = 1.0;
+
+# Malonyl-CoA (mM). Fed-state signal, inhibits beta-oxidation.
+# Rust: rasayan::pathway::MetabolicNetwork::default().malonyl_coa
+const RY_PATHWAY_METABOLIC_NETWORK_DEFAULT_MALONYL_COA = 0.01;
+
+# Configuration for all pathways in the metabolic network.
+# Rust: rasayan::pathway::NetworkConfig::default()
+
+# Unused since 1.2.0, kept for compatibility: the NAD+/NADH ratio now
+# follows an explicit NADH pool ([`NAD_POOL_TOTAL`]) instead of a
+# sensitivity heuristic. Still validated as finite and `>= 0`.
+# Rust: rasayan::pathway::NetworkConfig::default().nad_ratio_sensitivity
+const RY_PATHWAY_NETWORK_CONFIG_DEFAULT_NAD_RATIO_SENSITIVITY = 50.0;
+
+# What the cell's surroundings supply and demand, held constant over a
+# tick.
+#
+# [`MetabolicNetwork::tick`] uses [`NetworkEnvironment::default`] (a
+# resting cell); [`MetabolicNetwork::tick_in`] takes any environment, e.g.
+# exercise (`atp_demand` from [`crate::energy::atp_demand_from_power`]) or
+# fasting (lower `plasma_glucose`).
+# Rust: rasayan::pathway::NetworkEnvironment::default()
+
+# ATP hydrolysed by cellular work — ion pumps, synthesis, contraction
+# (mM/s). ATP → ADP before the pools are updated.
+# Rust: rasayan::pathway::NetworkEnvironment::default().atp_demand
+const RY_PATHWAY_NETWORK_ENVIRONMENT_DEFAULT_ATP_DEMAND = 1.2;
+
+# Plasma glucose (mM) the cell's glucose pool relaxes toward.
+# Rust: rasayan::pathway::NetworkEnvironment::default().plasma_glucose
+const RY_PATHWAY_NETWORK_ENVIRONMENT_DEFAULT_PLASMA_GLUCOSE = 5.0;
+
+# Plasma free fatty acid (mM) the cell's FFA pool relaxes toward.
+# Rust: rasayan::pathway::NetworkEnvironment::default().plasma_fatty_acids
+const RY_PATHWAY_NETWORK_ENVIRONMENT_DEFAULT_PLASMA_FATTY_ACIDS = 0.3;
+
+# Plasma amino acids (mM) the cell's amino acid pool relaxes toward.
+# Rust: rasayan::pathway::NetworkEnvironment::default().plasma_amino_acids
+const RY_PATHWAY_NETWORK_ENVIRONMENT_DEFAULT_PLASMA_AMINO_ACIDS = 2.0;
+
+# MetabolicNetwork's field names, in declaration order.
+# MetabolicNetwork's field names, NUL-separated, in declaration order.
+var _RY_METABOLIC_NETWORK_FIELDS: u8[76] = {
+    103, 108, 121, 99, 111, 108, 121, 115, 105, 115, 0,  # glycolysis
+    116, 99, 97, 0,  # tca
+    101, 116, 99, 0,  # etc
+    98, 101, 116, 97, 95, 111, 120, 0,  # beta_ox
+    97, 109, 105, 110, 111, 95, 99, 97, 116, 97, 98, 0,  # amino_catab
+    97, 116, 112, 0,  # atp
+    97, 100, 112, 0,  # adp
+    110, 97, 100, 95, 114, 97, 116, 105, 111, 0,  # nad_ratio
+    111, 120, 121, 103, 101, 110, 0,  # oxygen
+    109, 97, 108, 111, 110, 121, 108, 95, 99, 111, 97, 0,  # malonyl_coa
+};
+
+# NetworkConfig's field names, in declaration order.
+# NetworkConfig's field names, NUL-separated, in declaration order.
+var _RY_NETWORK_CONFIG_FIELDS: u8[61] = {
+    103, 108, 121, 99, 111, 108, 121, 115, 105, 115, 0,  # glycolysis
+    116, 99, 97, 0,  # tca
+    101, 116, 99, 0,  # etc
+    98, 101, 116, 97, 95, 111, 120, 0,  # beta_ox
+    97, 109, 105, 110, 111, 95, 99, 97, 116, 97, 98, 0,  # amino_catab
+    110, 97, 100, 95, 114, 97, 116, 105, 111, 95, 115, 101, 110, 115, 105, 116,  # nad_ratio_sensitivity
+    105, 118, 105, 116, 121, 0,
+};
+
+# NetworkFlux's field names, in declaration order.
+# NetworkFlux's field names, NUL-separated, in declaration order.
+var _RY_NETWORK_FLUX_FIELDS: u8[72] = {
+    103, 108, 121, 99, 111, 108, 121, 115, 105, 115, 0,  # glycolysis
+    116, 99, 97, 0,  # tca
+    101, 116, 99, 0,  # etc
+    98, 101, 116, 97, 95, 111, 120, 0,  # beta_ox
+    97, 109, 105, 110, 111, 95, 99, 97, 116, 97, 98, 0,  # amino_catab
+    110, 101, 116, 95, 97, 116, 112, 0,  # net_atp
+    111, 50, 95, 99, 111, 110, 115, 117, 109, 101, 100, 0,  # o2_consumed
+    99, 111, 50, 95, 112, 114, 111, 100, 117, 99, 101, 100, 0,  # co2_produced
+};
+
+# NetworkEnvironment's field names, in declaration order.
+# NetworkEnvironment's field names, NUL-separated, in declaration order.
+var _RY_NETWORK_ENVIRONMENT_FIELDS: u8[64] = {
+    97, 116, 112, 95, 100, 101, 109, 97, 110, 100, 0,  # atp_demand
+    112, 108, 97, 115, 109, 97, 95, 103, 108, 117, 99, 111, 115, 101, 0,  # plasma_glucose
+    112, 108, 97, 115, 109, 97, 95, 102, 97, 116, 116, 121, 95, 97, 99, 105, 100, 115, 0,  # plasma_fatty_acids
+    112, 108, 97, 115, 109, 97, 95, 97, 109, 105, 110, 111, 95, 97, 99, 105, 100, 115, 0,  # plasma_amino_acids
+};
+
+# NetworkExchange's field names, in declaration order.
+# NetworkExchange's field names, NUL-separated, in declaration order.
+var _RY_NETWORK_EXCHANGE_FIELDS: u8[81] = {
+    103, 108, 117, 99, 111, 115, 101, 95, 117, 112, 116, 97, 107, 101, 0,  # glucose_uptake
+    102, 97, 116, 116, 121, 95, 97, 99, 105, 100, 95, 117, 112, 116, 97, 107, 101, 0,  # fatty_acid_uptake
+    97, 109, 105, 110, 111, 95, 97, 99, 105, 100, 95, 117, 112, 116, 97, 107, 101, 0,  # amino_acid_uptake
+    108, 97, 99, 116, 97, 116, 101, 95, 101, 120, 112, 111, 114, 116, 0,  # lactate_export
+    97, 116, 112, 95, 100, 101, 109, 97, 110, 100, 95, 109, 101, 116, 0,  # atp_demand_met
+};
+
+# NetworkTick's field names, in declaration order.
+# NetworkTick's field names, NUL-separated, in declaration order.
+var _RY_NETWORK_TICK_FIELDS: u8[14] = {
+    102, 108, 117, 120, 0,  # flux
+    101, 120, 99, 104, 97, 110, 103, 101, 0,  # exchange
+};
+
+# --- pathway.cyr ---
+
+# rasayan — src/pathway.cyr: the metabolic network (rust-old/src/pathway.rs)
+#
+# M5 part 1: the six types, their defaults and validators, `respiratory_quotient`, the private NAD+/NADH solve layer
+# and the crate-private sub-step sums, and the serde codecs. The step (`tick`, `tick_in`, the producer probe) and the
+# steady-state run join at parts 2 and 3.
+#
+# The Cyrius forms (ADR 0002 rows 7, 10, 14):
+# - Each network type holds its pathways' values by value, nested in place, as Rust's does: RyMetabolicNetwork is
+#   264 bytes (glycolysis's 11 words, TCA's 9, the ETC's 3, β-oxidation's 2, amino-acid catabolism's 3, then the
+#   five shared pools), RyNetworkConfig 832 (the five configs, then `nad_ratio_sensitivity`), RyNetworkFlux 496,
+#   RyNetworkTick 536. A nested value's address is the struct's plus its offset (`_RY_NET_*`): `&n.tca` is not taken
+#   at the pin.
+# - `solve_decreasing`'s closure (`impl Fn(f64) -> f64`, capturing the balance's inputs) is a fn pointer called through
+#   callptr with a context struct: `excess(ctx, n)` (port plan §7.3, probe 4). Its loop is transcribed statement for
+#   statement (P9); `st`, when not 0, gets the iterations entered (st[0]) and how the solve ended (st[1]), which the
+#   golden rows pin and the network's step does not ask for.
+# - The validators chain the pathways' own and then the shared pools' guards, in Rust's order; the codecs write the
+#   nested values with the pathways' own writers and read them with their node readers (`_ry_<t>_from_node`).
+
+# ── the types ──
+
+# Unified metabolic network state: every pathway's state plus the shared cofactor pools that connect them.
+struct RyMetabolicNetwork {
+    glycolysis: RyGlycolysisState;
+    tca: RyTcaState;
+    etc: RyEtcState;
+    beta_ox: RyBetaOxState;
+    amino_catab: RyAminoCatabState;
+    atp: f64;
+    adp: f64;
+    nad_ratio: f64;
+    oxygen: f64;
+    malonyl_coa: f64;
+}
+
+# Configuration for all pathways in the network. `nad_ratio_sensitivity` is unused since 1.2.0 (the NAD+/NADH ratio
+# follows an explicit NADH pool) and kept for compatibility: still validated as finite and >= 0.
+struct RyNetworkConfig {
+    glycolysis: RyGlycolysisConfig;
+    tca: RyTcaConfig;
+    etc: RyEtcConfig;
+    beta_ox: RyBetaOxConfig;
+    amino_catab: RyAminoCatabConfig;
+    nad_ratio_sensitivity: f64;
+}
+
+# Combined flux from all pathways for a tick: the pathway fluxes, the net ATP change applied to the shared pool
+# (limited to [−atp, adp], so ATP + ADP is conserved), the O2 consumed and the CO2 produced (mM).
+struct RyNetworkFlux {
+    glycolysis: RyGlycolysisFlux;
+    tca: RyTcaFlux;
+    etc: RyEtcFlux;
+    beta_ox: RyBetaOxFlux;
+    amino_catab: RyAminoCatabFlux;
+    net_atp: f64;
+    o2_consumed: f64;
+    co2_produced: f64;
+}
+
+# What the cell's surroundings supply and demand over a tick: ATP hydrolysed by cellular work (mM/s) and the plasma
+# glucose, free fatty acid and amino acid levels the cell's pools relax toward (mM).
+struct RyNetworkEnvironment {
+    atp_demand: f64;
+    plasma_glucose: f64;
+    plasma_fatty_acids: f64;
+    plasma_amino_acids: f64;
+}
+
+# Exchange between the cell and plasma over a tick (mM of cell volume): substrate uptake (negative: released), the
+# lactate exported, and the ATP the environment's demand actually hydrolysed.
+struct RyNetworkExchange {
+    glucose_uptake: f64;
+    fatty_acid_uptake: f64;
+    amino_acid_uptake: f64;
+    lactate_export: f64;
+    atp_demand_met: f64;
+}
+
+# Result of a network tick in an environment: the pathway fluxes plus what crossed the plasma membrane.
+struct RyNetworkTick {
+    flux: RyNetworkFlux;
+    exchange: RyNetworkExchange;
+}
+
+# The nested values' byte offsets.
+const _RY_NET_TCA = 88;
+const _RY_NET_ETC = 160;
+const _RY_NET_BETA_OX = 184;
+const _RY_NET_AMINO = 200;
+const _RY_NET_POOLS = 224;
+const _RY_NET_SIZE = 264;
+const _RY_NETCFG_TCA = 304;
+const _RY_NETCFG_ETC = 560;
+const _RY_NETCFG_BETA_OX = 672;
+const _RY_NETCFG_AMINO = 720;
+const _RY_NETCFG_SIZE = 832;
+const _RY_NETFLUX_TCA = 120;
+const _RY_NETFLUX_ETC = 232;
+const _RY_NETFLUX_BETA_OX = 312;
+const _RY_NETFLUX_AMINO = 376;
+const _RY_NETFLUX_TOTALS = 472;
+const _RY_NETFLUX_SIZE = 496;
+const _RY_NETTICK_SIZE = 536;
+
+# ── defaults ──
+
+# Fills *out with Rust's MetabolicNetwork::default(): every pathway at its default, ATP 6, ADP 0.5, NAD+/NADH 700,
+# full oxygen and malonyl-CoA 0.01 mM (src/pathway_data.cyr).
+fn ry_metabolic_network_default(out: *RyMetabolicNetwork) {
+    var w = out;
+    ry_glycolysis_state_default(w);
+    ry_tca_state_default(w + _RY_NET_TCA);
+    ry_etc_state_default(w + _RY_NET_ETC);
+    ry_beta_ox_state_default(w + _RY_NET_BETA_OX);
+    ry_amino_catab_state_default(w + _RY_NET_AMINO);
+    out.atp = RY_PATHWAY_METABOLIC_NETWORK_DEFAULT_ATP;
+    out.adp = RY_PATHWAY_METABOLIC_NETWORK_DEFAULT_ADP;
+    out.nad_ratio = RY_PATHWAY_METABOLIC_NETWORK_DEFAULT_NAD_RATIO;
+    out.oxygen = RY_PATHWAY_METABOLIC_NETWORK_DEFAULT_OXYGEN;
+    out.malonyl_coa = RY_PATHWAY_METABOLIC_NETWORK_DEFAULT_MALONYL_COA;
+    return 0;
+}
+
+# Fills *out with Rust's NetworkConfig::default(): every pathway's default config, `nad_ratio_sensitivity` 50.
+fn ry_network_config_default(out: *RyNetworkConfig) {
+    var w = out;
+    ry_glycolysis_config_default(w);
+    ry_tca_config_default(w + _RY_NETCFG_TCA);
+    ry_etc_config_default(w + _RY_NETCFG_ETC);
+    ry_beta_ox_config_default(w + _RY_NETCFG_BETA_OX);
+    ry_amino_catab_config_default(w + _RY_NETCFG_AMINO);
+    out.nad_ratio_sensitivity = RY_PATHWAY_NETWORK_CONFIG_DEFAULT_NAD_RATIO_SENSITIVITY;
+    return 0;
+}
+
+# Fills *out with Rust's NetworkEnvironment::default(), a resting, fed cell: RESTING_ATP_DEMAND, plasma glucose 5,
+# free fatty acids 0.3 and amino acids 2 mM.
+fn ry_network_environment_default(out: *RyNetworkEnvironment) {
+    out.atp_demand = RY_PATHWAY_NETWORK_ENVIRONMENT_DEFAULT_ATP_DEMAND;
+    out.plasma_glucose = RY_PATHWAY_NETWORK_ENVIRONMENT_DEFAULT_PLASMA_GLUCOSE;
+    out.plasma_fatty_acids = RY_PATHWAY_NETWORK_ENVIRONMENT_DEFAULT_PLASMA_FATTY_ACIDS;
+    out.plasma_amino_acids = RY_PATHWAY_NETWORK_ENVIRONMENT_DEFAULT_PLASMA_AMINO_ACIDS;
+    return 0;
+}
+
+# Fills *out with Rust's NetworkFlux::default(): every field 0.
+fn ry_network_flux_default(out: *RyNetworkFlux) {
+    memset(out, 0, _RY_NETFLUX_SIZE);
+    return 0;
+}
+
+# Fills *out with Rust's NetworkExchange::default(): every field 0.
+fn ry_network_exchange_default(out: *RyNetworkExchange) {
+    memset(out, 0, 40);
+    return 0;
+}
+
+# Fills *out with Rust's NetworkTick::default(): every field 0.
+fn ry_network_tick_default(out: *RyNetworkTick) {
+    memset(out, 0, _RY_NETTICK_SIZE);
+    return 0;
+}
+
+# ── validation ──
+
+# Ok(0) when every pathway state validates (glycolysis, TCA, the ETC, β-oxidation, amino-acid catabolism, in that
+# order), ATP and ADP are finite and >= 0, the NAD+/NADH ratio finite and > 0, oxygen in [0, 1] and malonyl-CoA finite
+# and >= 0; else the first failure's Err. Mirrors `MetabolicNetwork::validate`.
+#must_use
+fn ry_metabolic_network_validate(p: *RyMetabolicNetwork): Result {
+    var w = p;
+    var t1, v1 = ry_glycolysis_state_validate(w);
+    if (is_err_result(t1) == 1) { return Err(v1); }
+    var t2, v2 = ry_tca_state_validate(w + _RY_NET_TCA);
+    if (is_err_result(t2) == 1) { return Err(v2); }
+    var t3, v3 = ry_etc_state_validate(w + _RY_NET_ETC);
+    if (is_err_result(t3) == 1) { return Err(v3); }
+    var t4, v4 = ry_beta_ox_state_validate(w + _RY_NET_BETA_OX);
+    if (is_err_result(t4) == 1) { return Err(v4); }
+    var t5, v5 = ry_amino_catab_state_validate(w + _RY_NET_AMINO);
+    if (is_err_result(t5) == 1) { return Err(v5); }
+    var atp: f64 = p.atp;
+    var adp: f64 = p.adp;
+    var ratio: f64 = p.nad_ratio;
+    var oxygen: f64 = p.oxygen;
+    var malonyl: f64 = p.malonyl_coa;
+    var t6, v6 = _ry_guard_non_negative("atp", atp);
+    if (is_err_result(t6) == 1) { return Err(v6); }
+    var t7, v7 = _ry_guard_non_negative("adp", adp);
+    if (is_err_result(t7) == 1) { return Err(v7); }
+    var t8, v8 = _ry_guard_positive("nad_ratio", ratio);
+    if (is_err_result(t8) == 1) { return Err(v8); }
+    var t9, v9 = _ry_guard_fraction("oxygen", oxygen);
+    if (is_err_result(t9) == 1) { return Err(v9); }
+    var ta, va = _ry_guard_non_negative("malonyl_coa", malonyl);
+    if (is_err_result(ta) == 1) { return Err(va); }
+    return Ok(0);
+}
+
+# Ok(0) when every pathway config validates (in declaration order) and `nad_ratio_sensitivity` is finite and >= 0;
+# else the first failure's Err. Mirrors `NetworkConfig::validate`.
+#must_use
+fn ry_network_config_validate(p: *RyNetworkConfig): Result {
+    var w = p;
+    var t1, v1 = ry_glycolysis_config_validate(w);
+    if (is_err_result(t1) == 1) { return Err(v1); }
+    var t2, v2 = ry_tca_config_validate(w + _RY_NETCFG_TCA);
+    if (is_err_result(t2) == 1) { return Err(v2); }
+    var t3, v3 = ry_etc_config_validate(w + _RY_NETCFG_ETC);
+    if (is_err_result(t3) == 1) { return Err(v3); }
+    var t4, v4 = ry_beta_ox_config_validate(w + _RY_NETCFG_BETA_OX);
+    if (is_err_result(t4) == 1) { return Err(v4); }
+    var t5, v5 = ry_amino_catab_config_validate(w + _RY_NETCFG_AMINO);
+    if (is_err_result(t5) == 1) { return Err(v5); }
+    var s: f64 = p.nad_ratio_sensitivity;
+    var t6, v6 = _ry_guard_non_negative("nad_ratio_sensitivity", s);
+    if (is_err_result(t6) == 1) { return Err(v6); }
+    return Ok(0);
+}
+
+# Ok(0) when every field is finite and >= 0; else the first failing one's Err, in declaration order. Mirrors
+# `NetworkEnvironment::validate`.
+#must_use
+fn ry_network_environment_validate(p: *RyNetworkEnvironment): Result {
+    var w = p;
+    var name = &_RY_NETWORK_ENVIRONMENT_FIELDS;
+    var k = 0;
+    while (k < 4) {
+        var value: f64 = load64(w + 8 * k);
+        var t, v = _ry_guard_non_negative(name, value);
+        if (is_err_result(t) == 1) { return Err(v); }
+        name = name + strlen(name) + 1;
+        k = k + 1;
+    }
+    return Ok(0);
+}
+
+# Respiratory quotient, CO2 produced / O2 consumed (≈ 1.0 for glucose, 0.7 for fat, 0.8 for protein), of flux *fl.
+# 0.0 when no O2 was consumed (o2_consumed <= f64::EPSILON): the RQ is undefined then, and 0.0 is a sentinel. The
+# network itself is not read. Mirrors `MetabolicNetwork::respiratory_quotient`.
+#must_use
+fn ry_metabolic_network_respiratory_quotient(p: *RyMetabolicNetwork, fl: *RyNetworkFlux): f64 {
+    var eps: f64 = 0x3CB0000000000000;           # f64::EPSILON
+    var o2: f64 = fl.o2_consumed;
+    if (o2 > eps) {
+        var co2: f64 = fl.co2_produced;
+        var rq: f64 = co2 / o2;
+        return rq;
+    }
+    return 0.0;
+}
+
+# ── the NAD+/NADH solve layer ──
+
+# The NAD factor the mitochondrial producers apply: min(r / RESTING_NAD_RATIO, MAX_NAD_FACTOR). Mirrors the private
+# `nad_factor`.
+#must_use
+#pure
+fn _ry_pathway_nad_factor(ratio: f64): f64 {
+    var scaled: f64 = ratio / RY_RESTING_NAD_RATIO;
+    var f: f64 = _ry_min(scaled, RY_MAX_NAD_FACTOR);
+    return f;
+}
+
+# The NAD+/NADH ratio of an NADH concentration `n`, within the ratio bounds: clamp((T − n) / n, MIN, MAX), NaN
+# propagating as Rust's clamp does. Mirrors the private `ratio_of`.
+#must_use
+#pure
+fn _ry_pathway_ratio_of(n: f64): f64 {
+    var r: f64 = (RY_PATHWAY_NAD_POOL_TOTAL - n) / n;
+    var c: f64 = _ry_clamp(r, RY_PATHWAY_NAD_RATIO_MIN, RY_PATHWAY_NAD_RATIO_MAX);
+    return c;
+}
+
+# NADH oxidized over one step at end-of-step NADH `n`: Complex I (capacity `c_ci`, Km COMPLEX_I_KM_NADH) plus LDH
+# (capacity `c_ldh`, Km LDH_KM_NADH), both capacities already multiplied by the step length. Mirrors the private
+# `nadh_oxidized`.
+#must_use
+#pure
+fn _ry_pathway_nadh_oxidized(n: f64, c_ci: f64, c_ldh: f64): f64 {
+    var ci: f64 = (c_ci * n) / (RY_ETC_COMPLEX_I_KM_NADH + n);
+    var ldh: f64 = (c_ldh * n) / (RY_PATHWAY_LDH_KM_NADH + n);
+    var s: f64 = ci + ldh;
+    return s;
+}
+
+# The inputs `balanced_nad_ratio`'s closure captures (the producers' outputs already sanitized).
+struct _RyPathwayBalance {
+    pool: f64;
+    glycolytic: f64;
+    mitochondrial: f64;
+    c_ci: f64;
+    c_ldh: f64;
+}
+
+# The inputs `end_of_step_nadh`'s closure captures.
+struct _RyPathwayAvail {
+    avail: f64;
+    c_ci: f64;
+    c_ldh: f64;
+}
+
+# `balanced_nad_ratio`'s closure at NADH `n`: pool + glycolytic·g(r(n)) + mitochondrial·f(r(n)) − oxidized(n) − n.
+#must_use
+fn _ry_pathway_balance_excess(c: *_RyPathwayBalance, n: f64): f64 {
+    var r: f64 = _ry_pathway_ratio_of(n);
+    var g: f64 = _ry_glycolysis_gapdh_nad_factor(r);
+    var f: f64 = _ry_pathway_nad_factor(r);
+    var ox: f64 = _ry_pathway_nadh_oxidized(n, c.c_ci, c.c_ldh);
+    var e: f64 = (((c.pool + (c.glycolytic * g)) + (c.mitochondrial * f)) - ox) - n;
+    return e;
+}
+
+# `end_of_step_nadh`'s closure at NADH `n`: avail − oxidized(n) − n.
+#must_use
+fn _ry_pathway_avail_excess(c: *_RyPathwayAvail, n: f64): f64 {
+    var ox: f64 = _ry_pathway_nadh_oxidized(n, c.c_ci, c.c_ldh);
+    var e: f64 = (c.avail - ox) - n;
+    return e;
+}
+
+# The root of a decreasing `excess` on [lo, hi], by Illinois-modified regula falsi, statement for statement as
+# Rust's private `solve_decreasing` (P9): lo when excess(lo) <= 0, hi when excess(hi) >= 0, else at most
+# SOLVE_MAX_ITERATIONS secant steps, each one's repeat on the same side halving the other end's value, stopping on an
+# exact root, a secant point outside the bracket, or a bracket within SOLVE_RELATIVE_TOLERANCE of hi (the midpoint
+# then). `excess` is called as callptr(excess, ctx, x). When `st` is not 0, st[0] gets the iterations entered and
+# st[1] how the solve ended: 0 lo, 1 hi, 2 an exact root, 3 the bracket or tolerance test, 4 the iteration cap.
+fn _ry_pathway_solve_decreasing(lo0: f64, hi0: f64, excess, ctx, st: *i64): f64 {
+    var lo: f64 = lo0;
+    var hi: f64 = hi0;
+    var it = 0;
+    var exit = 4;
+    var f_lo: f64 = callptr(excess, ctx, lo);
+    if (f_lo <= 0.0) {
+        if (st != 0) {
+            st[0] = 0;
+            st[1] = 0;
+        }
+        return lo;
+    }
+    var f_hi: f64 = callptr(excess, ctx, hi);
+    if (f_hi >= 0.0) {
+        if (st != 0) {
+            st[0] = 0;
+            st[1] = 1;
+        }
+        return hi;
+    }
+    # Which end moved last (−1 low, +1 high): a repeat halves the other end's value.
+    var last = 0;
+    var result: f64 = 0.0;
+    var done = 0;
+    while (it < _RY_PATHWAY_SOLVE_MAX_ITERATIONS && done == 0) {
+        it = it + 1;
+        var x: f64 = ((lo * f_hi) - (hi * f_lo)) / (f_hi - f_lo);
+        var inside = 0;
+        if (x > lo) {
+            if (x < hi) { inside = 1; }
+        }
+        var width: f64 = hi - lo;
+        var tol: f64 = _RY_PATHWAY_SOLVE_RELATIVE_TOLERANCE * hi;
+        if (inside == 0 || width <= tol) {
+            exit = 3;
+            done = 1;
+        } else {
+            var f_x: f64 = callptr(excess, ctx, x);
+            if (f_x > 0.0) {
+                lo = x;
+                f_lo = f_x;
+                if (last == 0 - 1) { f_hi = f_hi * 0.5; }
+                last = 0 - 1;
+            } elif (f_x < 0.0) {
+                hi = x;
+                f_hi = f_x;
+                if (last == 1) { f_lo = f_lo * 0.5; }
+                last = 1;
+            } else {
+                result = x;
+                exit = 2;
+                done = 2;
+            }
+        }
+    }
+    if (st != 0) {
+        st[0] = it;
+        st[1] = exit;
+    }
+    if (done == 2) { return result; }
+    var mid: f64 = 0.5 * (lo + hi);
+    return mid;
+}
+
+# The self-consistent NAD+/NADH ratio for one step: the end-of-step NADH N solving (backward Euler)
+# pool + glycolytic·gapdh_nad_factor(r(N)) + mitochondrial·nad_factor(r(N)) − oxidized(N) = N over
+# [T / (1 + MAX), T / (1 + MIN)], with `glycolytic` and `mitochondrial` the producers' NADH output this step at the
+# resting ratio (each sanitized by `conc`), returned as r(N). The solved NADH goes to *nout and the solve's count to
+# `st` (either may be 0). Mirrors the private `balanced_nad_ratio`.
+fn _ry_pathway_balanced_nad_ratio(pool: f64, glycolytic: f64, mitochondrial: f64, c_ci: f64, c_ldh: f64, st: *i64,
+  nout: *f64): f64 {
+    var ctx: _RyPathwayBalance;
+    var g: f64 = _ry_guard_conc(glycolytic);
+    var m: f64 = _ry_guard_conc(mitochondrial);
+    ctx.pool = pool;
+    ctx.glycolytic = g;
+    ctx.mitochondrial = m;
+    ctx.c_ci = c_ci;
+    ctx.c_ldh = c_ldh;
+    var lo: f64 = RY_PATHWAY_NAD_POOL_TOTAL / (1.0 + RY_PATHWAY_NAD_RATIO_MAX);
+    var hi: f64 = RY_PATHWAY_NAD_POOL_TOTAL / (1.0 + RY_PATHWAY_NAD_RATIO_MIN);
+    var n: f64 = _ry_pathway_solve_decreasing(lo, hi, &_ry_pathway_balance_excess, &ctx, st);
+    if (nout != 0) { nout[0] = n; }
+    var r: f64 = _ry_pathway_ratio_of(n);
+    return r;
+}
+
+# The end-of-step NADH when `avail` (the pool plus this step's production) is oxidized by Complex I and LDH, solved
+# implicitly: N + oxidized(N) = avail on [0, avail]; 0 for avail <= 0 (st[1] = 5 then: no solve). Mirrors the private
+# `end_of_step_nadh`.
+fn _ry_pathway_end_of_step_nadh(avail: f64, c_ci: f64, c_ldh: f64, st: *i64): f64 {
+    if (avail <= 0.0) {
+        if (st != 0) {
+            st[0] = 0;
+            st[1] = 5;
+        }
+        return 0.0;
+    }
+    var ctx: _RyPathwayAvail;
+    ctx.avail = avail;
+    ctx.c_ci = c_ci;
+    ctx.c_ldh = c_ldh;
+    var n: f64 = _ry_pathway_solve_decreasing(0.0, avail, &_ry_pathway_avail_excess, &ctx, st);
+    return n;
+}
+
+# LDH's capacity over a step of length `h` at pyruvate `pyruvate` (mM): LDH_VMAX·p / (LDH_KM_PYRUVATE + p)·h, p the
+# pyruvate sanitized by `conc`. Mirrors the private `ldh_capacity`.
+#must_use
+#pure
+fn _ry_pathway_ldh_capacity(pyruvate: f64, h: f64): f64 {
+    var p: f64 = _ry_guard_conc(pyruvate);
+    var c: f64 = ((RY_PATHWAY_LDH_VMAX * p) / (RY_PATHWAY_LDH_KM_PYRUVATE + p)) * h;
+    return c;
+}
+
+# ── the sub-step sums ──
+
+# Adds a sub-step's flux `o` into the tick total `t`: each pathway flux by its own accumulate (amounts summed, rates
+# weighted by `weight`), then the net ATP, O2 and CO2 summed. Mirrors the crate-private `NetworkFlux::accumulate`.
+fn _ry_network_flux_accumulate(t: *RyNetworkFlux, o: *RyNetworkFlux, weight: f64) {
+    var wt = t;
+    var wo = o;
+    _ry_glycolysis_flux_accumulate(wt, wo, weight);
+    _ry_tca_flux_accumulate(wt + _RY_NETFLUX_TCA, wo + _RY_NETFLUX_TCA, weight);
+    _ry_etc_flux_accumulate(wt + _RY_NETFLUX_ETC, wo + _RY_NETFLUX_ETC, weight);
+    _ry_beta_ox_flux_accumulate(wt + _RY_NETFLUX_BETA_OX, wo + _RY_NETFLUX_BETA_OX, weight);
+    _ry_amino_catab_flux_accumulate(wt + _RY_NETFLUX_AMINO, wo + _RY_NETFLUX_AMINO, weight);
+    var net: f64 = t.net_atp + o.net_atp;
+    var o2: f64 = t.o2_consumed + o.o2_consumed;
+    var co2: f64 = t.co2_produced + o.co2_produced;
+    t.net_atp = net;
+    t.o2_consumed = o2;
+    t.co2_produced = co2;
+    return 0;
+}
+
+# Adds a sub-step's exchange `o` into the tick total `t`, field by field. Mirrors the crate-private
+# `NetworkExchange::accumulate`.
+fn _ry_network_exchange_accumulate(t: *RyNetworkExchange, o: *RyNetworkExchange) {
+    var wt = t;
+    var wo = o;
+    var k = 0;
+    while (k < 5) {
+        var x: f64 = load64(wt + 8 * k);
+        var y: f64 = load64(wo + 8 * k);
+        var s: f64 = x + y;
+        store64(wt + 8 * k, load64(&s));
+        k = k + 1;
+    }
+    return 0;
+}
+
+# ── JSON (P7: serde_json's documents) ──
+
+# Appends MetabolicNetwork `p` as serde_json writes it, each pathway state a nested object and then the five pools, on
+# allocator `a`: Ok(0), or Err(RY_ERR_OUT_OF_MEMORY) when the builder could not grow.
+#must_use
+fn ry_metabolic_network_to_json_a(a, sb, p: *RyMetabolicNetwork): Result {
+    var w = p;
+    var name = &_RY_METABOLIC_NETWORK_FIELDS;
+    var e = _ry_jw_byte(a, sb, 123);
+    e = e | _ry_jw_key(a, sb, name, 1);
+    var t1, v1 = ry_glycolysis_state_to_json_a(a, sb, w);
+    if (is_err_result(t1) == 1) { e = 1; }
+    name = name + strlen(name) + 1;
+    e = e | _ry_jw_key(a, sb, name, 0);
+    var t2, v2 = ry_tca_state_to_json_a(a, sb, w + _RY_NET_TCA);
+    if (is_err_result(t2) == 1) { e = 1; }
+    name = name + strlen(name) + 1;
+    e = e | _ry_jw_key(a, sb, name, 0);
+    var t3, v3 = ry_etc_state_to_json_a(a, sb, w + _RY_NET_ETC);
+    if (is_err_result(t3) == 1) { e = 1; }
+    name = name + strlen(name) + 1;
+    e = e | _ry_jw_key(a, sb, name, 0);
+    var t4, v4 = ry_beta_ox_state_to_json_a(a, sb, w + _RY_NET_BETA_OX);
+    if (is_err_result(t4) == 1) { e = 1; }
+    name = name + strlen(name) + 1;
+    e = e | _ry_jw_key(a, sb, name, 0);
+    var t5, v5 = ry_amino_catab_state_to_json_a(a, sb, w + _RY_NET_AMINO);
+    if (is_err_result(t5) == 1) { e = 1; }
+    var k = 0;
+    while (k < 5) {
+        name = name + strlen(name) + 1;
+        e = e | _ry_jw_key(a, sb, name, 0);
+        var x: f64 = load64(w + _RY_NET_POOLS + 8 * k);
+        e = e | _ry_jw_f64(a, sb, x);
+        k = k + 1;
+    }
+    e = e | _ry_jw_byte(a, sb, 125);
+    if (e != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return Ok(0);
+}
+
+# ry_metabolic_network_to_json_a on the default allocator (a builder from str_builder_new).
+#must_use
+fn ry_metabolic_network_to_json(sb, p: *RyMetabolicNetwork): Result {
+    return ry_metabolic_network_to_json_a(default_alloc(), sb, p);
+}
+
+# The MetabolicNetwork at node `v`, by serde's rules (an object by field name, or an array of its ten fields; each
+# pathway state itself an object or an array), into the 264 bytes at `w`: 1, or 0 for a refusal.
+#must_use
+fn _ry_metabolic_network_from_node(v, w): i64 {
+    var form = _ry_jr_form(v, 10);
+    if (form == 0) { return 0; }
+    var name = &_RY_METABOLIC_NETWORK_FIELDS;
+    var ok = _ry_glycolysis_state_from_node(_ry_jr_at(v, form, 0, name), w);
+    name = name + strlen(name) + 1;
+    if (ok == 1) { ok = _ry_tca_state_from_node(_ry_jr_at(v, form, 1, name), w + _RY_NET_TCA); }
+    name = name + strlen(name) + 1;
+    if (ok == 1) { ok = _ry_etc_state_from_node(_ry_jr_at(v, form, 2, name), w + _RY_NET_ETC); }
+    name = name + strlen(name) + 1;
+    if (ok == 1) { ok = _ry_beta_ox_state_from_node(_ry_jr_at(v, form, 3, name), w + _RY_NET_BETA_OX); }
+    name = name + strlen(name) + 1;
+    if (ok == 1) { ok = _ry_amino_catab_state_from_node(_ry_jr_at(v, form, 4, name), w + _RY_NET_AMINO); }
+    var k = 5;
+    while (k < 10 && ok == 1) {
+        name = name + strlen(name) + 1;
+        if (_ry_jr_f64(_ry_jr_at(v, form, k, name), w + _RY_NET_POOLS + 8 * (k - 5)) == 0) { ok = 0; }
+        k = k + 1;
+    }
+    return ok;
+}
+
+# Reads a MetabolicNetwork from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`): Ok(0)
+# with *out filled, or Err(RY_ERR_DESERIALIZE) with *out untouched.
+#must_use
+fn ry_metabolic_network_from_json_a(a, buf, n, out: *RyMetabolicNetwork): Result {
+    var w[264];
+    var v = _ry_jr_parse(a, buf, n);
+    if (_ry_metabolic_network_from_node(v, &w) == 0) {
+        return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "MetabolicNetwork", 16));
+    }
+    memcpy(out, &w, _RY_NET_SIZE);
+    return Ok(0);
+}
+
+# ry_metabolic_network_from_json_a on the default allocator (the tree is never freed: for a one-off read).
+#must_use
+fn ry_metabolic_network_from_json(buf, n, out: *RyMetabolicNetwork): Result {
+    return ry_metabolic_network_from_json_a(default_alloc(), buf, n, out);
+}
+
+# Appends NetworkConfig `p` as serde_json writes it, each pathway config a nested object (β-oxidation's chain length an
+# integer, amino-acid catabolism's routing nested again) and then `nad_ratio_sensitivity`, on allocator `a`: Ok(0), or
+# Err(RY_ERR_OUT_OF_MEMORY).
+#must_use
+fn ry_network_config_to_json_a(a, sb, p: *RyNetworkConfig): Result {
+    var w = p;
+    var name = &_RY_NETWORK_CONFIG_FIELDS;
+    var e = _ry_jw_byte(a, sb, 123);
+    e = e | _ry_jw_key(a, sb, name, 1);
+    var t1, v1 = ry_glycolysis_config_to_json_a(a, sb, w);
+    if (is_err_result(t1) == 1) { e = 1; }
+    name = name + strlen(name) + 1;
+    e = e | _ry_jw_key(a, sb, name, 0);
+    var t2, v2 = ry_tca_config_to_json_a(a, sb, w + _RY_NETCFG_TCA);
+    if (is_err_result(t2) == 1) { e = 1; }
+    name = name + strlen(name) + 1;
+    e = e | _ry_jw_key(a, sb, name, 0);
+    var t3, v3 = ry_etc_config_to_json_a(a, sb, w + _RY_NETCFG_ETC);
+    if (is_err_result(t3) == 1) { e = 1; }
+    name = name + strlen(name) + 1;
+    e = e | _ry_jw_key(a, sb, name, 0);
+    var t4, v4 = ry_beta_ox_config_to_json_a(a, sb, w + _RY_NETCFG_BETA_OX);
+    if (is_err_result(t4) == 1) { e = 1; }
+    name = name + strlen(name) + 1;
+    e = e | _ry_jw_key(a, sb, name, 0);
+    var t5, v5 = ry_amino_catab_config_to_json_a(a, sb, w + _RY_NETCFG_AMINO);
+    if (is_err_result(t5) == 1) { e = 1; }
+    name = name + strlen(name) + 1;
+    e = e | _ry_jw_key(a, sb, name, 0);
+    var s: f64 = p.nad_ratio_sensitivity;
+    e = e | _ry_jw_f64(a, sb, s);
+    e = e | _ry_jw_byte(a, sb, 125);
+    if (e != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return Ok(0);
+}
+
+# ry_network_config_to_json_a on the default allocator.
+#must_use
+fn ry_network_config_to_json(sb, p: *RyNetworkConfig): Result {
+    return ry_network_config_to_json_a(default_alloc(), sb, p);
+}
+
+# The NetworkConfig at node `v`, by serde's rules (an object by field name, or an array of its six fields; each
+# pathway config itself an object or an array), into the 832 bytes at `w`: 1, or 0 for a refusal.
+#must_use
+fn _ry_network_config_from_node(v, w): i64 {
+    var form = _ry_jr_form(v, 6);
+    if (form == 0) { return 0; }
+    var name = &_RY_NETWORK_CONFIG_FIELDS;
+    var ok = _ry_glycolysis_config_from_node(_ry_jr_at(v, form, 0, name), w);
+    name = name + strlen(name) + 1;
+    if (ok == 1) { ok = _ry_tca_config_from_node(_ry_jr_at(v, form, 1, name), w + _RY_NETCFG_TCA); }
+    name = name + strlen(name) + 1;
+    if (ok == 1) { ok = _ry_etc_config_from_node(_ry_jr_at(v, form, 2, name), w + _RY_NETCFG_ETC); }
+    name = name + strlen(name) + 1;
+    if (ok == 1) { ok = _ry_beta_ox_config_from_node(_ry_jr_at(v, form, 3, name), w + _RY_NETCFG_BETA_OX); }
+    name = name + strlen(name) + 1;
+    if (ok == 1) { ok = _ry_amino_catab_config_from_node(_ry_jr_at(v, form, 4, name), w + _RY_NETCFG_AMINO); }
+    name = name + strlen(name) + 1;
+    if (ok == 1) { ok = _ry_jr_f64(_ry_jr_at(v, form, 5, name), w + _RY_NETCFG_SIZE - 8); }
+    return ok;
+}
+
+# Reads a NetworkConfig from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`): Ok(0) with
+# *out filled, or Err(RY_ERR_DESERIALIZE) with *out untouched. Serde reads any value: validate refuses the bad ones.
+#must_use
+fn ry_network_config_from_json_a(a, buf, n, out: *RyNetworkConfig): Result {
+    var w[832];
+    var v = _ry_jr_parse(a, buf, n);
+    if (_ry_network_config_from_node(v, &w) == 0) {
+        return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "NetworkConfig", 13));
+    }
+    memcpy(out, &w, _RY_NETCFG_SIZE);
+    return Ok(0);
+}
+
+# ry_network_config_from_json_a on the default allocator (the tree is never freed: for a one-off read).
+#must_use
+fn ry_network_config_from_json(buf, n, out: *RyNetworkConfig): Result {
+    return ry_network_config_from_json_a(default_alloc(), buf, n, out);
+}
+
+# Appends NetworkFlux `f` as serde_json writes it, each pathway flux a nested object (its rates one array) and then
+# `net_atp`, `o2_consumed` and `co2_produced`, on allocator `a`: Ok(0), or Err(RY_ERR_OUT_OF_MEMORY).
+#must_use
+fn ry_network_flux_to_json_a(a, sb, f: *RyNetworkFlux): Result {
+    var w = f;
+    var name = &_RY_NETWORK_FLUX_FIELDS;
+    var e = _ry_jw_byte(a, sb, 123);
+    e = e | _ry_jw_key(a, sb, name, 1);
+    var t1, v1 = ry_glycolysis_flux_to_json_a(a, sb, w);
+    if (is_err_result(t1) == 1) { e = 1; }
+    name = name + strlen(name) + 1;
+    e = e | _ry_jw_key(a, sb, name, 0);
+    var t2, v2 = ry_tca_flux_to_json_a(a, sb, w + _RY_NETFLUX_TCA);
+    if (is_err_result(t2) == 1) { e = 1; }
+    name = name + strlen(name) + 1;
+    e = e | _ry_jw_key(a, sb, name, 0);
+    var t3, v3 = ry_etc_flux_to_json_a(a, sb, w + _RY_NETFLUX_ETC);
+    if (is_err_result(t3) == 1) { e = 1; }
+    name = name + strlen(name) + 1;
+    e = e | _ry_jw_key(a, sb, name, 0);
+    var t4, v4 = ry_beta_ox_flux_to_json_a(a, sb, w + _RY_NETFLUX_BETA_OX);
+    if (is_err_result(t4) == 1) { e = 1; }
+    name = name + strlen(name) + 1;
+    e = e | _ry_jw_key(a, sb, name, 0);
+    var t5, v5 = ry_amino_catab_flux_to_json_a(a, sb, w + _RY_NETFLUX_AMINO);
+    if (is_err_result(t5) == 1) { e = 1; }
+    var k = 0;
+    while (k < 3) {
+        name = name + strlen(name) + 1;
+        e = e | _ry_jw_key(a, sb, name, 0);
+        var x: f64 = load64(w + _RY_NETFLUX_TOTALS + 8 * k);
+        e = e | _ry_jw_f64(a, sb, x);
+        k = k + 1;
+    }
+    e = e | _ry_jw_byte(a, sb, 125);
+    if (e != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return Ok(0);
+}
+
+# ry_network_flux_to_json_a on the default allocator.
+#must_use
+fn ry_network_flux_to_json(sb, f: *RyNetworkFlux): Result {
+    return ry_network_flux_to_json_a(default_alloc(), sb, f);
+}
+
+# The NetworkFlux at node `v`, by serde's rules (an object by field name, or an array of its eight fields; each pathway
+# flux itself an object or an array), into the 496 bytes at `w`: 1, or 0 for a refusal.
+#must_use
+fn _ry_network_flux_from_node(v, w): i64 {
+    var form = _ry_jr_form(v, 8);
+    if (form == 0) { return 0; }
+    var name = &_RY_NETWORK_FLUX_FIELDS;
+    var ok = _ry_glycolysis_flux_from_node(_ry_jr_at(v, form, 0, name), w);
+    name = name + strlen(name) + 1;
+    if (ok == 1) { ok = _ry_tca_flux_from_node(_ry_jr_at(v, form, 1, name), w + _RY_NETFLUX_TCA); }
+    name = name + strlen(name) + 1;
+    if (ok == 1) { ok = _ry_etc_flux_from_node(_ry_jr_at(v, form, 2, name), w + _RY_NETFLUX_ETC); }
+    name = name + strlen(name) + 1;
+    if (ok == 1) { ok = _ry_beta_ox_flux_from_node(_ry_jr_at(v, form, 3, name), w + _RY_NETFLUX_BETA_OX); }
+    name = name + strlen(name) + 1;
+    if (ok == 1) { ok = _ry_amino_catab_flux_from_node(_ry_jr_at(v, form, 4, name), w + _RY_NETFLUX_AMINO); }
+    var k = 5;
+    while (k < 8 && ok == 1) {
+        name = name + strlen(name) + 1;
+        if (_ry_jr_f64(_ry_jr_at(v, form, k, name), w + _RY_NETFLUX_TOTALS + 8 * (k - 5)) == 0) { ok = 0; }
+        k = k + 1;
+    }
+    return ok;
+}
+
+# Reads a NetworkFlux from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`): Ok(0) with *out
+# filled, or Err(RY_ERR_DESERIALIZE) with *out untouched.
+#must_use
+fn ry_network_flux_from_json_a(a, buf, n, out: *RyNetworkFlux): Result {
+    var w[496];
+    var v = _ry_jr_parse(a, buf, n);
+    if (_ry_network_flux_from_node(v, &w) == 0) {
+        return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "NetworkFlux", 11));
+    }
+    memcpy(out, &w, _RY_NETFLUX_SIZE);
+    return Ok(0);
+}
+
+# ry_network_flux_from_json_a on the default allocator (the tree is never freed: for a one-off read).
+#must_use
+fn ry_network_flux_from_json(buf, n, out: *RyNetworkFlux): Result {
+    return ry_network_flux_from_json_a(default_alloc(), buf, n, out);
+}
+
+# Appends NetworkEnvironment `p` as serde_json writes it, its four fields in declaration order, on allocator `a`:
+# Ok(0), or Err(RY_ERR_OUT_OF_MEMORY).
+#must_use
+fn ry_network_environment_to_json_a(a, sb, p: *RyNetworkEnvironment): Result {
+    if (_ry_jw_f64_fields(a, sb, p, 4, &_RY_NETWORK_ENVIRONMENT_FIELDS) != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return Ok(0);
+}
+
+# ry_network_environment_to_json_a on the default allocator.
+#must_use
+fn ry_network_environment_to_json(sb, p: *RyNetworkEnvironment): Result {
+    return ry_network_environment_to_json_a(default_alloc(), sb, p);
+}
+
+# Reads a NetworkEnvironment from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`): Ok(0)
+# with *out filled, or Err(RY_ERR_DESERIALIZE).
+#must_use
+fn ry_network_environment_from_json_a(a, buf, n, out: *RyNetworkEnvironment): Result {
+    var w[32];
+    var v = _ry_jr_parse(a, buf, n);
+    if (_ry_jr_f64_fields(v, &w, 4, &_RY_NETWORK_ENVIRONMENT_FIELDS) == 0) {
+        return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "NetworkEnvironment", 18));
+    }
+    memcpy(out, &w, 32);
+    return Ok(0);
+}
+
+# ry_network_environment_from_json_a on the default allocator (the tree is never freed: for a one-off read).
+#must_use
+fn ry_network_environment_from_json(buf, n, out: *RyNetworkEnvironment): Result {
+    return ry_network_environment_from_json_a(default_alloc(), buf, n, out);
+}
+
+# Appends NetworkExchange `p` as serde_json writes it, its five fields in declaration order, on allocator `a`: Ok(0),
+# or Err(RY_ERR_OUT_OF_MEMORY).
+#must_use
+fn ry_network_exchange_to_json_a(a, sb, p: *RyNetworkExchange): Result {
+    if (_ry_jw_f64_fields(a, sb, p, 5, &_RY_NETWORK_EXCHANGE_FIELDS) != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return Ok(0);
+}
+
+# ry_network_exchange_to_json_a on the default allocator.
+#must_use
+fn ry_network_exchange_to_json(sb, p: *RyNetworkExchange): Result {
+    return ry_network_exchange_to_json_a(default_alloc(), sb, p);
+}
+
+# Reads a NetworkExchange from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`): Ok(0) with
+# *out filled, or Err(RY_ERR_DESERIALIZE).
+#must_use
+fn ry_network_exchange_from_json_a(a, buf, n, out: *RyNetworkExchange): Result {
+    var w[40];
+    var v = _ry_jr_parse(a, buf, n);
+    if (_ry_jr_f64_fields(v, &w, 5, &_RY_NETWORK_EXCHANGE_FIELDS) == 0) {
+        return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "NetworkExchange", 15));
+    }
+    memcpy(out, &w, 40);
+    return Ok(0);
+}
+
+# ry_network_exchange_from_json_a on the default allocator (the tree is never freed: for a one-off read).
+#must_use
+fn ry_network_exchange_from_json(buf, n, out: *RyNetworkExchange): Result {
+    return ry_network_exchange_from_json_a(default_alloc(), buf, n, out);
+}
+
+# Appends NetworkTick `p` as serde_json writes it, `{"flux":{…},"exchange":{…}}`, on allocator `a`: Ok(0), or
+# Err(RY_ERR_OUT_OF_MEMORY).
+#must_use
+fn ry_network_tick_to_json_a(a, sb, p: *RyNetworkTick): Result {
+    var w = p;
+    var name = &_RY_NETWORK_TICK_FIELDS;
+    var e = _ry_jw_byte(a, sb, 123);
+    e = e | _ry_jw_key(a, sb, name, 1);
+    var t1, v1 = ry_network_flux_to_json_a(a, sb, w);
+    if (is_err_result(t1) == 1) { e = 1; }
+    name = name + strlen(name) + 1;
+    e = e | _ry_jw_key(a, sb, name, 0);
+    var t2, v2 = ry_network_exchange_to_json_a(a, sb, w + _RY_NETFLUX_SIZE);
+    if (is_err_result(t2) == 1) { e = 1; }
+    e = e | _ry_jw_byte(a, sb, 125);
+    if (e != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return Ok(0);
+}
+
+# ry_network_tick_to_json_a on the default allocator.
+#must_use
+fn ry_network_tick_to_json(sb, p: *RyNetworkTick): Result {
+    return ry_network_tick_to_json_a(default_alloc(), sb, p);
+}
+
+# Reads a NetworkTick from the `n`-byte document at `buf` by serde's rules (an object or an array of its two fields,
+# each itself an object or an array), its tree on allocator `a`: Ok(0) with *out filled, or Err(RY_ERR_DESERIALIZE).
+#must_use
+fn ry_network_tick_from_json_a(a, buf, n, out: *RyNetworkTick): Result {
+    var w[536];
+    var v = _ry_jr_parse(a, buf, n);
+    var form = _ry_jr_form(v, 2);
+    var ok = 0;
+    if (form != 0) {
+        var name = &_RY_NETWORK_TICK_FIELDS;
+        ok = _ry_network_flux_from_node(_ry_jr_at(v, form, 0, name), &w);
+        name = name + strlen(name) + 1;
+        if (ok == 1) {
+            ok = _ry_jr_f64_fields(_ry_jr_at(v, form, 1, name), &w + _RY_NETFLUX_SIZE, 5, &_RY_NETWORK_EXCHANGE_FIELDS);
+        }
+    }
+    if (ok == 0) { return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "NetworkTick", 11)); }
+    memcpy(out, &w, _RY_NETTICK_SIZE);
+    return Ok(0);
+}
+
+# ry_network_tick_from_json_a on the default allocator (the tree is never freed: for a one-off read).
+#must_use
+fn ry_network_tick_from_json(buf, n, out: *RyNetworkTick): Result {
+    return ry_network_tick_from_json_a(default_alloc(), buf, n, out);
 }
 
 # --- ai_data.cyr ---

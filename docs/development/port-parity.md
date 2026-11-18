@@ -1544,3 +1544,53 @@ names are generated; the crate-private entry points the metabolic network calls 
 through verbatim copies, so M5 starts on tested code; Rust's coupling loops (glycolysis to TCA, the full respiration
 pipeline, β-oxidation and amino-acid catabolism into TCA) are golden rows of class T.
 
+## 8. M5 (Metabolic network)
+
+### 8a. Part 1: the types, validators, solve layer and codecs (2026-11-17)
+
+M5 is one module in three parts (CLAUDE.md task sizing): part 1 everything but the step, part 2 the step
+(`produce`, `step`, `tick_in`, `tick`), part 3 `run_to_steady_state`, the long runs and the soak (probe 5). Part 1's
+9 Rust tests are ported with markers; pathway joins the surface-parity and ledger lists at part 3, when all its
+items and tests are due.
+
+**What is compared.** `tests/golden/pathway.tsv` (new, 1,916 rows), through the oracle's public API and, for the
+private solve layer and the crate-private sums, a verbatim copy (`scripts/oracle/src/v_pathway.rs`: `nad_factor`
+through `ldh_capacity` as one block, calling `guard::conc` and `gapdh_nad_factor` through their own copies; the two
+`accumulate`s on mirrors built from the pathway fluxes' mirrors). The rows cover:
+- the six defaults, `MetabolicNetwork` flattened to 33 values and `NetworkConfig` to 104 (`chain_length` an `i:`
+  token at 84);
+- `MetabolicNetwork::validate` over each of the 33 fields' 14 edges, Rust's seven bad cofactors, the oxygen
+  fraction's ends, and every pair of the ten groups (the five states, the five pools) with each bad value first
+  (599 rows); `NetworkConfig::validate` with each of the 104 fields NaN, 0 and -1, the chain's refusals, the
+  sensitivity over the edges, and pairs of sub-configs in both orders (365); `NetworkEnvironment::validate` (63);
+- `respiratory_quotient` around f64::EPSILON (an ulp either side), the division's edges and seeded fluxes (104);
+- the solve layer: the helpers (`nad_factor` 22, `ratio_of` 42, `nadh_oxidized` 53, `ldh_capacity` 32),
+  `solve_decreasing` on the Rust tests' closures (linear, curved, constant: 36), 242 `balanced_nad_ratio` rows
+  (Rust's test's three, the edges, 200 on the network's inputs at steps of 1 to 31 ms) and 246 `end_of_step_nadh`
+  rows. Each solve gives its iteration count and its exit (0 low end, 1 high end, 2 exact root, 3 the bracket or
+  tolerance test, 4 the cap, 5 no solve), from probe 4's counting copy, whose result must equal the verbatim
+  function's on every row;
+- 58 `accumulate` rows and the six types' nested serde documents (written, read, sequence forms at every level, a
+  missing nested field, extra keys, a float chain length). A read row records each number correctly rounded
+  (ADR 0004), found through the document's tree (`reads::read_row_tree`); 4 rows record a value serde_json misreads.
+
+No row reaches a transcendental: B for the arithmetic and the solves (835), A for the validators, the defaults and
+the documents (1,081).
+
+| Check | Result |
+|---|---|
+| every row | identical on the first run (class B at 0 ulp, every iteration count and exit equal) |
+| `validate.py` | every row re-derived from its own transcription (`pathway.rs`'s modelled spans pinned; the nested shapes read from the oracle's structs; each pathway's validator from its own source; the solve re-transcribed in Python's binary64); 120,121 checks in all; one flipped value per function (an f64's last bit, an iteration count, an Ok made an error, a document byte) is reported, 33 of 33 |
+| Rust tests | 9 unit tests ported (`tests/pathway.tcyr`, 31 checks), the rest needing the step; the ledger at 489 of 723 |
+| fuzz | every input also read as the six network documents (1,122 accepted, each written and read back bit for bit) |
+| four targets (`scripts/gates.sh`, 338 s under another project's load, every step green) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 115,102 ok, 234 accepted, 0 failed; coverage 282 of 282 public fns executed (the first run's 280: the flux's and the exchange's default-allocator readers, since tested) |
+
+**The Cyrius forms** (ADR 0002 rows 10, 15): each network type holds its pathways' values by value, nested in place
+(`RyMetabolicNetwork` 264 bytes, the size probe 2's frame copy measured); a nested value's address is the struct's
+plus its offset (`_RY_NET_*`). `solve_decreasing`'s closure is a fn pointer and a context through callptr, as probe 4
+transcribed it; its optional `st` out-pointer gives the count the rows pin and the step will pass 0. The 16 pathway
+readers split into a parse and a node reader (`_ry_<type>_from_node`), which the network's readers call for their
+nested values; the five modules' rows are unchanged.
+
+**Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): the two solves and `validate`, Cyrius only; Rust's
+`network_tick` joins at part 2.

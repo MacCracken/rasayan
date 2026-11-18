@@ -17,10 +17,37 @@ JSON writers and readers) follow: M1 is complete. M2 part 1 (enzyme), part 2 (me
 (metabolism) and part 5 (energy) follow: M2 is complete. M3 part 1 (protein), part 2 (alignment), part 3
 (ptm) and part 4 (domain) follow: M3 is complete. M4a part 1 (glycolysis) and part 2 (TCA) follow: M4a is
 complete. M4b part 1 (the electron transport chain), part 2 (β-oxidation) and part 3 (amino-acid catabolism)
-follow: M4b is complete, and with it M4.
+follow: M4b is complete, and with it M4. M5 part 1 (the metabolic network's types, validators, solve layer and
+codecs) follows.
 
 ### Added
 
+- **src/pathway.cyr**, **src/pathway_data.cyr** (M5 part 1) — `pathway.rs`'s types and everything but the step:
+  `RyMetabolicNetwork` (the five pathway states nested in place, then the shared pools; 264 bytes),
+  `RyNetworkConfig`, `RyNetworkFlux`, `RyNetworkEnvironment`, `RyNetworkExchange`, `RyNetworkTick`. The defaults
+  come from the generated consts and the pathways' own defaults; the six types' field-name blobs are generated. The
+  three validators (each pathway's own first, then the shared pools, in Rust's order), `respiratory_quotient`, and
+  the private NAD+/NADH solve layer transcribed statement for statement (P9): `nad_factor`, `ratio_of`,
+  `nadh_oxidized`, `ldh_capacity`, `solve_decreasing` (its closure a fn pointer and a context through callptr, with
+  an optional out-pointer for the iterations and the exit), `balanced_nad_ratio` and `end_of_step_nadh`. The
+  crate-private `NetworkFlux::accumulate` and `NetworkExchange::accumulate` for part 2's sub-steps, and the nested
+  serde codecs of all six types ([ADR 0002](docs/adr/0002-port-api-divergences.md) rows 10 and 15). The step
+  (`tick`, `tick_in`) joins at part 2, `run_to_steady_state` at part 3
+- **tests/golden/pathway.tsv** (M5 part 1, 1,916 rows, a new module, no transcendental: classes A and B) — the six
+  defaults. `MetabolicNetwork::validate` over every field's edges and two bad groups in every order (599 rows),
+  `NetworkConfig::validate` over every field of the 104 (365), `NetworkEnvironment::validate` (63), the RQ around
+  f64::EPSILON (104). The solve layer through a verbatim copy (`scripts/oracle/src/v_pathway.rs`): the helpers,
+  `solve_decreasing` on the Rust tests' closures, 242 `balanced_nad_ratio` and 246 `end_of_step_nadh` rows on the
+  network's inputs and the edges, each with its iteration count and exit from a counting copy whose result must be
+  the verbatim function's. 58 `accumulate` rows and the nested serde documents (read rows re-read correctly rounded
+  through the document's tree, `reads::read_row_tree`). Every row matches on the first run; `validate.py`
+  re-derives every row from its own model (120,121 independent checks) and catches each of 33 flipped values
+- **tests/pathway.tcyr** (M5 part 1, 31 checks) — the 9 `pathway.rs` unit tests that need no network step, as they
+  are written, and the nested layout, the sums, every codec's round trip and the solves' counts: the Rust-test
+  ledger at 489 of 723. The fuzz harness reads every input as the six network documents (1,122 read and written
+  back bit for bit)
+- **benchmarks** (M5 part 1, Cyrius only) — `balanced_nad_ratio` and `end_of_step_nadh` on a resting step's inputs
+  and `MetabolicNetwork::validate` (`docs/benchmarks-rust-v-cyrius.md`); Rust's `network_tick` joins at part 2
 - **src/amino_catabolism.cyr**, **src/amino_catabolism_data.cyr** (M4b part 3) — `amino_catabolism.rs` transcribed:
   `RyCarbonSkeletonOutput`, `RyAminoCatabState`, `RyAminoCatabConfig` (its routing a nested struct, in place) and
   `RyAminoCatabFlux`. The defaults come from the generated consts, with the four types' generated field-name blobs.
@@ -614,6 +641,10 @@ follow: M4b is complete, and with it M4.
 
 ### Changed
 
+- **src/glycolysis.cyr**, **src/tca.cyr**, **src/etc.cyr**, **src/beta_oxidation.cyr**, **src/amino_catabolism.cyr**
+  (M5 part 1) — each of the 16 JSON readers now parses its document and calls `_ry_<type>_from_node`, which reads a
+  node of a parsed tree; the network's readers call the same functions for their nested values. No behaviour
+  changes: every golden row of the five modules still matches
 - **scripts/oracle/validate.py** (M4b part 2) — the ETC's full respiration rows and β-oxidation's coupling rows run
   TCA's (and glycolysis's) `pow`: the model now takes MPFR's for them and requires glibc's to give the golden value on
   the recorded platform, as each module's own class C rows do (both corrected-oracle files stay empty)

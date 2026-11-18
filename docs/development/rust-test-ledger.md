@@ -6,7 +6,7 @@
 > milestone hasn't come. The golden corpus (`tests/golden/`) checks every ported function on its grid besides.
 > The 2 doc tests and the example are M9's.
 
-**723 Rust tests:** 480 ported; 38 at M5, 108 at M6, 62 at M7, 35 at M8.
+**723 Rust tests:** 489 ported; 29 at M5, 108 at M6, 62 at M7, 35 at M8.
 
 | Rust file | Tests | Ported | Due, unported | Later (milestone) |
 |---|---:|---:|---:|---|
@@ -30,7 +30,7 @@
 | `src/metabolism.rs` | 26 | 26 | 0 | — |
 | `src/neurotransmitter.rs` | 31 | 0 | 0 | 31 (M7) |
 | `src/nuclear_receptor.rs` | 11 | 0 | 0 | 11 (M6) |
-| `src/pathway.rs` | 34 | 0 | 0 | 34 (M5) |
+| `src/pathway.rs` | 34 | 9 | 0 | 25 (M5) |
 | `src/pi3k.rs` | 11 | 0 | 0 | 11 (M6) |
 | `src/protein.rs` | 68 | 68 | 0 | — |
 | `src/ptm.rs` | 16 | 16 | 0 | — |
@@ -40,7 +40,7 @@
 | `src/tca.rs` | 26 | 26 | 0 | — |
 | `tests/integration.rs` | 70 | 45 | 0 | 4 (M5), 15 (M6), 6 (M7) |
 | `tests/validation.rs` | 25 | 25 | 0 | — |
-| **Total** | **723** | **480** | **0** | |
+| **Total** | **723** | **489** | **0** | |
 
 ## Where each is ported
 
@@ -325,6 +325,15 @@
 | `src/metabolism.rs` `test_validate_negative_atp` | `tests/metabolism.tcyr` `validation` |
 | `src/metabolism.rs` `test_validate_rejects_non_finite` | `tests/metabolism.tcyr` `validation` |
 | `src/metabolism.rs` `test_validate_valid` | `tests/metabolism.tcyr` `validation` |
+| `src/pathway.rs` `test_balanced_ratio_monotone_in_supply` | `tests/pathway.tcyr` `solving` |
+| `src/pathway.rs` `test_default_valid` | `tests/pathway.tcyr` `validation` |
+| `src/pathway.rs` `test_environment_validate` | `tests/pathway.tcyr` `validation` |
+| `src/pathway.rs` `test_network_config_validate` | `tests/pathway.tcyr` `validation` |
+| `src/pathway.rs` `test_respiratory_quotient_undefined_without_o2` | `tests/pathway.tcyr` `quotient` |
+| `src/pathway.rs` `test_serde_roundtrip` | `tests/pathway.tcyr` `serde` |
+| `src/pathway.rs` `test_serde_roundtrip_config` | `tests/pathway.tcyr` `serde` |
+| `src/pathway.rs` `test_solve_decreasing` | `tests/pathway.tcyr` `solving` |
+| `src/pathway.rs` `test_validate_rejects_bad_cofactors` | `tests/pathway.tcyr` `validation` |
 | `src/protein.rs` `test_amino_acid_average_masses` | `tests/protein.tcyr` `lookups` |
 | `src/protein.rs` `test_amino_acid_count` | `tests/protein.tcyr` `lookups` |
 | `src/protein.rs` `test_bjellqvist_terminal_residue_pka` | `tests/protein.tcyr` `published_sets` |

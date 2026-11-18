@@ -70,7 +70,7 @@ const IDH_KM: usize = 12;
 const IDH_N: usize = 13;
 
 /// TcaFlux's five amounts, in declaration order (then `step_rates`).
-const FLUX_NAMES: &[&str] = &["pyruvate_consumed", "nadh_produced", "fadh2_produced", "gtp_produced", "co2_produced"];
+pub const FLUX_NAMES: &[&str] = &["pyruvate_consumed", "nadh_produced", "fadh2_produced", "gtp_produced", "co2_produced"];
 
 /// The edge values each state field is varied over.
 const EDGES: [f64; 14] = [
@@ -176,13 +176,13 @@ fn toks(a: &[f64]) -> Vec<Tok> {
     a.iter().map(|&x| f(x)).collect()
 }
 
-fn flux_vals(x: &TcaFlux) -> Vec<f64> {
+pub fn flux_vals(x: &TcaFlux) -> Vec<f64> {
     let mut v = vec![x.pyruvate_consumed, x.nadh_produced, x.fadh2_produced, x.gtp_produced, x.co2_produced];
     v.extend(x.step_rates);
     v
 }
 
-fn flux_of(a: &[f64]) -> TcaFlux {
+pub fn flux_of(a: &[f64]) -> TcaFlux {
     let mut step_rates = [0.0; 9];
     step_rates.copy_from_slice(&a[5..14]);
     TcaFlux {

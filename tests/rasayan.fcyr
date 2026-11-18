@@ -8,7 +8,7 @@
 # MembranePermeability's; part 3, SecondMessenger's; part 4, MetabolicState's; part 5, BioenergyState's. M3 part 1:
 # every protein function on the input as a sequence; part 2, alignment on its two halves; parts 3 and 4, the PTM and
 # domain scans. M4a: the glycolysis and TCA codecs, and steps of every state the readers accept; M4b, the
-# ETC's, β-oxidation's and amino-acid catabolism's.
+# ETC's, β-oxidation's and amino-acid catabolism's. M5 part 1: the metabolic network's six codecs.
 
 include "src/constants.cyr"
 include "src/constants_private.cyr"
@@ -46,6 +46,8 @@ include "src/beta_oxidation_data.cyr"
 include "src/beta_oxidation.cyr"
 include "src/amino_catabolism_data.cyr"
 include "src/amino_catabolism.cyr"
+include "src/pathway_data.cyr"
+include "src/pathway.cyr"
 
 var _fz_state = 0x2545F4914F6CDD1D;
 var _fz_bad = 0;
@@ -64,6 +66,7 @@ var _fz_tca = 0;
 var _fz_etc = 0;
 var _fz_beta_ox = 0;
 var _fz_amino = 0;
+var _fz_network = 0;
 
 # xorshift64*: the next pseudo-random word.
 fn fz_next(): i64 {
@@ -679,6 +682,84 @@ fn fuzz_amino(data, len) {
     return 0;
 }
 
+# A failure unless the `n` words at `w` are finite f64s, but for the integer word `skip` (-1: none), and written then
+# read back (`ok` 1 when both calls succeeded) they come back bit for bit in the `size` bytes at `back`.
+fn fz_net_check(w, n, skip, ok, back, size) {
+    var good = ok;
+    var j = 0;
+    while (j < n) {
+        if (j != skip && fz_all_finite(w + 8 * j, 1) == 0) { good = 0; }
+        j = j + 1;
+    }
+    if (good == 0 || memeq(back, w, size) == 0) { _fz_bad = _fz_bad + 1; }
+    return 0;
+}
+
+# 1 when both a write's and a read's Result tags are Ok.
+fn fz_both(t1, t2) {
+    if (is_ok(t1) == 1 && is_ok(t2) == 1) { return 1; }
+    return 0;
+}
+
+# pathway: the six network codecs on one input; each accepted value holds only finite f64s (the config's chain length
+# an integer in u32's range) and reads back bit for bit from what it writes.
+fn fuzz_network(data, len) {
+    reset_via(_fz_arena);
+    var w[832];
+    var back[832];
+    var t1, v1 = ry_metabolic_network_from_json_a(_fz_arena, data, len, &w);
+    if (is_ok(t1) == 1) {
+        _fz_network = _fz_network + 1;
+        store64(_fz_sb + 8, 0);
+        var a1, b1 = ry_metabolic_network_to_json(_fz_sb, &w);
+        var c1, d1 = ry_metabolic_network_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &back);
+        fz_net_check(&w, 33, 0 - 1, fz_both(a1, c1), &back, 264);
+    }
+    var t2, v2 = ry_network_config_from_json_a(_fz_arena, data, len, &w);
+    if (is_ok(t2) == 1) {
+        _fz_network = _fz_network + 1;
+        var chain = load64(&w + 8 * 84);
+        if (chain < 0 || chain > 4294967295) { _fz_bad = _fz_bad + 1; }
+        store64(_fz_sb + 8, 0);
+        var a2, b2 = ry_network_config_to_json(_fz_sb, &w);
+        var c2, d2 = ry_network_config_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &back);
+        fz_net_check(&w, 104, 84, fz_both(a2, c2), &back, 832);
+    }
+    var t3, v3 = ry_network_flux_from_json_a(_fz_arena, data, len, &w);
+    if (is_ok(t3) == 1) {
+        _fz_network = _fz_network + 1;
+        store64(_fz_sb + 8, 0);
+        var a3, b3 = ry_network_flux_to_json(_fz_sb, &w);
+        var c3, d3 = ry_network_flux_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &back);
+        fz_net_check(&w, 62, 0 - 1, fz_both(a3, c3), &back, 496);
+    }
+    var t4, v4 = ry_network_environment_from_json_a(_fz_arena, data, len, &w);
+    if (is_ok(t4) == 1) {
+        _fz_network = _fz_network + 1;
+        store64(_fz_sb + 8, 0);
+        var a4, b4 = ry_network_environment_to_json(_fz_sb, &w);
+        var c4, d4 = ry_network_environment_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &back);
+        fz_net_check(&w, 4, 0 - 1, fz_both(a4, c4), &back, 32);
+    }
+    var t5, v5 = ry_network_exchange_from_json_a(_fz_arena, data, len, &w);
+    if (is_ok(t5) == 1) {
+        _fz_network = _fz_network + 1;
+        store64(_fz_sb + 8, 0);
+        var a5, b5 = ry_network_exchange_to_json(_fz_sb, &w);
+        var c5, d5 = ry_network_exchange_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &back);
+        fz_net_check(&w, 5, 0 - 1, fz_both(a5, c5), &back, 40);
+    }
+    var t6, v6 = ry_network_tick_from_json_a(_fz_arena, data, len, &w);
+    if (is_ok(t6) == 1) {
+        _fz_network = _fz_network + 1;
+        store64(_fz_sb + 8, 0);
+        var a6, b6 = ry_network_tick_to_json(_fz_sb, &w);
+        var c6, d6 = ry_network_tick_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &back);
+        fz_net_check(&w, 67, 0 - 1, fz_both(a6, c6), &back, 536);
+    }
+    return 0;
+}
+
 # A NUL-terminated copy of the document builder `sb` holds (a seed).
 fn fz_seed_of(sb): i64 {
     var n = load64(sb + 8);
@@ -829,7 +910,7 @@ fn main() {
     var buf = alloc(cap + 1);
     _fz_arena = arena_allocator_growable(65536);
     _fz_sb = str_builder_new();
-    var seeds = alloc(8 * 55);
+    var seeds = alloc(8 * 61);
     store64(seeds, "trace");
     store64(seeds + 8, "DEBUG");
     store64(seeds + 16, "info,warn");
@@ -944,6 +1025,37 @@ fn main() {
     store64(_fz_sb + 8, 0);
     var ta2, va2 = ry_amino_catab_flux_to_json(_fz_sb, &amf);
     store64(seeds + 432, fz_seed_of(_fz_sb));
+    # The network documents: the default network, config, flux, environment, exchange and tick as written.
+    var nwn: RyMetabolicNetwork;
+    var nwc: RyNetworkConfig;
+    var nwf: RyNetworkFlux;
+    var nwe: RyNetworkEnvironment;
+    var nwx: RyNetworkExchange;
+    var nwt: RyNetworkTick;
+    ry_metabolic_network_default(&nwn);
+    ry_network_config_default(&nwc);
+    ry_network_flux_default(&nwf);
+    ry_network_environment_default(&nwe);
+    ry_network_exchange_default(&nwx);
+    ry_network_tick_default(&nwt);
+    store64(_fz_sb + 8, 0);
+    var tn1, vn1 = ry_metabolic_network_to_json(_fz_sb, &nwn);
+    store64(seeds + 440, fz_seed_of(_fz_sb));
+    store64(_fz_sb + 8, 0);
+    var tn2, vn2 = ry_network_config_to_json(_fz_sb, &nwc);
+    store64(seeds + 448, fz_seed_of(_fz_sb));
+    store64(_fz_sb + 8, 0);
+    var tn3, vn3 = ry_network_flux_to_json(_fz_sb, &nwf);
+    store64(seeds + 456, fz_seed_of(_fz_sb));
+    store64(_fz_sb + 8, 0);
+    var tn4, vn4 = ry_network_environment_to_json(_fz_sb, &nwe);
+    store64(seeds + 464, fz_seed_of(_fz_sb));
+    store64(_fz_sb + 8, 0);
+    var tn5, vn5 = ry_network_exchange_to_json(_fz_sb, &nwx);
+    store64(seeds + 472, fz_seed_of(_fz_sb));
+    store64(_fz_sb + 8, 0);
+    var tn6, vn6 = ry_network_tick_to_json(_fz_sb, &nwt);
+    store64(seeds + 480, fz_seed_of(_fz_sb));
     var i = 0;
     while (i < 50000) {
         var n = 0;
@@ -952,7 +1064,7 @@ fn main() {
             var k = 0;
             while (k < n) { store8(buf + k, fz_below(256)); k = k + 1; }
         } else {
-            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(55)));
+            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(61)));
         }
         fuzz_main(buf, n);
         fuzz_json(buf, n);
@@ -966,6 +1078,7 @@ fn main() {
         fuzz_etc(buf, n);
         fuzz_beta_ox(buf, n);
         fuzz_amino(buf, n);
+        fuzz_network(buf, n);
         i = i + 1;
     }
     if (_fz_bad != 0) {
@@ -997,6 +1110,8 @@ fn main() {
     fmt_int(_fz_beta_ox);
     print(", amino-acid catabolism documents read: ", 40);
     fmt_int(_fz_amino);
+    print(", network documents read: ", 26);
+    fmt_int(_fz_network);
     println(")");
     return 0;
 }

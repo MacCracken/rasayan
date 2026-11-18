@@ -100,7 +100,7 @@ pub fn cfg_vals(c: &AminoCatabConfig) -> Vec<f64> {
     v
 }
 
-fn cfg_from(v: &[f64]) -> AminoCatabConfig {
+pub fn cfg_from(v: &[f64]) -> AminoCatabConfig {
     AminoCatabConfig {
         transaminase_vmax: v[0],
         transaminase_km: v[1],
@@ -203,15 +203,15 @@ fn toks(a: &[f64]) -> Vec<Tok> {
     a.iter().map(|&x| f(x)).collect()
 }
 
-fn state_of(a: &[f64]) -> AminoCatabState {
+pub fn state_of(a: &[f64]) -> AminoCatabState {
     AminoCatabState { amino_acid_pool: a[0], glutamate: a[1], ammonium: a[2] }
 }
 
-fn state_vals(x: &AminoCatabState) -> Vec<f64> {
+pub fn state_vals(x: &AminoCatabState) -> Vec<f64> {
     vec![x.amino_acid_pool, x.glutamate, x.ammonium]
 }
 
-fn flux_vals(x: &AminoCatabFlux) -> Vec<f64> {
+pub fn flux_vals(x: &AminoCatabFlux) -> Vec<f64> {
     vec![
         x.amino_acids_consumed,
         x.nadh_produced,
@@ -228,7 +228,7 @@ fn flux_vals(x: &AminoCatabFlux) -> Vec<f64> {
     ]
 }
 
-fn flux_of(a: &[f64]) -> AminoCatabFlux {
+pub fn flux_of(a: &[f64]) -> AminoCatabFlux {
     va::AminoCatabFlux::of(a).oracle_of()
 }
 

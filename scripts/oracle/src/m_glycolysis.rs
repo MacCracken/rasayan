@@ -193,15 +193,15 @@ fn toks(a: &[f64]) -> Vec<Tok> {
 }
 
 /// GlycolysisFlux's five amounts, in declaration order (then `step_rates`).
-const FLUX_NAMES: &[&str] = &["atp_consumed", "atp_produced", "net_atp", "nadh_produced", "pyruvate_produced"];
+pub const FLUX_NAMES: &[&str] = &["atp_consumed", "atp_produced", "net_atp", "nadh_produced", "pyruvate_produced"];
 
-fn flux_vals(x: &GlycolysisFlux) -> Vec<f64> {
+pub fn flux_vals(x: &GlycolysisFlux) -> Vec<f64> {
     let mut v = vec![x.atp_consumed, x.atp_produced, x.net_atp, x.nadh_produced, x.pyruvate_produced];
     v.extend(x.step_rates);
     v
 }
 
-fn flux_of(a: &[f64]) -> GlycolysisFlux {
+pub fn flux_of(a: &[f64]) -> GlycolysisFlux {
     let mut step_rates = [0.0; 10];
     step_rates.copy_from_slice(&a[5..15]);
     GlycolysisFlux {

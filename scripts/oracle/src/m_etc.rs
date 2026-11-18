@@ -59,7 +59,7 @@ record!(ec, rasayan::etc::EtcConfig, [
 ]);
 
 /// EtcFlux's five amounts, in declaration order (then `complex_rates`).
-const FLUX_NAMES: &[&str] = &["nadh_consumed", "fadh2_consumed", "o2_consumed", "atp_produced", "h2o_produced"];
+pub const FLUX_NAMES: &[&str] = &["nadh_consumed", "fadh2_consumed", "o2_consumed", "atp_produced", "h2o_produced"];
 
 /// The edge values each state field is varied over.
 const EDGES: [f64; 14] = [
@@ -156,13 +156,13 @@ fn toks(a: &[f64]) -> Vec<Tok> {
     a.iter().map(|&x| f(x)).collect()
 }
 
-fn flux_vals(x: &EtcFlux) -> Vec<f64> {
+pub fn flux_vals(x: &EtcFlux) -> Vec<f64> {
     let mut v = vec![x.nadh_consumed, x.fadh2_consumed, x.o2_consumed, x.atp_produced, x.h2o_produced];
     v.extend(x.complex_rates);
     v
 }
 
-fn flux_of(a: &[f64]) -> EtcFlux {
+pub fn flux_of(a: &[f64]) -> EtcFlux {
     let mut complex_rates = [0.0; 5];
     complex_rates.copy_from_slice(&a[5..10]);
     EtcFlux {

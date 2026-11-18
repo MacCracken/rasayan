@@ -525,13 +525,21 @@ fn ry_glycolysis_state_to_json(sb, p: *RyGlycolysisState): Result {
     return ry_glycolysis_state_to_json_a(default_alloc(), sb, p);
 }
 
+# The GlycolysisState at node `v` of a parsed document, by serde's rules (as ry_glycolysis_state_from_json_a reads it),
+# into the 88 bytes at `w`: 1, or 0 for a refusal (what `w` holds then is unspecified). The metabolic network's readers
+# call it for their nested values.
+#must_use
+fn _ry_glycolysis_state_from_node(v, w): i64 {
+    return _ry_jr_f64_fields(v, w, 11, &_RY_GLYCOLYSIS_STATE_FIELDS);
+}
+
 # Reads a GlycolysisState from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`, which the
 # caller resets): Ok(0) with *out filled, or Err(RY_ERR_DESERIALIZE).
 #must_use
 fn ry_glycolysis_state_from_json_a(a, buf, n, out: *RyGlycolysisState): Result {
     var w[88];
     var v = _ry_jr_parse(a, buf, n);
-    if (_ry_jr_f64_fields(v, &w, 11, &_RY_GLYCOLYSIS_STATE_FIELDS) == 0) {
+    if (_ry_glycolysis_state_from_node(v, &w) == 0) {
         return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "GlycolysisState", 15));
     }
     memcpy(out, &w, 88);
@@ -558,13 +566,21 @@ fn ry_glycolysis_config_to_json(sb, p: *RyGlycolysisConfig): Result {
     return ry_glycolysis_config_to_json_a(default_alloc(), sb, p);
 }
 
+# The GlycolysisConfig at node `v` of a parsed document, by serde's rules (as ry_glycolysis_config_from_json_a reads
+# it), into the 304 bytes at `w`: 1, or 0 for a refusal (what `w` holds then is unspecified). The metabolic network's
+# readers call it for their nested values.
+#must_use
+fn _ry_glycolysis_config_from_node(v, w): i64 {
+    return _ry_jr_f64_fields(v, w, 38, &_RY_GLYCOLYSIS_CONFIG_FIELDS);
+}
+
 # Reads a GlycolysisConfig from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`): Ok(0) with
 # *out filled, or Err(RY_ERR_DESERIALIZE).
 #must_use
 fn ry_glycolysis_config_from_json_a(a, buf, n, out: *RyGlycolysisConfig): Result {
     var w[304];
     var v = _ry_jr_parse(a, buf, n);
-    if (_ry_jr_f64_fields(v, &w, 38, &_RY_GLYCOLYSIS_CONFIG_FIELDS) == 0) {
+    if (_ry_glycolysis_config_from_node(v, &w) == 0) {
         return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "GlycolysisConfig", 16));
     }
     memcpy(out, &w, 304);
@@ -607,13 +623,11 @@ fn ry_glycolysis_flux_to_json(sb, f: *RyGlycolysisFlux): Result {
     return ry_glycolysis_flux_to_json_a(default_alloc(), sb, f);
 }
 
-# Reads a GlycolysisFlux from the `n`-byte document at `buf` by serde's rules (an object by field name, or an array of
-# its six fields; `step_rates` an array of exactly ten numbers), its tree on allocator `a`: Ok(0) with *out filled, or
-# Err(RY_ERR_DESERIALIZE).
+# The GlycolysisFlux at node `v` of a parsed document, by serde's rules (as ry_glycolysis_flux_from_json_a reads it),
+# into the 120 bytes at `w`: 1, or 0 for a refusal (what `w` holds then is unspecified). The metabolic network's readers
+# call it for their nested values.
 #must_use
-fn ry_glycolysis_flux_from_json_a(a, buf, n, out: *RyGlycolysisFlux): Result {
-    var w[120];
-    var v = _ry_jr_parse(a, buf, n);
+fn _ry_glycolysis_flux_from_node(v, w): i64 {
     var form = _ry_jr_form(v, 6);
     var ok = 0;
     if (form != 0) {
@@ -621,13 +635,25 @@ fn ry_glycolysis_flux_from_json_a(a, buf, n, out: *RyGlycolysisFlux): Result {
         var name = _RY_GLYCOLYSIS_FLUX_FIELDS;
         var k = 0;
         while (k < 5 && ok == 1) {
-            if (_ry_jr_f64(_ry_jr_at(v, form, k, name), &w + 8 * k) == 0) { ok = 0; }
+            if (_ry_jr_f64(_ry_jr_at(v, form, k, name), w + 8 * k) == 0) { ok = 0; }
             name = name + strlen(name) + 1;
             k = k + 1;
         }
-        if (ok == 1 && _ry_jr_f64_array(_ry_jr_at(v, form, 5, "step_rates"), &w + 40, 10) == 0) { ok = 0; }
+        if (ok == 1 && _ry_jr_f64_array(_ry_jr_at(v, form, 5, "step_rates"), w + 40, 10) == 0) { ok = 0; }
     }
-    if (ok == 0) { return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "GlycolysisFlux", 14)); }
+    return ok;
+}
+
+# Reads a GlycolysisFlux from the `n`-byte document at `buf` by serde's rules (an object by field name, or an array of
+# its six fields; `step_rates` an array of exactly ten numbers), its tree on allocator `a`: Ok(0) with *out filled, or
+# Err(RY_ERR_DESERIALIZE).
+#must_use
+fn ry_glycolysis_flux_from_json_a(a, buf, n, out: *RyGlycolysisFlux): Result {
+    var w[120];
+    var v = _ry_jr_parse(a, buf, n);
+    if (_ry_glycolysis_flux_from_node(v, &w) == 0) {
+        return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "GlycolysisFlux", 14));
+    }
     memcpy(out, &w, 120);
     return Ok(0);
 }

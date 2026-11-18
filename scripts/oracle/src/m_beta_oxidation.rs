@@ -173,15 +173,15 @@ fn toks(a: &[f64]) -> Vec<Tok> {
     a.iter().map(|&x| f(x)).collect()
 }
 
-fn state_of(a: &[f64]) -> BetaOxState {
+pub fn state_of(a: &[f64]) -> BetaOxState {
     BetaOxState { acyl_coa: a[0], free_fatty_acid: a[1] }
 }
 
-fn state_vals(x: &BetaOxState) -> Vec<f64> {
+pub fn state_vals(x: &BetaOxState) -> Vec<f64> {
     vec![x.acyl_coa, x.free_fatty_acid]
 }
 
-fn flux_vals(x: &BetaOxFlux) -> Vec<f64> {
+pub fn flux_vals(x: &BetaOxFlux) -> Vec<f64> {
     vec![
         x.ffa_consumed,
         x.acyl_coa_consumed,
@@ -194,7 +194,7 @@ fn flux_vals(x: &BetaOxFlux) -> Vec<f64> {
     ]
 }
 
-fn flux_of(a: &[f64]) -> BetaOxFlux {
+pub fn flux_of(a: &[f64]) -> BetaOxFlux {
     BetaOxFlux {
         ffa_consumed: a[0],
         acyl_coa_consumed: a[1],

@@ -250,3 +250,21 @@ Measured at load 1.4–1.8, with the reference rows at their quiet values (micha
 nernst 79 ns), the same in two runs. The tick is a ping-pong rate, two Michaelis-Menten calls, two concentration
 guards, the NAD+ factor's `min`, three capped transfers and the six routed skeletons; Rust inlines all of them.
 
+## M5 part 1: the metabolic network's solve layer (Cyrius only)
+
+Rust 1.2.0's `network_tick` times the whole step, which ports at part 2; the solve layer and the validator are
+private or have no Rust bench, so part 1 records them alone.
+
+| Benchmark | Cyrius (ns) | Notes |
+|---|---|---|
+| `balanced_nad_ratio` | ≈ 1,000–1,300 | a resting step's inputs (h 0.02 s: the pool at ratio 700, the producers' NADH, Complex I's and LDH's capacities): 14 iterations, 16 excess calls |
+| `end_of_step_nadh` | 321 | the same step's pool plus production: 10 iterations |
+| `MetabolicNetwork::validate` | 939 | the default network: five pathway validators, then the five pools (38 guards) |
+
+**Provisional**: measured while another project held the machine's load at 5–18. The `end_of_step_nadh` and
+`validate` figures come from the gates' bench step, whose reference row amino_catab_tick read 108 ns against its quiet
+105; `balanced_nad_ratio`'s from runs where it read 123 ns, so its figure is a range. Probe 4 measured 582 ns and 259
+ns on its own mix of inputs (fewer iterations on average); Rust's verbatim functions took 155–187 ns and 98–119 ns
+there. Part 2 re-measures them on a quiet machine with the whole step. Hoisting GAPDH's resting normaliser out of the
+balance's excess (an exact change, every row identical) gave no difference the load let through, so it was not kept.
+

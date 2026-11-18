@@ -82,6 +82,13 @@ include "src/tca.cyr"
 include "src/etc.cyr"
 include "src/beta_oxidation.cyr"
 include "src/amino_catabolism.cyr"
+include "src/pathway_data.cyr"
+include "src/pathway.cyr"
+
+# pathway's solve_decreasing rows: the Rust tests' closures' contexts (`a - x`, `c - 3·n/(k + n)·c - n`, the constant
+# `v`).
+struct _ParLin { a: f64; }
+struct _ParCurve { c: f64; k: f64; }
 
 alloc_init();
 
@@ -3668,6 +3675,328 @@ fn _par_amino_json(fp, fl): i64 {
     return 1;
 }
 
+# ── pathway ─────────────────────────────────────────────────────────────────────────
+# src/pathway_data.cyr and src/pathway.cyr (M5 part 1). A MetabolicNetwork row takes its 33 values flattened in
+# declaration order (the five pathway states, then the five pools: the struct's own memory order); a NetworkConfig is
+# the default with overrides, `i:n` then n pairs `i:field f:x` over the config's 104 words (84, chain_length, takes
+# `i:`); a NetworkFlux is its 62 values, a NetworkEnvironment its 4, a NetworkExchange its 5, a NetworkTick its 67. A
+# solve row's outputs end with `i:iterations i:exit`; solve_decreasing itself runs on the Rust tests' closures.
+
+# Reads a network config from input k into *c (the default, then the overrides): the index after it, or -1 when
+# malformed.
+fn _par_nc_in(k, c: *RyNetworkConfig): i64 {
+    ry_network_config_default(c);
+    if (_par_is_i(k) == 0) { return 0 - 1; }
+    var n = _par_in(k);
+    var w = c;
+    var at = k + 1;
+    var j = 0;
+    while (j < n) {
+        if (_par_is_i(at) == 0) { return 0 - 1; }
+        var field = _par_in(at);
+        if (field == 84) {
+            if (_par_is_i(at + 1) == 0) { return 0 - 1; }
+        } elif (field < 0 || field >= 104 || _par_is_f(at + 1) == 0) {
+            return 0 - 1;
+        }
+        store64(w + 8 * field, _par_in(at + 1));
+        at = at + 2;
+        j = j + 1;
+    }
+    return at;
+}
+
+# Appends network config *c's 104 values, chain_length as an i: token (`as_f` 0) or as its f64 (1, the read rows).
+fn _par_got_nc(c: *RyNetworkConfig, as_f) {
+    var w = c;
+    _par_got_fields(w, 84);
+    if (as_f == 1) {
+        var ch: f64 = f64_from(c.beta_ox.chain_length);
+        _par_got_f(ch);
+    } else {
+        _par_got_i(c.beta_ox.chain_length);
+    }
+    _par_got_fields(w + 8 * 85, 19);
+    return 0;
+}
+
+# solve_decreasing<linear>'s closure: a - x.
+fn _par_lin_excess(p: *_ParLin, x: f64): f64 {
+    var e: f64 = p.a - x;
+    return e;
+}
+
+# solve_decreasing<curved>'s closure, in Rust's operation order: c - 3.0 * n / (k + n) * c - n.
+fn _par_curve_excess(p: *_ParCurve, n: f64): f64 {
+    var c: f64 = p.c;
+    var k: f64 = p.k;
+    var e: f64 = (c - (((3.0 * n) / (k + n)) * c)) - n;
+    return e;
+}
+
+# solve_decreasing<constant>'s closure: v.
+fn _par_const_excess(p: *_ParLin, x: f64): f64 {
+    var v: f64 = p.a;
+    return v;
+}
+
+# The pathway rows: the defaults, the validators, the RQ, the solve layer, the sums, the serde rows.
+fn _par_pathway(fp, fl): i64 {
+    var n: RyMetabolicNetwork;
+    var c: RyNetworkConfig;
+    var e: RyNetworkEnvironment;
+    var fx: RyNetworkFlux;
+    var x: RyNetworkExchange;
+    var tk: RyNetworkTick;
+    var st[16];
+    if (_par_in_n == 0) {
+        if (_par_eq(fp, fl, "pathway::MetabolicNetwork::default") == 1) {
+            ry_metabolic_network_default(&n);
+            _par_got_fields(&n, 33);
+            return 1;
+        }
+        if (_par_eq(fp, fl, "pathway::NetworkConfig::default") == 1) {
+            ry_network_config_default(&c);
+            _par_got_nc(&c, 0);
+            return 1;
+        }
+        if (_par_eq(fp, fl, "pathway::NetworkEnvironment::default") == 1) {
+            ry_network_environment_default(&e);
+            _par_got_fields(&e, 4);
+            return 1;
+        }
+        if (_par_eq(fp, fl, "pathway::NetworkFlux::default") == 1) {
+            memset(&fx, 255, 496);
+            ry_network_flux_default(&fx);
+            _par_got_fields(&fx, 62);
+            return 1;
+        }
+        if (_par_eq(fp, fl, "pathway::NetworkExchange::default") == 1) {
+            memset(&x, 255, 40);
+            ry_network_exchange_default(&x);
+            _par_got_fields(&x, 5);
+            return 1;
+        }
+        if (_par_eq(fp, fl, "pathway::NetworkTick::default") == 1) {
+            memset(&tk, 255, 536);
+            ry_network_tick_default(&tk);
+            _par_got_fields(&tk, 67);
+            return 1;
+        }
+    }
+    if (_par_eq(fp, fl, "pathway::NetworkConfig::validate") == 1) {
+        if (_par_nc_in(0, &c) != _par_in_n) { return 0 - 1; }
+        var tc, vc = ry_network_config_validate(&c);
+        _par_got_outcome(tc, vc);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "pathway::MetabolicNetwork::validate") == 1) {
+        if (_par_in_n != 33 || _par_all_f(33) == 0) { return 0 - 1; }
+        _par_fields_in(0, &n, 33);
+        var tn, vn = ry_metabolic_network_validate(&n);
+        _par_got_outcome(tn, vn);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "pathway::NetworkEnvironment::validate") == 1) {
+        if (_par_in_n != 4 || _par_all_f(4) == 0) { return 0 - 1; }
+        _par_fields_in(0, &e, 4);
+        var te, ve = ry_network_environment_validate(&e);
+        _par_got_outcome(te, ve);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "pathway::NetworkFlux::accumulate") == 1) {
+        if (_par_in_n != 125 || _par_all_f(125) == 0) { return 0 - 1; }
+        var o: RyNetworkFlux;
+        _par_fields_in(0, &fx, 62);
+        _par_fields_in(62, &o, 62);
+        var weight: f64 = _par_f(124);
+        _ry_network_flux_accumulate(&fx, &o, weight);
+        _par_got_fields(&fx, 62);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "pathway::NetworkExchange::accumulate") == 1) {
+        if (_par_in_n != 10 || _par_all_f(10) == 0) { return 0 - 1; }
+        var y: RyNetworkExchange;
+        _par_fields_in(0, &x, 5);
+        _par_fields_in(5, &y, 5);
+        _ry_network_exchange_accumulate(&x, &y);
+        _par_got_fields(&x, 5);
+        return 1;
+    }
+    if (_par_in_n >= 1 && _par_in_n <= 5 && _par_all_f(_par_in_n) == 1) {
+        var a0: f64 = _par_f(0);
+        if (_par_in_n == 1) {
+            if (_par_eq(fp, fl, "pathway::nad_factor") == 1) {
+                var nf: f64 = _ry_pathway_nad_factor(a0);
+                _par_got_f(nf);
+                return 1;
+            }
+            if (_par_eq(fp, fl, "pathway::ratio_of") == 1) {
+                var ro: f64 = _ry_pathway_ratio_of(a0);
+                _par_got_f(ro);
+                return 1;
+            }
+        }
+        var a1: f64 = _par_f(1);
+        if (_par_in_n == 2) {
+            if (_par_eq(fp, fl, "pathway::ldh_capacity") == 1) {
+                var lc: f64 = _ry_pathway_ldh_capacity(a0, a1);
+                _par_got_f(lc);
+                return 1;
+            }
+            if (_par_eq(fp, fl, "pathway::MetabolicNetwork::respiratory_quotient") == 1) {
+                ry_metabolic_network_default(&n);
+                ry_network_flux_default(&fx);
+                fx.o2_consumed = a0;
+                fx.co2_produced = a1;
+                var rq: f64 = ry_metabolic_network_respiratory_quotient(&n, &fx);
+                _par_got_f(rq);
+                return 1;
+            }
+        }
+        var a2: f64 = _par_f(2);
+        if (_par_in_n == 3) {
+            if (_par_eq(fp, fl, "pathway::nadh_oxidized") == 1) {
+                var ox: f64 = _ry_pathway_nadh_oxidized(a0, a1, a2);
+                _par_got_f(ox);
+                return 1;
+            }
+            if (_par_eq(fp, fl, "pathway::end_of_step_nadh") == 1) {
+                var en: f64 = _ry_pathway_end_of_step_nadh(a0, a1, a2, &st);
+                _par_got_f(en);
+                _par_got_i(load64(&st));
+                _par_got_i(load64(&st + 8));
+                return 1;
+            }
+            var lin: _ParLin;
+            lin.a = a2;
+            var root: f64 = 0.0;
+            var hit = 0;
+            if (_par_eq(fp, fl, "pathway::solve_decreasing<linear>") == 1) {
+                root = _ry_pathway_solve_decreasing(a0, a1, &_par_lin_excess, &lin, &st);
+                hit = 1;
+            }
+            if (_par_eq(fp, fl, "pathway::solve_decreasing<constant>") == 1) {
+                root = _ry_pathway_solve_decreasing(a0, a1, &_par_const_excess, &lin, &st);
+                hit = 1;
+            }
+            if (hit == 1) {
+                _par_got_f(root);
+                _par_got_i(load64(&st));
+                _par_got_i(load64(&st + 8));
+                return 1;
+            }
+        }
+        var a3: f64 = _par_f(3);
+        if (_par_in_n == 4 && _par_eq(fp, fl, "pathway::solve_decreasing<curved>") == 1) {
+            var cur: _ParCurve;
+            cur.c = a2;
+            cur.k = a3;
+            var cr: f64 = _ry_pathway_solve_decreasing(a0, a1, &_par_curve_excess, &cur, &st);
+            _par_got_f(cr);
+            _par_got_i(load64(&st));
+            _par_got_i(load64(&st + 8));
+            return 1;
+        }
+        if (_par_in_n == 5 && _par_eq(fp, fl, "pathway::balanced_nad_ratio") == 1) {
+            var a4: f64 = _par_f(4);
+            var nn: f64 = 0.0;
+            var br: f64 = _ry_pathway_balanced_nad_ratio(a0, a1, a2, a3, a4, &st, &nn);
+            _par_got_f(br);
+            _par_got_f(nn);
+            _par_got_i(load64(&st));
+            _par_got_i(load64(&st + 8));
+            return 1;
+        }
+    }
+    return _par_pathway_json(fp, fl);
+}
+
+# The serde rows of the six network types.
+fn _par_pathway_json(fp, fl): i64 {
+    var n: RyMetabolicNetwork;
+    var c: RyNetworkConfig;
+    var e: RyNetworkEnvironment;
+    var fx: RyNetworkFlux;
+    var x: RyNetworkExchange;
+    var tk: RyNetworkTick;
+    if (_par_jsb == 0) { _par_jsb = str_builder_new(); }
+    var sb = _par_jsb;
+    store64(sb + 8, 0);
+    var wt = 0;
+    var wv = 0;
+    var wrote = 0;
+    if (_par_eq(fp, fl, "serde_json::to_string<MetabolicNetwork>") == 1 && _par_in_n == 33 && _par_all_f(33) == 1) {
+        _par_fields_in(0, &n, 33);
+        wt, wv = ry_metabolic_network_to_json(sb, &n);
+        wrote = 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::to_string<NetworkConfig>") == 1) {
+        if (_par_nc_in(0, &c) != _par_in_n) { return 0 - 1; }
+        wt, wv = ry_network_config_to_json(sb, &c);
+        wrote = 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::to_string<NetworkFlux>") == 1 && _par_in_n == 62 && _par_all_f(62) == 1) {
+        _par_fields_in(0, &fx, 62);
+        wt, wv = ry_network_flux_to_json(sb, &fx);
+        wrote = 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::to_string<NetworkEnvironment>") == 1 && _par_in_n == 4 && _par_all_f(4) == 1) {
+        _par_fields_in(0, &e, 4);
+        wt, wv = ry_network_environment_to_json(sb, &e);
+        wrote = 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::to_string<NetworkExchange>") == 1 && _par_in_n == 5 && _par_all_f(5) == 1) {
+        _par_fields_in(0, &x, 5);
+        wt, wv = ry_network_exchange_to_json(sb, &x);
+        wrote = 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::to_string<NetworkTick>") == 1 && _par_in_n == 67 && _par_all_f(67) == 1) {
+        _par_fields_in(0, &tk, 67);
+        wt, wv = ry_network_tick_to_json(sb, &tk);
+        wrote = 1;
+    }
+    if (wrote == 1) {
+        if (is_err_result(wt) == 1) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    var kind = 0;
+    if (_par_eq(fp, fl, "serde_json::from_slice<MetabolicNetwork>") == 1) { kind = 1; }
+    if (_par_eq(fp, fl, "serde_json::from_slice<NetworkConfig>") == 1) { kind = 2; }
+    if (_par_eq(fp, fl, "serde_json::from_slice<NetworkFlux>") == 1) { kind = 3; }
+    if (_par_eq(fp, fl, "serde_json::from_slice<NetworkEnvironment>") == 1) { kind = 4; }
+    if (_par_eq(fp, fl, "serde_json::from_slice<NetworkExchange>") == 1) { kind = 5; }
+    if (_par_eq(fp, fl, "serde_json::from_slice<NetworkTick>") == 1) { kind = 6; }
+    if (kind == 0) { return 0; }
+    var lw[8];
+    var doc = _par_in_bytes(0, &lw);
+    if (doc == 0) { return 0 - 1; }
+    var len = load64(&lw);
+    if (_par_jarena == 0) { _par_jarena = arena_allocator_growable(65536); }
+    _par_json_gap = _par_has_neg_zero_int(doc, len);
+    reset_via(_par_jarena);
+    var rt = 0;
+    var rv = 0;
+    if (kind == 1) { rt, rv = ry_metabolic_network_from_json_a(_par_jarena, doc, len, &n); }
+    if (kind == 2) { rt, rv = ry_network_config_from_json_a(_par_jarena, doc, len, &c); }
+    if (kind == 3) { rt, rv = ry_network_flux_from_json_a(_par_jarena, doc, len, &fx); }
+    if (kind == 4) { rt, rv = ry_network_environment_from_json_a(_par_jarena, doc, len, &e); }
+    if (kind == 5) { rt, rv = ry_network_exchange_from_json_a(_par_jarena, doc, len, &x); }
+    if (kind == 6) { rt, rv = ry_network_tick_from_json_a(_par_jarena, doc, len, &tk); }
+    if (is_err_result(rt) == 1) {
+        _par_got_err(rv);
+        return 1;
+    }
+    if (kind == 1) { _par_got_fields(&n, 33); }
+    if (kind == 2) { _par_got_nc(&c, 1); }
+    if (kind == 3) { _par_got_fields(&fx, 62); }
+    if (kind == 4) { _par_got_fields(&e, 4); }
+    if (kind == 5) { _par_got_fields(&x, 5); }
+    if (kind == 6) { _par_got_fields(&tk, 67); }
+    return 1;
+}
+
 fn _par_dispatch(mp, ml, fp, fl): i64 {
     _par_got_n = 0;
     if (_par_eq(fp, fl, "const") == 1) { return _par_const(); }
@@ -3681,6 +4010,7 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
     if (_par_eq(mp, ml, "etc") == 1) { return _par_etc(fp, fl); }
     if (_par_eq(mp, ml, "beta_oxidation") == 1) { return _par_beta_oxidation(fp, fl); }
     if (_par_eq(mp, ml, "amino_catabolism") == 1) { return _par_amino_catabolism(fp, fl); }
+    if (_par_eq(mp, ml, "pathway") == 1) { return _par_pathway(fp, fl); }
     if (_par_eq(mp, ml, "enzyme") == 1) { return _par_enzyme(fp, fl); }
     if (_par_eq(mp, ml, "membrane") == 1) { return _par_membrane(fp, fl); }
     if (_par_eq(mp, ml, "signal") == 1) { return _par_signal(fp, fl); }
