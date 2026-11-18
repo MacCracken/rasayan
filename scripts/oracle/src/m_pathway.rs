@@ -29,6 +29,12 @@
 //! crate-private, on the counting solves), whose network and tick must be the oracle's `tick_in`'s bit for bit on
 //! every row. A `tick_in` row is the same without the counts, at any dt; a `tick` row takes the network, the config
 //! and `f:dt` and gives the network and the flux (the resting environment).
+//!
+//! Part 3 (class T): a `run_to_steady_state` row takes the network, the config and `f:dt f:tolerance i:max_steps`,
+//! and gives the network after, the last flux and `i:<ticks>`. A trajectory row (`pathway::MetabolicNetwork::trajectory`)
+//! is a script: the network, the config, the starting environment's 4 values, then `i:1 f:dt i:k` (`tick_in` k times),
+//! `i:2` and four `f:` (the environment set) and `i:3 i:<field> f:<x>` (a network field set); its outputs are the
+//! network after the script and its last tick's 67 values.
 
 use std::hint::black_box;
 
@@ -818,6 +824,7 @@ pub fn rows(m: &mut Module) {
     accumulate_rows(m, &mut rng);
     json_rows(m, &mut rng);
     step_rows(m, &mut rng);
+    long_rows(m, &mut rng);
 }
 
 // ── part 2: the step ──
@@ -1208,4 +1215,129 @@ fn step_rows(m: &mut Module, rng: &mut Rng) {
         a[k] = f64::NAN;
     }
     tick_row(m, &a, &[], 0.1);
+}
+
+// ── part 3: the steady-state run and trajectories ──
+
+/// One operation of a network trajectory script.
+#[derive(Clone, Copy)]
+enum Op {
+    /// tick_in(dt), k times, in the current environment.
+    Tick(f64, u32),
+    /// The environment set (its four values).
+    Env([f64; 4]),
+    /// A network field set.
+    Set(usize, f64),
+}
+
+fn op_toks(op: Op) -> Vec<Tok> {
+    match op {
+        Op::Tick(dt, k) => vec![i(1), f(dt), i(k)],
+        Op::Env(e) => {
+            let mut t = vec![i(2)];
+            t.extend(toks(&e));
+            t
+        }
+        Op::Set(k, x) => vec![i(3), i(i64::try_from(k).unwrap_or(-1)), f(x)],
+    }
+}
+
+/// A trajectory row (class T): the network, the config, the starting environment, then the script; out the network
+/// after it and the last tick (67 values; zero when the script ticked nothing).
+fn trajectory_row(m: &mut Module, net: &[f64], ov: &[Ov], env: &[f64], ops: &[Op]) {
+    let cfg = cfg_of(ov);
+    let mut n = net_of(net);
+    let mut e = env_of(env);
+    let mut last = NetworkTick::default();
+    for &op in ops {
+        match op {
+            Op::Tick(dt, k) => {
+                for _ in 0..k {
+                    last = black_box(&mut n).tick_in(black_box(&cfg), &e, black_box(dt));
+                }
+            }
+            Op::Env(v) => e = env_of(&v),
+            Op::Set(k, x) => {
+                let mut a = net_vals(&n);
+                a[k] = x;
+                n = net_of(&a);
+            }
+        }
+    }
+    let mut ins = toks(net);
+    ins.extend(cfg_toks(ov));
+    ins.extend(toks(env));
+    for &op in ops {
+        ins.extend(op_toks(op));
+    }
+    let mut outs = toks(&net_vals(&n));
+    outs.extend(toks(&tick_vals(&last)));
+    m.row("pathway::MetabolicNetwork::trajectory", Class::T, &ins, &outs);
+}
+
+/// A `run_to_steady_state` row (class T): the network, the config, `f:dt f:tolerance i:max_steps`; out the network
+/// after, the last flux and `i:<ticks>`.
+fn steady_row(m: &mut Module, net: &[f64], ov: &[Ov], dt: f64, tol: f64, max: usize) {
+    let cfg = cfg_of(ov);
+    let mut n = net_of(net);
+    let (fl, ticks) = black_box(&mut n).run_to_steady_state(black_box(&cfg), black_box(dt), tol, max);
+    let mut ins = toks(net);
+    ins.extend(cfg_toks(ov));
+    ins.extend([f(dt), f(tol), i(i64::try_from(max).unwrap_or(-1))]);
+    let mut outs = toks(&net_vals(&n));
+    outs.extend(toks(&flux_vals(&fl)));
+    outs.push(i(i64::try_from(ticks).unwrap_or(-1)));
+    m.row("pathway::MetabolicNetwork::run_to_steady_state", Class::T, &ins, &outs);
+}
+
+fn long_rows(m: &mut Module, rng: &mut Rng) {
+    let d = net_vals(&MetabolicNetwork::default());
+    let rest = [1.2, 5.0, 0.3, 2.0];
+    // run_to_steady_state: Rust's tests' calls, the counting edges, other tolerances, steps and starts.
+    for (dt, tol, max) in [
+        (0.1, 1e-3, 5000),
+        (0.1, 1e-3, 0),
+        (0.1, 1e-3, 1),
+        (0.1, f64::INFINITY, 1000),
+        (0.1, 0.0, 30),
+        (0.1, 1e-3, 2),
+        (0.1, f64::INFINITY, 11),
+        (0.1, f64::INFINITY, 12),
+        (0.0, 1e-3, 10),
+        (f64::NAN, 1e-3, 10),
+        (0.1, f64::NAN, 20),
+        (0.1, -1.0, 15),
+        (0.02, 1e-6, 1000),
+        (1.0, 1e-4, 40),
+        (0.1, 1e-5, 400),
+    ] {
+        steady_row(m, &d, &[], dt, tol, max);
+    }
+    let mut anoxic = d.clone();
+    anoxic[31] = 0.0;
+    steady_row(m, &anoxic, &[], 0.1, 1e-4, 200);
+    steady_row(m, &d, &[Ov::X(38, 0.0)], 0.1, 1e-3, 200);
+    // Trajectories: rest at four step lengths over the same minute (dt invariance), anoxia and reoxygenation,
+    // exercise and recovery, fasting, a glucose bolus, NaN cofactors recovering, seeded networks.
+    trajectory_row(m, &d, &[], &rest, &[Op::Tick(0.02, 1000)]);
+    for (dt, k) in [(0.1, 600), (1.0, 60), (5.0, 12)] {
+        trajectory_row(m, &d, &[], &rest, &[Op::Tick(dt, k)]);
+    }
+    let anox = [Op::Tick(0.02, 500), Op::Set(31, 0.0), Op::Tick(0.02, 500), Op::Set(31, 1.0), Op::Tick(0.02, 500)];
+    trajectory_row(m, &d, &[], &rest, &anox[..3]);
+    trajectory_row(m, &d, &[], &rest, &anox);
+    let ex = [Op::Env([3.0, 5.0, 0.3, 2.0]), Op::Tick(0.05, 400), Op::Env(rest), Op::Tick(0.05, 400)];
+    trajectory_row(m, &d, &[], &rest, &ex[..2]);
+    trajectory_row(m, &d, &[], &rest, &ex);
+    trajectory_row(m, &d, &[], &[1.2, 3.0, 0.6, 2.0], &[Op::Tick(0.1, 600)]);
+    trajectory_row(m, &d, &[], &rest, &[Op::Set(0, 15.0), Op::Tick(0.1, 300)]);
+    let mut nan = d.clone();
+    for k in [28, 30, 31, 32] {
+        nan[k] = f64::NAN;
+    }
+    trajectory_row(m, &nan, &[], &rest, &[Op::Tick(0.02, 250)]);
+    for _ in 0..2 {
+        trajectory_row(m, &seeded_net(rng), &[], &rest, &[Op::Tick(0.02, 250)]);
+    }
+    trajectory_row(m, &d, &[Ov::Chain(12), Ov::X(103, 0.0)], &rest, &[Op::Tick(0.1, 100)]);
 }

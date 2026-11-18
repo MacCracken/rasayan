@@ -6,7 +6,7 @@
 > milestone hasn't come. The golden corpus (`tests/golden/`) checks every ported function on its grid besides.
 > The 2 doc tests and the example are M9's.
 
-**723 Rust tests:** 515 ported; 3 at M5, 108 at M6, 62 at M7, 35 at M8.
+**723 Rust tests:** 518 ported; 108 at M6, 62 at M7, 35 at M8.
 
 | Rust file | Tests | Ported | Due, unported | Later (milestone) |
 |---|---:|---:|---:|---|
@@ -30,7 +30,7 @@
 | `src/metabolism.rs` | 26 | 26 | 0 | — |
 | `src/neurotransmitter.rs` | 31 | 0 | 0 | 31 (M7) |
 | `src/nuclear_receptor.rs` | 11 | 0 | 0 | 11 (M6) |
-| `src/pathway.rs` | 34 | 31 | 0 | 3 (M5) |
+| `src/pathway.rs` | 34 | 34 | 0 | — |
 | `src/pi3k.rs` | 11 | 0 | 0 | 11 (M6) |
 | `src/protein.rs` | 68 | 68 | 0 | — |
 | `src/ptm.rs` | 16 | 16 | 0 | — |
@@ -40,7 +40,7 @@
 | `src/tca.rs` | 26 | 26 | 0 | — |
 | `tests/integration.rs` | 70 | 49 | 0 | 15 (M6), 6 (M7) |
 | `tests/validation.rs` | 25 | 25 | 0 | — |
-| **Total** | **723** | **515** | **0** | |
+| **Total** | **723** | **518** | **0** | |
 
 ## Where each is ported
 
@@ -352,7 +352,10 @@
 | `src/pathway.rs` `test_serde_roundtrip_config` | `tests/pathway.tcyr` `serde` |
 | `src/pathway.rs` `test_single_tick` | `tests/pathway.tcyr` `ticking` |
 | `src/pathway.rs` `test_solve_decreasing` | `tests/pathway.tcyr` `solving` |
+| `src/pathway.rs` `test_steady_state_analysis` | `tests/pathway.tcyr` `steady` |
 | `src/pathway.rs` `test_steady_state_is_dt_invariant` | `tests/pathway.tcyr` `physiology` |
+| `src/pathway.rs` `test_steady_state_step_counting` | `tests/pathway.tcyr` `steady` |
+| `src/pathway.rs` `test_steady_state_zero_steps` | `tests/pathway.tcyr` `steady` |
 | `src/pathway.rs` `test_substeps_match_manual_steps` | `tests/pathway.tcyr` `bookkeeping` |
 | `src/pathway.rs` `test_tick_is_tick_in_resting` | `tests/pathway.tcyr` `bookkeeping` |
 | `src/pathway.rs` `test_validate_rejects_bad_cofactors` | `tests/pathway.tcyr` `validation` |

@@ -257,28 +257,26 @@ private or have no Rust bench, so part 1 records them alone.
 
 | Benchmark | Cyrius (ns) | Notes |
 |---|---|---|
-| `balanced_nad_ratio` | ≈ 1,000–1,300 | a resting step's inputs (h 0.02 s: the pool at ratio 700, the producers' NADH, Complex I's and LDH's capacities): 14 iterations, 16 excess calls |
-| `end_of_step_nadh` | 321 | the same step's pool plus production: 10 iterations |
-| `MetabolicNetwork::validate` | 939 | the default network: five pathway validators, then the five pools (38 guards) |
+| `balanced_nad_ratio` | 1,036–1,051 | a resting step's inputs (h 0.02 s: the pool at ratio 700, the producers' NADH, Complex I's and LDH's capacities): 14 iterations, 16 excess calls |
+| `end_of_step_nadh` | 333–338 | the same step's pool plus production: 10 iterations |
+| `MetabolicNetwork::validate` | 950–962 | the default network: five pathway validators, then the five pools (38 guards) |
 
-**Provisional**: measured while another project held the machine's load at 5–18. The `end_of_step_nadh` and
-`validate` figures come from the gates' bench step, whose reference row amino_catab_tick read 108 ns against its quiet
-105; `balanced_nad_ratio`'s from runs where it read 123 ns, so its figure is a range. Probe 4 measured 582 ns and 259
-ns on its own mix of inputs (fewer iterations on average); Rust's verbatim functions took 155–187 ns and 98–119 ns
-there. Part 2 re-measures them on a quiet machine with the whole step. Hoisting GAPDH's resting normaliser out of the
-balance's excess (an exact change, every row identical) gave no difference the load let through, so it was not kept.
+Measured at M5 part 3 on a quiet machine (load 2.8–3.5, two runs), with the reference rows at their quiet values in
+the same runs (michaelis_menten 12 ns, glycolysis_tick 746–761 ns, amino_catab_tick 107–109 ns). Part 1's figures,
+taken at a load of 5–18, were 2.3–3.4× high. Probe 4 measured 582 ns and 259 ns on its own mix of inputs (fewer
+iterations on average); Rust's verbatim functions took 155–187 ns and 98–119 ns there. Hoisting GAPDH's resting
+normaliser out of the balance's excess (an exact change, every row identical) gave no difference the load let through,
+so it was not kept.
 
 ## M5 part 2: the metabolic network's step
 
 | Benchmark | Rust 1.2.0 (µs) | Cyrius (µs) | Notes |
 |---|---|---|---|
-| network_tick | 1.016 | ≈ 4.8 (11.3 measured) | Rust's loop body: a default network, one tick of 0.01 s (one step: two producer runs, two solves, the ETC) |
-| network_tick_1s | 55.76 | ≈ 250 (594 measured) | a default network, one tick of 1 s: 50 sub-steps of 0.02 s |
+| network_tick | 1.016 | 4.86–4.91 | Rust's loop body: a default network, one tick of 0.01 s (one step: two producer runs, two solves, the ETC) |
+| network_tick_1s | 55.76 | 259–262 | a default network, one tick of 1 s: 50 sub-steps of 0.02 s |
 
-**Provisional**: measured at a load of about 20 (other projects' builds), with the reference rows 2.3–3.4× their
-quiet values in the same run (glycolysis_tick 1.77 µs against 0.76, tca_tick 1.74 against 0.51, amino_catab_tick 260
-ns against 105); the ≈ figures scale by glycolysis_tick's factor, the step's largest part. Part 3 re-measures them on
-a quiet machine.
+Measured at M5 part 3 on a quiet machine (load 2.8–3.5, two runs; the reference rows as above). Part 2's estimate,
+measured at a load of about 20 and scaled by glycolysis_tick's factor, was ≈ 4.8 µs and ≈ 250 µs.
 
 The step is two producer runs (glycolysis, β-oxidation, amino-acid catabolism, TCA: about 1.5 µs quiet each), the
 two solves, the ETC step and the bookkeeping. Its fluxes first reached the tick through the stdlib's `memcpy`, which

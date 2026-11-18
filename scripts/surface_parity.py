@@ -32,10 +32,9 @@ root = Path(sys.argv[1]).resolve()
 # The modules whose milestone has come.
 PORTED = ["constants", "error", "guard", "integrate", "logging", "enzyme", "membrane", "signal", "metabolism",
           "energy", "protein", "alignment", "ptm", "domain", "glycolysis", "tca", "etc", "beta_oxidation",
-          "amino_catabolism"]
+          "amino_catabolism", "pathway"]
 # The rest, with their milestone (port plan §3.1).
 SCHEDULED = {
-    "pathway": "M5",
     "mapk": "M6", "pi3k": "M6", "jak_stat": "M6", "calcium": "M6", "receptor": "M6", "nuclear_receptor": "M6",
     "signaling": "M6",
     "neurotransmitter": "M7", "hormonal": "M7",
@@ -83,6 +82,12 @@ TYPES = {
     "AminoCatabState": ("RyAminoCatabState", "amino_catab_state"),
     "AminoCatabConfig": ("RyAminoCatabConfig", "amino_catab_config"),
     "AminoCatabFlux": ("RyAminoCatabFlux", "amino_catab_flux"),
+    "MetabolicNetwork": ("RyMetabolicNetwork", "metabolic_network"),
+    "NetworkConfig": ("RyNetworkConfig", "network_config"),
+    "NetworkFlux": ("RyNetworkFlux", "network_flux"),
+    "NetworkEnvironment": ("RyNetworkEnvironment", "network_environment"),
+    "NetworkExchange": ("RyNetworkExchange", "network_exchange"),
+    "NetworkTick": ("RyNetworkTick", "network_tick"),
 }
 # Rust item -> the Cyrius names that carry it ("fn x", "const X", "enum X", "struct X"), where the rules give none.
 MAPPED = {

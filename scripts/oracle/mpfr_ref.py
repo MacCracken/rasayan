@@ -1427,10 +1427,63 @@ def _n_tick_row(a, P):
     return s2 + tick[:62]
 
 
+def _n_tick_flux(s, c, dt, P):
+    """`tick`: tick_in in the resting environment, its flux."""
+    s2, tick = _n_tick_in(s, c, [1.2, 5.0, 0.3, 2.0], dt, P)
+    return s2, tick[:62]
+
+
+def _n_steady_row(a, P):
+    """run_to_steady_state: (network, last flux, ticks)."""
+    c, k = _n_config(a, 33)
+    dt, tol, max_steps = a[k], a[k + 1], a[k + 2]
+    s = list(a[:33])
+    if max_steps == 0 or not (math.isfinite(dt) and dt > 0.0):
+        return s + [0.0] * 62 + [0]
+    s, flux = _n_tick_flux(s, c, dt, P)
+    ema = None
+    for ticks in range(2, max_steps + 1):
+        s, flux = _n_tick_flux(s, c, dt, P)
+        if ema is None:
+            ema = flux[59]
+        else:
+            nxt = 0.1 * flux[59] + (1.0 - 0.1) * ema
+            prev, ema = ema, nxt
+            if ticks >= 12 and abs(nxt - prev) < tol:
+                return s + flux + [ticks]
+    return s + flux + [max_steps]
+
+
+def _n_trajectory_row(a, P):
+    """A trajectory script: `1 dt k` tick_in k times, `2 e0 e1 e2 e3` the environment, `3 field x`."""
+    c, k = _n_config(a, 33)
+    s = list(a[:33])
+    env = list(a[k:k + 4])
+    k += 4
+    last = [0.0] * 67
+    while k < len(a):
+        op = a[k]
+        if op == 1:
+            for _ in range(a[k + 2]):
+                s, last = _n_tick_in(s, c, env, a[k + 1], P)
+            k += 3
+        elif op == 2:
+            env = list(a[k + 1:k + 5])
+            k += 5
+        elif op == 3:
+            s[a[k + 1]] = a[k + 2]
+            k += 3
+        else:
+            raise ValueError(f"no operation {op}")
+    return s + last
+
+
 PATHWAY = {
     "pathway::MetabolicNetwork::step": _n_step_row,
     "pathway::MetabolicNetwork::tick_in": _n_tick_in_row,
     "pathway::MetabolicNetwork::tick": _n_tick_row,
+    "pathway::MetabolicNetwork::run_to_steady_state": _n_steady_row,
+    "pathway::MetabolicNetwork::trajectory": _n_trajectory_row,
 }
 
 # The modules with class-C (and class-T) rows beyond math, and their models.

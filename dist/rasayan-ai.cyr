@@ -12857,7 +12857,7 @@ var _RY_NETWORK_TICK_FIELDS: u8[14] = {
 #
 # M5 part 1: the six types, their defaults and validators, `respiratory_quotient`, the private NAD+/NADH solve layer
 # and the crate-private sub-step sums, and the serde codecs. Part 2: the step (`produce`, `step`, `tick_in`, `tick`;
-# the producer probe a frame copy of the network, probe 2). The steady-state run joins at part 3.
+# the producer probe a frame copy of the network, probe 2). Part 3: `run_to_steady_state`.
 #
 # The Cyrius forms (ADR 0002 rows 7, 10, 14):
 # - Each network type holds its pathways' values by value, nested in place, as Rust's does: RyMetabolicNetwork is
@@ -13610,6 +13610,53 @@ fn ry_metabolic_network_tick(p: *RyMetabolicNetwork, c: *RyNetworkConfig, dt: f6
     out.o2_consumed = o2;
     out.co2_produced = co2;
     return 0;
+}
+
+# Runs the network in the resting environment until its net ATP flux settles, or `max_steps` ticks of `dt`, and fills
+# *out with the last tick's flux; returns the ticks taken. Each tick's net ATP is folded into an exponential moving
+# average (ALPHA 0.1, seeded from the second tick, so the first, transient tick is ignored); the run stops once that
+# average moves by less than `tolerance` between consecutive ticks, checked from the 12th tick on (only the smoothed
+# net ATP is tested: pools may still drift). With `max_steps` < 1 or an invalid dt no tick runs (*out zero, 0
+# returned). Reaching `max_steps` unconverged returns the run anyway, with a DEBUG event. Mirrors
+# `MetabolicNetwork::run_to_steady_state` (its `usize` max_steps an i64 here).
+fn ry_metabolic_network_run_to_steady_state(p: *RyMetabolicNetwork, c: *RyNetworkConfig, dt: f64, tolerance: f64,
+  max_steps, out: *RyNetworkFlux): i64 {
+    if (max_steps < 1 || _ry_guard_valid_dt(dt) == 0) {
+        _ry_pathway_zero(out, 62);
+        return 0;
+    }
+    ry_metabolic_network_tick(p, c, dt, out);
+    var seeded = 0;
+    var ema: f64 = 0.0;
+    var keep: f64 = 1.0 - _RY_PATHWAY_ALPHA;
+    var ticks = 2;
+    while (ticks <= max_steps) {
+        ry_metabolic_network_tick(p, c, dt, out);
+        var net: f64 = out.net_atp;
+        if (seeded == 0) {
+            ema = net;
+            seeded = 1;
+        } else {
+            var prev: f64 = ema;
+            var next: f64 = _RY_PATHWAY_ALPHA * net + keep * prev;
+            ema = next;
+            var moved: f64 = f64_abs(next - prev);
+            if (ticks >= _RY_PATHWAY_MIN_TICKS && moved < tolerance) { return ticks; }
+        }
+        ticks = ticks + 1;
+    }
+    if (_ry_debug_on() == 1) {
+        var shown: f64 = out.net_atp;
+        if (seeded == 1) { shown = ema; }
+        var hd[24];
+        var b[256];
+        var e = _ry_ev(&hd, &b, 256, "rasayan::pathway", "run_to_steady_state hit max_steps without converging");
+        _ry_ev_i(e, "max_steps", max_steps);
+        _ry_ev_f(e, "tolerance", tolerance);
+        _ry_ev_f(e, "ema_net_atp", shown);
+        _ry_debug(e);
+    }
+    return max_steps;
 }
 
 # ── JSON (P7: serde_json's documents) ──

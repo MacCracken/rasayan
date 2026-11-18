@@ -13,7 +13,8 @@
 #   aarch64 (qemu) and x86_64 PE (wine), one target at a time, each log checked for its summary line (wine can truncate
 #   output under load and still exit 0); p4's control build (-D P4_ALT, the algebraically equal secant step) must NOT
 #   agree, which shows the comparison sees a 1-ulp difference;
-# - p2 (copies without the heap) and p3 (wide results) check their own claims and exit 1 if one fails;
+# - p2 (copies without the heap), p3 (wide results) and p5 (the network's 10^6-step soak, M5) check their own
+#   claims and exit 1 if one fails;
 # - p6 (bote 3.8.15, part 3b) answers the oracle's MCP requests on x86_64 ELF, aarch64 and PE, and p6_compare.py must
 #   find every tools/call payload and the inputSchema byte-identical and no difference but the recorded ones;
 # - p7 (hoosh 2.12.3, P8): the oracle bin probe_ai and p7_hoosh each make the client's eight calls against their own
@@ -45,7 +46,7 @@ for bin in probe_substeps probe_solver probe_mcp probe_json; do
 done
 
 # Every probe builds; only p12 warns, and exactly as often as it has diagnosed traps.
-for p in p0_math p1_substeps p2_memory p3_wide_results p4_solver p6_bote p7_hoosh p8_span_cost p11_json \
+for p in p0_math p1_substeps p2_memory p3_wide_results p4_solver p5_soak p6_bote p7_hoosh p8_span_cost p11_json \
     p12_f64_hygiene; do
     if ! cyrius build "scripts/probes/$p.cyr" "$OUT/$p" > "$OUT/$p.build" 2>&1; then
         FAILED+=("build $p")
@@ -115,6 +116,8 @@ fi
 # p2 and p3 check their own claims.
 runs p2_memory 'probe 2: .*: ok$' "./$OUT/p2_memory"
 runs p3_wide_results 'probe 3: .*: ok$' "./$OUT/p3_wide_results"
+# p5, the network's 10^6-step soak (M5 part 3), checks its own claims.
+runs p5_soak 'probe 5: .*: ok$' "./$OUT/p5_soak"
 
 # p6 on the three targets: bote's answers to the oracle's requests, compared by p6_compare.py.
 p6cmp() { # <label> <cmd...>: runs p6, keeps its answers, compares them with the oracle's

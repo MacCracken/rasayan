@@ -2,7 +2,7 @@
 # Stdlib auto-included via cyrius.cyml
 #
 # The `pathway.rs` unit tests and the 4 integration tests (tests/integration.rs) that call the network, as they are
-# written: M5 part 1's 9 that need no step, part 2's 22 that tick it; the 3 of `run_to_steady_state` join at part 3.
+# written: M5 part 1's 9 that need no step, part 2's 22 that tick it, part 3's 3 of `run_to_steady_state`.
 # tests/golden/pathway.tsv checks every function, single step and tick on its grid besides. Beyond them: the nested
 # layout, the sums, every codec's round trip, the solve's count and the trace event.
 
@@ -751,6 +751,53 @@ fn physiology() {
     return 0;
 }
 
+# rust src/pathway.rs: test_steady_state_analysis, test_steady_state_zero_steps, test_steady_state_step_counting
+fn steady() {
+    test_group("pathway: run_to_steady_state");
+    var n: RyMetabolicNetwork;
+    var d: RyMetabolicNetwork;
+    var c: RyNetworkConfig;
+    var f: RyNetworkFlux;
+    var zero: RyNetworkFlux;
+    ry_network_config_default(&c);
+    ry_metabolic_network_default(&d);
+    ry_network_flux_default(&zero);
+    ry_metabolic_network_default(&n);
+    var steps = ry_metabolic_network_run_to_steady_state(&n, &c, 0.1, 0.001, 5000, &f);
+    var net: f64 = f.net_atp;
+    var atp: f64 = n.atp;
+    var adp: f64 = n.adp;
+    assert(steps > 0 && _ry_is_finite(net) == 1 && atp >= 0.0 && adp >= 0.0, "a finite steady state, valid pools");
+    ry_metabolic_network_default(&n);
+    memset(&f, 255, 496);
+    var none = ry_metabolic_network_run_to_steady_state(&n, &c, 0.1, 0.001, 0, &f);
+    assert(none == 0 && memeq(&f, &zero, 496) == 1 && memeq(&n, &d, 264) == 1, "max_steps 0: no tick runs");
+    ry_metabolic_network_default(&n);
+    var one = ry_metabolic_network_run_to_steady_state(&n, &c, 0.1, 0.001, 1, &f);
+    var inf: f64 = _RY_INF;
+    ry_metabolic_network_default(&n);
+    var twelve = ry_metabolic_network_run_to_steady_state(&n, &c, 0.1, inf, 1000, &f);
+    ry_metabolic_network_default(&n);
+    var thirty = ry_metabolic_network_run_to_steady_state(&n, &c, 0.1, 0.0, 30, &f);
+    assert(one == 1 && twelve == 12 && thirty == 30, "one tick; converged at the first check (12); every step used");
+    # Rust's DEBUG event when max_steps runs out, under rasayan::pathway, its fields in Rust's order.
+    sakshi_set_emit_hook(&_ev_hook);
+    sakshi_set_level(SK_DEBUG);
+    _ev_len = 0;
+    ry_metabolic_network_default(&n);
+    var all = ry_metabolic_network_run_to_steady_state(&n, &c, 0.1, 0.0, 13, &f);
+    var head = "rasayan::pathway: run_to_steady_state hit max_steps without converging max_steps=13 tolerance=0 ";
+    var hl = strlen(head);
+    assert(all == 13 && _ev_len > hl && memeq(&_ev_buf, head, hl) == 1, "the max_steps event");
+    _ev_len = 0;
+    ry_metabolic_network_default(&n);
+    var conv = ry_metabolic_network_run_to_steady_state(&n, &c, 0.1, inf, 50, &f);
+    assert(conv == 12 && _ev_len == 0, "no event for a converged run");
+    sakshi_set_level(SK_INFO);
+    sakshi_clear_emit_hook();
+    return 0;
+}
+
 # Rust's trace event, under the target `rasayan::pathway`, its fields in Rust's order (the pools as passed in).
 fn events() {
     test_group("pathway: trace event");
@@ -858,6 +905,7 @@ fn main() {
     bookkeeping();
     conservation();
     physiology();
+    steady();
     events();
     serde();
     return assert_summary();

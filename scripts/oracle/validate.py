@@ -1910,6 +1910,57 @@ def check_pathway(root, rows, rep):
             out = [fbits(x) for x in s2 + tick[:62]]
         return out, ("C" if hit else "B")
 
+    rest_env = None
+
+    def long_model(fn, ins, correct):
+        """run_to_steady_state and trajectory rows (class T)."""
+        nonlocal rest_env
+        if rest_env is None:
+            rest_env = [tok_f(x) for x in PW_ENV_DEFAULT_TOKS(root)]
+        pw, em1 = prims(correct, [])
+        a = [tok_f(x) for x in ins[:33]]
+        n_ = int(ins[33][2:])
+        c = cfg_of(ins[33:34 + 2 * n_])
+        at = 34 + 2 * n_
+        if fn.endswith("::run_to_steady_state"):
+            if len(ins) != at + 3:
+                raise ValueError("run_to_steady_state inputs")
+            dt, tol, max_steps = tok_f(ins[at]), tok_f(ins[at + 1]), int(ins[at + 2][2:])
+            if max_steps == 0 or not (math.isfinite(dt) and dt > 0.0):
+                return [fbits(x) for x in a + [0.0] * 62] + ["i:0"]
+            s_, tick = tick_in(a, c, rest_env, dt, pw, em1)
+            ema, ticks_out = None, max_steps
+            for ticks in range(2, max_steps + 1):
+                s_, tick = tick_in(s_, c, rest_env, dt, pw, em1)
+                if ema is None:
+                    ema = tick[59]
+                    continue
+                nxt = 0.1 * tick[59] + (1.0 - 0.1) * ema
+                prev, ema = ema, nxt
+                if ticks >= 12 and abs(nxt - prev) < tol:
+                    ticks_out = ticks
+                    break
+            return [fbits(x) for x in s_ + tick[:62]] + [f"i:{ticks_out}"]
+        s_ = list(a)
+        env = [tok_f(x) for x in ins[at:at + 4]]
+        last = [0.0] * 67
+        k_ = at + 4
+        while k_ < len(ins):
+            op = int(ins[k_][2:])
+            if op == 1:
+                for _ in range(int(ins[k_ + 2][2:])):
+                    s_, last = tick_in(s_, c, env, tok_f(ins[k_ + 1]), pw, em1)
+                k_ += 3
+            elif op == 2:
+                env = [tok_f(x) for x in ins[k_ + 1:k_ + 5]]
+                k_ += 5
+            elif op == 3:
+                s_[int(ins[k_ + 1][2:])] = tok_f(ins[k_ + 2])
+                k_ += 3
+            else:
+                raise ValueError(f"no operation {op}")
+        return [fbits(x) for x in s_ + last]
+
     eps = 2.0 ** -52
     per = {}
     serde_types = {"MetabolicNetwork", "NetworkConfig", "NetworkFlux", "NetworkEnvironment", "NetworkExchange",
@@ -1931,6 +1982,16 @@ def check_pathway(root, rows, rep):
                         want = libm if exact else outs
                     elif exact and not same_toks(libm, outs):
                         rep.fail(where, f"{fn}: this machine's libm model differs from the golden row")
+            elif fn in ("pathway::MetabolicNetwork::run_to_steady_state", "pathway::MetabolicNetwork::trajectory"):
+                want, want_cls = long_model(fn, ins, True), "T"
+                key = (fn, " ".join(ins))
+                libm = long_model(fn, ins, False)
+                if key in corrected:
+                    if corrected[key] != want:
+                        rep.fail(where, f"pathway.cr.tsv lists {corrected[key][:4]}, MPFR gives {want[:4]}")
+                    want = libm if exact else outs
+                elif exact and not same_toks(libm, outs):
+                    rep.fail(where, f"{fn}: this machine's libm model differs from the golden row")
             elif fn == "pathway::MetabolicNetwork::validate":
                 want, want_cls = net_validate(a), "A"
             elif fn == "pathway::NetworkConfig::validate":
@@ -7024,7 +7085,7 @@ def main():
           f"{dict(sorted(bx_per.items()))}")
     print(f"amino_catabolism: {sum(am_per.values())} routing, validator, step, trajectory, coupling and serde rows "
           f"{dict(sorted(am_per.items()))}")
-    print(f"pathway: {sum(pw_per.values())} validator, RQ, solve, sum, serde and step rows "
+    print(f"pathway: {sum(pw_per.values())} validator, RQ, solve, sum, serde, step and trajectory rows "
           f"{dict(sorted(pw_per.items()))}")
     print(
         f"independently checked: {rep.checked} (constants, src/constants.cyr, math classes A and B, the table rows, "

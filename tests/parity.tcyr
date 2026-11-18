@@ -3744,6 +3744,8 @@ fn _par_const_excess(p: *_ParLin, x: f64): f64 {
 fn _par_pathway(fp, fl): i64 {
     var stepped = _par_pathway_step(fp, fl);
     if (stepped != 0) { return stepped; }
+    var long = _par_pathway_long(fp, fl);
+    if (long != 0) { return long; }
     var n: RyMetabolicNetwork;
     var c: RyNetworkConfig;
     var e: RyNetworkEnvironment;
@@ -3912,6 +3914,68 @@ fn _par_pathway(fp, fl): i64 {
         }
     }
     return _par_pathway_json(fp, fl);
+}
+
+# The long rows (M5 part 3, class T). A run_to_steady_state row: a network, a config, `f:dt f:tolerance i:max_steps`;
+# out the network after, the last flux (62) and `i:ticks`. A trajectory row: a network, a config, the starting
+# environment (4), then the script (`i:1 f:dt i:k` tick_in k times, `i:2` and four `f:` the environment set, `i:3
+# i:field f:x` a network field set); out the network after and the last tick (67).
+fn _par_pathway_long(fp, fl): i64 {
+    var kind = 0;
+    if (_par_eq(fp, fl, "pathway::MetabolicNetwork::run_to_steady_state") == 1) { kind = 1; }
+    if (_par_eq(fp, fl, "pathway::MetabolicNetwork::trajectory") == 1) { kind = 2; }
+    if (kind == 0) { return 0; }
+    var n: RyMetabolicNetwork;
+    var c: RyNetworkConfig;
+    var e: RyNetworkEnvironment;
+    var tk: RyNetworkTick;
+    if (_par_in_n < 35 || _par_all_f_from(0, 33) == 0) { return 0 - 1; }
+    _par_fields_in(0, &n, 33);
+    var at = _par_nc_in(33, &c);
+    if (at < 0) { return 0 - 1; }
+    if (kind == 1) {
+        if (_par_in_n != at + 3 || _par_all_f_from(at, 2) == 0 || _par_is_i(at + 2) == 0) { return 0 - 1; }
+        var fx: RyNetworkFlux;
+        var dt: f64 = _par_f(at);
+        var tol: f64 = _par_f(at + 1);
+        var ticks = ry_metabolic_network_run_to_steady_state(&n, &c, dt, tol, _par_in(at + 2), &fx);
+        _par_got_fields(&n, 33);
+        _par_got_fields(&fx, 62);
+        _par_got_i(ticks);
+        return 1;
+    }
+    if (_par_all_f_from(at, 4) == 0) { return 0 - 1; }
+    _par_fields_in(at, &e, 4);
+    ry_network_tick_default(&tk);
+    var wn = &n;
+    var k = at + 4;
+    while (k < _par_in_n) {
+        if (_par_is_i(k) == 0) { return 0 - 1; }
+        var op = _par_in(k);
+        if (op == 1 && _par_is_f(k + 1) == 1 && _par_is_i(k + 2) == 1) {
+            var h: f64 = _par_f(k + 1);
+            var times = _par_in(k + 2);
+            var j = 0;
+            while (j < times) {
+                ry_metabolic_network_tick_in(&n, &c, &e, h, &tk);
+                j = j + 1;
+            }
+            k = k + 3;
+        } elif (op == 2 && _par_all_f_from(k + 1, 4) == 1) {
+            _par_fields_in(k + 1, &e, 4);
+            k = k + 5;
+        } elif (op == 3 && _par_is_i(k + 1) == 1 && _par_is_f(k + 2) == 1) {
+            var field = _par_in(k + 1);
+            if (field < 0 || field >= 33) { return 0 - 1; }
+            store64(wn + 8 * field, _par_in(k + 2));
+            k = k + 3;
+        } else {
+            return 0 - 1;
+        }
+    }
+    _par_got_fields(&n, 33);
+    _par_got_fields(&tk, 67);
+    return 1;
 }
 
 # The step rows (M5 part 2): a network (33), a config (the default with overrides), then an environment (4) and `f:h`

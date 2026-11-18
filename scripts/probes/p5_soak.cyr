@@ -1,0 +1,89 @@
+# Probe 5 (port plan §2.10, §4 step 9; M5 part 3): the metabolic network soaked for heap growth. 10^6 network steps
+# (`ry_metabolic_network_tick_in` at dt 0.02 s, one step each: the producer probe's frame copy, the two NADH solves,
+# every pathway tick) from the default network in the resting environment. The global allocator is a bump with no
+# free, so any allocation on the step's path would grow the heap for the life of the process: alloc_used() before and
+# after must be equal. Every 10^5 steps the network must still validate; at the end ATP + ADP must be conserved (each
+# step conserves it exactly but for its own rounding: a random walk of about an ulp a step). The time per step is
+# printed, measured not gated.
+#
+#   cyrius build scripts/probes/p5_soak.cyr build/p5 && ./build/p5
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+include "src/integrate.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
+include "src/enzyme_data.cyr"
+include "src/enzyme.cyr"
+include "src/glycolysis_data.cyr"
+include "src/glycolysis.cyr"
+include "src/tca_data.cyr"
+include "src/tca.cyr"
+include "src/etc_data.cyr"
+include "src/etc.cyr"
+include "src/beta_oxidation_data.cyr"
+include "src/beta_oxidation.cyr"
+include "src/amino_catabolism_data.cyr"
+include "src/amino_catabolism.cyr"
+include "src/pathway_data.cyr"
+include "src/pathway.cyr"
+include "scripts/probes/probe_io.cyr"
+
+# The monotonic clock, in nanoseconds.
+fn p5_now(): i64 {
+    var ts[16];
+    syscall(228, 1, &ts);
+    return load64(&ts) * 1000000000 + load64(&ts + 8);
+}
+
+# Runs the soak; exits 0 when every claim holds.
+fn main(): i64 {
+    alloc_init();
+    var n: RyMetabolicNetwork;
+    var c: RyNetworkConfig;
+    var e: RyNetworkEnvironment;
+    var t: RyNetworkTick;
+    ry_metabolic_network_default(&n);
+    ry_network_config_default(&c);
+    ry_network_environment_default(&e);
+    var total: f64 = n.atp + n.adp;
+    var steps = 1000000;
+    var valid = 1;
+    var before = alloc_used();
+    var t0 = p5_now();
+    var k = 0;
+    while (k < steps) {
+        ry_metabolic_network_tick_in(&n, &c, &e, 0.02, &t);
+        k = k + 1;
+        if (k % 100000 == 0) {
+            var tv, vv = ry_metabolic_network_validate(&n);
+            if (is_ok(tv) == 0) { valid = 0; }
+        }
+    }
+    var t1 = p5_now();
+    var grew = alloc_used() - before;
+    var now: f64 = n.atp + n.adp;
+    var drift: f64 = f64_abs(now - total) / total;
+    var bound: f64 = 0.000000001;
+    print("probe 5: ", 9);
+    fmt_int(grew);
+    print(" bytes of global heap over ", 27);
+    fmt_int(steps);
+    print(" network steps, ", 16);
+    fmt_int((t1 - t0) / steps);
+    println(" ns a step (measured, not gated)");
+    var ok = 1;
+    if (grew != 0 || valid == 0 || drift > bound) { ok = 0; }
+    print("probe 5: zero heap growth over 10^6 network steps, the network valid throughout, ATP + ADP ", 91);
+    pio_ok("conserved: ", ok);
+    if (ok == 1) { return 0; }
+    return 1;
+}
+
+var r = main();
+sys_exit_group(r);

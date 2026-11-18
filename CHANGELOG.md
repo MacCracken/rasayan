@@ -18,10 +18,25 @@ JSON writers and readers) follow: M1 is complete. M2 part 1 (enzyme), part 2 (me
 (ptm) and part 4 (domain) follow: M3 is complete. M4a part 1 (glycolysis) and part 2 (TCA) follow: M4a is
 complete. M4b part 1 (the electron transport chain), part 2 (β-oxidation) and part 3 (amino-acid catabolism)
 follow: M4b is complete, and with it M4. M5 part 1 (the metabolic network's types, validators, solve layer and
-codecs) and part 2 (its step) follow.
+codecs), part 2 (its step) and part 3 (the steady-state run, the long runs, the soak) follow: M5 is complete.
 
 ### Added
 
+- **src/pathway.cyr** (M5 part 3) — `ry_metabolic_network_run_to_steady_state`: ticks until the exponential moving
+  average of the net ATP flux (ALPHA 0.1, seeded from the second tick) moves by less than the tolerance, checked from
+  the 12th tick; the last flux into the caller's record and the ticks returned (Rust's `usize` an i64; below 1, no
+  tick). Rust's DEBUG event when `max_steps` runs out is a level-gated sakshi event under `rasayan::pathway`
+- **tests/golden/pathway.tsv** (M5 part 3, +31 rows, 2,877 in all; class T) — 17 `run_to_steady_state` rows (Rust's
+  tests' calls, the 0, 1, 11 and 12 step counts, infinite, zero, NaN and negative tolerances, invalid steps, other step
+  lengths, an anoxic start, PDH off) and 14 trajectories (rest over the same minute at 0.02, 0.1, 1 and 5 s; anoxia and
+  reoxygenation; exercise and recovery; fasting; a glucose bolus; NaN cofactors recovering; seeded networks; another
+  chain length), all matching bit for bit on the first run. `mpfr_ref.py` and `validate.py` model both (121,082
+  independent checks); the correctly rounded `pow` changes none of them
+- **tests/pathway.tcyr** (M5 part 3, 78 checks) — the 3 `run_to_steady_state` tests and its DEBUG event: every
+  `pathway.rs` test and the network's 4 integration tests are ported, the Rust-test ledger at 518 of 723, pathway in
+  the surface-parity list (45 of 45 public items)
+- **scripts/probes/p5_soak.cyr** (M5 part 3, probe 5) — 10⁶ network steps from the default: zero bytes of global heap
+  growth, the network valid throughout, ATP + ADP conserved; in `scripts/probes/run.sh --gate`
 - **src/pathway.cyr** (M5 part 2) — the network's step, transcribed in Rust's operation order (P9): the private
   `produce` (glycolysis's `tick_regulated` with citrate's Randle inhibition, β-oxidation with the ACC-derived
   malonyl-CoA, amino-acid catabolism on TCA's α-KG, the skeletons into the cycle, TCA, cataplerosis) and `step`
@@ -50,8 +65,8 @@ codecs) and part 2 (its step) follow.
   balance over 300 s at any dt, the dt-invariant resting state, 30 minutes at rest, anoxia's Pasteur effect and
   recovery, exercise), and the trace event: the Rust-test ledger at 515 of 723. The fuzz harness steps every accepted
   valid network (188), which stays valid and conserves ATP + ADP to 1e-12
-- **benchmarks** (M5 part 2) — network_tick, Rust → Cyrius: 1.02 → ≈ 4.8 µs; network_tick_1s 55.8 → ≈ 250 µs
-  (provisional: measured under load and scaled by the reference rows)
+- **benchmarks** (M5 part 2) — network_tick, Rust → Cyrius: 1.02 → 4.9 µs; network_tick_1s 55.8 → 260 µs (measured
+  on a quiet machine at part 3)
 - **src/pathway.cyr**, **src/pathway_data.cyr** (M5 part 1) — `pathway.rs`'s types and everything but the step:
   `RyMetabolicNetwork` (the five pathway states nested in place, then the shared pools; 264 bytes),
   `RyNetworkConfig`, `RyNetworkFlux`, `RyNetworkEnvironment`, `RyNetworkExchange`, `RyNetworkTick`. The defaults

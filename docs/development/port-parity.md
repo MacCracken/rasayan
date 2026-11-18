@@ -1634,4 +1634,40 @@ and the 496-byte flux `tick` returns cost more than the network's two solves (a 
 ns by assignment). The count out-pointer `st` is an `*i64`, so the end-of-step solve's half is `st + 2`.
 
 **Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): network_tick 1.02 → ≈ 4.8 µs, network_tick_1s 55.8 → ≈ 250
-µs, provisional (measured at a load of about 20, scaled by the reference rows).
+µs, provisional (measured at a load of about 20, scaled by the reference rows); re-measured at part 3 (§8c).
+
+### 8c. Part 3: the steady-state run, the long runs, the soak (2026-11-17)
+
+**What is compared.** `tests/golden/pathway.tsv` +31 class-T rows (2,877 in all), through the oracle's public
+`run_to_steady_state` and `tick_in`:
+- 17 `run_to_steady_state` rows: Rust's tests' calls (dt 0.1 at 1e-3 and 5000 steps, which converges at tick 18;
+  0 and 1 steps; an infinite tolerance, which stops at the first check, tick 12; a zero one, which uses every step),
+  the edges of the count (2, 11 and 12 steps), NaN and negative tolerances (never converging), invalid steps, other
+  step lengths and tolerances, an anoxic start, PDH off;
+- 14 trajectory scripts: the resting network over the same minute at 0.02, 0.1, 1 and 5 s (Rust's dt-invariance
+  test, pinned at every step length), anoxia and reoxygenation, exercise and recovery, fasting, a glucose bolus, NaN
+  cofactors recovering, two seeded networks, another chain length.
+
+| Check | Result |
+|---|---|
+| every row | identical on the first run, bit for bit |
+| corrected oracle | `mpfr_ref.py` models both and reproduces all 954 class-C and -T rows with glibc's `pow`; the correctly rounded one changes none of the 31 (`pathway.cr.tsv` keeps its 1 row) |
+| `validate.py` | both re-derived by its own network model with MPFR's and the recorded libm; 121,082 checks in all; a flipped value in 4 sampled rows (an f64's last bit, the tick count) is reported, 4 of 4 |
+| Rust tests | the 3 `run_to_steady_state` tests and the max-steps DEBUG event (`tests/pathway.tcyr`, 78 checks): all 34 `pathway.rs` tests and the network's 4 integration tests ported; the ledger at 518 of 723, 0 due and unported; surface parity 45 of 45 |
+| probe 5 | 10⁶ network steps (`scripts/probes/p5_soak.cyr`, in `run.sh --gate`): 0 bytes of global heap growth, the network valid at every 10⁵ steps, ATP + ADP conserved to 1e-9 relative |
+| four targets (`scripts/gates.sh`, 926 s under a load of about 18, every step green) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 116,062 ok, 235 accepted (ADR 3: 154), 0 failed; coverage 285 of 285 public fns executed; probe 5 in the probe gate |
+
+**Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`), re-measured on a quiet machine (load 2.8–3.5, the reference rows at
+their quiet values): network_tick 1.02 → 4.9 µs, network_tick_1s 55.8 → 260 µs; the solves 1.04 µs and 333 ns,
+`validate` 950 ns (part 1's loaded figures were 2.3–3.4× high).
+
+### 8d. M5 complete
+
+One module, 2,877 golden rows (A 1,081, B 842, C 923, T 31), every one matching the oracle but one, which ADR 3
+accepts: in the 1000 s tick's 5000 sub-steps glibc rounds one PFK-1 `pow` up an ulp and the trajectory carries it; the
+port gives the correctly rounded row. The two implicit NADH solves are transcribed statement for statement and every
+solve row pins its iteration count and exit (P9), the single steps both solves' counts, through a transcription of
+the private step checked against the oracle's `tick_in` on every row. The producer probe is a frame copy and the
+network allocates nothing over 10⁶ steps (probes 2 and 5); the sub-step counts follow Rust's division (probe 1). All
+38 of the network's Rust tests are ported. M5 also split the 16 pathway JSON readers into node readers, and found the
+stdlib's byte-loop `memcpy` on the step's path (an addendum to the open cyrius issue, drafted).
