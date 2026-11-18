@@ -25,6 +25,23 @@ part 5 (receptor) is the first module its Python generator writes.
 
 ### Added
 
+- **src/signaling.cyr**, **src/signaling_data.cyr** (M6 part 7) — `signaling.rs` transcribed: `RySignalingNetwork`,
+  `RySignalingConfig` and `RySignalingFlux` (the four pathways' records nested at fixed offsets, the config's three
+  crosstalk gains after them), `RySignalingInput`; the defaults (every pathway's; the gains 0; the input from
+  `src/signaling_data.cyr`, by `gen.py`); both validators (each pathway's in order, then the gains); `ry_signaling_network_tick`
+  (the inputs sanitized; Ras → PI3K, Ca2+ → Ras and Akt → Raf from the start-of-tick state; MAPK through its
+  crate-private `tick_with_raf_inhibition`, then PI3K, JAK-STAT and calcium); the serde codecs of all four, nested.
+  Rust's `signaling_tick` trace event under `rasayan::signaling`
+- **tests/golden/signaling.tsv** (M6 part 7, 679 rows: A 317, B 88, C 253, T 21) — `gen.py` on `mpfr_ref.py`'s four
+  tick models (which reproduce all 1,640 tick rows of their modules): the three defaults, both validators over every
+  leaf, 341 single ticks (22 step lengths, the inputs' edges, every leaf's edges, each gain over 0, 0.5, 2, 10⁶, NaN and
+  inf, each pathway parameter at 0, seeded), 21 trajectories (Rust's crosstalk runs among them) and the nested serde
+  documents (a sequence form, an unknown nested member, a missing pathway, a repeated one). All 679 match the port on
+  the first run
+- **tests/signaling.tcyr** (M6 part 7, 23 checks) — the 13 `signaling.rs` unit tests and its 3 integration tests, and
+  the trace event: the ledger at 626 of 723. The fuzz harness reads the four documents (1,218 read and written back)
+  and ticks every valid network and every valid config
+- **benchmarks** (M6 part 7) — signaling_tick, Rust → Cyrius: 154 → 696 ns
 - **src/nuclear_receptor.cyr**, **src/nuclear_receptor_data.cyr** (M6 part 6) — `nuclear_receptor.rs` transcribed:
   `RyNuclearReceptorState`, `RyNuclearReceptorConfig`, `RyNuclearReceptorFlux`; the defaults and field-name blobs (written by
   `gen.py`); both validators; `ry_nuclear_receptor_state_free_receptor`; `ry_nuclear_receptor_state_tick` (binding from

@@ -1,0 +1,353 @@
+# rasayan — src/signaling.cyr: Rust 1.2.0's signaling network tests, ported
+# Stdlib auto-included via cyrius.cyml
+#
+# The 13 unit tests of `signaling.rs` and the 3 integration tests (tests/integration.rs) that call only the network,
+# as they are written; tests/golden/signaling.tsv checks every method, single tick and trajectory besides. Beyond
+# them: the trace event and every codec's round trip.
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+include "src/integrate.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
+include "src/enzyme_data.cyr"
+include "src/enzyme.cyr"
+include "src/mapk_data.cyr"
+include "src/mapk.cyr"
+include "src/pi3k_data.cyr"
+include "src/pi3k.cyr"
+include "src/jak_stat_data.cyr"
+include "src/jak_stat.cyr"
+include "src/calcium_data.cyr"
+include "src/calcium.cyr"
+include "src/signaling_data.cyr"
+include "src/signaling.cyr"
+
+# The byte offsets of the leaves the tests read (MAPK at 0, PI3K at 32, JAK-STAT at 56, calcium at 88).
+const RAS = 0;
+const RAF = 8;
+const ERK = 24;
+const AKT = 40;
+const STAT_DIMER = 72;
+const CYTO_CA = 88;
+
+# The f64 at byte `off` of network `p`.
+fn leaf(p, off): f64 {
+    var x: f64 = load64(p + off);
+    return x;
+}
+
+# 1 when the network validates.
+fn net_ok(p: *RySignalingNetwork) {
+    var t, v = ry_signaling_network_validate(p);
+    return is_ok(t);
+}
+
+# 1 when the config validates.
+fn cfg_ok(c: *RySignalingConfig) {
+    var t, v = ry_signaling_config_validate(c);
+    return is_ok(t);
+}
+
+# An input of growth factor `gf`, cytokine `cy` and IP3 `ip`.
+fn input_of(i: *RySignalingInput, gf: f64, cy: f64, ip: f64) {
+    i.growth_factor = gf;
+    i.cytokine = cy;
+    i.ip3 = ip;
+    return 0;
+}
+
+# Rust's test helper `run`: `n` ticks of 0.1 s.
+fn run(s: *RySignalingNetwork, c: *RySignalingConfig, i: *RySignalingInput, n) {
+    var f: RySignalingFlux;
+    var k = 0;
+    while (k < n) {
+        ry_signaling_network_tick(s, c, i, 0.1, &f);
+        k = k + 1;
+    }
+    return 0;
+}
+
+# `n` ticks of `dt`.
+fn ticks(s: *RySignalingNetwork, c: *RySignalingConfig, i: *RySignalingInput, n, dt: f64) {
+    var f: RySignalingFlux;
+    var k = 0;
+    while (k < n) {
+        ry_signaling_network_tick(s, c, i, dt, &f);
+        k = k + 1;
+    }
+    return 0;
+}
+
+# ── the captured events ──
+var _ev_buf[1024];
+var _ev_len = 0;
+var _ev_first = 0;
+
+# sakshi's subscriber: keeps the first event's message after a reset (the network's own event comes before its
+# pathways').
+fn _ev_hook(ts, level, category, msg, msg_len, extra) {
+    if (_ev_first == 1) { return 0; }
+    var n = msg_len;
+    if (n > 1024) { n = 1024; }
+    memcpy(&_ev_buf, msg, n);
+    _ev_len = msg_len;
+    _ev_first = 1;
+    return 0;
+}
+
+# 1 if the captured event is the C string `want`.
+fn _ev_is(want) {
+    var n = strlen(want);
+    if (_ev_len != n) { return 0; }
+    return memeq(&_ev_buf, want, n);
+}
+
+# rust src/signaling.rs: test_default_valid, test_default_crosstalk_is_zero, test_config_validate_rejects_bad_values
+fn validation() {
+    test_group("signaling: defaults and validation");
+    var s: RySignalingNetwork;
+    var c: RySignalingConfig;
+    ry_signaling_network_default(&s);
+    ry_signaling_config_default(&c);
+    assert(net_ok(&s) == 1 && cfg_ok(&c) == 1, "the defaults validate");
+    var g1: f64 = c.ras_pi3k_crosstalk;
+    var g2: f64 = c.akt_raf_inhibition;
+    var g3: f64 = c.ca_ras_crosstalk;
+    assert(g1 == 0.0 && g2 == 0.0 && g3 == 0.0, "every crosstalk gain defaults to 0");
+    var nan: f64 = _ry_nan();
+    var inf: f64 = _RY_INF;
+    var refused = 0;
+    var k = 0;
+    while (k < 5) {
+        ry_signaling_config_default(&c);
+        var w = &c;
+        if (k == 0) { c.akt_raf_inhibition = nan; }
+        if (k == 1) { c.ca_ras_crosstalk = 0.0 - 1.0; }
+        if (k == 2) { c.ras_pi3k_crosstalk = inf; }
+        if (k == 3) { store64(w + _RY_SIGCFG_JAK_STAT + 80, 0.0); }          # jak_stat.socs_ki = 0
+        if (k == 4) { store64(w + _RY_SIGCFG_CALCIUM + 64, 0.0); }           # calcium.serca_km = 0
+        if (cfg_ok(&c) == 0) { refused = refused + 1; }
+        k = k + 1;
+    }
+    assert_eq(refused, 5, "each of Rust's five bad configs is refused");
+    return 0;
+}
+
+# rust src/signaling.rs: test_growth_factor_activates_mapk_and_pi3k, test_cytokine_activates_jak_stat
+# rust src/signaling.rs: test_ip3_raises_calcium, test_bounded
+fn pathways() {
+    test_group("signaling: the pathways");
+    var s: RySignalingNetwork;
+    var c: RySignalingConfig;
+    var i: RySignalingInput;
+    ry_signaling_config_default(&c);
+    ry_signaling_network_default(&s);
+    input_of(&i, 1.0, 0.0, 0.0);
+    ticks(&s, &c, &i, 100, 0.1);
+    var erk: f64 = leaf(&s, ERK);
+    var akt: f64 = leaf(&s, AKT);
+    assert(erk > RY_MAPK_MAPK_STATE_DEFAULT_ERK_PP && akt > RY_PI3K_PI3K_STATE_DEFAULT_AKT_ACTIVE,
+      "a growth factor activates MAPK and PI3K");
+    ry_signaling_network_default(&s);
+    input_of(&i, 0.0, 1.0, 0.0);
+    ticks(&s, &c, &i, 100, 0.1);
+    var dimer: f64 = leaf(&s, STAT_DIMER);
+    assert(dimer > RY_JAK_STAT_JAK_STAT_STATE_DEFAULT_STAT_DIMER, "a cytokine activates JAK-STAT");
+    ry_signaling_network_default(&s);
+    input_of(&i, 0.0, 0.0, 1.0);
+    ticks(&s, &c, &i, 100, 0.01);
+    var ca: f64 = leaf(&s, CYTO_CA);
+    assert(ca > RY_CALCIUM_CALCIUM_STATE_DEFAULT_CYTOPLASMIC_CA, "IP3 raises cytosolic Ca2+");
+    ry_signaling_network_default(&s);
+    input_of(&i, 1.0, 0.5, 0.5);
+    ticks(&s, &c, &i, 1000, 0.01);
+    assert_eq(net_ok(&s), 1, "1000 steps of 0.01 s stay valid");
+    return 0;
+}
+
+# rust src/signaling.rs: test_ras_pi3k_crosstalk, test_akt_raf_inhibition_lowers_mapk, test_ca_ras_crosstalk_raises_ras
+fn crosstalk() {
+    test_group("signaling: crosstalk");
+    var base: RySignalingConfig;
+    var xt: RySignalingConfig;
+    var a: RySignalingNetwork;
+    var b: RySignalingNetwork;
+    var i: RySignalingInput;
+    var f: RySignalingFlux;
+    ry_signaling_config_default(&base);
+    ry_signaling_config_default(&xt);
+    xt.ras_pi3k_crosstalk = 2.0;
+    input_of(&i, 0.3, 0.0, 0.0);
+    ry_signaling_network_default(&a);
+    ry_signaling_network_default(&b);
+    var k = 0;
+    while (k < 100) {
+        ry_signaling_network_tick(&a, &base, &i, 0.1, &f);
+        ry_signaling_network_tick(&b, &xt, &i, 0.1, &f);
+        k = k + 1;
+    }
+    var akt_a: f64 = leaf(&a, AKT);
+    var akt_b: f64 = leaf(&b, AKT);
+    assert(akt_b > akt_a, "Ras → PI3K crosstalk boosts Akt");
+    ry_signaling_config_default(&xt);
+    xt.akt_raf_inhibition = 1.0;
+    input_of(&i, 1.0, 0.0, 0.0);
+    ry_signaling_network_default(&a);
+    ry_signaling_network_default(&b);
+    run(&a, &base, &i, 300);
+    run(&b, &xt, &i, 300);
+    var akt: f64 = leaf(&b, AKT);
+    var raf_a: f64 = leaf(&a, RAF);
+    var raf_b: f64 = leaf(&b, RAF);
+    var erk_a: f64 = leaf(&a, ERK);
+    var erk_b: f64 = leaf(&b, ERK);
+    assert(akt > 0.1 && raf_b < raf_a && erk_b < erk_a && net_ok(&b) == 1, "Akt inhibits Raf, and it reaches ERK");
+    var strong: RySignalingConfig;
+    ry_signaling_config_default(&strong);
+    strong.akt_raf_inhibition = 1000000.0;
+    ry_signaling_network_tick(&b, &strong, &i, 100.0, &f);
+    assert_eq(net_ok(&b), 1, "a huge gain and dt keep Raf in [0, 1]");
+    ry_signaling_config_default(&xt);
+    xt.ca_ras_crosstalk = 1.0;
+    input_of(&i, 0.1, 0.0, 1.0);
+    ry_signaling_network_default(&a);
+    ry_signaling_network_default(&b);
+    run(&a, &base, &i, 100);
+    run(&b, &xt, &i, 100);
+    var ras_a: f64 = leaf(&a, RAS);
+    var ras_b: f64 = leaf(&b, RAS);
+    erk_a = leaf(&a, ERK);
+    erk_b = leaf(&b, ERK);
+    assert(ras_b > ras_a && erk_b > erk_a, "Ca2+ activates Ras");
+    return 0;
+}
+
+# rust src/signaling.rs: test_nan_inputs_do_not_drive_pathways, test_invalid_dt_is_noop
+fn hardening() {
+    test_group("signaling: hardening");
+    var c: RySignalingConfig;
+    var a: RySignalingNetwork;
+    var b: RySignalingNetwork;
+    var nan_in: RySignalingInput;
+    var zero_in: RySignalingInput;
+    var f: RySignalingFlux;
+    var zero: RySignalingFlux;
+    var nan: f64 = _ry_nan();
+    var inf: f64 = _RY_INF;
+    ry_signaling_config_default(&c);
+    c.ca_ras_crosstalk = 1.0;
+    c.ras_pi3k_crosstalk = 1.0;
+    input_of(&nan_in, nan, nan, nan);
+    ry_signaling_input_default(&zero_in);
+    ry_signaling_network_default(&a);
+    ry_signaling_network_default(&b);
+    run(&a, &c, &nan_in, 50);
+    run(&b, &c, &zero_in, 50);
+    assert(memeq(&a, &b, _RY_SIG_SIZE) == 1 && net_ok(&a) == 1, "NaN inputs drive nothing");
+    ry_signaling_config_default(&c);
+    var full: RySignalingInput;
+    input_of(&full, 1.0, 1.0, 1.0);
+    var d: RySignalingNetwork;
+    ry_signaling_network_default(&d);
+    ry_signaling_flux_default(&zero);
+    var k = 0;
+    while (k < 4) {
+        var dt: f64 = 0.0;
+        if (k == 1) { dt = -0.1; }
+        if (k == 2) { dt = nan; }
+        if (k == 3) { dt = inf; }
+        ry_signaling_network_default(&a);
+        memset(&f, 255, _RY_SIG_SIZE);
+        ry_signaling_network_tick(&a, &c, &full, dt, &f);
+        assert(memeq(&a, &d, _RY_SIG_SIZE) == 1 && memeq(&f, &zero, _RY_SIG_SIZE) == 1,
+          "an invalid dt changes nothing, a zero flux");
+        k = k + 1;
+    }
+    return 0;
+}
+
+# Rust's trace event, under the target `rasayan::signaling`, its fields in Rust's order (the inputs sanitized).
+fn events() {
+    test_group("signaling: trace event");
+    sakshi_set_emit_hook(&_ev_hook);
+    sakshi_set_level(SK_TRACE);
+    var s: RySignalingNetwork;
+    var c: RySignalingConfig;
+    var i: RySignalingInput;
+    var f: RySignalingFlux;
+    ry_signaling_network_default(&s);
+    ry_signaling_config_default(&c);
+    input_of(&i, 2.0, 0.0 - 1.0, 0.5);
+    _ev_first = 0;
+    ry_signaling_network_tick(&s, &c, &i, 0.01, &f);
+    assert_eq(_ev_is("rasayan::signaling: signaling_tick dt=0.01 gf=1 cytokine=0 ip3=0.5"), 1, "signaling_tick");
+    _ev_first = 0;
+    _ev_len = 0;
+    ry_signaling_network_tick(&s, &c, &i, 0.0, &f);
+    assert_eq(_ev_len, 0, "no event for an invalid dt");
+    sakshi_set_level(SK_INFO);
+    _ev_first = 0;
+    ry_signaling_network_tick(&s, &c, &i, 0.01, &f);
+    assert_eq(_ev_len, 0, "below TRACE, nothing");
+    sakshi_clear_emit_hook();
+    return 0;
+}
+
+# rust src/signaling.rs: test_serde_roundtrip
+# rust tests/integration.rs: test_signaling_config_serde_roundtrip, test_signaling_input_serde_roundtrip
+# rust tests/integration.rs: test_signaling_flux_serde_roundtrip
+fn serde() {
+    test_group("signaling: serde round trips");
+    var sb = str_builder_new();
+    var s: RySignalingNetwork;
+    var s2: RySignalingNetwork;
+    ry_signaling_network_default(&s);
+    var t1, v1 = ry_signaling_network_to_json(sb, &s);
+    var t2, v2 = ry_signaling_network_from_json(load64(sb), load64(sb + 8), &s2);
+    assert(is_ok(t2) == 1 && memeq(&s2, &s, _RY_SIG_SIZE) == 1, "the network reads back");
+    var c: RySignalingConfig;
+    var c2: RySignalingConfig;
+    ry_signaling_config_default(&c);
+    store64(sb + 8, 0);
+    var t3, v3 = ry_signaling_config_to_json(sb, &c);
+    var t4, v4 = ry_signaling_config_from_json(load64(sb), load64(sb + 8), &c2);
+    assert(is_ok(t4) == 1 && memeq(&c2, &c, _RY_SIGCFG_SIZE) == 1, "the config reads back");
+    var i: RySignalingInput;
+    var i2: RySignalingInput;
+    input_of(&i, 0.5, 0.3, 0.2);
+    store64(sb + 8, 0);
+    var t5, v5 = ry_signaling_input_to_json(sb, &i);
+    var t6, v6 = ry_signaling_input_from_json(load64(sb), load64(sb + 8), &i2);
+    assert(is_ok(t6) == 1 && memeq(&i2, &i, 24) == 1, "the input reads back");
+    var f: RySignalingFlux;
+    var f2: RySignalingFlux;
+    ry_signaling_network_tick(&s, &c, &i, 0.01, &f);
+    store64(sb + 8, 0);
+    var t7, v7 = ry_signaling_flux_to_json(sb, &f);
+    var t8, v8 = ry_signaling_flux_from_json(load64(sb), load64(sb + 8), &f2);
+    assert(is_ok(t8) == 1 && memeq(&f2, &f, _RY_SIG_SIZE) == 1, "a tick's flux reads back, bit for bit");
+    return 0;
+}
+
+# Runs the signaling suite.
+fn main() {
+    alloc_init();
+    validation();
+    pathways();
+    crosstalk();
+    hardening();
+    events();
+    serde();
+    return assert_summary();
+}
+
+var exit_code = main();
+# assert_summary() returns the failure count; a wait status is 8 bits, so any failure exits 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

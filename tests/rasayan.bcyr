@@ -68,6 +68,8 @@ include "src/receptor_data.cyr"
 include "src/receptor.cyr"
 include "src/nuclear_receptor_data.cyr"
 include "src/nuclear_receptor.cyr"
+include "src/signaling_data.cyr"
+include "src/signaling.cyr"
 
 # Keeps the loops' results observable.
 var _bn_sink = 0;
@@ -1216,6 +1218,41 @@ fn _bn_nuclear_receptor(name, kind, n): i64 {
     return 0;
 }
 
+# n calls of signaling benchmark `kind`: 0 signaling_tick (Rust's body: a default network, one tick of 0.01 s at
+# growth factor 0.5, cytokine 0.3, IP3 0.2), 1 the same network ticked on (no reset), 2 the same with every crosstalk
+# gain at 0.5; the flux kept.
+fn _bn_signaling(name, kind, n): i64 {
+    var s: RySignalingNetwork;
+    var c: RySignalingConfig;
+    var f: RySignalingFlux;
+    var inp: RySignalingInput;
+    ry_signaling_network_default(&s);
+    ry_signaling_config_default(&c);
+    if (kind == 2) {
+        c.ras_pi3k_crosstalk = 0.5;
+        c.akt_raf_inhibition = 0.5;
+        c.ca_ras_crosstalk = 0.5;
+    }
+    inp.growth_factor = 0.5;
+    inp.cytokine = 0.3;
+    inp.ip3 = 0.2;
+    var acc: f64 = 0.0;
+    var b = bench_new(name);
+    bench_batch_start(b);
+    var i = 0;
+    while (i < n) {
+        if (kind != 1) { ry_signaling_network_default(&s); }
+        ry_signaling_network_tick(&s, &c, &inp, 0.01, &f);
+        var x: f64 = load64(&f);
+        acc = acc + x;
+        i = i + 1;
+    }
+    bench_batch_stop(b, n);
+    bench_report(b);
+    _bn_keep(acc);
+    return 0;
+}
+
 # Runs the benchmark suite (Rust twins arrive with each milestone).
 fn main(): i64 {
     alloc_init();
@@ -1341,6 +1378,9 @@ fn main(): i64 {
     _bn_nuclear_receptor("nuclear_receptor_tick", 0, 1000000);
     _bn_nuclear_receptor("nuclear_receptor/tick, no reset", 1, 1000000);
     _bn_nuclear_receptor("nuclear_receptor/tick 100 s", 2, 1000000);
+    _bn_signaling("signaling_tick", 0, 1000000);
+    _bn_signaling("signaling/tick, no reset", 1, 1000000);
+    _bn_signaling("signaling/tick, every crosstalk gain 0.5", 2, 1000000);
     bench_batch_stop(b10, 50000);
     bench_report(b10);
     if (_bn_sink == 1) { println(""); }

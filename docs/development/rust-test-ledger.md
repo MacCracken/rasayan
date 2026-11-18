@@ -6,7 +6,7 @@
 > milestone hasn't come. The golden corpus (`tests/golden/`) checks every ported function on its grid besides.
 > The 2 doc tests and the example are M9's.
 
-**723 Rust tests:** 610 ported; 16 at M6, 62 at M7, 35 at M8.
+**723 Rust tests:** 626 ported; 62 at M7, 35 at M8.
 
 | Rust file | Tests | Ported | Due, unported | Later (milestone) |
 |---|---:|---:|---:|---|
@@ -36,11 +36,11 @@
 | `src/ptm.rs` | 16 | 16 | 0 | — |
 | `src/receptor.rs` | 12 | 12 | 0 | — |
 | `src/signal.rs` | 21 | 21 | 0 | — |
-| `src/signaling.rs` | 13 | 0 | 0 | 13 (M6) |
+| `src/signaling.rs` | 13 | 13 | 0 | — |
 | `src/tca.rs` | 26 | 26 | 0 | — |
-| `tests/integration.rs` | 70 | 61 | 0 | 3 (M6), 6 (M7) |
+| `tests/integration.rs` | 70 | 64 | 0 | 6 (M7) |
 | `tests/validation.rs` | 25 | 25 | 0 | — |
-| **Total** | **723** | **610** | **0** | |
+| **Total** | **723** | **626** | **0** | |
 
 ## Where each is ported
 
@@ -544,6 +544,19 @@
 | `src/signal.rs` `test_validate_out_of_range` | `tests/signal.tcyr` `validation` |
 | `src/signal.rs` `test_validate_rejects_non_finite` | `tests/signal.tcyr` `validation` |
 | `src/signal.rs` `test_validate_valid` | `tests/signal.tcyr` `validation` |
+| `src/signaling.rs` `test_akt_raf_inhibition_lowers_mapk` | `tests/signaling.tcyr` `crosstalk` |
+| `src/signaling.rs` `test_bounded` | `tests/signaling.tcyr` `pathways` |
+| `src/signaling.rs` `test_ca_ras_crosstalk_raises_ras` | `tests/signaling.tcyr` `crosstalk` |
+| `src/signaling.rs` `test_config_validate_rejects_bad_values` | `tests/signaling.tcyr` `validation` |
+| `src/signaling.rs` `test_cytokine_activates_jak_stat` | `tests/signaling.tcyr` `pathways` |
+| `src/signaling.rs` `test_default_crosstalk_is_zero` | `tests/signaling.tcyr` `validation` |
+| `src/signaling.rs` `test_default_valid` | `tests/signaling.tcyr` `validation` |
+| `src/signaling.rs` `test_growth_factor_activates_mapk_and_pi3k` | `tests/signaling.tcyr` `pathways` |
+| `src/signaling.rs` `test_invalid_dt_is_noop` | `tests/signaling.tcyr` `hardening` |
+| `src/signaling.rs` `test_ip3_raises_calcium` | `tests/signaling.tcyr` `pathways` |
+| `src/signaling.rs` `test_nan_inputs_do_not_drive_pathways` | `tests/signaling.tcyr` `hardening` |
+| `src/signaling.rs` `test_ras_pi3k_crosstalk` | `tests/signaling.tcyr` `crosstalk` |
+| `src/signaling.rs` `test_serde_roundtrip` | `tests/signaling.tcyr` `serde` |
 | `src/tca.rs` `test_adp_activates_idh` | `tests/tca.tcyr` `regulation` |
 | `src/tca.rs` `test_carbon_balance_exact` | `tests/tca.tcyr` `conservation` |
 | `src/tca.rs` `test_co2_produced` | `tests/tca.tcyr` `ticking` |
@@ -630,6 +643,9 @@
 | `tests/integration.rs` `test_receptor_flux_serde_roundtrip` | `tests/receptor.tcyr` `serde` |
 | `tests/integration.rs` `test_reversible_haldane_consistency` | `tests/enzyme.tcyr` `reversible` |
 | `tests/integration.rs` `test_second_messenger_serde_roundtrip` | `tests/signal.tcyr` `serde` |
+| `tests/integration.rs` `test_signaling_config_serde_roundtrip` | `tests/signaling.tcyr` `serde` |
+| `tests/integration.rs` `test_signaling_flux_serde_roundtrip` | `tests/signaling.tcyr` `serde` |
+| `tests/integration.rs` `test_signaling_input_serde_roundtrip` | `tests/signaling.tcyr` `serde` |
 | `tests/integration.rs` `test_tca_flux_serde_roundtrip` | `tests/tca.tcyr` `serde` |
 | `tests/validation.rs` `validate_arrhenius_temperature_sensitivity` | `tests/enzyme.tcyr` `temperature` |
 | `tests/validation.rs` `validate_blosum62_known_entries` | `tests/alignment.tcyr` `matrices` |

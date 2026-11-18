@@ -61,6 +61,8 @@ include "src/receptor_data.cyr"
 include "src/receptor.cyr"
 include "src/nuclear_receptor_data.cyr"
 include "src/nuclear_receptor.cyr"
+include "src/signaling_data.cyr"
+include "src/signaling.cyr"
 
 var _fz_state = 0x2545F4914F6CDD1D;
 var _fz_bad = 0;
@@ -87,6 +89,7 @@ var _fz_jak_stat = 0;
 var _fz_calcium = 0;
 var _fz_receptor = 0;
 var _fz_nuclear_receptor = 0;
+var _fz_signaling = 0;
 
 # xorshift64*: the next pseudo-random word.
 fn fz_next(): i64 {
@@ -1231,6 +1234,94 @@ fn fuzz_nuclear_receptor(data, len) {
     return 0;
 }
 
+# signaling: the four codecs on one input (an accepted value holds only finite f64s and reads back bit for bit from
+# what it writes); a valid network stepped 0.1 s and 100 s on the default config at a mid input, and the default
+# network on an accepted config that validates, which stay valid with finite fluxes.
+fn fz_signaling_step(s: *RySignalingNetwork, c: *RySignalingConfig) {
+    var f: RySignalingFlux;
+    var i: RySignalingInput;
+    i.growth_factor = 0.5;
+    i.cytokine = 0.3;
+    i.ip3 = 0.2;
+    ry_signaling_network_tick(s, c, &i, 0.1, &f);
+    var ok = fz_all_finite(&f, 14);
+    ry_signaling_network_tick(s, c, &i, 100.0, &f);
+    if (fz_all_finite(&f, 14) == 0) { ok = 0; }
+    var tv, vv = ry_signaling_network_validate(s);
+    if (is_ok(tv) == 0 || ok == 0) { _fz_bad = _fz_bad + 1; }
+    return 0;
+}
+
+# signaling: the network, config, flux and input documents (see fz_signaling_step).
+fn fuzz_signaling(data, len) {
+    reset_via(_fz_arena);
+    var dc: RySignalingConfig;
+    ry_signaling_config_default(&dc);
+    var s: RySignalingNetwork;
+    var s2: RySignalingNetwork;
+    var t1, v1 = ry_signaling_network_from_json_a(_fz_arena, data, len, &s);
+    if (is_ok(t1) == 1) {
+        _fz_signaling = _fz_signaling + 1;
+        store64(_fz_sb + 8, 0);
+        var t2, v2 = ry_signaling_network_to_json(_fz_sb, &s);
+        var t3, v3 = ry_signaling_network_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &s2);
+        if (fz_all_finite(&s, 14) == 0 || is_ok(t2) == 0 || is_ok(t3) == 0 || memeq(&s2, &s, 112) == 0) {
+            _fz_bad = _fz_bad + 1;
+        }
+        var tv, vv = ry_signaling_network_validate(&s);
+        var ws = &s;
+        var ca: f64 = load64(ws + 88);
+        var er: f64 = load64(ws + 96);
+        var p: f64 = load64(ws + 64);
+        var dd: f64 = load64(ws + 72);
+        var held: f64 = p + 2.0 * dd;
+        if (is_ok(tv) == 1 && ca <= 1000000.0 && er <= 1000000.0 && held <= 1.0) { fz_signaling_step(&s, &dc); }
+    }
+    var c2: RySignalingConfig;
+    var cb: RySignalingConfig;
+    var t4, v4 = ry_signaling_config_from_json_a(_fz_arena, data, len, &c2);
+    if (is_ok(t4) == 1) {
+        _fz_signaling = _fz_signaling + 1;
+        store64(_fz_sb + 8, 0);
+        var t5, v5 = ry_signaling_config_to_json(_fz_sb, &c2);
+        var t6, v6 = ry_signaling_config_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &cb);
+        if (fz_all_finite(&c2, 46) == 0 || is_ok(t5) == 0 || is_ok(t6) == 0 || memeq(&cb, &c2, 368) == 0) {
+            _fz_bad = _fz_bad + 1;
+        }
+        var tc, vc = ry_signaling_config_validate(&c2);
+        if (is_ok(tc) == 1) {
+            var d: RySignalingNetwork;
+            ry_signaling_network_default(&d);
+            fz_signaling_step(&d, &c2);
+        }
+    }
+    var fx: RySignalingFlux;
+    var fb: RySignalingFlux;
+    var t7, v7 = ry_signaling_flux_from_json_a(_fz_arena, data, len, &fx);
+    if (is_ok(t7) == 1) {
+        _fz_signaling = _fz_signaling + 1;
+        store64(_fz_sb + 8, 0);
+        var t8, v8 = ry_signaling_flux_to_json(_fz_sb, &fx);
+        var t9, v9 = ry_signaling_flux_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &fb);
+        if (fz_all_finite(&fx, 14) == 0 || is_ok(t8) == 0 || is_ok(t9) == 0 || memeq(&fb, &fx, 112) == 0) {
+            _fz_bad = _fz_bad + 1;
+        }
+    }
+    var ix: RySignalingInput;
+    var ib: RySignalingInput;
+    var ta, va = ry_signaling_input_from_json_a(_fz_arena, data, len, &ix);
+    if (is_ok(ta) == 1) {
+        _fz_signaling = _fz_signaling + 1;
+        store64(_fz_sb + 8, 0);
+        var tb, vb = ry_signaling_input_to_json(_fz_sb, &ix);
+        var tq, vq = ry_signaling_input_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &ib);
+        if (fz_all_finite(&ix, 3) == 0 || is_ok(tb) == 0 || is_ok(tq) == 0 || memeq(&ib, &ix, 24) == 0) {
+            _fz_bad = _fz_bad + 1;
+        }
+    }
+    return 0;
+}
+
 # A NUL-terminated copy of the document builder `sb` holds (a seed).
 fn fz_seed_of(sb): i64 {
     var n = load64(sb + 8);
@@ -1381,7 +1472,7 @@ fn main() {
     var buf = alloc(cap + 1);
     _fz_arena = arena_allocator_growable(65536);
     _fz_sb = str_builder_new();
-    var seeds = alloc(8 * 79);
+    var seeds = alloc(8 * 82);
     store64(seeds, "trace");
     store64(seeds + 8, "DEBUG");
     store64(seeds + 16, "info,warn");
@@ -1612,6 +1703,26 @@ fn main() {
     store64(_fz_sb + 8, 0);
     var tnuz2, vnuz2 = ry_nuclear_receptor_flux_to_json(_fz_sb, &nuzf);
     store64(seeds + 624, fz_seed_of(_fz_sb));
+    # The signaling documents: the default network, config and a tick's flux as written.
+    var sgc: RySignalingConfig;
+    var sgs: RySignalingNetwork;
+    var sgf: RySignalingFlux;
+    var sgi: RySignalingInput;
+    ry_signaling_config_default(&sgc);
+    ry_signaling_network_default(&sgs);
+    sgi.growth_factor = 0.5;
+    sgi.cytokine = 0.3;
+    sgi.ip3 = 0.2;
+    ry_signaling_network_tick(&sgs, &sgc, &sgi, 0.1, &sgf);
+    store64(_fz_sb + 8, 0);
+    var tsg0, vsg0 = ry_signaling_network_to_json(_fz_sb, &sgs);
+    store64(seeds + 632, fz_seed_of(_fz_sb));
+    store64(_fz_sb + 8, 0);
+    var tsg1, vsg1 = ry_signaling_config_to_json(_fz_sb, &sgc);
+    store64(seeds + 640, fz_seed_of(_fz_sb));
+    store64(_fz_sb + 8, 0);
+    var tsg2, vsg2 = ry_signaling_flux_to_json(_fz_sb, &sgf);
+    store64(seeds + 648, fz_seed_of(_fz_sb));
     var i = 0;
     while (i < 50000) {
         var n = 0;
@@ -1620,7 +1731,7 @@ fn main() {
             var k = 0;
             while (k < n) { store8(buf + k, fz_below(256)); k = k + 1; }
         } else {
-            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(79)));
+            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(82)));
         }
         fuzz_main(buf, n);
         fuzz_json(buf, n);
@@ -1641,6 +1752,7 @@ fn main() {
         fuzz_calcium(buf, n);
         fuzz_receptor(buf, n);
         fuzz_nuclear_receptor(buf, n);
+        fuzz_signaling(buf, n);
         i = i + 1;
     }
     if (_fz_bad != 0) {
@@ -1688,6 +1800,8 @@ fn main() {
     fmt_int(_fz_receptor);
     print(", nuclear-receptor documents read: ", 35);
     fmt_int(_fz_nuclear_receptor);
+    print(", signaling documents read: ", 28);
+    fmt_int(_fz_signaling);
     println(")");
     return 0;
 }

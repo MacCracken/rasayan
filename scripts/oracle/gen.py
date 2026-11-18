@@ -1084,6 +1084,290 @@ def signaling():
     return m, {"src/signaling_data.cyr": "".join(out).rstrip() + "\n"}
 
 
+# ── validators written as loops over (name, value) lists, in their check order ──
+
+def check_order(module, ty):
+    """[(field, guard)] of `<ty>::validate` in the order it checks them: direct `guard::<g>("name", …)` calls and
+    `for (name, value) in [("a", self.a), …] { guard::<g>(name, value)?; }` loops, as the source writes them."""
+    src = rust_src(module)
+    body = src[src.index(f"impl {ty} {{"):]
+    body = body[body.index("pub fn validate"):]
+    body = body[:body.index("Ok(())")]
+    out = []
+    pos = 0
+    pat = re.compile(r'guard::(\w+)\(\s*"(\w+)",|for \(name, value\) in \[(.*?)\]\s*\{\s*guard::(\w+)\(name, value\)\?;', re.S)
+    for m in pat.finditer(body, pos):
+        if m.group(1):
+            out.append((m.group(2), m.group(1)))
+        else:
+            out += [(n, m.group(4)) for n in re.findall(r'\(\s*"(\w+)",', m.group(3))]
+    return out
+
+
+def validate_order(order, names, vals):
+    """The first refusal of `vals` (in declaration order) when checked in `order`, or None."""
+    at = {n: k for k, n in enumerate(names)}
+    for n, kind in order:
+        e = guard_err(kind, vals[at[n]])
+        if e:
+            return e
+    return None
+
+
+# ── neurotransmitter (M7 part 1) ──
+
+def neurotransmitter():
+    mod = "neurotransmitter"
+    S = struct_names(mod, "NeurotransmitterState")
+    C = struct_names(mod, "NeurotransmitterConfig")
+    F = struct_names(mod, "NeurotransmitterFlux")
+    sd = [x for _, x in defaults(mod, "NeurotransmitterState")]
+    cd = [x for _, x in defaults(mod, "NeurotransmitterConfig")]
+    s_order = check_order(mod, "NeurotransmitterState")
+    c_order = check_order(mod, "NeurotransmitterConfig")
+    if sorted(n for n, _ in s_order) != sorted(S) or sorted(n for n, _ in c_order) != sorted(C):
+        raise SystemExit("gen: neurotransmitter's validators do not guard every field once")
+    env = validate.module_env(validate.scan_items(mod, rust_src(mod)))
+    PLASMA_TRP, PLASMA_TYR = float(env("PLASMA_TRYPTOPHAN")), float(env("PLASMA_TYROSINE"))
+    RATE, MIN_CLEAR = float(env("PRECURSOR_TRANSPORT_RATE")), float(env("MIN_CLEARANCE_RATE"))
+    EPS = 2.0 ** -52
+
+    def consume(rate, pool, dt):
+        amount = rate * dt
+        if amount <= pool:
+            return rate, amount
+        return div(pool, dt), pool
+
+    def tick(st, c, acetyl_coa, stimulus, dt):
+        if not valid_dt(dt):
+            return list(st), [0.0] * 14, False
+        stim = conc(stimulus)
+        accoa = unit(acetyl_coa)
+        sero, da, ne, gaba, glu, ach, endo, trp, tyr, gln, cho = st
+        hit = []
+
+        def pd(x, prod, decay):
+            v, e = produce_decay(x, prod, decay, dt)
+            hit.append(e)
+            return v
+
+        def pdr(level, rate, amount, decay):
+            nxt = pd(level, rate, decay)
+            return nxt, rmax(level + amount - nxt, 0.0)
+
+        def rx(x, target):
+            v, e = relax(x, target, RATE, dt)
+            hit.append(e)
+            return v
+
+        v_tph, trp_used = consume(michaelis_menten(trp, c[0], c[1]) * stim, trp, dt)
+        v_5ht_deg = c[2] * sero
+        trp = rx(trp - trp_used, PLASMA_TRP)
+        sero = pd(sero, v_tph, c[2])
+        v_th, tyr_used = consume(michaelis_menten(tyr, c[3], c[4]) * stim, tyr, dt)
+        v_dbh, da_used = consume(michaelis_menten(da, c[7], c[8]) * stim, da, dt)
+        da_loss = c[5] + c[6]
+        v_da_deg = da_loss * da
+        v_ne_deg = c[9] * ne
+        tyr = rx(tyr - tyr_used, PLASMA_TYR)
+        da = pd(da - da_used, v_th, da_loss)
+        ne = pd(ne, v_dbh, c[9])
+        v_gad, glu_used = consume(michaelis_menten(glu, c[10], c[11]) * stim, glu, dt)
+        v_glut, gln_used = consume(michaelis_menten(gln, c[13], c[14]) * stim, gln, dt)
+        v_glu_clear = c[15] * glu
+        v_gaba_deg = c[12] * gaba
+        glutamate, glu_cleared = pdr(glu - glu_used, v_glut, gln_used, c[15])
+        gaba2, gaba_degraded = pdr(gaba, v_gad, glu_used, c[12])
+        glu, gaba = glutamate, gaba2
+        gln = gln - gln_used + glu_cleared + gaba_degraded
+        v_chat, choline_used = consume(michaelis_menten(cho, c[16], c[17]) * accoa * stim, cho, dt)
+        v_ache = c[18] * ach
+        ach, ach_hydrolyzed = pdr(ach, v_chat, choline_used, c[18])
+        cho = cho - choline_used + ach_hydrolyzed
+        v_pomc = c[19] * stim
+        v_endo_deg = c[20] * endo
+        endo = pd(endo, v_pomc, c[20])
+        return ([sero, da, ne, gaba, glu, ach, endo, trp, tyr, gln, cho],
+                [v_tph, v_5ht_deg, v_th, v_da_deg, v_dbh, v_ne_deg, v_gad, v_gaba_deg, v_glut, v_glu_clear, v_chat,
+                 v_ache, v_pomc, v_endo_deg], any(hit))
+
+    def steady(synthesis, rate):
+        return div(synthesis, rmax(rate, MIN_CLEAR))
+
+    bridges = {
+        "neurotransmitter::serotonin_synthesis_rate":
+            lambda a: michaelis_menten(conc(a[0]), 0.05 * conc(a[1]), 2.0),
+        "neurotransmitter::dopamine_level":
+            lambda a: steady(michaelis_menten(conc(a[0]), 0.08 * conc(a[1]), 2.0), a[2]),
+        "neurotransmitter::gaba_glutamate_ratio":
+            lambda a: div(conc(a[0]), conc(a[1])) if conc(a[1]) > EPS else 0.0,
+        "neurotransmitter::norepinephrine_level":
+            lambda a: steady(michaelis_menten(conc(a[0]), 0.04 * conc(a[1]), 0.5), a[2]),
+        "neurotransmitter::acetylcholine_level":
+            lambda a: steady(0.1 * michaelis_menten(conc(a[0]), 1.0, 1.0) * unit(a[1]), a[2]),
+        "neurotransmitter::endorphin_level":
+            lambda a: steady(0.01 * conc(a[0]), a[1]),
+    }
+    arity = {"neurotransmitter::serotonin_synthesis_rate": 2, "neurotransmitter::dopamine_level": 3,
+             "neurotransmitter::gaba_glutamate_ratio": 2, "neurotransmitter::norepinephrine_level": 3,
+             "neurotransmitter::acetylcholine_level": 3, "neurotransmitter::endorphin_level": 2}
+    src = rust_src(mod)
+    for fn in bridges:
+        if f"pub fn {fn.split('::')[1]}(" not in src:
+            raise SystemExit(f"gen: neurotransmitter.rs has no {fn}")
+
+    m = g.Module(mod)
+    rng = Rng(0x6E65_7572)
+    m.row("neurotransmitter::NeurotransmitterState::default", "A", [], toks(sd))
+    m.row("neurotransmitter::NeurotransmitterConfig::default", "A", [], toks(cd))
+
+    def seeded_state():
+        return [sd[k] * rng.log_uniform(-1.0, 1.0) for k in range(len(S))]
+
+    def seeded_cfg():
+        return [(k, cd[k] * rng.log_uniform(-1.0, 1.0)) for k in range(len(C))]
+
+    states = [list(sd)]
+    for k in range(len(S)):
+        for e in (0.0, -0.0, -1.0, 1e300, SUB, MAX, INF, -INF, NAN, -SUB):
+            a = list(sd)
+            a[k] = e
+            states.append(a)
+    for x, y in ((0, 10), (3, 4), (7, 8)):
+        for u, v in ((NAN, -1.0), (-1.0, NAN)):
+            a = list(sd)
+            a[x], a[y] = u, v
+            states.append(a)
+    for _ in range(15):
+        states.append(seeded_state())
+    for a in states:
+        m.row("neurotransmitter::NeurotransmitterState::validate", "A", toks(a), outcome(validate_order(s_order, S, a)))
+    cases = [[]]
+    for k in range(len(C)):
+        for e in CFG_EDGES:
+            cases.append([(k, e)])
+    # The check order picks the error: a Km of 0 (checked second) after a NaN rate (checked first), and before it.
+    cases += [[(1, 0.0), (20, NAN)], [(20, NAN), (1, 0.0)], [(11, -1.0), (2, -1.0)], [(17, 0.0), (18, INF)],
+              [(1, NAN), (0, -1.0)]]
+    for _ in range(10):
+        cases.append(seeded_cfg())
+    for ov in cases:
+        m.row("neurotransmitter::NeurotransmitterConfig::validate", "A", cfg_toks(ov),
+              outcome(validate_order(c_order, C, cfg_of(cd, ov))))
+    for a in states[:40] + [seeded_state() for _ in range(10)]:
+        glu, gaba = a[4], a[3]
+        m.row("neurotransmitter::NeurotransmitterState::gaba_glutamate_ratio", "B", toks(a),
+              [f(div(gaba, glu) if glu > EPS else 0.0)])
+    args_edges = [0.0, -0.0, 1.0, 2.0, 0.5, 5.0, -1.0, 1e-300, 1e300, SUB, MAX, INF, -INF, NAN, EPS, 0.01, 0.009]
+    for fn, model in bridges.items():
+        n = arity[fn]
+        base = {2: [5.0, 1.0], 3: [5.0, 1.0, 0.05]}[n]
+        rows = [list(base)]
+        for k in range(n):
+            for e in args_edges:
+                a = list(base)
+                a[k] = e
+                rows.append(a)
+        for _ in range(15):
+            rows.append([rng.log_uniform(-3.0, 2.0) for _ in range(n)])
+        for a in rows:
+            m.row(fn, "B", toks(a), [f(model(a))])
+
+    def tick_row(st, ov, accoa, stim, dt):
+        after, flux, exp = tick(st, cfg_of(cd, ov), accoa, stim, dt)
+        m.row("neurotransmitter::NeurotransmitterState::tick", "C" if exp else "B",
+              toks(st) + cfg_toks(ov) + toks([accoa, stim, dt]), toks(after + flux))
+
+    for dt in (0.0, -0.0, -0.1, NAN, INF, -INF, SUB, 1e-300, 0.001, 0.01, 0.1, 0.3, 0.5, 0.52, 0.6, 1.0, 2.0, 3.0, 5.0,
+               10.0, 60.0, 100.0, 1000.0, 1e300, MAX):
+        for accoa, stim in ((0.05, 1.0), (1.0, 3.0)):
+            tick_row(sd, [], accoa, stim, dt)
+    for k in range(len(S)):
+        for e in (0.0, -1.0, 1e300, INF, NAN, 10.0, SUB):
+            a = list(sd)
+            a[k] = e
+            tick_row(a, [], 0.05, 1.0, 0.1)
+            tick_row(a, [], 0.05, 1.0, 10.0)
+    for accoa in (0.0, 1.0, NAN, -1.0, 2.0, INF):
+        for stim in (0.0, 1.0, 10.0, NAN, -1.0, INF, 1e300):
+            tick_row(sd, [], accoa, stim, 1.0)
+    for k in range(len(C)):
+        for e in (0.0, -1.0, 1e300, INF, NAN, 10.0, SUB):
+            tick_row(sd, [(k, e)], 0.05, 1.0, 0.1)
+    # Rust's cases: no precursor (tryptophan and tyrosine at 0); synthesis capped at a scarce precursor; AChE fast.
+    no_pre = list(sd)
+    no_pre[7], no_pre[8] = 0.0, 0.0
+    tick_row(no_pre, [], 0.05, 5.0, 1.0)
+    scarce = list(sd)
+    scarce[7] = 1e-6
+    tick_row(scarce, [(0, 1e3)], 0.05, 10.0, 10.0)
+    tick_row(sd, [(18, 50.0)], 0.05, 1.0, 1.0)
+    for _ in range(60):
+        st = seeded_state()
+        tick_row(st, seeded_cfg(), rng.unit(), rng.log_uniform(-1.0, 1.0), rng.log_uniform(-3.0, 1.5))
+        tick_row(st, [], 0.05, rng.log_uniform(-1.0, 1.0), 0.1)
+
+    def traj(start, ov, ops):
+        c = cfg_of(cd, ov)
+        st = list(start)
+        flux = [0.0] * 14
+        ins = toks(start) + cfg_toks(ov)
+        for op in ops:
+            if op[0] == "tick":
+                _, accoa, stim, dt, k = op
+                for _ in range(k):
+                    st, flux, _e = tick(st, c, accoa, stim, dt)
+                ins += [i(1), f(accoa), f(stim), f(dt), i(k)]
+            else:
+                _, field, x = op
+                st[field] = x
+                ins += [i(3), i(field), f(x)]
+        m.row("neurotransmitter::NeurotransmitterState::trajectory", "T", ins, toks(st + flux))
+
+    # Rust's runs: resting stability, high stimulus, the hour at rest and without stimulus, large steps, the
+    # conservation runs; a stimulus sweep, NaN recovery, seeded.
+    traj(sd, [], [("tick", 0.05, 1.0, 0.1, 1000)])
+    traj(sd, [], [("tick", 0.05, 5.0, 0.1, 100)])
+    traj(sd, [], [("tick", 0.05, 1.0, 1.0, 3600)])
+    traj(sd, [], [("tick", 0.05, 0.0, 1.0, 3600)])
+    for dt in (10.0, 100.0, 1000.0):
+        traj(sd, [], [("tick", 0.05, 2.0, dt, 50)])
+    traj(sd, [], [("tick", 0.05, 3.0, 0.5, 2000)])
+    traj(no_pre, [], [("tick", 0.05, 5.0, 1.0, 100)])
+    for stim in (0.1, 0.5, 1.0, 2.0, 5.0):
+        traj(sd, [], [("tick", 0.05, stim, 0.5, 400)])
+    traj(sd, [], [("tick", 1.0, 2.0, 0.1, 500), ("tick", 1.0, 0.0, 0.1, 500)])
+    traj(sd, [], [("set", 0, NAN), ("tick", 0.05, 1.0, 0.1, 50)])
+    traj(sd, [], [("set", 9, INF), ("tick", 0.05, 1.0, 0.1, 50)])
+    for _ in range(4):
+        traj(seeded_state(), seeded_cfg(), [("tick", rng.unit(), rng.log_uniform(-1.0, 1.0), rng.log_uniform(-2.0, 0.5), 300)])
+
+    worked = list(sd)
+    flux = [0.0] * 14
+    for _ in range(100):
+        worked, flux, _e = tick(worked, cd, 0.05, 1.5, 0.1)
+    odd = [NAN, -0.0, 1e300, SUB, 0.1 + 0.2, 1e21, 1e-7, -1.0, INF, 2.5e-8, 123456.789, 7e-310, 0.5]
+    js, jc, jf = json_struct(S, worked), json_struct(C, cd), json_struct(F, flux)
+    sd_doc = json_struct(S, sd)
+    serde_rows(m, "NeurotransmitterState", S, [sd, worked, (odd * 2)[:len(S)]],
+               [js, "[" + ",".join(validate.json_f64(x) for x in sd) + "]", "[1,1,1]",
+                sd_doc.replace('"choline":3.0', '"choline":3.0,"z":[1,{"a":null}]', 1),
+                sd_doc.replace(',"choline":3.0', "", 1), sd_doc.replace('"gaba":1.0', '"gaba":"1"', 1),
+                sd_doc.replace('"serotonin":1.0', '"serotonin":-0.0', 1).replace('"dopamine":1.0', '"dopamine":1e-400', 1),
+                sd_doc[:-1] + ',"gaba":2.0}'])
+    serde_rows(m, "NeurotransmitterConfig", C, [cd, (odd * 2)[:len(C)]],
+               [jc, "[" + ",".join(validate.json_f64(x) for x in cd) + "]",
+                jc.replace(f',"{C[-1]}":{validate.json_f64(cd[-1])}', "", 1),
+                jc.replace(f'"{C[1]}":{validate.json_f64(cd[1])}', f'"{C[1]}":null', 1)])
+    serde_rows(m, "NeurotransmitterFlux", F, [[0.0] * 14, flux, (odd * 2)[:14]],
+               [jf, "[" + ",".join(str(k + 1) for k in range(14)) + "]", "[" + ",".join(str(k + 1) for k in range(13)) + "]"])
+    data = defaults_data(mod, "neurotransmitter data: the default levels and kinetic parameters", "NEUROTRANSMITTER",
+                         [("NeurotransmitterState", "NEUROTRANSMITTER_STATE", True),
+                          ("NeurotransmitterConfig", "NEUROTRANSMITTER_CONFIG", True),
+                          ("NeurotransmitterFlux", "NEUROTRANSMITTER_FLUX", False)])
+    return m, {f"src/{mod}_data.cyr": data}
+
+
 MODULES = {"receptor": receptor, "nuclear_receptor": nuclear_receptor, "signaling": signaling}
 
 

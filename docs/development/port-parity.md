@@ -1875,3 +1875,24 @@ the serde documents. Classes: A 178, B 370, C 57 (an `exp_m1` step), T 23.
 | four targets (`scripts/gates.sh`, 496 s) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 120,520 ok, 81 accepted (ADR 3: 0), 0 failed; coverage 397 of 397 public fns executed |
 
 **Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): nuclear_receptor_tick 9.2 → 82 ns.
+
+### 9h. Part 7: the signaling network (2026-11-18)
+
+**What is compared.** `tests/golden/signaling.tsv` (new, 679 rows), written by `gen.py` on `mpfr_ref.py`'s MAPK,
+PI3K, JAK-STAT and calcium tick models (first checked against all 1,640 tick rows of those modules, classes B and C)
+with signaling.rs's crosstalk around them, against the Cyrius port. The rows: the three defaults; both validators over
+every leaf of the nested records (14 network leaves, 46 config leaves) and Rust's refusals; 341 single ticks (22 step
+lengths at two inputs, the inputs' edges, every network leaf's edges, each crosstalk gain over 0, 0.5, 2, 10⁶, NaN and
+inf at three drives, each pathway parameter at 0, 80 seeded); 21 trajectories (Rust's runs: each pathway driven alone,
+Ras → PI3K at gain 2, Akt → Raf at gain 1 and 10⁶ with a 100-s tick, Ca2+ → Ras, NaN inputs, the bounded run; NaN
+recovery, four seeded); the nested serde documents. Classes: A 317, B 88, C 253 (a pathway's `exp_m1`), T 21.
+
+| Check | Result |
+|---|---|
+| every row | 679 identical on the first run |
+| `gen.py --check` | the golden file and `src/signaling_data.cyr` byte-identical on regeneration |
+| Rust tests | the 13 `signaling.rs` tests and its 3 integration tests ported (`tests/signaling.tcyr`, 23 checks); the ledger at 626 of 723; surface parity 16 of 16 |
+| fuzz | the four documents (1,218 accepted, each written and read back bit for bit); a valid network, and the default network on a valid config, ticked 0.1 s and 100 s stay valid with finite fluxes |
+| four targets (`scripts/gates.sh`, 479 s) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 121,199 ok, 81 accepted (ADR 3: 0), 0 failed; coverage 420 of 420 public fns executed |
+
+**Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): signaling_tick 154 → 696 ns.

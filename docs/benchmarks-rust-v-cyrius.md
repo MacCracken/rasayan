@@ -379,3 +379,13 @@ and the four pool updates; no transcendental.
 Cyrius only: the state ticked on (no reset) 78 ns; a tick of 100 s 146 ns (the expression's `produce_decay` on the
 `exp_m1` branch). Measured at load 2.8, with the reference rows at their quiet values (michaelis_menten 12 ns,
 glycolysis_tick 731 ns, receptor_tick 79 ns).
+
+## M6 part 7: the signaling network
+
+| Benchmark | Rust 1.2.0 (ns) | Cyrius (ns) | Notes |
+|---|---|---|---|
+| signaling_tick | 154.4 | 696 | Rust's loop body: a default network, one tick of 0.01 s at growth factor 0.5, cytokine 0.3, IP3 0.2 |
+
+Cyrius only: the network ticked on (no reset) 679 ns; every crosstalk gain at 0.5, 696 ns. Measured at load 0.4,
+with the reference rows at their quiet values (michaelis_menten 11 ns, glycolysis_tick 690 ns, mapk_tick 214 ns). A
+tick is the four pathway ticks (MAPK 214, PI3K 149, JAK-STAT 162, calcium 153 ns alone) and the crosstalk terms.
