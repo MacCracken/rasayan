@@ -50,6 +50,8 @@ include "src/tca_data.cyr"
 include "src/tca.cyr"
 include "src/etc_data.cyr"
 include "src/etc.cyr"
+include "src/beta_oxidation_data.cyr"
+include "src/beta_oxidation.cyr"
 
 # Keeps the loops' results observable.
 var _bn_sink = 0;
@@ -870,6 +872,48 @@ fn _bn_etc(name, kind, n): i64 {
     return 0;
 }
 
+# ── M4b part 2: β-oxidation, the Rust bench's twin (the same loop body) ──
+
+# n calls of β-oxidation benchmark `kind`: 0 beta_ox_tick (Rust's body: a default state, one tick of 0.01 s at no
+# malonyl-CoA and NAD+/NADH 700), 1 the same state ticked on (no reset), 2 one step of Rust's β-oxidation-to-TCA
+# coupling; the flux kept.
+fn _bn_beta_ox(name, kind, n): i64 {
+    var s: RyBetaOxState;
+    var c: RyBetaOxConfig;
+    var f: RyBetaOxFlux;
+    var t: RyTcaState;
+    var tc: RyTcaConfig;
+    var tf: RyTcaFlux;
+    ry_beta_ox_state_default(&s);
+    ry_beta_ox_config_default(&c);
+    ry_tca_state_default(&t);
+    ry_tca_config_default(&tc);
+    var acc: f64 = 0.0;
+    var b = bench_new(name);
+    bench_batch_start(b);
+    var i = 0;
+    while (i < n) {
+        if (kind == 0) {
+            ry_beta_ox_state_default(&s);
+            ry_beta_ox_state_tick(&s, &c, 0.0, 700.0, 0.01, &f);
+        } elif (kind == 1) {
+            ry_beta_ox_state_tick(&s, &c, 0.0, 700.0, 0.01, &f);
+        } else {
+            ry_beta_ox_state_tick(&s, &c, 0.0, 700.0, 0.01, &f);
+            var fed: f64 = t.acetyl_coa + f.acetyl_coa_produced;
+            t.acetyl_coa = fed;
+            ry_tca_state_tick(&t, &tc, 0.0, 6.0, 0.5, 700.0, 0.01, &tf);
+        }
+        var made: f64 = f.acetyl_coa_produced;
+        acc = acc + made;
+        i = i + 1;
+    }
+    bench_batch_stop(b, n);
+    bench_report(b);
+    _bn_keep(acc);
+    return 0;
+}
+
 # Runs the benchmark suite (Rust twins arrive with each milestone).
 fn main(): i64 {
     alloc_init();
@@ -951,6 +995,9 @@ fn main(): i64 {
     _bn_etc("etc_tick", 0, 1000000);
     _bn_etc("etc/tick, no reset", 1, 1000000);
     _bn_etc("etc/full respiration, one step", 2, 1000000);
+    _bn_beta_ox("beta_ox_tick", 0, 1000000);
+    _bn_beta_ox("beta_ox/tick, no reset", 1, 1000000);
+    _bn_beta_ox("beta_ox/feeding tca, one step", 2, 1000000);
     var br = bench_new("json/read MembranePermeability (3 f64)");
     bench_batch_start(br);
     _bn_read("{\"p_na\":0.04,\"p_k\":1.0,\"p_cl\":0.45}", 3, "p_na\0p_k\0p_cl\0", 100000);

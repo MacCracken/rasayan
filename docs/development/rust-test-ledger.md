@@ -6,14 +6,14 @@
 > milestone hasn't come. The golden corpus (`tests/golden/`) checks every ported function on its grid besides.
 > The 2 doc tests and the example are M9's.
 
-**723 Rust tests:** 427 ported; 53 at M4b, 38 at M5, 108 at M6, 62 at M7, 35 at M8.
+**723 Rust tests:** 453 ported; 27 at M4b, 38 at M5, 108 at M6, 62 at M7, 35 at M8.
 
 | Rust file | Tests | Ported | Due, unported | Later (milestone) |
 |---|---:|---:|---:|---|
 | `src/ai.rs` | 4 | 0 | 0 | 4 (M8) |
 | `src/alignment.rs` | 19 | 19 | 0 | — |
 | `src/amino_catabolism.rs` | 23 | 0 | 0 | 23 (M4b) |
-| `src/beta_oxidation.rs` | 23 | 0 | 0 | 23 (M4b) |
+| `src/beta_oxidation.rs` | 23 | 23 | 0 | — |
 | `src/calcium.rs` | 17 | 0 | 0 | 17 (M6) |
 | `src/domain.rs` | 24 | 24 | 0 | — |
 | `src/energy.rs` | 29 | 29 | 0 | — |
@@ -38,9 +38,9 @@
 | `src/signal.rs` | 21 | 21 | 0 | — |
 | `src/signaling.rs` | 13 | 0 | 0 | 13 (M6) |
 | `src/tca.rs` | 26 | 26 | 0 | — |
-| `tests/integration.rs` | 70 | 38 | 0 | 7 (M4b), 4 (M5), 15 (M6), 6 (M7) |
+| `tests/integration.rs` | 70 | 41 | 0 | 4 (M4b), 4 (M5), 15 (M6), 6 (M7) |
 | `tests/validation.rs` | 25 | 25 | 0 | — |
-| **Total** | **723** | **427** | **0** | |
+| **Total** | **723** | **453** | **0** | |
 
 ## Where each is ported
 
@@ -65,6 +65,29 @@
 | `src/alignment.rs` `test_score_alignment_saturates` | `tests/alignment.tcyr` `scoring` |
 | `src/alignment.rs` `test_score_alignment_unknown` | `tests/alignment.tcyr` `scoring` |
 | `src/alignment.rs` `test_unknown_residue` | `tests/alignment.tcyr` `matrices` |
+| `src/beta_oxidation.rs` `test_acetyl_coa_produced` | `tests/beta_oxidation.tcyr` `ticking` |
+| `src/beta_oxidation.rs` `test_activation_costs_atp` | `tests/beta_oxidation.tcyr` `ticking` |
+| `src/beta_oxidation.rs` `test_concentrations_non_negative` | `tests/beta_oxidation.tcyr` `ticking` |
+| `src/beta_oxidation.rs` `test_default_config_valid` | `tests/beta_oxidation.tcyr` `validation` |
+| `src/beta_oxidation.rs` `test_default_state_valid` | `tests/beta_oxidation.tcyr` `validation` |
+| `src/beta_oxidation.rs` `test_ffa_consumed_over_time` | `tests/beta_oxidation.tcyr` `ticking` |
+| `src/beta_oxidation.rs` `test_high_malonyl_coa_strong_inhibition` | `tests/beta_oxidation.tcyr` `regulation` |
+| `src/beta_oxidation.rs` `test_invalid_chain_length` | `tests/beta_oxidation.tcyr` `validation` |
+| `src/beta_oxidation.rs` `test_invalid_dt_is_noop` | `tests/beta_oxidation.tcyr` `hardening` |
+| `src/beta_oxidation.rs` `test_large_dt_no_negative_pools_no_carbon_created` | `tests/beta_oxidation.tcyr` `conservation` |
+| `src/beta_oxidation.rs` `test_malonyl_coa_inhibits` | `tests/beta_oxidation.tcyr` `regulation` |
+| `src/beta_oxidation.rs` `test_nadh_and_fadh2_produced` | `tests/beta_oxidation.tcyr` `ticking` |
+| `src/beta_oxidation.rs` `test_nan_inputs_sanitized` | `tests/beta_oxidation.tcyr` `hardening` |
+| `src/beta_oxidation.rs` `test_no_ffa_no_activation` | `tests/beta_oxidation.tcyr` `regulation` |
+| `src/beta_oxidation.rs` `test_odd_chain_conserves_carbon` | `tests/beta_oxidation.tcyr` `conservation` |
+| `src/beta_oxidation.rs` `test_other_chain_lengths` | `tests/beta_oxidation.tcyr` `validation` |
+| `src/beta_oxidation.rs` `test_oxidation_capped_at_acyl_coa_pool` | `tests/beta_oxidation.tcyr` `hardening` |
+| `src/beta_oxidation.rs` `test_palmitate_flux_stoichiometry` | `tests/beta_oxidation.tcyr` `ticking` |
+| `src/beta_oxidation.rs` `test_palmitate_stoichiometry` | `tests/beta_oxidation.tcyr` `validation` |
+| `src/beta_oxidation.rs` `test_serde_roundtrip_config` | `tests/beta_oxidation.tcyr` `serde` |
+| `src/beta_oxidation.rs` `test_serde_roundtrip_state` | `tests/beta_oxidation.tcyr` `serde` |
+| `src/beta_oxidation.rs` `test_validate_config_rejects_bad_values` | `tests/beta_oxidation.tcyr` `validation` |
+| `src/beta_oxidation.rs` `test_validate_state_rejects_nan` | `tests/beta_oxidation.tcyr` `validation` |
 | `src/domain.rs` `test_catalytic_triad_not_produced` | `tests/domain.tcyr` `edges` |
 | `src/domain.rs` `test_dead_box` | `tests/domain.tcyr` `short_motifs` |
 | `src/domain.rs` `test_ef_hand` | `tests/domain.tcyr` `ef_hand` |
@@ -414,6 +437,9 @@
 | `tests/integration.rs` `test_all_defaults_validate` | `tests/energy.tcyr` `hardening` |
 | `tests/integration.rs` `test_amino_acid_serialize` | `tests/protein.tcyr` `serde` |
 | `tests/integration.rs` `test_arrhenius_temperature_sensitivity` | `tests/enzyme.tcyr` `temperature` |
+| `tests/integration.rs` `test_beta_ox_feeds_tca` | `tests/beta_oxidation.tcyr` `coupling` |
+| `tests/integration.rs` `test_beta_ox_flux_serde_roundtrip` | `tests/beta_oxidation.tcyr` `serde` |
+| `tests/integration.rs` `test_beta_ox_validation` | `tests/beta_oxidation.tcyr` `validation` |
 | `tests/integration.rs` `test_bioenergy_and_metabolism_alignment` | `tests/energy.tcyr` `basics` |
 | `tests/integration.rs` `test_bioenergy_state_serde_roundtrip` | `tests/energy.tcyr` `serde` |
 | `tests/integration.rs` `test_dose_response_at_ec50` | `tests/signal.tcyr` `binding` |

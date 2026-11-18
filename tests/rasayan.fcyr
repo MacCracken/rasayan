@@ -7,8 +7,8 @@
 # The sequence readers and each type's codec join with their milestones: M2 part 2, IonicState's and
 # MembranePermeability's; part 3, SecondMessenger's; part 4, MetabolicState's; part 5, BioenergyState's. M3 part 1:
 # every protein function on the input as a sequence; part 2, alignment on its two halves; parts 3 and 4, the PTM and
-# domain scans. M4a: the glycolysis and TCA codecs, and steps of every state the readers accept; M4b part 1, the
-# ETC's.
+# domain scans. M4a: the glycolysis and TCA codecs, and steps of every state the readers accept; M4b, the
+# ETC's and β-oxidation's.
 
 include "src/constants.cyr"
 include "src/constants_private.cyr"
@@ -42,6 +42,8 @@ include "src/tca_data.cyr"
 include "src/tca.cyr"
 include "src/etc_data.cyr"
 include "src/etc.cyr"
+include "src/beta_oxidation_data.cyr"
+include "src/beta_oxidation.cyr"
 
 var _fz_state = 0x2545F4914F6CDD1D;
 var _fz_bad = 0;
@@ -58,6 +60,7 @@ var _fz_domain = 0;
 var _fz_glycolysis = 0;
 var _fz_tca = 0;
 var _fz_etc = 0;
+var _fz_beta_ox = 0;
 
 # xorshift64*: the next pseudo-random word.
 fn fz_next(): i64 {
@@ -517,6 +520,72 @@ fn fuzz_etc(data, len) {
     return 0;
 }
 
+# The β-oxidation codecs on one input: an accepted state, config or flux is finite (its chain length a u32) and reads
+# back bit for bit. An accepted state that validates, with both pools below 1e300, stays valid through a 0.5 s and a
+# 50 s step on the default config, and conserves its carbon (what it holds plus 2 per acetyl-CoA released), to 1e-12.
+fn fuzz_beta_ox(data, len) {
+    reset_via(_fz_arena);
+    var s: RyBetaOxState;
+    var sb2: RyBetaOxState;
+    var t1, v1 = ry_beta_ox_state_from_json_a(_fz_arena, data, len, &s);
+    if (is_ok(t1) == 1) {
+        _fz_beta_ox = _fz_beta_ox + 1;
+        if (fz_all_finite(&s, 2) == 0) { _fz_bad = _fz_bad + 1; }
+        store64(_fz_sb + 8, 0);
+        var t2, v2 = ry_beta_ox_state_to_json(_fz_sb, &s);
+        var t3, v3 = ry_beta_ox_state_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &sb2);
+        if (is_ok(t2) == 0 || is_ok(t3) == 0 || memeq(&sb2, &s, 16) == 0) { _fz_bad = _fz_bad + 1; }
+        var tv, vv = ry_beta_ox_state_validate(&s);
+        var huge: f64 = 0x7E37E43C8800759C;     # 1e300
+        var acyl0: f64 = s.acyl_coa;
+        var ffa0: f64 = s.free_fatty_acid;
+        if (is_ok(tv) == 1 && acyl0 < huge && ffa0 < huge) {
+            var c: RyBetaOxConfig;
+            var f: RyBetaOxFlux;
+            ry_beta_ox_config_default(&c);
+            var n: f64 = f64_from(c.chain_length);
+            var before: f64 = n * (acyl0 + ffa0);
+            ry_beta_ox_state_tick(&s, &c, 0.0, 700.0, 0.5, &f);
+            var out: f64 = f.acetyl_coa_produced;
+            ry_beta_ox_state_tick(&s, &c, 0.0, 700.0, 50.0, &f);
+            out = out + f.acetyl_coa_produced;
+            var held: f64 = s.acyl_coa + s.free_fatty_acid;
+            var after: f64 = n * held + 2.0 * out;
+            var drift: f64 = f64_abs(after - before);
+            var bound: f64 = 0.000000000001 * before;
+            var tw, vw = ry_beta_ox_state_validate(&s);
+            if (is_ok(tw) == 0 || fz_all_finite(&f, 8) == 0 || drift > bound) { _fz_bad = _fz_bad + 1; }
+        }
+    }
+    var c2: RyBetaOxConfig;
+    var cb: RyBetaOxConfig;
+    var t4, v4 = ry_beta_ox_config_from_json_a(_fz_arena, data, len, &c2);
+    if (is_ok(t4) == 1) {
+        _fz_beta_ox = _fz_beta_ox + 1;
+        store64(_fz_sb + 8, 0);
+        var t5, v5 = ry_beta_ox_config_to_json(_fz_sb, &c2);
+        var t6, v6 = ry_beta_ox_config_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &cb);
+        var chain = c2.chain_length;
+        if (chain < 0 || chain > 4294967295 || fz_all_finite(&c2 + 8, 5) == 0 || is_ok(t5) == 0 || is_ok(t6) == 0
+          || memeq(&cb, &c2, 48) == 0) {
+            _fz_bad = _fz_bad + 1;
+        }
+    }
+    var fx: RyBetaOxFlux;
+    var fb: RyBetaOxFlux;
+    var t7, v7 = ry_beta_ox_flux_from_json_a(_fz_arena, data, len, &fx);
+    if (is_ok(t7) == 1) {
+        _fz_beta_ox = _fz_beta_ox + 1;
+        store64(_fz_sb + 8, 0);
+        var t8, v8 = ry_beta_ox_flux_to_json(_fz_sb, &fx);
+        var t9, v9 = ry_beta_ox_flux_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &fb);
+        if (fz_all_finite(&fx, 8) == 0 || is_ok(t8) == 0 || is_ok(t9) == 0 || memeq(&fb, &fx, 64) == 0) {
+            _fz_bad = _fz_bad + 1;
+        }
+    }
+    return 0;
+}
+
 # A NUL-terminated copy of the document builder `sb` holds (a seed).
 fn fz_seed_of(sb): i64 {
     var n = load64(sb + 8);
@@ -667,7 +736,7 @@ fn main() {
     var buf = alloc(cap + 1);
     _fz_arena = arena_allocator_growable(65536);
     _fz_sb = str_builder_new();
-    var seeds = alloc(8 * 48);
+    var seeds = alloc(8 * 51);
     store64(seeds, "trace");
     store64(seeds + 8, "DEBUG");
     store64(seeds + 16, "info,warn");
@@ -750,6 +819,18 @@ fn main() {
     store64(_fz_sb + 8, 0);
     var te2, ve2 = ry_etc_flux_to_json(_fz_sb, &efx);
     store64(seeds + 376, fz_seed_of(_fz_sb));
+    # The β-oxidation documents: the default state, the default config (its chain length an integer) and a step's flux.
+    store64(seeds + 384, "{\"acyl_coa\":0.02,\"free_fatty_acid\":0.3}");
+    store64(seeds + 392, "[16,0.05,0.1,0.03,0.01,0.01]");
+    var bxc: RyBetaOxConfig;
+    var bxs: RyBetaOxState;
+    var bxf: RyBetaOxFlux;
+    ry_beta_ox_config_default(&bxc);
+    ry_beta_ox_state_default(&bxs);
+    ry_beta_ox_state_tick(&bxs, &bxc, 0.0, 700.0, 0.1, &bxf);
+    store64(_fz_sb + 8, 0);
+    var tb1, vb1 = ry_beta_ox_flux_to_json(_fz_sb, &bxf);
+    store64(seeds + 400, fz_seed_of(_fz_sb));
     var i = 0;
     while (i < 50000) {
         var n = 0;
@@ -758,7 +839,7 @@ fn main() {
             var k = 0;
             while (k < n) { store8(buf + k, fz_below(256)); k = k + 1; }
         } else {
-            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(48)));
+            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(51)));
         }
         fuzz_main(buf, n);
         fuzz_json(buf, n);
@@ -770,6 +851,7 @@ fn main() {
         fuzz_glycolysis(buf, n);
         fuzz_tca(buf, n);
         fuzz_etc(buf, n);
+        fuzz_beta_ox(buf, n);
         i = i + 1;
     }
     if (_fz_bad != 0) {
@@ -797,6 +879,8 @@ fn main() {
     fmt_int(_fz_tca);
     print(", ETC documents read: ", 22);
     fmt_int(_fz_etc);
+    print(", beta-oxidation documents read: ", 33);
+    fmt_int(_fz_beta_ox);
     println(")");
     return 0;
 }

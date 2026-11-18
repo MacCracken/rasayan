@@ -216,3 +216,20 @@ Measured at load 3.9–4.5 (another project's jobs), with the reference rows wit
 three-value pump split, the transfers), which Rust inlines. The review wrote `_ry_guard_unit`'s clamp out, one call
 per guard instead of two (218 → 197 ns; the SecondMessenger tick at dt 0.01, which makes three, 105 → 91 ns).
 
+## M4b part 2: β-oxidation
+
+| Benchmark | Rust 1.2.0 (ns) | Cyrius (ns) | Notes |
+|---|---|---|---|
+| beta_ox_tick | 19.72 | 88 | Rust's loop body: a default state, one tick of 0.01 s at no malonyl-CoA and NAD+/NADH 700; no transcendental |
+
+Cyrius only:
+
+| Benchmark | Cyrius (ns) | Notes |
+|---|---|---|
+| tick, the state stepped on (no reset) | 111 | |
+| feeding TCA, one step | 656 | Rust's integration loop body: a β-oxidation tick, its acetyl-CoA added to TCA's, a TCA tick |
+
+Measured at load 4.4–4.9 (another project's jobs), with the reference rows within 3 % of their quiet values
+(michaelis_menten 12 ns, nernst 82 ns). The tick is two Michaelis-Menten calls, three guards, two transfers and the
+chain's counts.
+

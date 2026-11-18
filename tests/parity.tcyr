@@ -59,6 +59,7 @@ include "src/energy_data.cyr"
 include "src/glycolysis_data.cyr"
 include "src/tca_data.cyr"
 include "src/etc_data.cyr"
+include "src/beta_oxidation_data.cyr"
 include "src/ai_data.cyr"
 include "src/fmtf.cyr"
 include "src/error.cyr"
@@ -78,6 +79,7 @@ include "src/domain.cyr"
 include "src/glycolysis.cyr"
 include "src/tca.cyr"
 include "src/etc.cyr"
+include "src/beta_oxidation.cyr"
 
 alloc_init();
 
@@ -3132,6 +3134,262 @@ fn _par_etc_json(fp, fl): i64 {
     return 1;
 }
 
+# ── beta_oxidation ──────────────────────────────────────────────────────────────────
+# src/beta_oxidation_data.cyr and src/beta_oxidation.cyr (M4b part 2). A BetaOxState row takes its two pools; a
+# BetaOxConfig is the default with overrides, `i:n` then n pairs `i:field <value>` (`i:` for field 0, the u32
+# chain_length; `f:` for the five f64). tick takes the state, the config and `f:malonyl_coa f:nad_ratio f:dt` and gives
+# the state after and the flux's eight values. A trajectory row (class T) is a script: the state, the config, then
+# `i:1 f:malonyl f:nad f:dt i:k` k ticks, `i:3 i:field f:x` a field set. A coupling row (`beta_oxidation::feeds_tca`)
+# is Rust's integration loop: the β-oxidation and TCA states, then `f:malonyl f:nad f:atp f:adp f:dt i:k`.
+
+# Reads a β-oxidation config from input k into *c (the default, then the overrides): the index after it, or -1 when
+# malformed.
+fn _par_bc_in(k, c: *RyBetaOxConfig): i64 {
+    ry_beta_ox_config_default(c);
+    if (_par_is_i(k) == 0) { return 0 - 1; }
+    var n = _par_in(k);
+    var w = c;
+    var at = k + 1;
+    var j = 0;
+    while (j < n) {
+        if (_par_is_i(at) == 0) { return 0 - 1; }
+        var field = _par_in(at);
+        if (field == 0) {
+            if (_par_is_i(at + 1) == 0) { return 0 - 1; }
+        } elif (field < 0 || field >= 6 || _par_is_f(at + 1) == 0) {
+            return 0 - 1;
+        }
+        store64(w + 8 * field, _par_in(at + 1));
+        at = at + 2;
+        j = j + 1;
+    }
+    return at;
+}
+
+# Replays a β-oxidation trajectory script from input k on *s under *c: 1 with *f the last step's flux, or -1 when
+# malformed.
+fn _par_box_script(s: *RyBetaOxState, c: *RyBetaOxConfig, k, f: *RyBetaOxFlux): i64 {
+    ry_beta_ox_flux_default(f);
+    var w = s;
+    var at = k;
+    while (at < _par_in_n) {
+        if (_par_is_i(at) == 0) { return 0 - 1; }
+        var op = _par_in(at);
+        if (op == 1 && _par_all_f_from(at + 1, 3) == 1 && _par_is_i(at + 4) == 1) {
+            var malonyl: f64 = _par_f(at + 1);
+            var nad: f64 = _par_f(at + 2);
+            var dt: f64 = _par_f(at + 3);
+            var n = _par_in(at + 4);
+            var j = 0;
+            while (j < n) {
+                ry_beta_ox_state_tick(s, c, malonyl, nad, dt, f);
+                j = j + 1;
+            }
+            at = at + 5;
+        } elif (op == 3 && _par_is_i(at + 1) == 1 && _par_is_f(at + 2) == 1) {
+            var field = _par_in(at + 1);
+            if (field < 0 || field > 1) { return 0 - 1; }
+            store64(w + 8 * field, _par_in(at + 2));
+            at = at + 3;
+        } else {
+            return 0 - 1;
+        }
+    }
+    return 1;
+}
+
+# Rust's test_beta_ox_feeds_tca loop (inputs: the two states, then `f:malonyl f:nad f:atp f:adp f:dt i:k`): 1 with the
+# two states, the acetyl-CoA sum and the NADH sum as the outputs, or -1 when malformed.
+fn _par_box_feeds_tca(): i64 {
+    if (_par_in_n != 17 || _par_all_f_from(0, 16) == 0 || _par_is_i(16) == 0) { return 0 - 1; }
+    var b: RyBetaOxState;
+    var bc: RyBetaOxConfig;
+    var bf: RyBetaOxFlux;
+    var t: RyTcaState;
+    var tc: RyTcaConfig;
+    var tf: RyTcaFlux;
+    _par_fields_in(0, &b, 2);
+    _par_fields_in(2, &t, 9);
+    ry_beta_ox_config_default(&bc);
+    ry_tca_config_default(&tc);
+    var malonyl: f64 = _par_f(11);
+    var nad: f64 = _par_f(12);
+    var atp: f64 = _par_f(13);
+    var adp: f64 = _par_f(14);
+    var dt: f64 = _par_f(15);
+    var n = _par_in(16);
+    var accoa: f64 = 0.0;
+    var nadh: f64 = 0.0;
+    var k = 0;
+    while (k < n) {
+        ry_beta_ox_state_tick(&b, &bc, malonyl, nad, dt, &bf);
+        var fed: f64 = t.acetyl_coa + bf.acetyl_coa_produced;
+        t.acetyl_coa = fed;
+        ry_tca_state_tick(&t, &tc, 0.0, atp, adp, nad, dt, &tf);
+        accoa = accoa + bf.acetyl_coa_produced;
+        nadh = nadh + (bf.nadh_produced + tf.nadh_produced);
+        k = k + 1;
+    }
+    _par_got_fields(&b, 2);
+    _par_got_fields(&t, 9);
+    _par_got_f(accoa);
+    _par_got_f(nadh);
+    return 1;
+}
+
+# The β-oxidation rows: the defaults, the validators, the chain's counts, accumulate, the steps, trajectories and the
+# coupling, the serde rows.
+fn _par_beta_oxidation(fp, fl): i64 {
+    var s: RyBetaOxState;
+    var c: RyBetaOxConfig;
+    var fx: RyBetaOxFlux;
+    if (_par_eq(fp, fl, "beta_oxidation::BetaOxState::default") == 1) {
+        if (_par_in_n != 0) { return 0 - 1; }
+        ry_beta_ox_state_default(&s);
+        _par_got_fields(&s, 2);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "beta_oxidation::BetaOxConfig::default") == 1) {
+        if (_par_in_n != 0) { return 0 - 1; }
+        ry_beta_ox_config_default(&c);
+        _par_got_i(c.chain_length);
+        _par_got_fields(&c + 8, 5);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "beta_oxidation::feeds_tca") == 1) { return _par_box_feeds_tca(); }
+    if (_par_eq(fp, fl, "beta_oxidation::BetaOxFlux::accumulate") == 1) {
+        if (_par_in_n != 17 || _par_all_f(17) == 0) { return 0 - 1; }
+        var o: RyBetaOxFlux;
+        _par_fields_in(0, &fx, 8);
+        _par_fields_in(8, &o, 8);
+        var weight: f64 = _par_f(16);
+        _ry_beta_ox_flux_accumulate(&fx, &o, weight);
+        _par_got_fields(&fx, 8);
+        return 1;
+    }
+    var k0 = _par_bc_in(0, &c);
+    if (k0 == _par_in_n && k0 > 0) {
+        if (_par_eq(fp, fl, "beta_oxidation::BetaOxConfig::validate") == 1) {
+            var tc, vc = ry_beta_ox_config_validate(&c);
+            _par_got_outcome(tc, vc);
+            return 1;
+        }
+        if (_par_eq(fp, fl, "beta_oxidation::BetaOxConfig::cycles") == 1) {
+            _par_got_i(ry_beta_ox_config_cycles(&c));
+            return 1;
+        }
+        if (_par_eq(fp, fl, "beta_oxidation::BetaOxConfig::acetyl_coa_per_fa") == 1) {
+            _par_got_i(ry_beta_ox_config_acetyl_coa_per_fa(&c));
+            return 1;
+        }
+        if (_par_eq(fp, fl, "beta_oxidation::BetaOxConfig::acetyl_carbon_equivalents") == 1) {
+            var eq: f64 = _ry_beta_ox_config_acetyl_carbon_equivalents(&c);
+            _par_got_f(eq);
+            return 1;
+        }
+    }
+    if (_par_in_n < 2 || _par_all_f_from(0, 2) == 0) { return _par_box_json(fp, fl); }
+    _par_fields_in(0, &s, 2);
+    if (_par_in_n == 2) {
+        if (_par_eq(fp, fl, "beta_oxidation::BetaOxState::validate") == 1) {
+            var ts, vs = ry_beta_ox_state_validate(&s);
+            _par_got_outcome(ts, vs);
+            return 1;
+        }
+        return _par_box_json(fp, fl);
+    }
+    var k = _par_bc_in(2, &c);
+    if (k < 0) { return _par_box_json(fp, fl); }
+    if (_par_eq(fp, fl, "beta_oxidation::BetaOxState::trajectory") == 1) {
+        if (_par_box_script(&s, &c, k, &fx) != 1) { return 0 - 1; }
+        _par_got_fields(&s, 2);
+        _par_got_fields(&fx, 8);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "beta_oxidation::BetaOxState::tick") == 1) {
+        if (_par_in_n != k + 3 || _par_all_f_from(k, 3) == 0) { return 0 - 1; }
+        var malonyl: f64 = _par_f(k);
+        var nad: f64 = _par_f(k + 1);
+        var dt: f64 = _par_f(k + 2);
+        ry_beta_ox_state_tick(&s, &c, malonyl, nad, dt, &fx);
+        _par_got_fields(&s, 2);
+        _par_got_fields(&fx, 8);
+        return 1;
+    }
+    return _par_box_json(fp, fl);
+}
+
+# The serde rows of BetaOxState, BetaOxConfig and BetaOxFlux.
+fn _par_box_json(fp, fl): i64 {
+    var s: RyBetaOxState;
+    var c: RyBetaOxConfig;
+    var fx: RyBetaOxFlux;
+    if (_par_jsb == 0) { _par_jsb = str_builder_new(); }
+    var sb = _par_jsb;
+    store64(sb + 8, 0);
+    if (_par_eq(fp, fl, "serde_json::to_string<BetaOxState>") == 1 && _par_in_n == 2 && _par_all_f(2) == 1) {
+        _par_fields_in(0, &s, 2);
+        var t1, v1 = ry_beta_ox_state_to_json(sb, &s);
+        if (is_err_result(t1) == 1) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::to_string<BetaOxConfig>") == 1 && _par_in_n == 6 && _par_is_i(0) == 1
+      && _par_all_f_from(1, 5) == 1) {
+        c.chain_length = _par_in(0);
+        _par_fields_in(1, &c + 8, 5);
+        var t2, v2 = ry_beta_ox_config_to_json(sb, &c);
+        if (is_err_result(t2) == 1) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::to_string<BetaOxFlux>") == 1 && _par_in_n == 8 && _par_all_f(8) == 1) {
+        _par_fields_in(0, &fx, 8);
+        var t3, v3 = ry_beta_ox_flux_to_json(sb, &fx);
+        if (is_err_result(t3) == 1) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    var kind = 0;
+    if (_par_eq(fp, fl, "serde_json::from_slice<BetaOxState>") == 1) { kind = 1; }
+    if (_par_eq(fp, fl, "serde_json::from_slice<BetaOxConfig>") == 1) { kind = 2; }
+    if (_par_eq(fp, fl, "serde_json::from_slice<BetaOxFlux>") == 1) { kind = 3; }
+    if (kind == 0) { return 0; }
+    var lw[8];
+    var doc = _par_in_bytes(0, &lw);
+    if (doc == 0) { return 0 - 1; }
+    var n = load64(&lw);
+    if (_par_jarena == 0) { _par_jarena = arena_allocator_growable(65536); }
+    _par_json_gap = _par_has_neg_zero_int(doc, n);
+    reset_via(_par_jarena);
+    if (kind == 1) {
+        var t4, v4 = ry_beta_ox_state_from_json_a(_par_jarena, doc, n, &s);
+        if (is_err_result(t4) == 1) {
+            _par_got_err(v4);
+            return 1;
+        }
+        _par_got_fields(&s, 2);
+        return 1;
+    }
+    if (kind == 2) {
+        var t5, v5 = ry_beta_ox_config_from_json_a(_par_jarena, doc, n, &c);
+        if (is_err_result(t5) == 1) {
+            _par_got_err(v5);
+            return 1;
+        }
+        _par_got_i(c.chain_length);
+        _par_got_fields(&c + 8, 5);
+        return 1;
+    }
+    var t6, v6 = ry_beta_ox_flux_from_json_a(_par_jarena, doc, n, &fx);
+    if (is_err_result(t6) == 1) {
+        _par_got_err(v6);
+        return 1;
+    }
+    _par_got_fields(&fx, 8);
+    return 1;
+}
+
 fn _par_dispatch(mp, ml, fp, fl): i64 {
     _par_got_n = 0;
     if (_par_eq(fp, fl, "const") == 1) { return _par_const(); }
@@ -3143,6 +3401,7 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
     if (_par_eq(mp, ml, "glycolysis") == 1) { return _par_glycolysis(fp, fl); }
     if (_par_eq(mp, ml, "tca") == 1) { return _par_tca(fp, fl); }
     if (_par_eq(mp, ml, "etc") == 1) { return _par_etc(fp, fl); }
+    if (_par_eq(mp, ml, "beta_oxidation") == 1) { return _par_beta_oxidation(fp, fl); }
     if (_par_eq(mp, ml, "enzyme") == 1) { return _par_enzyme(fp, fl); }
     if (_par_eq(mp, ml, "membrane") == 1) { return _par_membrane(fp, fl); }
     if (_par_eq(mp, ml, "signal") == 1) { return _par_signal(fp, fl); }

@@ -1055,10 +1055,83 @@ ETC = {
     "etc::full_respiration": _e_pipeline,
 }
 
+# ── beta_oxidation (M4b part 2) ──
+# BetaOxState::tick in Rust's order. No primitive is called: the model is here for the class-T rows (the trajectories
+# and Rust's β-oxidation-to-TCA coupling, which runs TCA's model too).
+
+B_DEFAULT = [16, 0.05, 0.1, 0.03, 0.01, 0.01]  # BetaOxConfig::default(): chain_length (u32), then the five f64
+
+
+def _b_tick(st, c, malonyl, nad, dt):
+    """One BetaOxState::tick on [acyl_coa, free_fatty_acid]: (state after, the 8 flux values)."""
+    if not (math.isfinite(dt) and dt > 0.0):
+        return list(st), [0.0] * 8
+    malonyl, nad = _conc(malonyl), _conc(nad)
+    nf = _rust_min(nad / RESTING_NAD_RATIO, MAX_NAD_FACTOR)
+    n = c[0]
+    cycles = float(n // 2 - 1) if n >= 4 else 0.0
+    per = float(n) / 2.0
+    acyl, ffa = st
+    v_act = _mm(ffa, c[1], c[2])
+    cpt1 = 1.0 / (1.0 + malonyl / c[5]) if c[5] > 0.0 else 1.0
+    v_ox = _mm(acyl, c[3] * cpt1 * nf, c[4])
+    act = _take(v_act * dt, ffa)
+    ffa, acyl = ffa - act, acyl + act
+    ox = _take(v_ox * dt, acyl)
+    acyl -= ox
+    return [acyl, ffa], [act, ox, ox * per, ox * cycles, ox * cycles, act * 2.0, ox / dt, act / dt]
+
+
+def _b_config(a, at):
+    c = list(B_DEFAULT)
+    for j in range(a[at]):
+        c[a[at + 1 + 2 * j]] = a[at + 2 + 2 * j]
+    return c, at + 1 + 2 * a[at]
+
+
+def _b_trajectory(a, P):
+    """A class-T script: the state, the config, then `1 malonyl nad dt k`, `3 field x`."""
+    st = list(a[:2])
+    c, k = _b_config(a, 2)
+    flux = [0.0] * 8
+    while k < len(a):
+        op = a[k]
+        if op == 1:
+            mc, n, dt, reps = a[k + 1:k + 5]
+            for _ in range(reps):
+                st, flux = _b_tick(st, c, mc, n, dt)
+            k += 5
+        elif op == 3:
+            st[a[k + 1]] = a[k + 2]
+            k += 3
+        else:
+            raise ValueError(f"no operation {op}")
+    return st + flux
+
+
+def _b_feeds_tca(a, P):
+    """Rust's test_beta_ox_feeds_tca loop: both states, then `malonyl nad atp adp dt k`."""
+    b, t = list(a[:2]), list(a[2:2 + T_STATE])
+    malonyl, nad, atp, adp, dt, reps = a[2 + T_STATE:]
+    accoa = nadh = 0.0
+    for _ in range(reps):
+        b, bf = _b_tick(b, list(B_DEFAULT), malonyl, nad, dt)
+        t[0] += bf[2]
+        t, tf = _t_tick(t, list(T_DEFAULT), 0.0, atp, adp, nad, dt, P)
+        accoa += bf[2]
+        nadh += bf[3] + tf[1]
+    return b + t + [accoa, nadh]
+
+
+BETA_OXIDATION = {
+    "beta_oxidation::BetaOxState::trajectory": _b_trajectory,
+    "beta_oxidation::feeds_tca": _b_feeds_tca,
+}
+
 # The modules with class-C (and class-T) rows beyond math, and their models.
 MODELS = {"integrate": INTEGRATE, "enzyme": ENZYME, "membrane": MEMBRANE, "signal": SIGNAL, "metabolism": METABOLISM,
           "energy": ENERGY, "protein": PROTEIN, "glycolysis": GLYCOLYSIS, "tca": TCA,
-          "etc": ETC}
+          "etc": ETC, "beta_oxidation": BETA_OXIDATION}
 
 
 def _arg(tok):

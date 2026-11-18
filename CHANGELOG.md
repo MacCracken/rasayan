@@ -16,10 +16,34 @@ and integrators), part 2 (logging, the failure events, the surface-parity and Ru
 JSON writers and readers) follow: M1 is complete. M2 part 1 (enzyme), part 2 (membrane), part 3 (signal), part 4
 (metabolism) and part 5 (energy) follow: M2 is complete. M3 part 1 (protein), part 2 (alignment), part 3
 (ptm) and part 4 (domain) follow: M3 is complete. M4a part 1 (glycolysis) and part 2 (TCA) follow: M4a is
-complete. M4b part 1 (the electron transport chain) follows.
+complete. M4b part 1 (the electron transport chain) and part 2 (β-oxidation) follow.
 
 ### Added
 
+- **src/beta_oxidation.cyr**, **src/beta_oxidation_data.cyr** (M4b part 2) — `beta_oxidation.rs` transcribed:
+  `RyBetaOxState`, `RyBetaOxConfig` (its `chain_length: u32` an integer word) and `RyBetaOxFlux`; the defaults from
+  the generated consts (the chain length an integer const) and the three types' generated field-name blobs; both
+  validators (an even chain >= 4 first); `cycles` and `acetyl_coa_per_fa`; `ry_beta_ox_state_tick` (activation, then
+  CPT-I-gated oxidation, each capped at its pool; an odd chain's carbon kept as `chain_length / 2` equivalents); the
+  serde codecs (the chain length a JSON integer in u32's range); the private `acetyl_carbon_equivalents` and the
+  crate-private `accumulate` for M5. Rust's `beta_oxidation_tick` trace event is a level-gated sakshi event under
+  `rasayan::beta_oxidation`
+- **tests/golden/beta_oxidation.tsv** (M4b part 2, 1,014 rows, a new module, no transcendental: classes A, B and T) —
+  the defaults. Both validators (every chain length from 0 to u32::MAX, each f64 parameter over its edges, the
+  chain-first order). `cycles`, `acetyl_coa_per_fa` and the carbon equivalents over 21 chain lengths. 628 single
+  `tick` rows: each pool over its edges, 15 malonyl-CoA and NAD+/NADH pairs (CPT-I's Ki, the fed state, the NAD+
+  factor's cap), 20 time steps, every chain length, each parameter's edges, and seeded states and configs. 57
+  `accumulate` rows, 24 trajectories (Rust's runs, its large-dt and odd-chain tests, C4 and C24, fed to fasted,
+  lipolysis, low NAD+, a degenerate start), 7 rows of Rust's β-oxidation-to-TCA coupling, and the serde documents (the
+  chain length's integer rules among them). Every row matches on the first run; `validate.py` re-derives every row
+  (116,017 independent checks)
+- **tests/beta_oxidation.tcyr** (M4b part 2, 49 checks) — the 23 `beta_oxidation.rs` unit tests and the 3
+  integration tests that now come due (`test_beta_ox_flux_serde_roundtrip`, `test_beta_ox_feeds_tca`,
+  `test_beta_ox_validation`), as they are written, and `accumulate`, the trace event and the codecs' integer field:
+  the Rust-test ledger at 453 of 723, 0 due and unported. The fuzz harness reads every input as the three documents
+  (918 read and written back bit for bit), and steps every accepted valid state: it stays valid and conserves carbon to
+  1e-12
+- **benchmarks** (M4b part 2) — beta_ox_tick, Rust → Cyrius: 20 → 88 ns
 - **src/etc.cyr**, **src/etc_data.cyr** (M4b part 1) — `etc.rs` transcribed (P9: the five rates from the sanitized
   state, then each carrier pool's consumers before its producers, the proton budget capped at the H+ there):
   `RyEtcState`, `RyEtcConfig`, `RyEtcFlux` (the five complex rates as consecutive fields with
@@ -562,6 +586,18 @@ complete. M4b part 1 (the electron transport chain) follows.
 
 ### Changed
 
+- **scripts/oracle/validate.py** (M4b part 2) — the ETC's full respiration rows and β-oxidation's coupling rows run
+  TCA's (and glycolysis's) `pow`: the model now takes MPFR's for them and requires glibc's to give the golden value on
+  the recorded platform, as each module's own class C rows do (both corrected-oracle files stay empty)
+- **scripts/oracle/src/verbatim.rs**, **scripts/oracle/src/v_beta_oxidation.rs** (M4b part 2) — β-oxidation's
+  private `acetyl_carbon_equivalents` (a local trait's method, as the ETC's `pump_stoichiometry`) and `accumulate`
+  copied verbatim
+- **tests/parity.tcyr** (M4b part 2) — the β-oxidation dispatcher (its config's `chain_length` override an `i:`
+  token) and the β-oxidation-to-TCA coupling rows
+- **scripts/surface_parity.py**, **scripts/rust_test_ledger.py** (M4b part 2) — β-oxidation is ported: its 16 public
+  items have their names
+- **cyrius.cyml** (M4b part 2) — `src/beta_oxidation_data.cyr` and `src/beta_oxidation.cyr` in the three bundles
+  after `src/etc.cyr`
 - **src/guard.cyr** (M4b part 1) — `_ry_guard_unit` writes Rust's `clamp(0.0, 1.0)` out (its two comparisons in its
   order) instead of calling `_ry_clamp`: one call per guard. The 151 `guard::unit` rows and every tick row are
   unchanged

@@ -1,0 +1,452 @@
+# rasayan — src/beta_oxidation.cyr: Rust 1.2.0's β-oxidation tests, ported
+# Stdlib auto-included via cyrius.cyml
+#
+# The 23 unit tests of `beta_oxidation.rs` and the 3 integration tests (tests/integration.rs) that call only
+# β-oxidation and TCA, as they are written; tests/golden/beta_oxidation.tsv checks every method, single step,
+# trajectory and Rust's β-oxidation-to-TCA coupling besides. Beyond them: the trace event, the private carbon
+# equivalents, accumulate, and the codecs' integer field.
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+include "src/integrate.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
+include "src/enzyme_data.cyr"
+include "src/enzyme.cyr"
+include "src/tca_data.cyr"
+include "src/tca.cyr"
+include "src/beta_oxidation_data.cyr"
+include "src/beta_oxidation.cyr"
+
+# 1 when |a − b| < tol.
+fn near(a: f64, b: f64, tol: f64) {
+    var d: f64 = f64_abs(a - b);
+    return d < tol;
+}
+
+# NaN (k 0), +inf (1), -inf (2): the non-finite values of Rust's hardening tests.
+fn nonfinite(k): f64 {
+    if (k == 0) { return _ry_nan(); }
+    var inf: f64 = _RY_INF;
+    if (k == 1) { return inf; }
+    return -inf;
+}
+
+# 1 when the state validates.
+fn bs_ok(p: *RyBetaOxState) {
+    var t, v = ry_beta_ox_state_validate(p);
+    return is_ok(t);
+}
+
+# 1 when the config validates.
+fn bc_ok(c: *RyBetaOxConfig) {
+    var t, v = ry_beta_ox_config_validate(c);
+    return is_ok(t);
+}
+
+# The validation outcome of the default config with f64 field k (1–5, declaration order) set to x: 1 for Ok, else 0.
+fn cfg_ok_with(k, x: f64) {
+    var c: RyBetaOxConfig;
+    ry_beta_ox_config_default(&c);
+    var w = &c;
+    store64(w + 8 * k, load64(&x));
+    return bc_ok(&c);
+}
+
+# Rust's run_beta_ox: `steps` ticks of `dt` at no malonyl-CoA and NAD+/NADH 700 from the default state into *s, on
+# config *c; *total sums the amounts and keeps the last tick's rates.
+fn run_beta_ox(steps, dt: f64, c: *RyBetaOxConfig, s: *RyBetaOxState, total: *RyBetaOxFlux) {
+    var f: RyBetaOxFlux;
+    ry_beta_ox_state_default(s);
+    ry_beta_ox_flux_default(total);
+    var k = 0;
+    while (k < steps) {
+        ry_beta_ox_state_tick(s, c, 0.0, 700.0, dt, &f);
+        var w = total;
+        var o = &f;
+        var j = 0;
+        while (j < 6) {
+            var x: f64 = load64(w + 8 * j);
+            var y: f64 = load64(o + 8 * j);
+            var sum: f64 = x + y;
+            store64(w + 8 * j, load64(&sum));
+            j = j + 1;
+        }
+        var ox: f64 = f.oxidation_rate;
+        var act: f64 = f.activation_rate;
+        total.oxidation_rate = ox;
+        total.activation_rate = act;
+        k = k + 1;
+    }
+    return 0;
+}
+
+# Rust's test helper `carbon`: the carbon the state holds plus the acetyl-CoA carbon released so far.
+fn carbon(s: *RyBetaOxState, c: *RyBetaOxConfig, acetyl_out: f64): f64 {
+    var n: f64 = f64_from(c.chain_length);
+    var pools: f64 = s.acyl_coa + s.free_fatty_acid;
+    var r: f64 = n * pools + 2.0 * acetyl_out;
+    return r;
+}
+
+# ── the captured events ──
+var _ev_buf[1024];
+var _ev_len = 0;
+
+# sakshi's subscriber: keeps the last event's message.
+fn _ev_hook(ts, level, category, msg, msg_len, extra) {
+    var n = msg_len;
+    if (n > 1024) { n = 1024; }
+    memcpy(&_ev_buf, msg, n);
+    _ev_len = msg_len;
+    return 0;
+}
+
+# 1 if the last captured event is the C string `want`.
+fn _ev_is(want) {
+    var n = strlen(want);
+    if (_ev_len != n) { return 0; }
+    return memeq(&_ev_buf, want, n);
+}
+
+# rust src/beta_oxidation.rs: test_default_state_valid, test_default_config_valid, test_palmitate_stoichiometry
+# rust src/beta_oxidation.rs: test_other_chain_lengths, test_invalid_chain_length, test_validate_state_rejects_nan
+# rust src/beta_oxidation.rs: test_validate_config_rejects_bad_values
+# rust tests/integration.rs: test_beta_ox_validation
+fn validation() {
+    test_group("beta_oxidation: defaults, chains and validation");
+    var s: RyBetaOxState;
+    var c: RyBetaOxConfig;
+    ry_beta_ox_state_default(&s);
+    ry_beta_ox_config_default(&c);
+    assert(bs_ok(&s) == 1 && bc_ok(&c) == 1, "the defaults validate");
+    assert(c.chain_length == 16 && ry_beta_ox_config_cycles(&c) == 7 && ry_beta_ox_config_acetyl_coa_per_fa(&c) == 8,
+      "palmitate: 7 cycles, 8 acetyl-CoA");
+    c.chain_length = 12;
+    assert(ry_beta_ox_config_cycles(&c) == 5 && ry_beta_ox_config_acetyl_coa_per_fa(&c) == 6, "C12: 5 and 6");
+    c.chain_length = 4;
+    assert(ry_beta_ox_config_cycles(&c) == 1 && ry_beta_ox_config_acetyl_coa_per_fa(&c) == 2, "C4: 1 and 2");
+    c.chain_length = 2;
+    assert(ry_beta_ox_config_cycles(&c) == 0 && bc_ok(&c) == 0, "C2: no cycle, refused");
+    c.chain_length = 15;
+    var t1, v1 = ry_beta_ox_config_validate(&c);
+    assert_eq(v1, RY_ERR_INVALID_PARAMETER, "an odd chain is refused");
+    s.acyl_coa = _ry_nan();
+    var t2, v2 = ry_beta_ox_state_validate(&s);
+    assert_eq(v2, RY_ERR_NON_FINITE, "a NaN acyl-CoA is refused");
+    # Rust's seven cases: activation_vmax NaN, cycle_vmax -1, activation_km 0, cycle_km 0, cpt1_ki 0 and inf, C17.
+    var inf: f64 = _RY_INF;
+    assert_eq(cfg_ok_with(1, _ry_nan()), 0, "activation_vmax NaN");
+    assert_eq(cfg_ok_with(3, -1.0), 0, "cycle_vmax -1");
+    assert_eq(cfg_ok_with(2, 0.0), 0, "activation_km 0");
+    assert_eq(cfg_ok_with(4, 0.0), 0, "cycle_km 0");
+    assert_eq(cfg_ok_with(5, 0.0), 0, "cpt1_ki_malonyl_coa 0");
+    assert_eq(cfg_ok_with(5, inf), 0, "cpt1_ki_malonyl_coa inf");
+    ry_beta_ox_config_default(&c);
+    c.chain_length = 17;
+    c.activation_vmax = _ry_nan();
+    var t3, v3 = ry_beta_ox_config_validate(&c);
+    assert_eq(v3, RY_ERR_INVALID_PARAMETER, "the chain is checked first");
+    return 0;
+}
+
+# rust src/beta_oxidation.rs: test_acetyl_coa_produced, test_nadh_and_fadh2_produced, test_activation_costs_atp
+# rust src/beta_oxidation.rs: test_concentrations_non_negative, test_ffa_consumed_over_time
+# rust src/beta_oxidation.rs: test_palmitate_flux_stoichiometry
+fn ticking() {
+    test_group("beta_oxidation: ticking");
+    var s: RyBetaOxState;
+    var c: RyBetaOxConfig;
+    var total: RyBetaOxFlux;
+    ry_beta_ox_config_default(&c);
+    run_beta_ox(100, 0.1, &c, &s, &total);
+    var accoa: f64 = total.acetyl_coa_produced;
+    var nadh: f64 = total.nadh_produced;
+    var fadh2: f64 = total.fadh2_produced;
+    var atp: f64 = total.atp_consumed;
+    var ffa: f64 = total.ffa_consumed;
+    var tol: f64 = 0.0000000001;
+    assert(accoa > 0.0 && nadh > 0.0 && fadh2 > 0.0, "acetyl-CoA, NADH and FADH2 are produced");
+    assert(near(nadh, fadh2, tol), "one NADH and one FADH2 per cycle");
+    assert(atp > 0.0 && near(atp, ffa * 2.0, tol), "2 ATP per fatty acid activated");
+    var left: f64 = s.free_fatty_acid;
+    assert(left < 0.3, "free fatty acid is consumed");
+    run_beta_ox(1000, 0.01, &c, &s, &total);
+    assert_eq(bs_ok(&s), 1, "the pools stay >= 0 over 1000 steps of 0.01 s");
+    run_beta_ox(200, 0.1, &c, &s, &total);
+    var acyl: f64 = total.acyl_coa_consumed;
+    var a2: f64 = total.acetyl_coa_produced;
+    var n2: f64 = total.nadh_produced;
+    var f2: f64 = total.fadh2_produced;
+    var nine: f64 = 0.000000001;
+    assert(acyl > 0.0 && near(a2 / acyl, 8.0, nine) && near(n2 / acyl, 7.0, nine) && near(f2 / acyl, 7.0, nine),
+      "per palmitoyl-CoA: 8 acetyl-CoA, 7 NADH, 7 FADH2");
+    return 0;
+}
+
+# rust src/beta_oxidation.rs: test_malonyl_coa_inhibits, test_high_malonyl_coa_strong_inhibition
+# rust src/beta_oxidation.rs: test_no_ffa_no_activation
+fn regulation() {
+    test_group("beta_oxidation: CPT-I");
+    var s: RyBetaOxState;
+    var c: RyBetaOxConfig;
+    var a: RyBetaOxFlux;
+    var b: RyBetaOxFlux;
+    ry_beta_ox_config_default(&c);
+    ry_beta_ox_state_default(&s);
+    ry_beta_ox_state_tick(&s, &c, 0.0, 700.0, 0.1, &a);
+    ry_beta_ox_state_default(&s);
+    ry_beta_ox_state_tick(&s, &c, 0.1, 700.0, 0.1, &b);
+    var free: f64 = a.oxidation_rate;
+    var held: f64 = b.oxidation_rate;
+    assert(held < free, "malonyl-CoA inhibits β-oxidation");
+    ry_beta_ox_state_default(&s);
+    ry_beta_ox_state_tick(&s, &c, 1.0, 700.0, 0.1, &b);
+    var fed: f64 = b.oxidation_rate;
+    var inhibition: f64 = 1.0 - fed / free;
+    assert(inhibition > 0.9, "a fed state's malonyl-CoA inhibits more than 90 %");
+    ry_beta_ox_state_default(&s);
+    s.free_fatty_acid = 0.0;
+    ry_beta_ox_state_tick(&s, &c, 0.0, 700.0, 0.1, &a);
+    var act: f64 = a.activation_rate;
+    assert(act < 0.0000000001, "no free fatty acid, no activation");
+    return 0;
+}
+
+# rust src/beta_oxidation.rs: test_invalid_dt_is_noop, test_nan_inputs_sanitized, test_oxidation_capped_at_acyl_coa_pool
+fn hardening() {
+    test_group("beta_oxidation: hardening");
+    var s: RyBetaOxState;
+    var d: RyBetaOxState;
+    var c: RyBetaOxConfig;
+    var f: RyBetaOxFlux;
+    var zero: RyBetaOxFlux;
+    ry_beta_ox_config_default(&c);
+    ry_beta_ox_state_default(&d);
+    ry_beta_ox_flux_default(&zero);
+    var k = 0;
+    while (k < 5) {
+        var dt: f64 = 0.0;
+        if (k == 1) { dt = -0.1; }
+        if (k > 1) { dt = nonfinite(k - 2); }
+        ry_beta_ox_state_default(&s);
+        memset(&f, 255, 64);
+        ry_beta_ox_state_tick(&s, &c, 0.0, 700.0, dt, &f);
+        assert(memeq(&s, &d, 16) == 1 && memeq(&f, &zero, 64) == 1, "an invalid dt changes nothing, a zero flux");
+        k = k + 1;
+    }
+    # (NaN, 700), (0, NaN), (inf, -inf), (-1, -1)
+    var j = 0;
+    while (j < 4) {
+        var malonyl: f64 = 0.0;
+        var nad: f64 = 700.0;
+        if (j == 0) { malonyl = _ry_nan(); }
+        if (j == 1) { nad = _ry_nan(); }
+        if (j == 2) {
+            malonyl = nonfinite(1);
+            nad = nonfinite(2);
+        }
+        if (j == 3) {
+            malonyl = -1.0;
+            nad = -1.0;
+        }
+        ry_beta_ox_state_default(&s);
+        ry_beta_ox_state_tick(&s, &c, malonyl, nad, 0.1, &f);
+        var accoa: f64 = f.acetyl_coa_produced;
+        var ox: f64 = f.oxidation_rate;
+        assert(bs_ok(&s) == 1 && _ry_is_finite(accoa) == 1 && _ry_is_finite(ox) == 1,
+          "bad inputs keep the state valid, the flux finite");
+        j = j + 1;
+    }
+    s.acyl_coa = 0.001;
+    s.free_fatty_acid = 0.0;
+    ry_beta_ox_state_tick(&s, &c, 0.0, 700.0, 1000.0, &f);
+    var acyl: f64 = s.acyl_coa;
+    var used: f64 = f.acyl_coa_consumed;
+    var made: f64 = f.acetyl_coa_produced;
+    assert(acyl == 0.0 && near(used, 0.001, 0.000000000000001) && near(made, 0.008, 0.000000000001),
+      "oxidation takes at most the acyl-CoA there is");
+    return 0;
+}
+
+# rust src/beta_oxidation.rs: test_large_dt_no_negative_pools_no_carbon_created, test_odd_chain_conserves_carbon
+fn conservation() {
+    test_group("beta_oxidation: carbon");
+    var s: RyBetaOxState;
+    var c: RyBetaOxConfig;
+    var f: RyBetaOxFlux;
+    ry_beta_ox_config_default(&c);
+    var dt: f64 = 1.0;
+    var r = 0;
+    while (r < 3) {
+        ry_beta_ox_state_default(&s);
+        var c0: f64 = carbon(&s, &c, 0.0);
+        var out: f64 = 0.0;
+        var ok = 1;
+        var k = 0;
+        while (k < 200) {
+            ry_beta_ox_state_tick(&s, &c, 0.0, 700.0, dt, &f);
+            out = out + f.acetyl_coa_produced;
+            if (bs_ok(&s) == 0) { ok = 0; }
+            k = k + 1;
+        }
+        var c1: f64 = carbon(&s, &c, out);
+        assert(ok == 1 && near(c1, c0, 0.000000001 * c0), "a large dt: no negative pool, carbon conserved");
+        if (r == 0) { dt = 5.0; }
+        if (r == 1) { dt = 100.0; }
+        r = r + 1;
+    }
+    c.chain_length = 15;
+    assert_eq(bc_ok(&c), 0, "C15 does not validate");
+    ry_beta_ox_state_default(&s);
+    var start: f64 = carbon(&s, &c, 0.0);
+    var accoa: f64 = 0.0;
+    var acyl: f64 = 0.0;
+    var nadh: f64 = 0.0;
+    var m = 0;
+    while (m < 200) {
+        ry_beta_ox_state_tick(&s, &c, 0.0, 700.0, 0.1, &f);
+        accoa = accoa + f.acetyl_coa_produced;
+        acyl = acyl + f.acyl_coa_consumed;
+        nadh = nadh + f.nadh_produced;
+        m = m + 1;
+    }
+    var end: f64 = carbon(&s, &c, accoa);
+    var nine: f64 = 0.000000001;
+    assert(near(end, start, nine * start) && near(accoa / acyl, 7.5, nine) && near(nadh / acyl, 6.0, nine),
+      "an odd chain keeps its carbon: 7.5 acetyl-CoA equivalents, 6 cycles");
+    var eq: f64 = _ry_beta_ox_config_acetyl_carbon_equivalents(&c);
+    assert(eq == 7.5, "C15's carbon equivalents are 7.5");
+    return 0;
+}
+
+# rust tests/integration.rs: test_beta_ox_feeds_tca
+fn coupling() {
+    test_group("beta_oxidation: feeding TCA");
+    var bc: RyBetaOxConfig;
+    var tc: RyTcaConfig;
+    var b: RyBetaOxState;
+    var t: RyTcaState;
+    var bf: RyBetaOxFlux;
+    var tf: RyTcaFlux;
+    ry_beta_ox_config_default(&bc);
+    ry_tca_config_default(&tc);
+    ry_beta_ox_state_default(&b);
+    ry_tca_state_default(&t);
+    var accoa: f64 = 0.0;
+    var nadh: f64 = 0.0;
+    var k = 0;
+    while (k < 200) {
+        ry_beta_ox_state_tick(&b, &bc, 0.0, 700.0, 0.1, &bf);
+        var fed: f64 = t.acetyl_coa + bf.acetyl_coa_produced;
+        t.acetyl_coa = fed;
+        ry_tca_state_tick(&t, &tc, 0.0, 6.0, 0.5, 700.0, 0.1, &tf);
+        accoa = accoa + bf.acetyl_coa_produced;
+        nadh = nadh + (bf.nadh_produced + tf.nadh_produced);
+        k = k + 1;
+    }
+    assert(accoa > 0.0 && nadh > 0.0, "β-oxidation's acetyl-CoA drives the cycle");
+    return 0;
+}
+
+# The crate-private accumulate the metabolic network calls (M5).
+fn network() {
+    test_group("beta_oxidation: the network's accumulate");
+    var s: RyBetaOxState;
+    var c: RyBetaOxConfig;
+    var f: RyBetaOxFlux;
+    var total: RyBetaOxFlux;
+    ry_beta_ox_state_default(&s);
+    ry_beta_ox_config_default(&c);
+    ry_beta_ox_state_tick(&s, &c, 0.0, 700.0, 0.1, &f);
+    ry_beta_ox_flux_default(&total);
+    _ry_beta_ox_flux_accumulate(&total, &f, 0.5);
+    _ry_beta_ox_flux_accumulate(&total, &f, 0.5);
+    var atp: f64 = total.atp_consumed;
+    var once: f64 = f.atp_consumed;
+    var ox2: f64 = total.oxidation_rate;
+    var ox1: f64 = f.oxidation_rate;
+    assert(atp == once + once && ox2 == ox1 * 0.5 + ox1 * 0.5, "amounts summed, rates weighted");
+    return 0;
+}
+
+# Rust's trace event, under the target `rasayan::beta_oxidation`, its fields in Rust's order.
+fn events() {
+    test_group("beta_oxidation: trace event");
+    sakshi_set_emit_hook(&_ev_hook);
+    sakshi_set_level(SK_TRACE);
+    var s: RyBetaOxState;
+    var c: RyBetaOxConfig;
+    var f: RyBetaOxFlux;
+    ry_beta_ox_state_default(&s);
+    ry_beta_ox_config_default(&c);
+    ry_beta_ox_state_tick(&s, &c, 0.0, 700.0, 0.01, &f);
+    assert_eq(_ev_is("rasayan::beta_oxidation: beta_oxidation_tick dt=0.01 acyl_coa=0.02 ffa=0.3"), 1,
+      "beta_oxidation_tick");
+    _ev_len = 0;
+    ry_beta_ox_state_tick(&s, &c, 0.0, 700.0, 0.0, &f);
+    assert_eq(_ev_len, 0, "no event for an invalid dt");
+    sakshi_set_level(SK_INFO);
+    ry_beta_ox_state_tick(&s, &c, 0.0, 700.0, 0.01, &f);
+    assert_eq(_ev_len, 0, "below TRACE, nothing");
+    sakshi_clear_emit_hook();
+    return 0;
+}
+
+# rust src/beta_oxidation.rs: test_serde_roundtrip_state, test_serde_roundtrip_config
+# rust tests/integration.rs: test_beta_ox_flux_serde_roundtrip
+fn serde() {
+    test_group("beta_oxidation: serde round trips");
+    var sb = str_builder_new();
+    var s: RyBetaOxState;
+    var back: RyBetaOxState;
+    ry_beta_ox_state_default(&s);
+    var t1, v1 = ry_beta_ox_state_to_json(sb, &s);
+    var t2, v2 = ry_beta_ox_state_from_json(load64(sb), load64(sb + 8), &back);
+    assert(is_ok(t2) == 1 && memeq(&back, &s, 16) == 1, "the state reads back");
+    var c: RyBetaOxConfig;
+    var cb: RyBetaOxConfig;
+    ry_beta_ox_config_default(&c);
+    store64(sb + 8, 0);
+    var t3, v3 = ry_beta_ox_config_to_json(sb, &c);
+    var want = "{\"chain_length\":16,\"activation_vmax\":0.05,\"activation_km\":0.1,\"cycle_vmax\":0.03,";
+    assert_eq(memeq(load64(sb), want, strlen(want)), 1, "chain_length is written as an integer");
+    var t4, v4 = ry_beta_ox_config_from_json(load64(sb), load64(sb + 8), &cb);
+    assert(is_ok(t4) == 1 && memeq(&cb, &c, 48) == 1, "the config reads back");
+    var float_chain = "[16.0,0.05,0.1,0.03,0.01,0.01]";
+    var t5, v5 = ry_beta_ox_config_from_json(float_chain, strlen(float_chain), &cb);
+    assert_eq(v5, RY_ERR_DESERIALIZE, "a float chain length is refused");
+    var f: RyBetaOxFlux;
+    var fb: RyBetaOxFlux;
+    ry_beta_ox_state_tick(&s, &c, 0.0, 700.0, 0.01, &f);
+    store64(sb + 8, 0);
+    var t6, v6 = ry_beta_ox_flux_to_json(sb, &f);
+    var t7, v7 = ry_beta_ox_flux_from_json(load64(sb), load64(sb + 8), &fb);
+    assert(is_ok(t7) == 1 && memeq(&fb, &f, 64) == 1, "a step's flux reads back, bit for bit");
+    return 0;
+}
+
+# Runs the β-oxidation suite.
+fn main() {
+    alloc_init();
+    validation();
+    ticking();
+    regulation();
+    hardening();
+    conservation();
+    coupling();
+    network();
+    events();
+    serde();
+    return assert_summary();
+}
+
+var exit_code = main();
+# assert_summary() returns the failure count; a wait status is 8 bits, so any failure exits 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

@@ -1450,3 +1450,41 @@ the state, as Rust does, and stores them back through `unit`.
 transcendental, the gap is the ~40 guard and helper calls Rust inlines; the review wrote `_ry_guard_unit`'s clamp out,
 one call per guard.
 
+### 7e. M4b part 2: β-oxidation (2026-11-17)
+
+**What is compared.** `tests/golden/beta_oxidation.tsv` (new, 1,014 rows), through the oracle's public API and, for
+the private `acetyl_carbon_equivalents` and the crate-private `BetaOxFlux::accumulate`, verbatim copies
+(`scripts/oracle/src/v_beta_oxidation.rs`: a local trait's method on the oracle's own `BetaOxConfig`, and a mirror
+type). The config's `chain_length` is a u32, so its default is an integer const, its golden value an `i:` token and
+its override `i:0 i:<chain>`. The rows cover:
+- the two defaults, and both validators: every chain length from 0 to u32::MAX (odd, short, long), each f64
+  parameter over its edges, and the chain checked before the Vmax and the divisors;
+- `cycles`, `acetyl_coa_per_fa` and the carbon equivalents over 21 chain lengths;
+- 628 single `tick` rows: each pool over 14 edges, 15 malonyl-CoA and NAD+/NADH pairs (CPT-I's Ki, the fed state,
+  the factor's cap of 2), 20 time steps, Rust's cap test (1 µM of acyl-CoA over 1000 s), every chain length, each
+  parameter's edges, and seeded states and configs;
+- 57 `accumulate` rows and the serde documents (a float, negative or 2^32 chain length refused; u32::MAX read);
+- 24 trajectory frames: Rust's runs, its large-dt test at 1, 5 and 100 s, its odd-chain test (C15), C4 and C24, fed
+  to fasted (malonyl-CoA 1, 0.1, 0), lipolysis refilling the free fatty acid, a low NAD+ ratio, a degenerate start;
+- 7 rows of Rust's `test_beta_ox_feeds_tca` loop (`beta_oxidation::feeds_tca`): β-oxidation's acetyl-CoA added to
+  TCA's each step, at four time steps, the fed state and low NAD+.
+
+β-oxidation calls no transcendental: B for the arithmetic (706), T for the scripts and the coupling (31), A for the
+validators, the counts, the defaults and the documents (277). The coupling's TCA steps reach IDH's `pow`; their rows
+take the corrected oracle's rule in both models, and `beta_oxidation.cr.tsv` stays empty.
+
+| Check | Result |
+|---|---|
+| every row | identical on the first run (class B at 0 ulp, the trajectories and coupling runs bit for bit) |
+| corrected oracle | `mpfr_ref.py` models the 31 class-T rows (the coupling with TCA's model) and reproduces them with glibc's `pow`; the correctly rounded `pow` changes none |
+| `validate.py` | every row re-derived from its own transcription of `beta_oxidation.rs` (pinned lines, the defaults and constants read from the sources), the coupling with its TCA model, MPFR's `pow` there and glibc's on the recorded platform; 116,017 checks in all. The ETC's pipeline rows now take the same two-`pow` check |
+| Rust tests | 23 unit and 3 integration tests ported (`tests/beta_oxidation.tcyr`, 49 checks); the ledger at 453 of 723, 0 due and unported |
+| fuzz | every input also read as the three documents (918 accepted, each written and read back bit for bit; the chain length a u32); an accepted valid state stepped 0.5 s and 50 s stays valid and conserves its carbon to 1e-12 |
+| four targets (`scripts/gates.sh`, 316 s, every step green) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 111,806 ok, 234 accepted, 0 failed; coverage 223 of 223 public fns executed |
+
+**The Cyrius forms** (ADR 0002 rows 7, 10): `chain_length` is an integer word, its JSON an unsigned integer read in
+u32's range; `cycles` and `acetyl_coa_per_fa` return integers; the three types' field names are generated, BetaOxFlux's
+eight among them (they exceed a 120-column literal).
+
+**Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): beta_ox_tick 19.7 → 88 ns.
+
