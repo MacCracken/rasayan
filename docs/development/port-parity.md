@@ -1896,3 +1896,29 @@ recovery, four seeded); the nested serde documents. Classes: A 317, B 88, C 253 
 | four targets (`scripts/gates.sh`, 479 s) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 121,199 ok, 81 accepted (ADR 3: 0), 0 failed; coverage 420 of 420 public fns executed |
 
 **Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): signaling_tick 154 → 696 ns.
+
+## 10. M7: neuro and hormonal
+
+### 10a. Part 1: neurotransmitter (2026-11-18)
+
+**What is compared.** `tests/golden/neurotransmitter.tsv` (new, 1,279 rows), written by `gen.py`
+(`neurotransmitter()`: neurotransmitter.rs's tick transcribed on the MPFR primitives, the integrators noting the
+`exp_m1` branch), against the Cyrius port. The rows: the two defaults; both validators (every state field over ten
+edges and six NaN/negative pairs; every config field over the config edges; five orderings where Rust's check order
+picks the error: a NaN rate before a zero Km); 50 `gaba_glutamate_ratio` rows; mastishk's six bridges (351 rows: every
+argument over 17 edges, among them the old Michaelis-Menten poles and the clearance floor, 15 seeded each); 516 single
+ticks (25 step lengths at two drives, every state field's and config field's edges, acetyl-CoA × stimulus, Rust's
+no-precursor, scarce-precursor and fast-AChE cases, 120 seeded); 21 trajectories (Rust's runs: 1,000 steps at rest, the
+hour at rest and without stimulus, steps of 10, 100 and 1,000 s, the conservation run, the depleted precursors, a
+stimulus sweep, NaN and inf recovery, four seeded); the serde documents. Classes: A 341, B 710, C 207 (an integrator's
+`exp_m1`), T 21.
+
+| Check | Result |
+|---|---|
+| every row | 1,279 identical on the first run |
+| `gen.py --check` | the golden file and `src/neurotransmitter_data.cyr` byte-identical on regeneration |
+| Rust tests | the 31 `neurotransmitter.rs` tests and its 2 integration tests ported (`tests/neurotransmitter.tcyr`, 40 checks); the ledger at 659 of 723; surface parity 25 of 25 |
+| fuzz | the three documents (560 accepted, each written and read back bit for bit); a valid state, and the default state on a valid config, ticked 0.1 s and 100 s stay valid with finite fluxes |
+| four targets (`scripts/gates.sh`, 485 s) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 122,478 ok, 81 accepted (ADR 3: 0), 0 failed; coverage 445 of 445 public fns executed |
+
+**Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): neurotransmitter_tick 48.0 → 346 ns.

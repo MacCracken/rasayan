@@ -1,0 +1,551 @@
+# rasayan — src/neurotransmitter.cyr: neurotransmitter synthesis, degradation and precursor recycling
+# (rust-old/src/neurotransmitter.rs)
+#
+# The synthesis, release and degradation of the major neurotransmitters — the rasayan → mastishk → bhava bridge.
+# Each level is a lumped neuronal + synaptic pool:
+# - serotonin: Trp → 5-HT (TPH) → MAO; dopamine: Tyr → DA (TH) → MAO/COMT and DAT reuptake (one lumped loss);
+#   norepinephrine: DA → NE (DBH) → MAO/COMT; tryptophan and tyrosine relax toward their plasma levels (LAT1);
+# - the glutamate–GABA–glutamine cycle: Gln → Glu (glutaminase), Glu → GABA (GAD); cleared glutamate and degraded GABA
+#   return to glutamine, so glutamine + glutamate + GABA is conserved;
+# - acetylcholine: choline + acetyl-CoA → ACh (ChAT) → AChE → choline, so choline + ACh is conserved;
+# - β-endorphin from POMC cleavage (stimulus-driven), cleared by peptidases.
+# Every production / first-order loss is integrated exactly over dt (integrate's `produce_decay` and `relax`), every
+# precursor-consuming flux capped at the precursor the step has. Seven bridge functions give steady-state levels.
+#
+# The Cyrius forms (ADR 0002 row 7): the state advances in place and the flux fills the caller's record. Every
+# operation is in the source's order (P9).
+
+# ── the types ──
+
+# The lumped neurotransmitter and precursor levels (uM-ish, normalized; resting ~1): serotonin, dopamine,
+# norepinephrine, GABA, glutamate, acetylcholine, β-endorphin; the precursors tryptophan, tyrosine, glutamine, choline.
+struct RyNeurotransmitterState {
+    serotonin: f64;
+    dopamine: f64;
+    norepinephrine: f64;
+    gaba: f64;
+    glutamate: f64;
+    acetylcholine: f64;
+    endorphin: f64;
+    tryptophan: f64;
+    tyrosine: f64;
+    glutamine: f64;
+    choline: f64;
+}
+
+# Kinetic parameters, pathway by pathway: each synthesis enzyme's Vmax and Km (> 0), each loss's first-order rate
+# (s^-1), POMC's cleavage rate per unit stimulus.
+struct RyNeurotransmitterConfig {
+    tph_vmax: f64;
+    tph_km: f64;
+    serotonin_mao_rate: f64;
+    th_vmax: f64;
+    th_km: f64;
+    dopamine_degradation_rate: f64;
+    dopamine_reuptake_rate: f64;
+    dbh_vmax: f64;
+    dbh_km: f64;
+    ne_degradation_rate: f64;
+    gad_vmax: f64;
+    gad_km: f64;
+    gaba_degradation_rate: f64;
+    glutaminase_vmax: f64;
+    glutaminase_km: f64;
+    glutamate_clearance_rate: f64;
+    chat_vmax: f64;
+    chat_km: f64;
+    ache_rate: f64;
+    pomc_cleavage_rate: f64;
+    endorphin_degradation_rate: f64;
+}
+
+# The tick's synthesis and loss rates per transmitter, at the start of the tick (each synthesis capped at its
+# precursor); zero for an invalid dt.
+struct RyNeurotransmitterFlux {
+    serotonin_synthesis: f64;
+    serotonin_degradation: f64;
+    dopamine_synthesis: f64;
+    dopamine_degradation: f64;
+    ne_synthesis: f64;
+    ne_degradation: f64;
+    gaba_synthesis: f64;
+    gaba_degradation: f64;
+    glutamate_synthesis: f64;
+    glutamate_clearance: f64;
+    ach_synthesis: f64;
+    ach_degradation: f64;
+    endorphin_synthesis: f64;
+    endorphin_degradation: f64;
+}
+
+# ── defaults ──
+
+# Fills *out with Rust's NeurotransmitterState::default() (src/neurotransmitter_data.cyr).
+fn ry_neurotransmitter_state_default(out: *RyNeurotransmitterState) {
+    out.serotonin = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_STATE_DEFAULT_SEROTONIN;
+    out.dopamine = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_STATE_DEFAULT_DOPAMINE;
+    out.norepinephrine = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_STATE_DEFAULT_NOREPINEPHRINE;
+    out.gaba = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_STATE_DEFAULT_GABA;
+    out.glutamate = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_STATE_DEFAULT_GLUTAMATE;
+    out.acetylcholine = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_STATE_DEFAULT_ACETYLCHOLINE;
+    out.endorphin = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_STATE_DEFAULT_ENDORPHIN;
+    out.tryptophan = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_STATE_DEFAULT_TRYPTOPHAN;
+    out.tyrosine = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_STATE_DEFAULT_TYROSINE;
+    out.glutamine = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_STATE_DEFAULT_GLUTAMINE;
+    out.choline = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_STATE_DEFAULT_CHOLINE;
+    return 0;
+}
+
+# Fills *out with Rust's NeurotransmitterConfig::default() (src/neurotransmitter_data.cyr): the 21 defaults in
+# declaration order.
+fn ry_neurotransmitter_config_default(out: *RyNeurotransmitterConfig) {
+    out.tph_vmax = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_CONFIG_DEFAULT_TPH_VMAX;
+    out.tph_km = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_CONFIG_DEFAULT_TPH_KM;
+    out.serotonin_mao_rate = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_CONFIG_DEFAULT_SEROTONIN_MAO_RATE;
+    out.th_vmax = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_CONFIG_DEFAULT_TH_VMAX;
+    out.th_km = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_CONFIG_DEFAULT_TH_KM;
+    out.dopamine_degradation_rate = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_CONFIG_DEFAULT_DOPAMINE_DEGRADATION_RATE;
+    out.dopamine_reuptake_rate = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_CONFIG_DEFAULT_DOPAMINE_REUPTAKE_RATE;
+    out.dbh_vmax = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_CONFIG_DEFAULT_DBH_VMAX;
+    out.dbh_km = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_CONFIG_DEFAULT_DBH_KM;
+    out.ne_degradation_rate = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_CONFIG_DEFAULT_NE_DEGRADATION_RATE;
+    out.gad_vmax = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_CONFIG_DEFAULT_GAD_VMAX;
+    out.gad_km = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_CONFIG_DEFAULT_GAD_KM;
+    out.gaba_degradation_rate = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_CONFIG_DEFAULT_GABA_DEGRADATION_RATE;
+    out.glutaminase_vmax = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_CONFIG_DEFAULT_GLUTAMINASE_VMAX;
+    out.glutaminase_km = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_CONFIG_DEFAULT_GLUTAMINASE_KM;
+    out.glutamate_clearance_rate = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_CONFIG_DEFAULT_GLUTAMATE_CLEARANCE_RATE;
+    out.chat_vmax = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_CONFIG_DEFAULT_CHAT_VMAX;
+    out.chat_km = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_CONFIG_DEFAULT_CHAT_KM;
+    out.ache_rate = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_CONFIG_DEFAULT_ACHE_RATE;
+    out.pomc_cleavage_rate = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_CONFIG_DEFAULT_POMC_CLEAVAGE_RATE;
+    out.endorphin_degradation_rate = RY_NEUROTRANSMITTER_NEUROTRANSMITTER_CONFIG_DEFAULT_ENDORPHIN_DEGRADATION_RATE;
+    return 0;
+}
+
+# Fills *out with Rust's NeurotransmitterFlux::default(): every rate 0.
+fn ry_neurotransmitter_flux_default(out: *RyNeurotransmitterFlux) {
+    var w = out;
+    var k = 0;
+    while (k < 14) {
+        store64(w + 8 * k, 0);
+        k = k + 1;
+    }
+    return 0;
+}
+
+# ── validation ──
+
+# Ok(0) when every level is finite and >= 0; else the first failing one's Err, in declaration order. Mirrors
+# `NeurotransmitterState::validate`.
+#must_use
+fn ry_neurotransmitter_state_validate(p: *RyNeurotransmitterState): Result {
+    var w = p;                                   # a plain address: `p + n` would step n states
+    var name = &_RY_NEUROTRANSMITTER_STATE_FIELDS;
+    var k = 0;
+    while (k < 11) {
+        var value: f64 = load64(w + 8 * k);
+        var t, v = _ry_guard_non_negative(name, value);
+        if (is_err_result(t) == 1) { return Err(v); }
+        name = name + strlen(name) + 1;
+        k = k + 1;
+    }
+    return Ok(0);
+}
+
+# 1 when config field `k` is a Km (must be > 0), else 0 (a rate, >= 0).
+#must_use
+#pure
+fn _ry_neurotransmitter_is_km(k): i64 {
+    if (k == 1 || k == 4 || k == 8 || k == 11 || k == 14 || k == 17) { return 1; }
+    return 0;
+}
+
+# Ok(0) when every rate and Vmax is finite and >= 0 and every Km finite and > 0; else the first failure's Err, in
+# Rust's check order: the 15 rates and Vmax values in declaration order first, then the six Km values. Mirrors
+# `NeurotransmitterConfig::validate`.
+#must_use
+fn ry_neurotransmitter_config_validate(p: *RyNeurotransmitterConfig): Result {
+    var w = p;
+    var pass = 0;
+    while (pass < 2) {
+        var name = &_RY_NEUROTRANSMITTER_CONFIG_FIELDS;
+        var k = 0;
+        while (k < 21) {
+            if (_ry_neurotransmitter_is_km(k) == pass) {
+                var value: f64 = load64(w + 8 * k);
+                var t = 0;
+                var v = 0;
+                if (pass == 1) {
+                    t, v = _ry_guard_positive(name, value);
+                } else {
+                    t, v = _ry_guard_non_negative(name, value);
+                }
+                if (is_err_result(t) == 1) { return Err(v); }
+            }
+            name = name + strlen(name) + 1;
+            k = k + 1;
+        }
+        pass = pass + 1;
+    }
+    return Ok(0);
+}
+
+# The GABA/glutamate ratio of the state (excitation/inhibition balance), 0 for glutamate at or below f64's epsilon.
+# Mirrors `NeurotransmitterState::gaba_glutamate_ratio`.
+#must_use
+#pure
+fn ry_neurotransmitter_state_gaba_glutamate_ratio(p: *RyNeurotransmitterState): f64 {
+    var glu: f64 = p.glutamate;
+    var eps: f64 = 0x3CB0000000000000;           # f64::EPSILON
+    if (glu > eps) {
+        var r: f64 = p.gaba / glu;
+        return r;
+    }
+    return 0.0;
+}
+
+# ── the dynamics ──
+
+# A rate that consumes `pool` over `dt`, capped at the pool: (rate, amount used), or (pool / dt, pool) when rate · dt
+# exceeds it. Mirrors the private `consume`.
+#must_use
+#pure
+fn _ry_neurotransmitter_consume(rate: f64, pool: f64, dt: f64): (f64, f64) {
+    var amount: f64 = rate * dt;
+    if (amount <= pool) { return (rate, amount); }
+    var r: f64 = pool / dt;
+    return (r, pool);
+}
+
+# `produce_decay` of `level` at production `rate` and first-order `decay` over dt, and the amount it lost to the decay
+# (level + amount − next, floored at 0; `amount` is what the production drew this step). Mirrors the private
+# `produce_decay_returning`.
+#must_use
+#pure
+fn _ry_neurotransmitter_produce_decay_returning(level: f64, rate: f64, amount: f64, decay: f64, dt: f64): (f64, f64) {
+    var next: f64 = _ry_integrate_produce_decay(level, rate, decay, dt);
+    var lost: f64 = level + amount - next;
+    var back: f64 = _ry_max(lost, 0.0);
+    return (next, back);
+}
+
+# Advances every transmitter by `dt` seconds under neuronal `stimulus` (sanitized by `conc`) with acetyl-CoA
+# availability `acetyl_coa` (sanitized by `unit`) and fills *out with the flux: serotonin, then dopamine and
+# norepinephrine, then the glutamate–GABA–glutamine cycle, acetylcholine and β-endorphin, each synthesis capped at its
+# precursor, each level by `produce_decay`, tryptophan and tyrosine by `relax` toward plasma. A non-finite or
+# non-positive dt leaves the state untouched with a zero flux (and a trace event saying so). Mirrors
+# `NeurotransmitterState::tick`.
+fn ry_neurotransmitter_state_tick(p: *RyNeurotransmitterState, c: *RyNeurotransmitterConfig, acetyl_coa: f64,
+  stimulus: f64, dt: f64, out: *RyNeurotransmitterFlux) {
+    if (_ry_guard_valid_dt(dt) == 0) {
+        if (_ry_trace_on() == 1) {
+            var hd0[24];
+            var b0[256];
+            var msg = "neurotransmitter_tick skipped: invalid dt";
+            var e0 = _ry_ev(&hd0, &b0, 256, "rasayan::neurotransmitter", msg);
+            _ry_ev_f(e0, "dt", dt);
+            _ry_trace(e0);
+        }
+        ry_neurotransmitter_flux_default(out);
+        return 0;
+    }
+    var stim: f64 = _ry_guard_conc(stimulus);
+    var accoa: f64 = _ry_guard_unit(acetyl_coa);
+    if (_ry_trace_on() == 1) {
+        var hd[24];
+        var b[256];
+        var e = _ry_ev(&hd, &b, 256, "rasayan::neurotransmitter", "neurotransmitter_tick");
+        _ry_ev_f(e, "dt", dt);
+        _ry_ev_f(e, "stimulus", stim);
+        _ry_trace(e);
+    }
+    # Serotonin: Trp → 5-HT (TPH) → MAO; Trp resupplied by LAT1.
+    var tph: f64 = ry_michaelis_menten(p.tryptophan, c.tph_vmax, c.tph_km);
+    var tph_drive: f64 = tph * stim;
+    var v_tph, trp_used = _ry_neurotransmitter_consume(tph_drive, p.tryptophan, dt);
+    var v_5ht_deg: f64 = c.serotonin_mao_rate * p.serotonin;
+    var trp_left: f64 = p.tryptophan - trp_used;
+    var trp: f64 = _ry_integrate_relax(trp_left, RY_NEUROTRANSMITTER_PLASMA_TRYPTOPHAN,
+      RY_NEUROTRANSMITTER_PRECURSOR_TRANSPORT_RATE, dt);
+    p.tryptophan = trp;
+    var sero: f64 = _ry_integrate_produce_decay(p.serotonin, v_tph, c.serotonin_mao_rate, dt);
+    p.serotonin = sero;
+    # Dopamine: Tyr → DA (TH) → MAO/COMT and reuptake; DA → NE (DBH).
+    var th: f64 = ry_michaelis_menten(p.tyrosine, c.th_vmax, c.th_km);
+    var th_drive: f64 = th * stim;
+    var v_th, tyr_used = _ry_neurotransmitter_consume(th_drive, p.tyrosine, dt);
+    var dbh: f64 = ry_michaelis_menten(p.dopamine, c.dbh_vmax, c.dbh_km);
+    var dbh_drive: f64 = dbh * stim;
+    var v_dbh, da_used = _ry_neurotransmitter_consume(dbh_drive, p.dopamine, dt);
+    var da_loss: f64 = c.dopamine_degradation_rate + c.dopamine_reuptake_rate;
+    var v_da_deg: f64 = da_loss * p.dopamine;
+    var v_ne_deg: f64 = c.ne_degradation_rate * p.norepinephrine;
+    var tyr_left: f64 = p.tyrosine - tyr_used;
+    var tyr: f64 = _ry_integrate_relax(tyr_left, RY_NEUROTRANSMITTER_PLASMA_TYROSINE,
+      RY_NEUROTRANSMITTER_PRECURSOR_TRANSPORT_RATE, dt);
+    p.tyrosine = tyr;
+    var da_left: f64 = p.dopamine - da_used;
+    var da: f64 = _ry_integrate_produce_decay(da_left, v_th, da_loss, dt);
+    p.dopamine = da;
+    var ne: f64 = _ry_integrate_produce_decay(p.norepinephrine, v_dbh, c.ne_degradation_rate, dt);
+    p.norepinephrine = ne;
+    # The glutamate–GABA–glutamine cycle: Gln → Glu (glutaminase), Glu → GABA (GAD); cleared glutamate and degraded
+    # GABA return to glutamine.
+    var gad: f64 = ry_michaelis_menten(p.glutamate, c.gad_vmax, c.gad_km);
+    var gad_drive: f64 = gad * stim;
+    var v_gad, glu_used = _ry_neurotransmitter_consume(gad_drive, p.glutamate, dt);
+    var glut: f64 = ry_michaelis_menten(p.glutamine, c.glutaminase_vmax, c.glutaminase_km);
+    var glut_drive: f64 = glut * stim;
+    var v_glut, gln_used = _ry_neurotransmitter_consume(glut_drive, p.glutamine, dt);
+    var v_glu_clear: f64 = c.glutamate_clearance_rate * p.glutamate;
+    var v_gaba_deg: f64 = c.gaba_degradation_rate * p.gaba;
+    var glu_left: f64 = p.glutamate - glu_used;
+    var glutamate, glu_cleared = _ry_neurotransmitter_produce_decay_returning(glu_left, v_glut, gln_used,
+      c.glutamate_clearance_rate, dt);
+    var gaba, gaba_degraded = _ry_neurotransmitter_produce_decay_returning(p.gaba, v_gad, glu_used,
+      c.gaba_degradation_rate, dt);
+    p.glutamate = glutamate;
+    p.gaba = gaba;
+    var gln: f64 = p.glutamine - gln_used + glu_cleared + gaba_degraded;
+    p.glutamine = gln;
+    # Acetylcholine: choline + acetyl-CoA → ACh (ChAT) → AChE → choline.
+    var chat: f64 = ry_michaelis_menten(p.choline, c.chat_vmax, c.chat_km);
+    var chat_drive: f64 = chat * accoa * stim;
+    var v_chat, choline_used = _ry_neurotransmitter_consume(chat_drive, p.choline, dt);
+    var v_ache: f64 = c.ache_rate * p.acetylcholine;
+    var ach, ach_hydrolyzed = _ry_neurotransmitter_produce_decay_returning(p.acetylcholine, v_chat, choline_used,
+      c.ache_rate, dt);
+    p.acetylcholine = ach;
+    var cho: f64 = p.choline - choline_used + ach_hydrolyzed;
+    p.choline = cho;
+    # β-endorphin: POMC cleavage (stimulus-driven) → peptidases.
+    var v_pomc: f64 = c.pomc_cleavage_rate * stim;
+    var v_endo_deg: f64 = c.endorphin_degradation_rate * p.endorphin;
+    var endo: f64 = _ry_integrate_produce_decay(p.endorphin, v_pomc, c.endorphin_degradation_rate, dt);
+    p.endorphin = endo;
+    out.serotonin_synthesis = v_tph;
+    out.serotonin_degradation = v_5ht_deg;
+    out.dopamine_synthesis = v_th;
+    out.dopamine_degradation = v_da_deg;
+    out.ne_synthesis = v_dbh;
+    out.ne_degradation = v_ne_deg;
+    out.gaba_synthesis = v_gad;
+    out.gaba_degradation = v_gaba_deg;
+    out.glutamate_synthesis = v_glut;
+    out.glutamate_clearance = v_glu_clear;
+    out.ach_synthesis = v_chat;
+    out.ach_degradation = v_ache;
+    out.endorphin_synthesis = v_pomc;
+    out.endorphin_degradation = v_endo_deg;
+    return 0;
+}
+
+# ── the bridge functions (plain f64 outputs for mastishk and bhava) ──
+
+# The steady-state level of a pool fed at `synthesis` and cleared at first-order `clearance_rate`, the rate floored at
+# RY_NEUROTRANSMITTER_MIN_CLEARANCE_RATE (a NaN rate is the floor). Mirrors the private `steady_state_level`.
+#must_use
+#pure
+fn _ry_neurotransmitter_steady_state_level(synthesis: f64, clearance_rate: f64): f64 {
+    var rate: f64 = _ry_max(clearance_rate, RY_NEUROTRANSMITTER_MIN_CLEARANCE_RATE);
+    var r: f64 = synthesis / rate;
+    return r;
+}
+
+# Serotonin synthesis rate: TPH (Vmax 0.05 · enzyme activity, Km 2.0) on `tryptophan`, both sanitized by `conc`.
+# Mirrors `serotonin_synthesis_rate`.
+#must_use
+#pure
+fn ry_serotonin_synthesis_rate(tryptophan: f64, enzyme_activity: f64): f64 {
+    var trp: f64 = _ry_guard_conc(tryptophan);
+    var act: f64 = _ry_guard_conc(enzyme_activity);
+    var r: f64 = ry_michaelis_menten(trp, 0.05 * act, 2.0);
+    return r;
+}
+
+# Steady-state dopamine: TH synthesis (Vmax 0.08 · activity, Km 2.0) over the reuptake rate. Mirrors
+# `dopamine_level`.
+#must_use
+#pure
+fn ry_dopamine_level(tyrosine: f64, th_activity: f64, reuptake_rate: f64): f64 {
+    var tyr: f64 = _ry_guard_conc(tyrosine);
+    var act: f64 = _ry_guard_conc(th_activity);
+    var synthesis: f64 = ry_michaelis_menten(tyr, 0.08 * act, 2.0);
+    var r: f64 = _ry_neurotransmitter_steady_state_level(synthesis, reuptake_rate);
+    return r;
+}
+
+# GABA synthesis over the glutamate level (both sanitized by `conc`), 0 for glutamate at or below f64's epsilon.
+# Mirrors `gaba_glutamate_ratio`.
+#must_use
+#pure
+fn ry_gaba_glutamate_ratio(gaba_synthesis: f64, glutamate_level: f64): f64 {
+    var glu: f64 = _ry_guard_conc(glutamate_level);
+    var eps: f64 = 0x3CB0000000000000;           # f64::EPSILON
+    if (glu > eps) {
+        var gaba: f64 = _ry_guard_conc(gaba_synthesis);
+        var r: f64 = gaba / glu;
+        return r;
+    }
+    return 0.0;
+}
+
+# Steady-state norepinephrine: DBH synthesis (Vmax 0.04 · activity, Km 0.5) on `dopamine` over the degradation rate.
+# Mirrors `norepinephrine_level`.
+#must_use
+#pure
+fn ry_norepinephrine_level(dopamine: f64, dbh_activity: f64, degradation_rate: f64): f64 {
+    var da: f64 = _ry_guard_conc(dopamine);
+    var act: f64 = _ry_guard_conc(dbh_activity);
+    var synthesis: f64 = ry_michaelis_menten(da, 0.04 * act, 0.5);
+    var r: f64 = _ry_neurotransmitter_steady_state_level(synthesis, degradation_rate);
+    return r;
+}
+
+# Steady-state acetylcholine: 0.1 · choline saturation (Km 1.0) · acetyl-CoA availability (`unit`) over the AChE
+# rate. Mirrors `acetylcholine_level`.
+#must_use
+#pure
+fn ry_acetylcholine_level(choline: f64, acetyl_coa: f64, ache_rate: f64): f64 {
+    var cho: f64 = _ry_guard_conc(choline);
+    var choline_sat: f64 = ry_michaelis_menten(cho, 1.0, 1.0);
+    var accoa_sat: f64 = _ry_guard_unit(acetyl_coa);
+    var synthesis: f64 = 0.1 * choline_sat * accoa_sat;
+    var r: f64 = _ry_neurotransmitter_steady_state_level(synthesis, ache_rate);
+    return r;
+}
+
+# Steady-state β-endorphin: 0.01 · POMC activity (`conc`) over the degradation rate. Mirrors `endorphin_level`.
+#must_use
+#pure
+fn ry_endorphin_level(pomc_activity: f64, degradation_rate: f64): f64 {
+    var act: f64 = _ry_guard_conc(pomc_activity);
+    var synthesis: f64 = 0.01 * act;
+    var r: f64 = _ry_neurotransmitter_steady_state_level(synthesis, degradation_rate);
+    return r;
+}
+
+# ── JSON (P7: serde_json's documents) ──
+
+# Appends NeurotransmitterState `p` as serde_json writes it, its eleven levels in declaration order, on allocator
+# `a`: Ok(0), or Err(RY_ERR_OUT_OF_MEMORY) when the builder could not grow.
+#must_use
+fn ry_neurotransmitter_state_to_json_a(a, sb, p: *RyNeurotransmitterState): Result {
+    var e = _ry_jw_f64_fields(a, sb, p, 11, &_RY_NEUROTRANSMITTER_STATE_FIELDS);
+    if (e != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return Ok(0);
+}
+
+# ry_neurotransmitter_state_to_json_a on the default allocator (a builder from str_builder_new).
+#must_use
+fn ry_neurotransmitter_state_to_json(sb, p: *RyNeurotransmitterState): Result {
+    return ry_neurotransmitter_state_to_json_a(default_alloc(), sb, p);
+}
+
+# The NeurotransmitterState at node `v` of a parsed document, by serde's rules, into the 88 bytes at `w`: 1, or 0 for
+# a refusal.
+#must_use
+fn _ry_neurotransmitter_state_from_node(v, w): i64 {
+    return _ry_jr_f64_fields(v, w, 11, &_RY_NEUROTRANSMITTER_STATE_FIELDS);
+}
+
+# Reads a NeurotransmitterState from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`):
+# Ok(0) with *out filled, or Err(RY_ERR_DESERIALIZE) with *out untouched.
+#must_use
+fn ry_neurotransmitter_state_from_json_a(a, buf, n, out: *RyNeurotransmitterState): Result {
+    var w[88];
+    var v = _ry_jr_parse(a, buf, n);
+    if (_ry_neurotransmitter_state_from_node(v, &w) == 0) {
+        return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "NeurotransmitterState", 21));
+    }
+    memcpy(out, &w, 88);
+    return Ok(0);
+}
+
+# ry_neurotransmitter_state_from_json_a on the default allocator (the tree is never freed: for a one-off read).
+#must_use
+fn ry_neurotransmitter_state_from_json(buf, n, out: *RyNeurotransmitterState): Result {
+    return ry_neurotransmitter_state_from_json_a(default_alloc(), buf, n, out);
+}
+
+# Appends NeurotransmitterConfig `p` as serde_json writes it, its 21 parameters in declaration order, on allocator
+# `a`: Ok(0), or Err(RY_ERR_OUT_OF_MEMORY).
+#must_use
+fn ry_neurotransmitter_config_to_json_a(a, sb, p: *RyNeurotransmitterConfig): Result {
+    var e = _ry_jw_f64_fields(a, sb, p, 21, &_RY_NEUROTRANSMITTER_CONFIG_FIELDS);
+    if (e != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return Ok(0);
+}
+
+# ry_neurotransmitter_config_to_json_a on the default allocator.
+#must_use
+fn ry_neurotransmitter_config_to_json(sb, p: *RyNeurotransmitterConfig): Result {
+    return ry_neurotransmitter_config_to_json_a(default_alloc(), sb, p);
+}
+
+# The NeurotransmitterConfig at node `v` of a parsed document, by serde's rules, into the 168 bytes at `w`: 1, or 0
+# for a refusal.
+#must_use
+fn _ry_neurotransmitter_config_from_node(v, w): i64 {
+    return _ry_jr_f64_fields(v, w, 21, &_RY_NEUROTRANSMITTER_CONFIG_FIELDS);
+}
+
+# Reads a NeurotransmitterConfig from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`):
+# Ok(0) with *out filled, or Err(RY_ERR_DESERIALIZE) with *out untouched.
+#must_use
+fn ry_neurotransmitter_config_from_json_a(a, buf, n, out: *RyNeurotransmitterConfig): Result {
+    var w[168];
+    var v = _ry_jr_parse(a, buf, n);
+    if (_ry_neurotransmitter_config_from_node(v, &w) == 0) {
+        return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "NeurotransmitterConfig", 22));
+    }
+    memcpy(out, &w, 168);
+    return Ok(0);
+}
+
+# ry_neurotransmitter_config_from_json_a on the default allocator (the tree is never freed: for a one-off read).
+#must_use
+fn ry_neurotransmitter_config_from_json(buf, n, out: *RyNeurotransmitterConfig): Result {
+    return ry_neurotransmitter_config_from_json_a(default_alloc(), buf, n, out);
+}
+
+# Appends NeurotransmitterFlux `f` as serde_json writes it, its 14 rates in declaration order, on allocator `a`:
+# Ok(0), or Err(RY_ERR_OUT_OF_MEMORY).
+#must_use
+fn ry_neurotransmitter_flux_to_json_a(a, sb, f: *RyNeurotransmitterFlux): Result {
+    if (_ry_jw_f64_fields(a, sb, f, 14, &_RY_NEUROTRANSMITTER_FLUX_FIELDS) != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return Ok(0);
+}
+
+# ry_neurotransmitter_flux_to_json_a on the default allocator.
+#must_use
+fn ry_neurotransmitter_flux_to_json(sb, f: *RyNeurotransmitterFlux): Result {
+    return ry_neurotransmitter_flux_to_json_a(default_alloc(), sb, f);
+}
+
+# The NeurotransmitterFlux at node `v` of a parsed document, by serde's rules, into the 112 bytes at `w`: 1, or 0 for
+# a refusal.
+#must_use
+fn _ry_neurotransmitter_flux_from_node(v, w): i64 {
+    return _ry_jr_f64_fields(v, w, 14, &_RY_NEUROTRANSMITTER_FLUX_FIELDS);
+}
+
+# Reads a NeurotransmitterFlux from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`): Ok(0)
+# with *out filled, or Err(RY_ERR_DESERIALIZE) with *out untouched.
+#must_use
+fn ry_neurotransmitter_flux_from_json_a(a, buf, n, out: *RyNeurotransmitterFlux): Result {
+    var w[112];
+    var v = _ry_jr_parse(a, buf, n);
+    if (_ry_neurotransmitter_flux_from_node(v, &w) == 0) {
+        return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "NeurotransmitterFlux", 20));
+    }
+    memcpy(out, &w, 112);
+    return Ok(0);
+}
+
+# ry_neurotransmitter_flux_from_json_a on the default allocator (the tree is never freed: for a one-off read).
+#must_use
+fn ry_neurotransmitter_flux_from_json(buf, n, out: *RyNeurotransmitterFlux): Result {
+    return ry_neurotransmitter_flux_from_json_a(default_alloc(), buf, n, out);
+}

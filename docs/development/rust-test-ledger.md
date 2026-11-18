@@ -6,7 +6,7 @@
 > milestone hasn't come. The golden corpus (`tests/golden/`) checks every ported function on its grid besides.
 > The 2 doc tests and the example are M9's.
 
-**723 Rust tests:** 626 ported; 62 at M7, 35 at M8.
+**723 Rust tests:** 659 ported; 29 at M7, 35 at M8.
 
 | Rust file | Tests | Ported | Due, unported | Later (milestone) |
 |---|---:|---:|---:|---|
@@ -28,7 +28,7 @@
 | `src/mcp.rs` | 31 | 0 | 0 | 31 (M8) |
 | `src/membrane.rs` | 19 | 19 | 0 | — |
 | `src/metabolism.rs` | 26 | 26 | 0 | — |
-| `src/neurotransmitter.rs` | 31 | 0 | 0 | 31 (M7) |
+| `src/neurotransmitter.rs` | 31 | 31 | 0 | — |
 | `src/nuclear_receptor.rs` | 11 | 11 | 0 | — |
 | `src/pathway.rs` | 34 | 34 | 0 | — |
 | `src/pi3k.rs` | 11 | 11 | 0 | — |
@@ -38,9 +38,9 @@
 | `src/signal.rs` | 21 | 21 | 0 | — |
 | `src/signaling.rs` | 13 | 13 | 0 | — |
 | `src/tca.rs` | 26 | 26 | 0 | — |
-| `tests/integration.rs` | 70 | 64 | 0 | 6 (M7) |
+| `tests/integration.rs` | 70 | 66 | 0 | 4 (M7) |
 | `tests/validation.rs` | 25 | 25 | 0 | — |
-| **Total** | **723** | **626** | **0** | |
+| **Total** | **723** | **659** | **0** | |
 
 ## Where each is ported
 
@@ -371,6 +371,37 @@
 | `src/metabolism.rs` `test_validate_negative_atp` | `tests/metabolism.tcyr` `validation` |
 | `src/metabolism.rs` `test_validate_rejects_non_finite` | `tests/metabolism.tcyr` `validation` |
 | `src/metabolism.rs` `test_validate_valid` | `tests/metabolism.tcyr` `validation` |
+| `src/neurotransmitter.rs` `test_ache_fast_degradation` | `tests/neurotransmitter.tcyr` `synthesis` |
+| `src/neurotransmitter.rs` `test_bridge_ach_depends_on_choline` | `tests/neurotransmitter.tcyr` `bridges` |
+| `src/neurotransmitter.rs` `test_bridge_endorphin_depends_on_pomc` | `tests/neurotransmitter.tcyr` `bridges` |
+| `src/neurotransmitter.rs` `test_bridge_functions` | `tests/neurotransmitter.tcyr` `bridges` |
+| `src/neurotransmitter.rs` `test_bridge_monotone_in_main_input` | `tests/neurotransmitter.tcyr` `monotone` |
+| `src/neurotransmitter.rs` `test_bridge_ne_depends_on_dopamine` | `tests/neurotransmitter.tcyr` `bridges` |
+| `src/neurotransmitter.rs` `test_bridge_negative_inputs_no_pole` | `tests/neurotransmitter.tcyr` `bridges` |
+| `src/neurotransmitter.rs` `test_bridge_steady_state_continuous_in_rate` | `tests/neurotransmitter.tcyr` `monotone` |
+| `src/neurotransmitter.rs` `test_bridge_values_unchanged_for_valid_inputs` | `tests/neurotransmitter.tcyr` `bridges` |
+| `src/neurotransmitter.rs` `test_concentrations_non_negative` | `tests/neurotransmitter.tcyr` `synthesis` |
+| `src/neurotransmitter.rs` `test_config_validate_rejects_nan_and_zero_km` | `tests/neurotransmitter.tcyr` `validation` |
+| `src/neurotransmitter.rs` `test_default_config_valid` | `tests/neurotransmitter.tcyr` `validation` |
+| `src/neurotransmitter.rs` `test_default_state_valid` | `tests/neurotransmitter.tcyr` `validation` |
+| `src/neurotransmitter.rs` `test_gaba_glutamate_ratio` | `tests/neurotransmitter.tcyr` `synthesis` |
+| `src/neurotransmitter.rs` `test_gaba_glutamate_ratio_zero_glutamate` | `tests/neurotransmitter.tcyr` `bridges` |
+| `src/neurotransmitter.rs` `test_glutamine_cycle_and_choline_conserved` | `tests/neurotransmitter.tcyr` `long_runs` |
+| `src/neurotransmitter.rs` `test_high_stimulus_increases_synthesis` | `tests/neurotransmitter.tcyr` `synthesis` |
+| `src/neurotransmitter.rs` `test_large_dt_stable` | `tests/neurotransmitter.tcyr` `hardening` |
+| `src/neurotransmitter.rs` `test_ne_from_dopamine` | `tests/neurotransmitter.tcyr` `synthesis` |
+| `src/neurotransmitter.rs` `test_no_precursor_no_synthesis` | `tests/neurotransmitter.tcyr` `synthesis` |
+| `src/neurotransmitter.rs` `test_one_hour_run_resting_stimulus` | `tests/neurotransmitter.tcyr` `long_runs` |
+| `src/neurotransmitter.rs` `test_one_hour_run_zero_stimulus` | `tests/neurotransmitter.tcyr` `long_runs` |
+| `src/neurotransmitter.rs` `test_precursors_near_plasma_level_at_rest` | `tests/neurotransmitter.tcyr` `long_runs` |
+| `src/neurotransmitter.rs` `test_resting_levels_stable` | `tests/neurotransmitter.tcyr` `synthesis` |
+| `src/neurotransmitter.rs` `test_serde_roundtrip_config` | `tests/neurotransmitter.tcyr` `serde` |
+| `src/neurotransmitter.rs` `test_serde_roundtrip_state` | `tests/neurotransmitter.tcyr` `serde` |
+| `src/neurotransmitter.rs` `test_state_validate_rejects_nan_and_negative` | `tests/neurotransmitter.tcyr` `validation` |
+| `src/neurotransmitter.rs` `test_synthesis_capped_at_available_precursor` | `tests/neurotransmitter.tcyr` `hardening` |
+| `src/neurotransmitter.rs` `test_tick_invalid_dt_is_noop` | `tests/neurotransmitter.tcyr` `hardening` |
+| `src/neurotransmitter.rs` `test_tick_nan_acetyl_coa_gives_no_ach_synthesis` | `tests/neurotransmitter.tcyr` `hardening` |
+| `src/neurotransmitter.rs` `test_tick_non_finite_stimulus_treated_as_zero` | `tests/neurotransmitter.tcyr` `hardening` |
 | `src/nuclear_receptor.rs` `test_bounded` | `tests/nuclear_receptor.tcyr` `response` |
 | `src/nuclear_receptor.rs` `test_default_valid` | `tests/nuclear_receptor.tcyr` `validation` |
 | `src/nuclear_receptor.rs` `test_delayed_response` | `tests/nuclear_receptor.tcyr` `response` |
@@ -635,6 +666,8 @@
 | `tests/integration.rs` `test_network_long_run_stability` | `tests/pathway.tcyr` `ticking` |
 | `tests/integration.rs` `test_network_zero_glucose_graceful` | `tests/pathway.tcyr` `oxygen` |
 | `tests/integration.rs` `test_network_zero_oxygen_graceful` | `tests/pathway.tcyr` `oxygen` |
+| `tests/integration.rs` `test_neurotransmitter_flux_serde_roundtrip` | `tests/neurotransmitter.tcyr` `serde` |
+| `tests/integration.rs` `test_neurotransmitter_long_run_stability` | `tests/neurotransmitter.tcyr` `long_runs` |
 | `tests/integration.rs` `test_nuclear_receptor_config_serde_roundtrip` | `tests/nuclear_receptor.tcyr` `serde` |
 | `tests/integration.rs` `test_nuclear_receptor_flux_serde_roundtrip` | `tests/nuclear_receptor.tcyr` `serde` |
 | `tests/integration.rs` `test_pi3k_config_serde_roundtrip` | `tests/pi3k.tcyr` `serde` |

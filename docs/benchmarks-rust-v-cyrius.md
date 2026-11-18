@@ -389,3 +389,14 @@ glycolysis_tick 731 ns, receptor_tick 79 ns).
 Cyrius only: the network ticked on (no reset) 679 ns; every crosstalk gain at 0.5, 696 ns. Measured at load 0.4,
 with the reference rows at their quiet values (michaelis_menten 11 ns, glycolysis_tick 690 ns, mapk_tick 214 ns). A
 tick is the four pathway ticks (MAPK 214, PI3K 149, JAK-STAT 162, calcium 153 ns alone) and the crosstalk terms.
+
+## M7 part 1: neurotransmitter
+
+| Benchmark | Rust 1.2.0 (ns) | Cyrius (ns) | Notes |
+|---|---|---|---|
+| neurotransmitter_tick | 47.99 | 346 | Rust's loop body: a default state, one tick of 0.01 s at acetyl-CoA 0.5, stimulus 0.5 |
+
+Cyrius only: the state ticked on (no reset) 340 ns; a 100-s tick (every integrator on its correctly rounded `exp_m1`)
+824 ns. Measured at load 0.4, with the reference rows at their quiet values (michaelis_menten 11 ns, glycolysis_tick
+688 ns, mapk_tick 216 ns). A tick is six capped Michaelis-Menten syntheses, seven `produce_decay` and two `relax`
+integrations, and the two trace-level checks.

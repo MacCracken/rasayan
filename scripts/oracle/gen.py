@@ -1368,7 +1368,8 @@ def neurotransmitter():
     return m, {f"src/{mod}_data.cyr": data}
 
 
-MODULES = {"receptor": receptor, "nuclear_receptor": nuclear_receptor, "signaling": signaling}
+MODULES = {"receptor": receptor, "nuclear_receptor": nuclear_receptor, "signaling": signaling,
+           "neurotransmitter": neurotransmitter}
 
 
 def outputs(root):

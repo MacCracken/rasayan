@@ -1,0 +1,639 @@
+# rasayan — src/neurotransmitter.cyr: Rust 1.2.0's neurotransmitter tests, ported
+# Stdlib auto-included via cyrius.cyml
+#
+# The 31 unit tests of `neurotransmitter.rs` and the 2 integration tests (tests/integration.rs) that call only the
+# transmitters, as they are written (the stress-response chain ports with hormonal, M7 part 2);
+# tests/golden/neurotransmitter.tsv checks every method, bridge, single tick and trajectory besides. Beyond them: both
+# trace events and every codec's round trip.
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+include "src/integrate.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
+include "src/enzyme_data.cyr"
+include "src/enzyme.cyr"
+include "src/neurotransmitter_data.cyr"
+include "src/neurotransmitter.cyr"
+
+# 1 when the state validates.
+fn ns_ok(p: *RyNeurotransmitterState) {
+    var t, v = ry_neurotransmitter_state_validate(p);
+    return is_ok(t);
+}
+
+# 1 when the config validates.
+fn nc_ok(c: *RyNeurotransmitterConfig) {
+    var t, v = ry_neurotransmitter_config_validate(c);
+    return is_ok(t);
+}
+
+# Rust's test helper `run_nt`: `steps` ticks of `dt` at acetyl-CoA 0.05 and `stimulus`, from the default state.
+fn run_nt(s: *RyNeurotransmitterState, steps, dt: f64, stimulus: f64) {
+    var c: RyNeurotransmitterConfig;
+    var f: RyNeurotransmitterFlux;
+    ry_neurotransmitter_config_default(&c);
+    ry_neurotransmitter_state_default(s);
+    var k = 0;
+    while (k < steps) {
+        ry_neurotransmitter_state_tick(s, &c, 0.05, stimulus, dt, &f);
+        k = k + 1;
+    }
+    return 0;
+}
+
+# 1 when every level is finite, >= 0 (> 0 when `strict`) and <= 10 (Rust's `levels` checks).
+fn levels_ok(s: *RyNeurotransmitterState, strict) {
+    var w = s;
+    var k = 0;
+    while (k < 11) {
+        var v: f64 = load64(w + 8 * k);
+        if (_ry_is_finite(v) == 0 || v < 0.0 || v > 10.0) { return 0; }
+        if (strict == 1 && v <= 0.0) { return 0; }
+        k = k + 1;
+    }
+    return 1;
+}
+
+# |a − b| <= 1e-12 · max(|b|, 1) (Rust's `close`).
+fn close(a: f64, b: f64) {
+    var d: f64 = a - b;
+    var m: f64 = _ry_max(f64_abs(b), 1.0);
+    if (f64_abs(d) <= 0.000000000001 * m) { return 1; }
+    return 0;
+}
+
+# ── the captured events ──
+var _ev_buf[1024];
+var _ev_len = 0;
+
+# sakshi's subscriber: keeps the last event's message.
+fn _ev_hook(ts, level, category, msg, msg_len, extra) {
+    var n = msg_len;
+    if (n > 1024) { n = 1024; }
+    memcpy(&_ev_buf, msg, n);
+    _ev_len = msg_len;
+    return 0;
+}
+
+# 1 if the last captured event is the C string `want`.
+fn _ev_is(want) {
+    var n = strlen(want);
+    if (_ev_len != n) { return 0; }
+    return memeq(&_ev_buf, want, n);
+}
+
+# rust src/neurotransmitter.rs: test_default_state_valid, test_default_config_valid
+# rust src/neurotransmitter.rs: test_state_validate_rejects_nan_and_negative
+# rust src/neurotransmitter.rs: test_config_validate_rejects_nan_and_zero_km
+fn validation() {
+    test_group("neurotransmitter: defaults and validation");
+    var s: RyNeurotransmitterState;
+    var c: RyNeurotransmitterConfig;
+    ry_neurotransmitter_state_default(&s);
+    ry_neurotransmitter_config_default(&c);
+    assert(ns_ok(&s) == 1 && nc_ok(&c) == 1, "the defaults validate");
+    var nan: f64 = _ry_nan();
+    var inf: f64 = _RY_INF;
+    var refused = 0;
+    var k = 0;
+    while (k < 3) {
+        var bad: f64 = nan;
+        if (k == 1) { bad = inf; }
+        if (k == 2) { bad = 0.0 - 1.0; }
+        ry_neurotransmitter_state_default(&s);
+        s.serotonin = bad;
+        if (ns_ok(&s) == 0) { refused = refused + 1; }
+        ry_neurotransmitter_state_default(&s);
+        s.choline = bad;
+        if (ns_ok(&s) == 0) { refused = refused + 1; }
+        k = k + 1;
+    }
+    assert_eq(refused, 6, "a NaN, infinite or negative serotonin or choline is refused");
+    c.tph_vmax = nan;
+    var t1, v1 = ry_neurotransmitter_config_validate(&c);
+    assert_eq(v1, RY_ERR_NON_FINITE, "a NaN TPH Vmax is non-finite");
+    ry_neurotransmitter_config_default(&c);
+    c.ache_rate = inf;
+    assert_eq(nc_ok(&c), 0, "an infinite AChE rate is refused");
+    var kms = 0;
+    k = 0;
+    while (k < 6) {
+        ry_neurotransmitter_config_default(&c);
+        if (k == 0) { c.tph_km = 0.0; }
+        if (k == 1) { c.th_km = 0.0; }
+        if (k == 2) { c.dbh_km = 0.0; }
+        if (k == 3) { c.gad_km = 0.0; }
+        if (k == 4) { c.glutaminase_km = 0.0; }
+        if (k == 5) { c.chat_km = 0.0; }
+        if (nc_ok(&c) == 0) { kms = kms + 1; }
+        k = k + 1;
+    }
+    assert_eq(kms, 6, "every zero Km is refused");
+    ry_neurotransmitter_config_default(&c);
+    c.tph_vmax = 0.0;
+    c.ache_rate = 0.0;
+    assert_eq(nc_ok(&c), 1, "zero rates and Vmax are allowed (a pathway switched off)");
+    return 0;
+}
+
+# rust src/neurotransmitter.rs: test_resting_levels_stable, test_high_stimulus_increases_synthesis
+# rust src/neurotransmitter.rs: test_no_precursor_no_synthesis, test_concentrations_non_negative, test_ne_from_dopamine
+# rust src/neurotransmitter.rs: test_gaba_glutamate_ratio, test_ache_fast_degradation
+fn synthesis() {
+    test_group("neurotransmitter: synthesis and degradation");
+    var d: RyNeurotransmitterState;
+    var s: RyNeurotransmitterState;
+    var c: RyNeurotransmitterConfig;
+    var f: RyNeurotransmitterFlux;
+    var g: RyNeurotransmitterFlux;
+    ry_neurotransmitter_state_default(&d);
+    ry_neurotransmitter_config_default(&c);
+    run_nt(&s, 100, 0.1, 1.0);
+    var stable = 1;
+    var k = 0;
+    while (k < 4) {
+        var off = 0;
+        if (k == 1) { off = 8; }
+        if (k == 3) { off = 24; }
+        if (k == 2) { k = k + 1; continue; }
+        var init: f64 = load64(&d + off);
+        var fin: f64 = load64(&s + off);
+        var change: f64 = f64_abs(fin - init) / init;
+        if (change >= 1.0) { stable = 0; }
+        k = k + 1;
+    }
+    assert_eq(stable, 1, "5-HT, DA and GABA stay roughly stable at rest");
+    var a: RyNeurotransmitterState;
+    var b: RyNeurotransmitterState;
+    ry_neurotransmitter_state_default(&a);
+    ry_neurotransmitter_state_default(&b);
+    ry_neurotransmitter_state_tick(&a, &c, 0.05, 1.0, 0.1, &f);
+    ry_neurotransmitter_state_tick(&b, &c, 0.05, 3.0, 0.1, &g);
+    var up = 0;
+    if (g.serotonin_synthesis > f.serotonin_synthesis) { up = up + 1; }
+    if (g.dopamine_synthesis > f.dopamine_synthesis) { up = up + 1; }
+    if (g.gaba_synthesis > f.gaba_synthesis) { up = up + 1; }
+    assert_eq(up, 3, "a high stimulus raises 5-HT, DA and GABA synthesis");
+    ry_neurotransmitter_state_default(&s);
+    s.tryptophan = 0.0;
+    s.tyrosine = 0.0;
+    s.glutamine = 0.0;
+    s.choline = 0.0;
+    ry_neurotransmitter_state_tick(&s, &c, 0.05, 1.0, 0.1, &f);
+    var lim: f64 = 0.0000000001;
+    var none = 0;
+    if (f.serotonin_synthesis < lim) { none = none + 1; }
+    if (f.dopamine_synthesis < lim) { none = none + 1; }
+    if (f.glutamate_synthesis < lim) { none = none + 1; }
+    if (f.ach_synthesis < lim) { none = none + 1; }
+    assert_eq(none, 4, "no precursor, no synthesis");
+    run_nt(&s, 1000, 0.01, 1.0);
+    assert_eq(ns_ok(&s), 1, "1000 steps of 0.01 s stay valid");
+    ry_neurotransmitter_state_default(&s);
+    ry_neurotransmitter_state_tick(&s, &c, 0.05, 1.0, 0.1, &f);
+    var ne: f64 = f.ne_synthesis;
+    assert(ne > 0.0, "NE is made from dopamine");
+    ry_neurotransmitter_state_default(&s);
+    var ratio: f64 = ry_neurotransmitter_state_gaba_glutamate_ratio(&s);
+    var gap: f64 = ratio - 1.0;
+    assert(f64_abs(gap) < 0.1, "the resting GABA/glutamate ratio is ~1");
+    s.acetylcholine = 5.0;
+    s.choline = 0.0;
+    k = 0;
+    while (k < 100) {
+        ry_neurotransmitter_state_tick(&s, &c, 0.0, 0.0, 0.1, &f);
+        k = k + 1;
+    }
+    var ach: f64 = s.acetylcholine;
+    assert(ach < 1.0, "AChE degrades ACh quickly");
+    return 0;
+}
+
+# rust src/neurotransmitter.rs: test_tick_invalid_dt_is_noop, test_tick_non_finite_stimulus_treated_as_zero
+# rust src/neurotransmitter.rs: test_tick_nan_acetyl_coa_gives_no_ach_synthesis
+# rust src/neurotransmitter.rs: test_synthesis_capped_at_available_precursor
+# rust src/neurotransmitter.rs: test_large_dt_stable
+fn hardening() {
+    test_group("neurotransmitter: hardening");
+    var d: RyNeurotransmitterState;
+    var s: RyNeurotransmitterState;
+    var c: RyNeurotransmitterConfig;
+    var f: RyNeurotransmitterFlux;
+    var zero: RyNeurotransmitterFlux;
+    ry_neurotransmitter_state_default(&d);
+    ry_neurotransmitter_config_default(&c);
+    ry_neurotransmitter_flux_default(&zero);
+    var nan: f64 = _ry_nan();
+    var inf: f64 = _RY_INF;
+    var ninf: f64 = -inf;
+    var k = 0;
+    while (k < 5) {
+        var dt: f64 = 0.0;
+        if (k == 1) { dt = -0.1; }
+        if (k == 2) { dt = nan; }
+        if (k == 3) { dt = inf; }
+        if (k == 4) { dt = ninf; }
+        ry_neurotransmitter_state_default(&s);
+        memset(&f, 255, 112);
+        ry_neurotransmitter_state_tick(&s, &c, 0.5, 1.0, dt, &f);
+        assert(memeq(&s, &d, 88) == 1 && memeq(&f, &zero, 112) == 1, "an invalid dt changes nothing, a zero flux");
+        k = k + 1;
+    }
+    var nothing = 1;
+    k = 0;
+    while (k < 4) {
+        var stim: f64 = nan;
+        if (k == 1) { stim = inf; }
+        if (k == 2) { stim = ninf; }
+        if (k == 3) { stim = 0.0 - 2.0; }
+        ry_neurotransmitter_state_default(&s);
+        ry_neurotransmitter_state_tick(&s, &c, 0.5, stim, 0.1, &f);
+        if (f.serotonin_synthesis != 0.0 || f.dopamine_synthesis != 0.0) { nothing = 0; }
+        if (f.ach_synthesis != 0.0 || f.endorphin_synthesis != 0.0 || ns_ok(&s) == 0) { nothing = 0; }
+        k = k + 1;
+    }
+    assert_eq(nothing, 1, "a non-finite or negative stimulus is no stimulus");
+    ry_neurotransmitter_state_default(&s);
+    ry_neurotransmitter_state_tick(&s, &c, nan, 1.0, 0.1, &f);
+    var ach_nan: f64 = f.ach_synthesis;
+    var valid_nan = ns_ok(&s);
+    ry_neurotransmitter_state_default(&s);
+    ry_neurotransmitter_state_tick(&s, &c, 0.0 - 1.0, 1.0, 0.1, &f);
+    var ach_neg: f64 = f.ach_synthesis;
+    var fa: RyNeurotransmitterFlux;
+    var fb: RyNeurotransmitterFlux;
+    var a: RyNeurotransmitterState;
+    var b: RyNeurotransmitterState;
+    ry_neurotransmitter_state_default(&a);
+    ry_neurotransmitter_state_default(&b);
+    ry_neurotransmitter_state_tick(&a, &c, 1.0, 1.0, 0.1, &fa);
+    ry_neurotransmitter_state_tick(&b, &c, 50.0, 1.0, 0.1, &fb);
+    var sa: f64 = fa.ach_synthesis;
+    var sb2: f64 = fb.ach_synthesis;
+    assert(ach_nan == 0.0 && valid_nan == 1 && ach_neg == 0.0 && sa == sb2,
+      "a NaN or negative acetyl-CoA gives no ACh synthesis; it saturates at 1");
+    ry_neurotransmitter_state_default(&s);
+    ry_neurotransmitter_state_tick(&s, &c, 1.0, 1000.0, 1.0, &f);
+    var capped = 1;
+    var tiny: f64 = 0.000000000001;
+    if (f.serotonin_synthesis > d.tryptophan + tiny) { capped = 0; }
+    if (f.dopamine_synthesis > d.tyrosine + tiny) { capped = 0; }
+    if (f.ne_synthesis > d.dopamine + tiny) { capped = 0; }
+    if (f.gaba_synthesis > d.glutamate + tiny) { capped = 0; }
+    if (f.glutamate_synthesis > d.glutamine + tiny) { capped = 0; }
+    if (f.ach_synthesis > d.choline + tiny) { capped = 0; }
+    var sero: f64 = s.serotonin;
+    if (sero > d.serotonin + d.tryptophan) { capped = 0; }
+    assert(capped == 1 && ns_ok(&s) == 1, "synthesis is capped at the precursor available");
+    var stable = 1;
+    var r = 0;
+    while (r < 3) {
+        var big: f64 = 10.0;
+        if (r == 1) { big = 1000.0; }
+        if (r == 2) { big = 1000000.0; }
+        ry_neurotransmitter_state_default(&s);
+        k = 0;
+        while (k < 5) {
+            ry_neurotransmitter_state_tick(&s, &c, 0.5, 2.0, big, &f);
+            k = k + 1;
+        }
+        if (levels_ok(&s, 0) == 0) { stable = 0; }
+        r = r + 1;
+    }
+    assert_eq(stable, 1, "steps of 10, 1000 and 10⁶ s stay finite, >= 0 and bounded");
+    return 0;
+}
+
+# rust src/neurotransmitter.rs: test_glutamine_cycle_and_choline_conserved, test_precursors_near_plasma_level_at_rest
+# rust src/neurotransmitter.rs: test_one_hour_run_resting_stimulus, test_one_hour_run_zero_stimulus
+# rust tests/integration.rs: test_neurotransmitter_long_run_stability
+fn long_runs() {
+    test_group("neurotransmitter: conservation and long runs");
+    var s: RyNeurotransmitterState;
+    var c: RyNeurotransmitterConfig;
+    var f: RyNeurotransmitterFlux;
+    ry_neurotransmitter_config_default(&c);
+    ry_neurotransmitter_state_default(&s);
+    var amino0: f64 = s.glutamine + s.glutamate + s.gaba;
+    var chol0: f64 = s.choline + s.acetylcholine;
+    var k = 0;
+    while (k < 2000) {
+        var stim: f64 = 0.5;
+        if (k % 2 == 0) { stim = 2.5; }
+        ry_neurotransmitter_state_tick(&s, &c, 0.8, stim, 0.5, &f);
+        k = k + 1;
+    }
+    var amino1: f64 = s.glutamine + s.glutamate + s.gaba;
+    var chol1: f64 = s.choline + s.acetylcholine;
+    var da: f64 = amino1 - amino0;
+    var dc: f64 = chol1 - chol0;
+    assert(f64_abs(da) < 0.000000001 && f64_abs(dc) < 0.000000001,
+      "glutamine + glutamate + GABA and choline + ACh are conserved");
+    run_nt(&s, 36000, 0.1, 1.0);
+    var trp_pl: f64 = RY_NEUROTRANSMITTER_PLASMA_TRYPTOPHAN;
+    var tyr_pl: f64 = RY_NEUROTRANSMITTER_PLASMA_TYROSINE;
+    var trp_dev: f64 = f64_abs(s.tryptophan - trp_pl) / trp_pl;
+    var tyr_dev: f64 = f64_abs(s.tyrosine - tyr_pl) / tyr_pl;
+    run_nt(&s, 1000, 0.1, 0.0);
+    var trp0: f64 = f64_abs(s.tryptophan - RY_NEUROTRANSMITTER_PLASMA_TRYPTOPHAN);
+    var tyr0: f64 = f64_abs(s.tyrosine - RY_NEUROTRANSMITTER_PLASMA_TYROSINE);
+    ry_neurotransmitter_state_default(&s);
+    s.tryptophan = 0.0;
+    s.tyrosine = 0.0;
+    k = 0;
+    while (k < 600) {
+        ry_neurotransmitter_state_tick(&s, &c, 0.05, 1.0, 0.1, &f);
+        k = k + 1;
+    }
+    var trp: f64 = s.tryptophan;
+    var tyr: f64 = s.tyrosine;
+    assert(trp_dev < 0.1 && tyr_dev < 0.1 && trp0 < 0.000000001 && tyr0 < 0.000000001 && trp > 4.0 && tyr > 4.0,
+      "the precursors stay near plasma at rest, unused without stimulus, and refill");
+    var ok = 1;
+    var r = 0;
+    while (r < 2) {
+        var accoa: f64 = 0.05;
+        if (r == 1) { accoa = 1.0; }
+        ry_neurotransmitter_state_default(&s);
+        k = 0;
+        while (k < 36000) {
+            ry_neurotransmitter_state_tick(&s, &c, accoa, 1.0, 0.1, &f);
+            k = k + 1;
+        }
+        var gln: f64 = s.glutamine;
+        trp = s.tryptophan;
+        tyr = s.tyrosine;
+        if (levels_ok(&s, 1) == 0 || gln <= 1.0 || trp <= 4.0 || tyr <= 4.0) { ok = 0; }
+        r = r + 1;
+    }
+    assert_eq(ok, 1, "an hour at rest (acetyl-CoA 0.05 and 1): every level > 0 and <= 10, the precursors kept");
+    ry_neurotransmitter_state_default(&s);
+    k = 0;
+    while (k < 36000) {
+        ry_neurotransmitter_state_tick(&s, &c, 0.5, 0.0, 0.1, &f);
+        k = k + 1;
+    }
+    var pools = 0;
+    if (s.tryptophan > 1.0) { pools = pools + 1; }
+    if (s.tyrosine > 1.0) { pools = pools + 1; }
+    if (s.glutamine > 1.0) { pools = pools + 1; }
+    if (s.choline > 1.0) { pools = pools + 1; }
+    assert(levels_ok(&s, 0) == 1 && pools == 4,
+      "an hour without stimulus: >= 0, bounded, the precursor pools retained");
+    run_nt(&s, 1000, 0.1, 1.0);
+    var pos = 0;
+    if (s.serotonin > 0.0) { pos = pos + 1; }
+    if (s.dopamine > 0.0) { pos = pos + 1; }
+    if (s.gaba > 0.0) { pos = pos + 1; }
+    if (s.glutamate > 0.0) { pos = pos + 1; }
+    assert(ns_ok(&s) == 1 && pos == 4, "100 s of rest: valid, the transmitters positive");
+    return 0;
+}
+
+# rust src/neurotransmitter.rs: test_bridge_functions, test_bridge_values_unchanged_for_valid_inputs
+# rust src/neurotransmitter.rs: test_bridge_ne_depends_on_dopamine, test_bridge_ach_depends_on_choline
+# rust src/neurotransmitter.rs: test_bridge_endorphin_depends_on_pomc, test_bridge_negative_inputs_no_pole
+# rust src/neurotransmitter.rs: test_gaba_glutamate_ratio_zero_glutamate
+fn bridges() {
+    test_group("neurotransmitter: the bridges");
+    var r1: f64 = ry_serotonin_synthesis_rate(5.0, 1.0);
+    var r2: f64 = ry_dopamine_level(5.0, 1.0, 0.05);
+    var r3: f64 = ry_gaba_glutamate_ratio(0.1, 1.0);
+    var r4: f64 = ry_norepinephrine_level(1.0, 1.0, 0.03);
+    var r5: f64 = ry_acetylcholine_level(3.0, 0.05, 0.2);
+    var r6: f64 = ry_endorphin_level(1.0, 0.05);
+    var g3: f64 = r3 - 0.1;
+    assert(r1 > 0.0 && r2 > 0.0 && f64_abs(g3) < 0.01 && r4 > 0.0 && r5 > 0.0 && r6 > 0.0,
+      "every bridge gives a level");
+    var v1: f64 = ry_serotonin_synthesis_rate(0.8, 1.0);
+    var v2: f64 = ry_dopamine_level(0.8, 1.0, 0.05);
+    var v3: f64 = ry_norepinephrine_level(0.4, 1.0, 0.03);
+    var v4: f64 = ry_acetylcholine_level(0.7, 0.8, 0.2);
+    var v5: f64 = ry_endorphin_level(0.3, 0.03);
+    var w1: f64 = 0.05 * 0.8 / 2.8;
+    var w2: f64 = 0.08 * 0.8 / 2.8 / 0.05;
+    var w3: f64 = 0.04 * 0.4 / 0.9 / 0.03;
+    var w4: f64 = 0.1 * (0.7 / 1.7) * 0.8 / 0.2;
+    var w5: f64 = 0.003 / 0.03;
+    assert(close(v1, w1) == 1 && close(v2, w2) == 1 && close(v3, w3) == 1 && close(v4, w4) == 1 && close(v5, w5) == 1,
+      "mastishk's call sites give their closed forms");
+    var ne_lo: f64 = ry_norepinephrine_level(0.1, 1.0, 0.03);
+    var ne_hi: f64 = ry_norepinephrine_level(5.0, 1.0, 0.03);
+    var ach_lo: f64 = ry_acetylcholine_level(0.1, 0.05, 0.2);
+    var ach_hi: f64 = ry_acetylcholine_level(5.0, 0.05, 0.2);
+    var en_lo: f64 = ry_endorphin_level(0.5, 0.05);
+    var en_hi: f64 = ry_endorphin_level(3.0, 0.05);
+    assert(ne_hi > ne_lo && ach_hi > ach_lo && en_hi > en_lo, "NE, ACh and endorphin rise with their inputs");
+    var n1: f64 = ry_dopamine_level(0.0 - 1.9, 1.0, 0.05);
+    var n2: f64 = ry_norepinephrine_level(0.0 - 0.45, 1.0, 0.03);
+    var n3: f64 = ry_acetylcholine_level(0.0 - 0.9, 1.0, 0.2);
+    var n4: f64 = ry_serotonin_synthesis_rate(0.0 - 1.9, 1.0);
+    var n5: f64 = ry_dopamine_level(5.0, 0.0 - 1.0, 0.05);
+    var n6: f64 = ry_endorphin_level(0.0 - 1.0, 0.05);
+    assert(n1 == 0.0 && n2 == 0.0 && n3 == 0.0 && n4 == 0.0 && n5 == 0.0 && n6 == 0.0, "negative inputs: no pole, 0");
+    var nan: f64 = _ry_nan();
+    var inf: f64 = _RY_INF;
+    var zero_glu = 1;
+    var k = 0;
+    while (k < 4) {
+        var glu: f64 = 0.0;
+        if (k == 1) { glu = 0.0 - 1.0; }
+        if (k == 2) { glu = nan; }
+        if (k == 3) { glu = inf; }
+        var r: f64 = ry_gaba_glutamate_ratio(0.1, glu);
+        if (r != 0.0) { zero_glu = 0; }
+        k = k + 1;
+    }
+    var s: RyNeurotransmitterState;
+    ry_neurotransmitter_state_default(&s);
+    s.glutamate = 0.0;
+    var sr: f64 = ry_neurotransmitter_state_gaba_glutamate_ratio(&s);
+    assert(zero_glu == 1 && sr == 0.0, "no glutamate (0, negative, NaN, inf): a ratio of 0");
+    return 0;
+}
+
+# The bridges' monotonicity over Rust's INPUTS (ascending, with the old Michaelis-Menten poles) and RATES.
+var _inputs[80];
+var _rates[72];
+
+# Fills Rust's INPUTS and RATES tables.
+fn _tables() {
+    var inf: f64 = _RY_INF;
+    var ninf: f64 = -inf;
+    store64(&_inputs, ninf);
+    store64(&_inputs + 8, 0.0 - 5.0);
+    store64(&_inputs + 16, 0.0 - 1.9);
+    store64(&_inputs + 24, 0.0 - 0.45);
+    store64(&_inputs + 32, 0.0 - 0.000000001);
+    store64(&_inputs + 40, 0.0);
+    store64(&_inputs + 48, 0.1);
+    store64(&_inputs + 56, 1.0);
+    store64(&_inputs + 64, 5.0);
+    store64(&_inputs + 72, 1000000.0);
+    store64(&_rates, 0.0 - 1.0);
+    store64(&_rates + 8, 0.0);
+    var tiny: f64 = 0x01A56E1FC2F8F359;          # 1e-300
+    store64(&_rates + 16, tiny);
+    store64(&_rates + 24, 0.000000000001);
+    store64(&_rates + 32, 0.005);
+    store64(&_rates + 40, 0.01);
+    store64(&_rates + 48, 0.05);
+    store64(&_rates + 56, 1.0);
+    store64(&_rates + 64, 100.0);
+    return 0;
+}
+
+# A bridge `which` at main input x (the others fixed as Rust's test fixes them).
+fn _bridge_at(which, x: f64): f64 {
+    var y: f64 = 0.0;
+    if (which == 0) { y = ry_serotonin_synthesis_rate(x, 1.0); }
+    if (which == 1) { y = ry_serotonin_synthesis_rate(5.0, x); }
+    if (which == 2) { y = ry_dopamine_level(x, 1.0, 0.05); }
+    if (which == 3) { y = ry_dopamine_level(5.0, x, 0.05); }
+    if (which == 4) { y = ry_norepinephrine_level(x, 1.0, 0.03); }
+    if (which == 5) { y = ry_acetylcholine_level(x, 0.5, 0.2); }
+    if (which == 6) { y = ry_acetylcholine_level(3.0, x, 0.2); }
+    if (which == 7) { y = ry_endorphin_level(x, 0.05); }
+    if (which == 8) { y = ry_gaba_glutamate_ratio(x, 1.0); }
+    return y;
+}
+
+# A steady-state bridge `which` at clearance rate r.
+fn _rate_at(which, r: f64): f64 {
+    var y: f64 = 0.0;
+    if (which == 0) { y = ry_dopamine_level(5.0, 1.0, r); }
+    if (which == 1) { y = ry_norepinephrine_level(1.0, 1.0, r); }
+    if (which == 2) { y = ry_acetylcholine_level(3.0, 1.0, r); }
+    if (which == 3) { y = ry_endorphin_level(1.0, r); }
+    return y;
+}
+
+# rust src/neurotransmitter.rs: test_bridge_monotone_in_main_input, test_bridge_steady_state_continuous_in_rate
+fn monotone() {
+    test_group("neurotransmitter: the bridges' shape");
+    _tables();
+    var nan: f64 = _ry_nan();
+    var inf: f64 = _RY_INF;
+    var ok = 1;
+    var which = 0;
+    while (which < 9) {
+        var prev: f64 = -inf;
+        var k = 0;
+        while (k < 10) {
+            var x: f64 = load64(&_inputs + 8 * k);
+            var y: f64 = _bridge_at(which, x);
+            if (_ry_is_finite(y) == 0 || y < 0.0 || y < prev) { ok = 0; }
+            prev = y;
+            k = k + 1;
+        }
+        var yn: f64 = _bridge_at(which, nan);
+        if (_ry_is_finite(yn) == 0 || yn < 0.0) { ok = 0; }
+        which = which + 1;
+    }
+    assert_eq(ok, 1, "every bridge is finite, >= 0 and non-decreasing in its main input");
+    ok = 1;
+    which = 0;
+    while (which < 4) {
+        var prev2: f64 = inf;
+        var k2 = 0;
+        while (k2 < 9) {
+            var r: f64 = load64(&_rates + 8 * k2);
+            var y2: f64 = _rate_at(which, r);
+            if (_ry_is_finite(y2) == 0 || y2 < 0.0 || y2 > prev2) { ok = 0; }
+            prev2 = y2;
+            k2 = k2 + 1;
+        }
+        var yn2: f64 = _rate_at(which, nan);
+        var yi2: f64 = _rate_at(which, inf);
+        if (_ry_is_finite(yn2) == 0 || yn2 < 0.0 || _ry_is_finite(yi2) == 0 || yi2 < 0.0) { ok = 0; }
+        var z0: f64 = _rate_at(which, 0.0);
+        var z1: f64 = _rate_at(which, 0.000000000001);
+        var z2: f64 = _rate_at(which, RY_NEUROTRANSMITTER_MIN_CLEARANCE_RATE);
+        var zm: f64 = _rate_at(which, 0.0 - 1.0);
+        if (z0 != z1 || z0 != z2 || zm != z0) { ok = 0; }
+        which = which + 1;
+    }
+    var synth: f64 = ry_michaelis_menten(5.0, 0.08, 2.0);
+    var ceil: f64 = ry_dopamine_level(5.0, 1.0, 0.0);
+    var cg: f64 = ceil - 100.0 * synth;
+    assert(ok == 1 && f64_abs(cg) < 0.000000000001,
+      "the steady states fall with the rate, continuous at the floor, capped at 100 × synthesis");
+    return 0;
+}
+
+# Rust's two trace events, under the target `rasayan::neurotransmitter`.
+fn events() {
+    test_group("neurotransmitter: trace events");
+    sakshi_set_emit_hook(&_ev_hook);
+    sakshi_set_level(SK_TRACE);
+    var s: RyNeurotransmitterState;
+    var c: RyNeurotransmitterConfig;
+    var f: RyNeurotransmitterFlux;
+    ry_neurotransmitter_state_default(&s);
+    ry_neurotransmitter_config_default(&c);
+    ry_neurotransmitter_state_tick(&s, &c, 0.05, 0.0 - 2.0, 0.01, &f);
+    assert_eq(_ev_is("rasayan::neurotransmitter: neurotransmitter_tick dt=0.01 stimulus=0"), 1,
+      "neurotransmitter_tick");
+    ry_neurotransmitter_state_tick(&s, &c, 0.05, 1.0, 0.0 - 1.0, &f);
+    assert_eq(_ev_is("rasayan::neurotransmitter: neurotransmitter_tick skipped: invalid dt dt=-1"), 1,
+      "an invalid dt is reported");
+    sakshi_set_level(SK_INFO);
+    _ev_len = 0;
+    ry_neurotransmitter_state_tick(&s, &c, 0.05, 1.0, 0.01, &f);
+    assert_eq(_ev_len, 0, "below TRACE, nothing");
+    sakshi_clear_emit_hook();
+    return 0;
+}
+
+# rust src/neurotransmitter.rs: test_serde_roundtrip_state, test_serde_roundtrip_config
+# rust tests/integration.rs: test_neurotransmitter_flux_serde_roundtrip
+fn serde() {
+    test_group("neurotransmitter: serde round trips");
+    var sb = str_builder_new();
+    var s: RyNeurotransmitterState;
+    var s2: RyNeurotransmitterState;
+    ry_neurotransmitter_state_default(&s);
+    var t1, v1 = ry_neurotransmitter_state_to_json(sb, &s);
+    var t2, v2 = ry_neurotransmitter_state_from_json(load64(sb), load64(sb + 8), &s2);
+    assert(is_ok(t2) == 1 && memeq(&s2, &s, 88) == 1, "the state reads back");
+    var c: RyNeurotransmitterConfig;
+    var c2: RyNeurotransmitterConfig;
+    ry_neurotransmitter_config_default(&c);
+    store64(sb + 8, 0);
+    var t3, v3 = ry_neurotransmitter_config_to_json(sb, &c);
+    var t4, v4 = ry_neurotransmitter_config_from_json(load64(sb), load64(sb + 8), &c2);
+    assert(is_ok(t4) == 1 && memeq(&c2, &c, 168) == 1, "the config reads back");
+    var f: RyNeurotransmitterFlux;
+    var f2: RyNeurotransmitterFlux;
+    ry_neurotransmitter_state_tick(&s, &c, 0.5, 0.5, 0.01, &f);
+    store64(sb + 8, 0);
+    var t5, v5 = ry_neurotransmitter_flux_to_json(sb, &f);
+    var t6, v6 = ry_neurotransmitter_flux_from_json(load64(sb), load64(sb + 8), &f2);
+    assert(is_ok(t6) == 1 && memeq(&f2, &f, 112) == 1, "a tick's flux reads back, bit for bit");
+    return 0;
+}
+
+# Runs the neurotransmitter suite.
+fn main() {
+    alloc_init();
+    validation();
+    synthesis();
+    hardening();
+    long_runs();
+    bridges();
+    monotone();
+    events();
+    serde();
+    return assert_summary();
+}
+
+var exit_code = main();
+# assert_summary() returns the failure count; a wait status is 8 bits, so any failure exits 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

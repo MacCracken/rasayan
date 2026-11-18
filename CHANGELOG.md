@@ -25,6 +25,26 @@ part 5 (receptor) is the first module its Python generator writes.
 
 ### Added
 
+- **src/neurotransmitter.cyr**, **src/neurotransmitter_data.cyr** (M7 part 1) — `neurotransmitter.rs` transcribed:
+  `RyNeurotransmitterState` (11 levels and precursor pools), `RyNeurotransmitterConfig` (21 rates and Kms) and
+  `RyNeurotransmitterFlux` (14 rates); the defaults (from `src/neurotransmitter_data.cyr`, by `gen.py`); both validators
+  (the config's rates first, then its six Kms, Rust's order); `gaba_glutamate_ratio`; `ry_neurotransmitter_state_tick`
+  (the stimulus and acetyl-CoA sanitized; each synthesis capped at its precursor; the precursors relaxing to plasma; the
+  glutamine–glutamate–GABA cycle and choline recycling conserved); mastishk's six bridges (`ry_serotonin_synthesis_rate`,
+  `ry_dopamine_level`, `ry_gaba_glutamate_ratio`, `ry_norepinephrine_level`, `ry_acetylcholine_level`,
+  `ry_endorphin_level`, the clearance floor continuous); the three codecs. Rust's `neurotransmitter_tick` trace event and
+  its invalid-dt event under `rasayan::neurotransmitter`
+- **tests/golden/neurotransmitter.tsv** (M7 part 1, 1,279 rows: A 341, B 710, C 207, T 21) — `gen.py`
+  (`neurotransmitter()`, MPFR): the two defaults, both validators over every field and Rust's check order, 50
+  `gaba_glutamate_ratio` rows, 351 bridge rows (every argument's edges, the old Michaelis-Menten poles, seeded), 516
+  single ticks (25 step lengths at two drives, every field's and every config field's edges, the acetyl-CoA × stimulus
+  grid, Rust's no-precursor, scarce-precursor and fast-AChE cases, seeded), 21 trajectories (Rust's runs: rest, the hour
+  at rest and without stimulus, large steps, the stimulus sweep, NaN and inf recovery, seeded) and the serde documents.
+  All 1,279 match the port on the first run
+- **tests/neurotransmitter.tcyr** (M7 part 1, 40 checks) — the 31 `neurotransmitter.rs` unit tests and its 2
+  integration tests, both events: the ledger at 659 of 723. The fuzz harness reads the three documents (560 read and
+  written back) and ticks every valid state and every valid config
+- **benchmarks** (M7 part 1) — neurotransmitter_tick, Rust → Cyrius: 48.0 → 346 ns
 - **src/signaling.cyr**, **src/signaling_data.cyr** (M6 part 7) — `signaling.rs` transcribed: `RySignalingNetwork`,
   `RySignalingConfig` and `RySignalingFlux` (the four pathways' records nested at fixed offsets, the config's three
   crosstalk gains after them), `RySignalingInput`; the defaults (every pathway's; the gains 0; the input from

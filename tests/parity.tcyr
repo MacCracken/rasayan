@@ -98,6 +98,8 @@ include "src/nuclear_receptor_data.cyr"
 include "src/nuclear_receptor.cyr"
 include "src/signaling_data.cyr"
 include "src/signaling.cyr"
+include "src/neurotransmitter_data.cyr"
+include "src/neurotransmitter.cyr"
 
 # pathway's solve_decreasing rows: the Rust tests' closures' contexts (`a - x`, `c - 3·n/(k + n)·c - n`, the constant
 # `v`).
@@ -5420,6 +5422,216 @@ fn _par_signaling_json(fp, fl): i64 {
     return 1;
 }
 
+# ── neurotransmitter ────────────────────────────────────────────────────────────────────────
+# src/neurotransmitter_data.cyr and src/neurotransmitter.cyr (M7 part 1). A NeurotransmitterState row takes its 11
+# fields; a NeurotransmitterConfig is the default with overrides, `i:n` then n pairs `i:field f:x` (0–20). tick takes
+# the state, the config and `f:acetyl_coa f:stimulus f:dt` and gives the state after and the flux's 14 values. A
+# trajectory row (class T) is a script: the state, the config, then `i:1 f:acetyl_coa f:stimulus f:dt i:k` and
+# `i:3 i:field f:x`. gaba_glutamate_ratio takes a state; the six bridges take their two or three f64s.
+
+# Reads a neurotransmitter config from input k into *c (the default, then the overrides): the index after it, or -1
+# when malformed.
+fn _par_nt_in(k, c: *RyNeurotransmitterConfig): i64 {
+    ry_neurotransmitter_config_default(c);
+    if (_par_is_i(k) == 0) { return 0 - 1; }
+    var n = _par_in(k);
+    var w = c;
+    var at = k + 1;
+    var j = 0;
+    while (j < n) {
+        if (_par_is_i(at) == 0 || _par_is_f(at + 1) == 0) { return 0 - 1; }
+        var field = _par_in(at);
+        if (field < 0 || field >= 21) { return 0 - 1; }
+        store64(w + 8 * field, _par_in(at + 1));
+        at = at + 2;
+        j = j + 1;
+    }
+    return at;
+}
+
+# Replays a neurotransmitter trajectory script from input k on *s under *c: 1 with *f the last tick's flux, or -1 when
+# malformed.
+fn _par_neurotransmitter_script(s: *RyNeurotransmitterState, c: *RyNeurotransmitterConfig, k,
+  f: *RyNeurotransmitterFlux): i64 {
+    ry_neurotransmitter_flux_default(f);
+    var w = s;
+    var at = k;
+    while (at < _par_in_n) {
+        if (_par_is_i(at) == 0) { return 0 - 1; }
+        var op = _par_in(at);
+        if (op == 1 && _par_all_f_from(at + 1, 3) == 1 && _par_is_i(at + 4) == 1) {
+            var accoa: f64 = _par_f(at + 1);
+            var stim: f64 = _par_f(at + 2);
+            var dt: f64 = _par_f(at + 3);
+            var n = _par_in(at + 4);
+            var j = 0;
+            while (j < n) {
+                ry_neurotransmitter_state_tick(s, c, accoa, stim, dt, f);
+                j = j + 1;
+            }
+            at = at + 5;
+        } elif (op == 3 && _par_is_i(at + 1) == 1 && _par_is_f(at + 2) == 1) {
+            var field = _par_in(at + 1);
+            if (field < 0 || field > 10) { return 0 - 1; }
+            store64(w + 8 * field, _par_in(at + 2));
+            at = at + 3;
+        } else {
+            return 0 - 1;
+        }
+    }
+    return 1;
+}
+
+# The six bridge rows (two or three f64s, one f64), or 0 when the row is none of them.
+fn _par_neurotransmitter_bridge(fp, fl): i64 {
+    var which = 0;
+    var n = 2;
+    if (_par_eq(fp, fl, "neurotransmitter::serotonin_synthesis_rate") == 1) { which = 1; }
+    if (_par_eq(fp, fl, "neurotransmitter::dopamine_level") == 1) { which = 2; n = 3; }
+    if (_par_eq(fp, fl, "neurotransmitter::gaba_glutamate_ratio") == 1) { which = 3; }
+    if (_par_eq(fp, fl, "neurotransmitter::norepinephrine_level") == 1) { which = 4; n = 3; }
+    if (_par_eq(fp, fl, "neurotransmitter::acetylcholine_level") == 1) { which = 5; n = 3; }
+    if (_par_eq(fp, fl, "neurotransmitter::endorphin_level") == 1) { which = 6; }
+    if (which == 0) { return 0; }
+    if (_par_in_n != n || _par_all_f(n) == 0) { return 0 - 1; }
+    var a: f64 = _par_f(0);
+    var b: f64 = _par_f(1);
+    var x: f64 = 0.0;
+    if (n == 3) { x = _par_f(2); }
+    var y: f64 = 0.0;
+    if (which == 1) { y = ry_serotonin_synthesis_rate(a, b); }
+    if (which == 2) { y = ry_dopamine_level(a, b, x); }
+    if (which == 3) { y = ry_gaba_glutamate_ratio(a, b); }
+    if (which == 4) { y = ry_norepinephrine_level(a, b, x); }
+    if (which == 5) { y = ry_acetylcholine_level(a, b, x); }
+    if (which == 6) { y = ry_endorphin_level(a, b); }
+    _par_got_f(y);
+    return 1;
+}
+
+# The neurotransmitter rows: the defaults, the validators, gaba_glutamate_ratio, the bridges, the ticks and
+# trajectories, the serde rows.
+fn _par_neurotransmitter(fp, fl): i64 {
+    var s: RyNeurotransmitterState;
+    var c: RyNeurotransmitterConfig;
+    var fx: RyNeurotransmitterFlux;
+    if (_par_eq(fp, fl, "neurotransmitter::NeurotransmitterState::default") == 1) {
+        if (_par_in_n != 0) { return 0 - 1; }
+        ry_neurotransmitter_state_default(&s);
+        _par_got_fields(&s, 11);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "neurotransmitter::NeurotransmitterConfig::default") == 1) {
+        if (_par_in_n != 0) { return 0 - 1; }
+        ry_neurotransmitter_config_default(&c);
+        _par_got_fields(&c, 21);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "neurotransmitter::NeurotransmitterConfig::validate") == 1) {
+        if (_par_nt_in(0, &c) != _par_in_n) { return 0 - 1; }
+        var tc, vc = ry_neurotransmitter_config_validate(&c);
+        _par_got_outcome(tc, vc);
+        return 1;
+    }
+    var br = _par_neurotransmitter_bridge(fp, fl);
+    if (br != 0) { return br; }
+    if (_par_in_n < 11 || _par_all_f_from(0, 11) == 0) { return _par_neurotransmitter_json(fp, fl); }
+    _par_fields_in(0, &s, 11);
+    if (_par_in_n == 11) {
+        if (_par_eq(fp, fl, "neurotransmitter::NeurotransmitterState::gaba_glutamate_ratio") == 1) {
+            var ratio: f64 = ry_neurotransmitter_state_gaba_glutamate_ratio(&s);
+            _par_got_f(ratio);
+            return 1;
+        }
+        if (_par_eq(fp, fl, "neurotransmitter::NeurotransmitterState::validate") == 1) {
+            var ts, vs = ry_neurotransmitter_state_validate(&s);
+            _par_got_outcome(ts, vs);
+            return 1;
+        }
+        return _par_neurotransmitter_json(fp, fl);
+    }
+    var k = _par_nt_in(11, &c);
+    if (k < 0) { return _par_neurotransmitter_json(fp, fl); }
+    if (_par_eq(fp, fl, "neurotransmitter::NeurotransmitterState::trajectory") == 1) {
+        if (_par_neurotransmitter_script(&s, &c, k, &fx) != 1) { return 0 - 1; }
+        _par_got_fields(&s, 11);
+        _par_got_fields(&fx, 14);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "neurotransmitter::NeurotransmitterState::tick") == 1) {
+        if (_par_in_n != k + 3 || _par_all_f_from(k, 3) == 0) { return 0 - 1; }
+        var accoa: f64 = _par_f(k);
+        var stim: f64 = _par_f(k + 1);
+        var dt: f64 = _par_f(k + 2);
+        ry_neurotransmitter_state_tick(&s, &c, accoa, stim, dt, &fx);
+        _par_got_fields(&s, 11);
+        _par_got_fields(&fx, 14);
+        return 1;
+    }
+    return _par_neurotransmitter_json(fp, fl);
+}
+
+# The serde rows of NeurotransmitterState, NeurotransmitterConfig and NeurotransmitterFlux.
+fn _par_neurotransmitter_json(fp, fl): i64 {
+    var s: RyNeurotransmitterState;
+    var c: RyNeurotransmitterConfig;
+    var fx: RyNeurotransmitterFlux;
+    if (_par_jsb == 0) { _par_jsb = str_builder_new(); }
+    var sb = _par_jsb;
+    store64(sb + 8, 0);
+    var wt = 0;
+    var wv = 0;
+    var wrote = 0;
+    if (_par_eq(fp, fl, "serde_json::to_string<NeurotransmitterState>") == 1 && _par_in_n == 11
+      && _par_all_f(11) == 1) {
+        _par_fields_in(0, &s, 11);
+        wt, wv = ry_neurotransmitter_state_to_json(sb, &s);
+        wrote = 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::to_string<NeurotransmitterConfig>") == 1 && _par_in_n == 21
+      && _par_all_f(21) == 1) {
+        _par_fields_in(0, &c, 21);
+        wt, wv = ry_neurotransmitter_config_to_json(sb, &c);
+        wrote = 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::to_string<NeurotransmitterFlux>") == 1 && _par_in_n == 14
+      && _par_all_f(14) == 1) {
+        _par_fields_in(0, &fx, 14);
+        wt, wv = ry_neurotransmitter_flux_to_json(sb, &fx);
+        wrote = 1;
+    }
+    if (wrote == 1) {
+        if (is_err_result(wt) == 1) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    var kind = 0;
+    if (_par_eq(fp, fl, "serde_json::from_slice<NeurotransmitterState>") == 1) { kind = 1; }
+    if (_par_eq(fp, fl, "serde_json::from_slice<NeurotransmitterConfig>") == 1) { kind = 2; }
+    if (_par_eq(fp, fl, "serde_json::from_slice<NeurotransmitterFlux>") == 1) { kind = 3; }
+    if (kind == 0) { return 0; }
+    var lw[8];
+    var doc = _par_in_bytes(0, &lw);
+    if (doc == 0) { return 0 - 1; }
+    var len = load64(&lw);
+    if (_par_jarena == 0) { _par_jarena = arena_allocator_growable(65536); }
+    _par_json_gap = _par_has_neg_zero_int(doc, len);
+    reset_via(_par_jarena);
+    var rt = 0;
+    var rv = 0;
+    if (kind == 1) { rt, rv = ry_neurotransmitter_state_from_json_a(_par_jarena, doc, len, &s); }
+    if (kind == 2) { rt, rv = ry_neurotransmitter_config_from_json_a(_par_jarena, doc, len, &c); }
+    if (kind == 3) { rt, rv = ry_neurotransmitter_flux_from_json_a(_par_jarena, doc, len, &fx); }
+    if (is_err_result(rt) == 1) {
+        _par_got_err(rv);
+        return 1;
+    }
+    if (kind == 1) { _par_got_fields(&s, 11); }
+    if (kind == 2) { _par_got_fields(&c, 21); }
+    if (kind == 3) { _par_got_fields(&fx, 14); }
+    return 1;
+}
+
 fn _par_dispatch(mp, ml, fp, fl): i64 {
     _par_got_n = 0;
     if (_par_eq(fp, fl, "const") == 1) { return _par_const(); }
@@ -5441,6 +5653,7 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
     if (_par_eq(mp, ml, "receptor") == 1) { return _par_receptor(fp, fl); }
     if (_par_eq(mp, ml, "nuclear_receptor") == 1) { return _par_nuclear_receptor(fp, fl); }
     if (_par_eq(mp, ml, "signaling") == 1) { return _par_signaling(fp, fl); }
+    if (_par_eq(mp, ml, "neurotransmitter") == 1) { return _par_neurotransmitter(fp, fl); }
     if (_par_eq(mp, ml, "enzyme") == 1) { return _par_enzyme(fp, fl); }
     if (_par_eq(mp, ml, "membrane") == 1) { return _par_membrane(fp, fl); }
     if (_par_eq(mp, ml, "signal") == 1) { return _par_signal(fp, fl); }
@@ -5577,6 +5790,7 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "calcium::CalciumState::tick") == 1) { return 0; }
     if (_par_eq(fp, fl, "nuclear_receptor::NuclearReceptorState::tick") == 1) { return 0; }
     if (_par_eq(fp, fl, "signaling::SignalingNetwork::tick") == 1) { return 0; }
+    if (_par_eq(fp, fl, "neurotransmitter::NeurotransmitterState::tick") == 1) { return 0; }
     return 0 - 1;
 }
 

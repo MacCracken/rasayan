@@ -13,8 +13,10 @@
   JSON), upstream drafts (`docs/development/issues/`)
 - [x] M1–M4 — the foundation (error, guard, integrate, logging, JSON), kinetics and cell physiology, sequence
   analysis, the metabolic pathways (glycolysis, TCA, the ETC, β-oxidation, amino-acid catabolism)
-- [ ] M5–M8 — the metabolic network, the signaling cascades, the neuroendocrine modules, MCP and the AI client
-  (plan §6)
+- [x] M5–M6 — the metabolic network; the signaling cascades (MAPK, PI3K, JAK-STAT, calcium, receptor, nuclear
+  receptor, the signaling network). The reference moved to accuracy and the Rust tooling left (ADR 0005)
+- [ ] M7 — the neuroendocrine modules: neurotransmitter (part 1, done), hormonal (part 2)
+- [ ] M8 — MCP and the AI client (plan §6)
 - [ ] M9 — release 2.0.0
 
 ## Backlog
