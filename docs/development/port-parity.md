@@ -1408,3 +1408,45 @@ row is the default with overrides; a fixed-size array field is consecutive field
 network calls are ported now and pinned through verbatim copies, so M5 starts on tested code; and read rows record the
 correctly rounded value of each number (`reads.rs`). 53 Rust tests are ported with them.
 
+### 7d. M4b part 1: ETC (2026-11-17)
+
+**What is compared.** `tests/golden/etc.tsv` (new, 1,572 rows), through the oracle's public API and, for the
+crate-private `EtcDrive`, `step`, `complex_i_capacity`, `accumulate` and the private `pump_stoichiometry`, their
+verbatim copies (`scripts/oracle/src/v_etc.rs`). `pump_stoichiometry` is a private method of the oracle's own public
+`EtcConfig`: the copy compiles its block as the one method of a local trait implemented for that type, which `step`'s
+`config.pump_stoichiometry()` then resolves to. The rows cover:
+- the two defaults, and both validators over every field's edges, plus pairs where Rust's check order picks the error
+  (the non-negative loop, the divisors, the threshold's range, then H+ per NADH against H+ per FADH2);
+- the pump split over 59 configs and Complex I's capacity over 147 states and configs;
+- 796 single `tick` rows: each of the 3 state fields over 14 edges, each of the 14 parameters over 13, 22 supplies
+  (Rust's no-O2, no-NADH, ADP and NADH-only cases, the cap test's tiny supplies over a 50 s step, every input at its
+  Km, O2 outside [0, 1]), 20 time steps, Rust's pump tests' configs, and seeded states and configs;
+- 114 `step` rows with the NADH concentration and availability apart (the network's backward-Euler drive), 57
+  `accumulate` rows and the serde documents;
+- 25 trajectory frames: Rust's runs, its P/O test, the electron-conservation test at dt 1 and 5 (NADH 2 every third
+  step), NaN recovery, anoxia and reoxygenation, ADP depletion and demand, a tenfold leak, the network's drive;
+- 7 rows of Rust's `test_full_respiration_pipeline` loop (`etc::full_respiration`): glycolysis, TCA and the ETC
+  together, at four time steps, low O2 and high ADP.
+
+No row reaches a transcendental: B for the arithmetic (1,173), T for the scripts and the pipeline (32), A for the
+validators, the defaults and the documents (367). Every `tick` row also runs through the copy's `step` with both
+NADH inputs the same, which must give the oracle's bits.
+
+| Check | Result |
+|---|---|
+| every row | identical on the first run (class B at 0 ulp, the trajectories and pipeline runs bit for bit) |
+| corrected oracle | `mpfr_ref.py` models the 32 class-T rows (the pipeline with glycolysis's and TCA's models) and reproduces them; with no primitive called, `etc.cr.tsv` is empty |
+| `validate.py` | every row re-derived from its own transcription of `etc.rs` (pinned lines, `COMPLEX_I_KM_NADH` read from the source, the validators' lists from validate's text), the pipeline with its glycolysis and TCA models; 114,763 checks in all; one flipped bit in a tick, a step, a trajectory or a pipeline row is reported |
+| Rust tests | 24 unit and 3 integration tests ported (`tests/etc.tcyr`, 55 checks); the ledger at 427 of 723, 0 due and unported |
+| fuzz | every input also read as the three documents (984 accepted, each written and read back bit for bit); an accepted valid state stepped 0.5 s and 50 s stays valid, consumes no more than it is offered, and balances its electron pairs to 1e-12 |
+| four targets (`scripts/gates.sh`, 299 s, every step green) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 110,792 ok, 234 accepted, 0 failed; coverage 203 of 203 public fns executed |
+
+**The Cyrius forms** (ADR 0002 rows 7, 10, 14): the drive is the private struct `_RyEtcDrive`, which `tick` fills
+with the guarded NADH twice; `pump_stoichiometry` returns its three H+ counts as a three-value return; the five complex
+rates are consecutive fields with `ry_etc_flux_complex_rates` as the array view. The step works on sanitized copies of
+the state, as Rust does, and stores them back through `unit`.
+
+**Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): etc_tick 43.2 → 197 ns (218 before the review). With no
+transcendental, the gap is the ~40 guard and helper calls Rust inlines; the review wrote `_ry_guard_unit`'s clamp out,
+one call per guard.
+

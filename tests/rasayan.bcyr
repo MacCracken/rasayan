@@ -48,6 +48,8 @@ include "src/glycolysis_data.cyr"
 include "src/glycolysis.cyr"
 include "src/tca_data.cyr"
 include "src/tca.cyr"
+include "src/etc_data.cyr"
+include "src/etc.cyr"
 
 # Keeps the loops' results observable.
 var _bn_sink = 0;
@@ -816,6 +818,58 @@ fn _bn_tca(name, kind, n): i64 {
     return 0;
 }
 
+# ── M4b part 1: the ETC, the Rust bench's twin (the same loop body) ──
+
+# n calls of ETC benchmark `kind`: 0 etc_tick (Rust's body: a default state, one tick of 0.01 s at NADH 0.5, FADH2 0.1,
+# O2 1, ADP 0.5), 1 the same state ticked on (no reset), 2 one step of Rust's full respiration pipeline (glycolysis,
+# TCA on its pyruvate, the ETC on their NADH and FADH2); the flux kept.
+fn _bn_etc(name, kind, n): i64 {
+    var s: RyEtcState;
+    var c: RyEtcConfig;
+    var f: RyEtcFlux;
+    var g: RyGlycolysisState;
+    var gc: RyGlycolysisConfig;
+    var gf: RyGlycolysisFlux;
+    var t: RyTcaState;
+    var tc: RyTcaConfig;
+    var tf: RyTcaFlux;
+    ry_etc_state_default(&s);
+    ry_etc_config_default(&c);
+    ry_glycolysis_state_default(&g);
+    ry_glycolysis_config_default(&gc);
+    ry_tca_state_default(&t);
+    ry_tca_config_default(&tc);
+    var acc: f64 = 0.0;
+    var b = bench_new(name);
+    bench_batch_start(b);
+    var i = 0;
+    while (i < n) {
+        if (kind == 0) {
+            ry_etc_state_default(&s);
+            ry_etc_state_tick(&s, &c, 0.5, 0.1, 1.0, 0.5, 0.01, &f);
+        } elif (kind == 1) {
+            ry_etc_state_tick(&s, &c, 0.5, 0.1, 1.0, 0.5, 0.01, &f);
+        } else {
+            ry_glycolysis_state_tick(&g, &gc, 6.0, 0.5, 700.0, 0.01, &gf);
+            var pyr: f64 = g.pyruvate;
+            ry_tca_state_tick(&t, &tc, pyr, 6.0, 0.5, 700.0, 0.01, &tf);
+            var left: f64 = g.pyruvate - tf.pyruvate_consumed;
+            var kept: f64 = _ry_max(left, 0.0);
+            g.pyruvate = kept;
+            var nadh: f64 = gf.nadh_produced + tf.nadh_produced;
+            var fadh2: f64 = tf.fadh2_produced;
+            ry_etc_state_tick(&s, &c, nadh, fadh2, 1.0, 0.5, 0.01, &f);
+        }
+        var made: f64 = f.atp_produced;
+        acc = acc + made;
+        i = i + 1;
+    }
+    bench_batch_stop(b, n);
+    bench_report(b);
+    _bn_keep(acc);
+    return 0;
+}
+
 # Runs the benchmark suite (Rust twins arrive with each milestone).
 fn main(): i64 {
     alloc_init();
@@ -894,6 +948,9 @@ fn main(): i64 {
     _bn_tca("tca_tick", 0, 1000000);
     _bn_tca("tca/tick, no reset", 1, 1000000);
     _bn_tca("tca/glycolysis feeding tca, one step", 2, 1000000);
+    _bn_etc("etc_tick", 0, 1000000);
+    _bn_etc("etc/tick, no reset", 1, 1000000);
+    _bn_etc("etc/full respiration, one step", 2, 1000000);
     var br = bench_new("json/read MembranePermeability (3 f64)");
     bench_batch_start(br);
     _bn_read("{\"p_na\":0.04,\"p_k\":1.0,\"p_cl\":0.45}", 3, "p_na\0p_k\0p_cl\0", 100000);

@@ -602,7 +602,7 @@ fn json_rows(m: &mut Module) {
     ];
     for d in &state_docs {
         let r: Result<TcaState, _> = serde_json::from_slice(d.as_bytes());
-        read_row(m, "serde_json::from_slice<TcaState>", d, r.ok().map(|v| ts::vals(&v)), ts::NAMES, 0);
+        read_row(m, "serde_json::from_slice<TcaState>", d, r.ok().map(|v| ts::vals(&v)), ts::NAMES, ("", 0));
     }
 
     let cj = serde_json::to_string(&cfg).unwrap_or_default();
@@ -619,7 +619,7 @@ fn json_rows(m: &mut Module) {
     ];
     for d in &cfg_docs {
         let r: Result<TcaConfig, _> = serde_json::from_slice(d.as_bytes());
-        read_row(m, "serde_json::from_slice<TcaConfig>", d, r.ok().map(|v| tc::vals(&v)), tc::NAMES, 0);
+        read_row(m, "serde_json::from_slice<TcaConfig>", d, r.ok().map(|v| tc::vals(&v)), tc::NAMES, ("", 0));
     }
 
     let fj = serde_json::to_string(&flux).unwrap_or_default();
@@ -639,7 +639,7 @@ fn json_rows(m: &mut Module) {
     ];
     for d in &flux_docs {
         let r: Result<TcaFlux, _> = serde_json::from_slice(d.as_bytes());
-        read_row(m, "serde_json::from_slice<TcaFlux>", d, r.ok().map(|v| flux_vals(&v)), FLUX_NAMES, 9);
+        read_row(m, "serde_json::from_slice<TcaFlux>", d, r.ok().map(|v| flux_vals(&v)), FLUX_NAMES, ("step_rates", 9));
     }
 }
 

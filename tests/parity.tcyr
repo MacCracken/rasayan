@@ -58,6 +58,7 @@ include "src/metabolism_data.cyr"
 include "src/energy_data.cyr"
 include "src/glycolysis_data.cyr"
 include "src/tca_data.cyr"
+include "src/etc_data.cyr"
 include "src/ai_data.cyr"
 include "src/fmtf.cyr"
 include "src/error.cyr"
@@ -76,6 +77,7 @@ include "src/ptm.cyr"
 include "src/domain.cyr"
 include "src/glycolysis.cyr"
 include "src/tca.cyr"
+include "src/etc.cyr"
 
 alloc_init();
 
@@ -2833,6 +2835,303 @@ fn _par_tca_json(fp, fl): i64 {
     return 1;
 }
 
+# ── etc ─────────────────────────────────────────────────────────────────────────────
+# src/etc_data.cyr and src/etc.cyr (M4b part 1). An EtcState row takes the state's three fields; an EtcConfig is the
+# default with overrides, `i:n` then n pairs `i:field f:x`. tick takes the state, the config and `f:nadh f:fadh2
+# f:oxygen f:adp f:dt`; step `f:nadh_conc f:nadh_avail f:fadh2 f:oxygen f:adp f:dt` (the EtcDrive, then dt); both give
+# the state after and the flux's ten values. complex_i_capacity takes the state and the config, pump_stoichiometry the
+# config. A trajectory row (class T) is a script: the state, the config, then `i:1 …tick… i:k`, `i:2 …step… i:k`,
+# `i:3 i:field f:x`. A pipeline row (`etc::full_respiration`) is Rust's full respiration loop: the glycolysis, TCA and
+# ETC states, then `f:atp f:adp f:nad f:oxygen f:dt i:k`.
+
+# Reads an ETC config from input k into *c (the default, then the overrides): the index after it, or -1 when
+# malformed.
+fn _par_ec_in(k, c: *RyEtcConfig): i64 {
+    ry_etc_config_default(c);
+    if (_par_is_i(k) == 0) { return 0 - 1; }
+    var n = _par_in(k);
+    var w = c;
+    var at = k + 1;
+    var j = 0;
+    while (j < n) {
+        if (_par_is_i(at) == 0 || _par_is_f(at + 1) == 0) { return 0 - 1; }
+        var field = _par_in(at);
+        if (field < 0 || field >= 14) { return 0 - 1; }
+        store64(w + 8 * field, _par_in(at + 1));
+        at = at + 2;
+        j = j + 1;
+    }
+    return at;
+}
+
+# The drive from the six f64 inputs from k (nadh_conc, nadh_avail, fadh2, oxygen, adp; dt is the sixth, not read here).
+fn _par_drive_in(k, d: *_RyEtcDrive) {
+    var w = d;
+    var j = 0;
+    while (j < 5) {
+        store64(w + 8 * j, _par_in(k + j));
+        j = j + 1;
+    }
+    return 0;
+}
+
+# Replays an ETC trajectory script from input k on *s under *c: 1 with *f the last step's flux, or -1 when malformed.
+fn _par_etc_script(s: *RyEtcState, c: *RyEtcConfig, k, f: *RyEtcFlux): i64 {
+    ry_etc_flux_default(f);
+    var w = s;
+    var d: _RyEtcDrive;
+    var at = k;
+    while (at < _par_in_n) {
+        if (_par_is_i(at) == 0) { return 0 - 1; }
+        var op = _par_in(at);
+        if (op == 1 && _par_all_f_from(at + 1, 5) == 1 && _par_is_i(at + 6) == 1) {
+            var nadh: f64 = _par_f(at + 1);
+            var fadh2: f64 = _par_f(at + 2);
+            var o2: f64 = _par_f(at + 3);
+            var adp: f64 = _par_f(at + 4);
+            var dt: f64 = _par_f(at + 5);
+            var n = _par_in(at + 6);
+            var j = 0;
+            while (j < n) {
+                ry_etc_state_tick(s, c, nadh, fadh2, o2, adp, dt, f);
+                j = j + 1;
+            }
+            at = at + 7;
+        } elif (op == 2 && _par_all_f_from(at + 1, 6) == 1 && _par_is_i(at + 7) == 1) {
+            _par_drive_in(at + 1, &d);
+            var sdt: f64 = _par_f(at + 6);
+            var reps = _par_in(at + 7);
+            var r = 0;
+            while (r < reps) {
+                _ry_etc_state_step(s, c, &d, sdt, f);
+                r = r + 1;
+            }
+            at = at + 8;
+        } elif (op == 3 && _par_is_i(at + 1) == 1 && _par_is_f(at + 2) == 1) {
+            var field = _par_in(at + 1);
+            if (field < 0 || field > 2) { return 0 - 1; }
+            store64(w + 8 * field, _par_in(at + 2));
+            at = at + 3;
+        } else {
+            return 0 - 1;
+        }
+    }
+    return 1;
+}
+
+# Rust's test_full_respiration_pipeline loop (inputs: the three states, then `f:atp f:adp f:nad f:oxygen f:dt i:k`): 1
+# with the three states, the ATP sum and the O2 sum as the outputs, or -1 when malformed.
+fn _par_etc_pipeline(): i64 {
+    if (_par_in_n != 29 || _par_all_f_from(0, 28) == 0 || _par_is_i(28) == 0) { return 0 - 1; }
+    var g: RyGlycolysisState;
+    var gc: RyGlycolysisConfig;
+    var gf: RyGlycolysisFlux;
+    var t: RyTcaState;
+    var tc: RyTcaConfig;
+    var tf: RyTcaFlux;
+    var e: RyEtcState;
+    var ec: RyEtcConfig;
+    var ef: RyEtcFlux;
+    _par_fields_in(0, &g, 11);
+    _par_fields_in(11, &t, 9);
+    _par_fields_in(20, &e, 3);
+    ry_glycolysis_config_default(&gc);
+    ry_tca_config_default(&tc);
+    ry_etc_config_default(&ec);
+    var atp: f64 = _par_f(23);
+    var adp: f64 = _par_f(24);
+    var nad: f64 = _par_f(25);
+    var oxygen: f64 = _par_f(26);
+    var dt: f64 = _par_f(27);
+    var n = _par_in(28);
+    var made: f64 = 0.0;
+    var o2: f64 = 0.0;
+    var k = 0;
+    while (k < n) {
+        ry_glycolysis_state_tick(&g, &gc, atp, adp, nad, dt, &gf);
+        var pyr: f64 = g.pyruvate;
+        ry_tca_state_tick(&t, &tc, pyr, atp, adp, nad, dt, &tf);
+        var left: f64 = g.pyruvate - tf.pyruvate_consumed;
+        var kept: f64 = _ry_max(left, 0.0);
+        g.pyruvate = kept;
+        var nadh_pool: f64 = gf.nadh_produced + tf.nadh_produced;
+        var fadh2: f64 = tf.fadh2_produced;
+        ry_etc_state_tick(&e, &ec, nadh_pool, fadh2, oxygen, adp, dt, &ef);
+        made = made + (gf.net_atp + tf.gtp_produced + ef.atp_produced);
+        o2 = o2 + ef.o2_consumed;
+        k = k + 1;
+    }
+    _par_got_fields(&g, 11);
+    _par_got_fields(&t, 9);
+    _par_got_fields(&e, 3);
+    _par_got_f(made);
+    _par_got_f(o2);
+    return 1;
+}
+
+# The ETC rows: the defaults, the validators, the pump split and Complex I's capacity, accumulate, the steps,
+# trajectories and the pipeline, the serde rows.
+fn _par_etc(fp, fl): i64 {
+    var s: RyEtcState;
+    var c: RyEtcConfig;
+    var fx: RyEtcFlux;
+    if (_par_eq(fp, fl, "etc::EtcState::default") == 1) {
+        if (_par_in_n != 0) { return 0 - 1; }
+        ry_etc_state_default(&s);
+        _par_got_fields(&s, 3);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "etc::EtcConfig::default") == 1) {
+        if (_par_in_n != 0) { return 0 - 1; }
+        ry_etc_config_default(&c);
+        _par_got_fields(&c, 14);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "etc::EtcConfig::validate") == 1) {
+        if (_par_ec_in(0, &c) != _par_in_n) { return 0 - 1; }
+        var tc, vc = ry_etc_config_validate(&c);
+        _par_got_outcome(tc, vc);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "etc::EtcConfig::pump_stoichiometry") == 1) {
+        if (_par_ec_in(0, &c) != _par_in_n) { return 0 - 1; }
+        var ci, ciii, civ = _ry_etc_config_pump_stoichiometry(&c);
+        var a: f64 = ci;
+        var b: f64 = ciii;
+        var d: f64 = civ;
+        _par_got_f(a);
+        _par_got_f(b);
+        _par_got_f(d);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "etc::full_respiration") == 1) { return _par_etc_pipeline(); }
+    if (_par_eq(fp, fl, "etc::EtcFlux::accumulate") == 1) {
+        if (_par_in_n != 21 || _par_all_f(21) == 0) { return 0 - 1; }
+        var o: RyEtcFlux;
+        _par_fields_in(0, &fx, 10);
+        _par_fields_in(10, &o, 10);
+        var weight: f64 = _par_f(20);
+        _ry_etc_flux_accumulate(&fx, &o, weight);
+        _par_got_fields(&fx, 10);
+        return 1;
+    }
+    if (_par_in_n < 3 || _par_all_f_from(0, 3) == 0) { return _par_etc_json(fp, fl); }
+    _par_fields_in(0, &s, 3);
+    if (_par_in_n == 3) {
+        if (_par_eq(fp, fl, "etc::EtcState::validate") == 1) {
+            var ts, vs = ry_etc_state_validate(&s);
+            _par_got_outcome(ts, vs);
+            return 1;
+        }
+        return _par_etc_json(fp, fl);
+    }
+    var k = _par_ec_in(3, &c);
+    if (k < 0) { return _par_etc_json(fp, fl); }
+    if (_par_eq(fp, fl, "etc::EtcState::complex_i_capacity") == 1) {
+        if (_par_in_n != k) { return 0 - 1; }
+        var cap: f64 = _ry_etc_state_complex_i_capacity(&s, &c);
+        _par_got_f(cap);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "etc::EtcState::trajectory") == 1) {
+        if (_par_etc_script(&s, &c, k, &fx) != 1) { return 0 - 1; }
+        _par_got_fields(&s, 3);
+        _par_got_fields(&fx, 10);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "etc::EtcState::tick") == 1) {
+        if (_par_in_n != k + 5 || _par_all_f_from(k, 5) == 0) { return 0 - 1; }
+        var nadh: f64 = _par_f(k);
+        var fadh2: f64 = _par_f(k + 1);
+        var o2: f64 = _par_f(k + 2);
+        var adp: f64 = _par_f(k + 3);
+        var dt: f64 = _par_f(k + 4);
+        ry_etc_state_tick(&s, &c, nadh, fadh2, o2, adp, dt, &fx);
+        _par_got_fields(&s, 3);
+        _par_got_fields(&fx, 10);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "etc::EtcState::step") == 1) {
+        if (_par_in_n != k + 6 || _par_all_f_from(k, 6) == 0) { return 0 - 1; }
+        var d: _RyEtcDrive;
+        _par_drive_in(k, &d);
+        var sdt: f64 = _par_f(k + 5);
+        _ry_etc_state_step(&s, &c, &d, sdt, &fx);
+        _par_got_fields(&s, 3);
+        _par_got_fields(&fx, 10);
+        return 1;
+    }
+    return _par_etc_json(fp, fl);
+}
+
+# The serde rows of EtcState, EtcConfig and EtcFlux.
+fn _par_etc_json(fp, fl): i64 {
+    var s: RyEtcState;
+    var c: RyEtcConfig;
+    var fx: RyEtcFlux;
+    if (_par_jsb == 0) { _par_jsb = str_builder_new(); }
+    var sb = _par_jsb;
+    store64(sb + 8, 0);
+    if (_par_eq(fp, fl, "serde_json::to_string<EtcState>") == 1 && _par_in_n == 3 && _par_all_f(3) == 1) {
+        _par_fields_in(0, &s, 3);
+        var t1, v1 = ry_etc_state_to_json(sb, &s);
+        if (is_err_result(t1) == 1) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::to_string<EtcConfig>") == 1 && _par_in_n == 14 && _par_all_f(14) == 1) {
+        _par_fields_in(0, &c, 14);
+        var t2, v2 = ry_etc_config_to_json(sb, &c);
+        if (is_err_result(t2) == 1) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::to_string<EtcFlux>") == 1 && _par_in_n == 10 && _par_all_f(10) == 1) {
+        _par_fields_in(0, &fx, 10);
+        var t3, v3 = ry_etc_flux_to_json(sb, &fx);
+        if (is_err_result(t3) == 1) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    var kind = 0;
+    if (_par_eq(fp, fl, "serde_json::from_slice<EtcState>") == 1) { kind = 1; }
+    if (_par_eq(fp, fl, "serde_json::from_slice<EtcConfig>") == 1) { kind = 2; }
+    if (_par_eq(fp, fl, "serde_json::from_slice<EtcFlux>") == 1) { kind = 3; }
+    if (kind == 0) { return 0; }
+    var lw[8];
+    var doc = _par_in_bytes(0, &lw);
+    if (doc == 0) { return 0 - 1; }
+    var n = load64(&lw);
+    if (_par_jarena == 0) { _par_jarena = arena_allocator_growable(65536); }
+    _par_json_gap = _par_has_neg_zero_int(doc, n);
+    reset_via(_par_jarena);
+    if (kind == 1) {
+        var t4, v4 = ry_etc_state_from_json_a(_par_jarena, doc, n, &s);
+        if (is_err_result(t4) == 1) {
+            _par_got_err(v4);
+            return 1;
+        }
+        _par_got_fields(&s, 3);
+        return 1;
+    }
+    if (kind == 2) {
+        var t5, v5 = ry_etc_config_from_json_a(_par_jarena, doc, n, &c);
+        if (is_err_result(t5) == 1) {
+            _par_got_err(v5);
+            return 1;
+        }
+        _par_got_fields(&c, 14);
+        return 1;
+    }
+    var t6, v6 = ry_etc_flux_from_json_a(_par_jarena, doc, n, &fx);
+    if (is_err_result(t6) == 1) {
+        _par_got_err(v6);
+        return 1;
+    }
+    _par_got_fields(&fx, 10);
+    return 1;
+}
+
 fn _par_dispatch(mp, ml, fp, fl): i64 {
     _par_got_n = 0;
     if (_par_eq(fp, fl, "const") == 1) { return _par_const(); }
@@ -2843,6 +3142,7 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
     if (_par_eq(mp, ml, "domain") == 1) { return _par_domain(fp, fl); }
     if (_par_eq(mp, ml, "glycolysis") == 1) { return _par_glycolysis(fp, fl); }
     if (_par_eq(mp, ml, "tca") == 1) { return _par_tca(fp, fl); }
+    if (_par_eq(mp, ml, "etc") == 1) { return _par_etc(fp, fl); }
     if (_par_eq(mp, ml, "enzyme") == 1) { return _par_enzyme(fp, fl); }
     if (_par_eq(mp, ml, "membrane") == 1) { return _par_membrane(fp, fl); }
     if (_par_eq(mp, ml, "signal") == 1) { return _par_signal(fp, fl); }

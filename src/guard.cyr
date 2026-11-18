@@ -92,14 +92,16 @@ fn _ry_guard_conc(x: f64): f64 {
     return 0.0;
 }
 
-# Sanitizes a fraction-like input into `[0, 1]`: NaN becomes +0, +inf 1, −inf 0; a zero keeps its sign. Mirrors
-# `guard::unit`.
+# Sanitizes a fraction-like input into `[0, 1]`: NaN becomes +0, +inf 1, −inf 0; a zero keeps its sign. Rust's
+# `x.clamp(0.0, 1.0)` is written out, its two comparisons in its order (_ry_clamp's), so there is one call per guard on
+# the tick paths. Mirrors `guard::unit`.
 #must_use
 #pure
 fn _ry_guard_unit(x: f64): f64 {
-    if (_ry_is_nan(x) == 1) { return 0.0; }
-    var r: f64 = _ry_clamp(x, 0.0, 1.0);
-    return r;
+    if (x != x) { return 0.0; }
+    if (x < 0.0) { return 0.0; }
+    if (x > 1.0) { return 1.0; }
+    return x;
 }
 
 # The amount a one-directional transfer moves this step: `amount` capped at the `pool` it drains. NaN, negative

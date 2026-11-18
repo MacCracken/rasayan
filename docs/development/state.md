@@ -47,6 +47,7 @@ milestone (M9) sets 2.0.0.
 | M4a part 1 — glycolysis | ✅ `src/glycolysis.cyr`: GlycolysisState, GlycolysisConfig and GlycolysisFlux (the flux's ten rates as consecutive fields with an array view, ADR 0002 row 14), both validators, `tick` (the state in place, the flux into the caller's record; Rust's trace event), the pools, the three codecs, and the crate-private `tick_regulated`, `gapdh_nad_factor` and `accumulate` for M5; `src/glycolysis_data.cyr` generated (the defaults and both field-name lists). Golden `glycolysis.tsv` 3,239 rows (C 1,588, B 812, A 807, T 32; a new module), all matching at 0 ulp; `glycolysis.cr.tsv` 0 rows; the crate-private rows through verbatim copies, which must give the oracle's own `tick` bits; `validate.py` models every row and its class (110,092). `tests/glycolysis.tcyr` 61 checks: Rust's 25 glycolysis tests; ledger 372 of 723, 0 due; surface parity 0 missing; the fuzz harness reads the three codecs and steps every valid state. glycolysis_tick benched; `take` / `shift` one call per transfer (808 → 755 ns); `scripts/gates.sh` (362 s): the same summary on ELF, `--bounds`, PE and aarch64, 106,899 ok, 0 failed; coverage 164 of 164; its one failure, clippy on the new emitter (two collapsible `if`s, a needless `vec!`), fixed and rerun clean with `--check` unchanged |
 | M4a part 2 — TCA | ✅ `src/tca.cyr`: TcaState, TcaConfig and TcaFlux (nine rates as consecutive fields with an array view), both validators, `tick` (PDH capped at the supply; the state in place, the flux into the caller's record; Rust's trace event), `total_pool`, the three codecs, the crate-private `accumulate` for M5; `src/tca_data.cyr` generated. Golden `tca.tsv` 2,321 rows (C 1,270, A 691, B 315, T 45; a new module), all matching at 0 ulp on the first run, Rust's glycolysis-to-TCA coupling loop among them; `tca.cr.tsv` 0 rows; `validate.py` models every row and its class (112,912). `tests/tca.tcyr` 55 checks: Rust's 26 TCA tests and the 2 integration tests now due; ledger 400 of 723, 0 due; surface parity 0 missing; the fuzz harness reads the three codecs and steps every valid state, its carbon balanced. tca_tick benched; `scripts/gates.sh` green (298 s; the same summary on ELF, `--bounds`, PE and aarch64: 109,220 ok, 0 failed); coverage 184 of 184 |
 | **M4a — glycolysis and the TCA cycle** | ✅ complete: glycolysis, TCA (`src/*.cyr` for both, their generated data files). 5,560 golden rows of their own, all matching at 0 ulp (no corrections: glibc's pow rounds every class-C row correctly), two new modules; the crate-private entry points M5 needs ported and pinned through verbatim copies; 53 of the Rust tests ported with them. Next: M4b, the ETC, β-oxidation and amino-acid catabolism |
+| M4b part 1 — ETC | ✅ `src/etc.cyr`: EtcState, EtcConfig and EtcFlux (five complex rates as consecutive fields with an array view), both validators, `tick` (the state in place, the flux into the caller's record; Rust's trace event), the three codecs, and the crate-private `EtcDrive` (`_RyEtcDrive`), `step`, `complex_i_capacity`, `accumulate` and `pump_stoichiometry` for M5; `src/etc_data.cyr` generated. Golden `etc.tsv` 1,572 rows (B 1,173, A 367, T 32; a new module, no transcendental), all matching on the first run, Rust's full respiration pipeline (glycolysis, TCA, ETC) among them; `validate.py` models every row and its class (114,763). `tests/etc.tcyr` 55 checks: Rust's 24 ETC tests and the 3 integration tests now due; ledger 427 of 723, 0 due; surface parity 0 missing; the fuzz harness reads the three codecs and steps every valid state, its electron pairs balanced. etc_tick benched; `unit` one call per guard (218 → 197 ns); `scripts/gates.sh` green (299 s; the same summary on ELF, `--bounds`, PE and aarch64: 110,792 ok, 0 failed); coverage 203 of 203 |
 
 ## Golden corpus
 
@@ -65,6 +66,8 @@ milestone (M9) sets 2.0.0.
 | `tests/golden/glycolysis.cr.tsv` | 0 corrections (glibc's pow correctly rounded on every call) | — |
 | `tests/golden/tca.tsv` | 2,321 (M4a part 2: the defaults, both validators, the pool, 1,307 `tick` single steps, `accumulate`, 37 trajectories, 8 glycolysis-to-TCA coupling runs, the serde documents) | A 691 · B 315 · C 1,270 · T 45 |
 | `tests/golden/tca.cr.tsv` | 0 corrections (glibc's pow correctly rounded on every call) | — |
+| `tests/golden/etc.tsv` | 1,572 (M4b part 1: the defaults, both validators, the pump split, Complex I's capacity, 796 `tick` and 114 `step` single steps, `accumulate`, 25 trajectories, 7 full respiration runs, the serde documents) | A 367 · B 1,173 · T 32 |
+| `tests/golden/etc.cr.tsv` | 0 corrections (no transcendental) | — |
 | `tests/golden/enzyme.tsv` | 7,219 (60 table cells and `lookup_enzyme`; 7,159 function rows from M2 part 1) | A 309 · B 4,870 · C 2,040 |
 | `tests/golden/enzyme.cr.tsv` | 0 corrections (glibc's pow and exp correctly rounded on every call) | — |
 | `tests/golden/membrane.tsv` | 1,739 (`DEFAULT_PERMEABILITY`; `IonicState::default` and 1,737 function rows from M2 part 2) | A 263 · B 450 · C 1,026 |
@@ -82,14 +85,14 @@ milestone (M9) sets 2.0.0.
 | `tests/golden/logging.tsv` | 196 (M1 part 2: each `RASAYAN_LOG` form × 20 event targets) | A |
 | `tests/golden/json.tsv` | 20,120 (M1 part 3: serde_json's text per scalar kind, Rust's Display of an f64; serde_json's decision on each document per reader) | A |
 
-109,454 rows (20,163 at M0, 11,573 from M1 part 1, 196 from part 2, 20,120 from part 3; 7,159 from M2 part 1, 1,738
+111,026 rows (20,163 at M0, 11,573 from M1 part 1, 196 from part 2, 20,120 from part 3; 7,159 from M2 part 1, 1,738
 from part 2, 6,025 from part 3, 5,088 from part 4, 4,509 from part 5; 14,065 from M3 part 1, 5,768 from part 2, 3,568
-from part 3, 3,922 from part 4; 3,239 from M4a part 1, 2,321 from part 2). Recorded with rustc 1.100.0 on glibc 2.44 x86_64 fma (rasayan 1.2.0). `--check`,
-`validate.py` (112,912 independent checks),
+from part 3, 3,922 from part 4; 3,239 from M4a part 1, 2,321 from part 2; 1,572 from M4b part 1). Recorded with rustc 1.100.0 on glibc 2.44 x86_64 fma (rasayan 1.2.0). `--check`,
+`validate.py` (114,763 independent checks),
 `mpfr_ref.py --check` and `probe_tables.py --all-targets` (2,470 compiled values) are clean. Generated: `src/constants.cyr` (67 constants, 333 lines), `src/constants_private.cyr` (16,
 74 lines), `src/protein_data.cyr` (721 lines), `src/alignment_data.cyr` (129),
 `src/enzyme_data.cyr` (251), `src/membrane_data.cyr` (56), `src/metabolism_data.cyr` (41), `src/energy_data.cyr` (41),
-`src/glycolysis_data.cyr` (279), `src/tca_data.cyr` (235),
+`src/glycolysis_data.cyr` (279), `src/tca_data.cyr` (235), `src/etc_data.cyr` (123),
 `src/signal_data.cyr` (26), `src/ai_data.cyr` (36); and from MPFR,
 `src/mathx_data.cyr` (32 tables and constants, 1,130 lines; `mathx_tables.py --check` is clean).
 
@@ -113,18 +116,18 @@ Raised by the M0 probes; each is decided when its milestone starts.
 
 - Rust oracle: `rust-old/` — 20,541 lines incl. tests (`rust-old/LINES_OF_SOURCE.txt`); 6,754 code lines in `src/`, 146 public fns
 - Cyrius port: the ported modules (`src/error.cyr`, `guard`, `integrate`, `logging`, `json`, `enzyme`, `membrane`,
-  `signal`, `metabolism`, `energy`, `protein`, `alignment`, `ptm`, `domain`, `glycolysis`, `tca`), the generated sources (`src/constants.cyr`,
+  `signal`, `metabolism`, `energy`, `protein`, `alignment`, `ptm`, `domain`, `glycolysis`, `tca`, `etc`), the generated sources (`src/constants.cyr`,
   `src/constants_private.cyr`, `src/*_data.cyr`), the vendored `src/mathx.cyr` (1,277 lines: the vendored functions
   and rasayan's own helpers) and the vendored `src/fmtf.cyr` (408 lines, impetus's shortest-digit printer by ushma's
   rule, `scripts/vendor_fmtf.py`; M1 part 3b); `src/main.cyr` is the scaffold. `[lib]` bundles them, in dependency
-  order, into `dist/rasayan.cyr` (10,797 lines, sidecar `str`); `[lib.mcp]` into `dist/rasayan-mcp.cyr` (the same
+  order, into `dist/rasayan.cyr` (11,472 lines, sidecar `str`); `[lib.mcp]` into `dist/rasayan-mcp.cyr` (the same
   modules until M8) and `[lib.ai]`, with `src/ai_data.cyr`, into `dist/rasayan-ai.cyr`; `distlib --check` is clean
 
 ## Parity harness
 
 `cyrius test` runs `tests/parity.tcyr`, warning-free (the same on `--bounds` and aarch64):
 
-`=== parity summary: 19 modules, 0 failing | rows: 109220 ok, 0 failed, 0 measured, 0 pending, 234 accepted (ADR 3: 153), 0 glibc-matching (failed) ===`
+`=== parity summary: 20 modules, 0 failing | rows: 110792 ok, 0 failed, 0 measured, 0 pending, 234 accepted (ADR 3: 153), 0 glibc-matching (failed) ===`
 
 - **ok:** the 108 `const` rows, the 1,229 table rows (from the generated data, index constants
   included), the 7,732 class A/B math rows (`src/mathx.cyr`'s helpers and the builtins), 10,998 class-C math rows at
@@ -137,7 +140,7 @@ Raised by the M0 probes; each is decided when its milestone starts.
   4,505 (sharira's call shape and the 35 trajectories bit for bit); protein's 14,065 (the charge and pI at 0 ulp on
   `_ry_cr_pow`, Chou-Fasman exactly) alignment's 5,768 (integers, exactly), ptm's 3,568 and domain's 3,922 (exactly); glycolysis's 3,239 (the steps at 0 ulp
   on `_ry_cr_pow`, the 32 trajectories bit for bit) and TCA's 2,321 (the 45 trajectories and coupling runs bit for
-  bit). 109,220 in all.
+  bit); the ETC's 1,572 (exactly; the 32 trajectories and pipeline runs bit for bit). 110,792 in all.
 - **accepted (ADR 4):** 20 reader rows where bayan refuses or misreads for a filed reason (ADR 0004): 19 json rows
   and one membrane row (an integer `-0` in an IonicState document).
 - **accepted (ADR 2):** 61 logging rows: `RASAYAN_LOG` forms the port refuses (the default applies, with a warning)
@@ -164,11 +167,13 @@ Raised by the M0 probes; each is decided when its milestone starts.
   `tests/protein.tcyr` (380: Rust's 78 protein tests), `tests/alignment.tcyr` (28: Rust's 21 alignment tests),
   `tests/ptm.tcyr` (37: Rust's 16 ptm tests), `tests/domain.tcyr` (35: Rust's 24 domain tests), `tests/glycolysis.tcyr`
   (61: Rust's 25 glycolysis tests, the event's text), `tests/tca.tcyr` (55: Rust's 26 TCA tests and 2 integration
-  tests, the event's text), the fuzz harness (50,000 inputs through `RASAYAN_LOG`, the JSON readers and the five M2 struct codecs, each accepted
+  tests, the event's text), `tests/etc.tcyr` (55: Rust's 24 ETC tests and 3 integration tests, the event's text), the
+  fuzz harness (50,000 inputs through `RASAYAN_LOG`, the JSON readers and the five M2 struct codecs, each accepted
   document written and read back, a SecondMessenger stepped and kept in [0, 1], a MetabolicState's charge in [0, 1]
   and a step conserving ATP + ADP, a BioenergyState ticked with its reserves in [0, 1], every protein function on the
-  input as a sequence, Needleman-Wunsch on its halves, the PTM and domain scans, the three glycolysis and three TCA codecs,
-  and steps of every valid state, which stays valid and conserves (glycolysis) or balances (TCA) its carbon);
+  input as a sequence, Needleman-Wunsch on its halves, the PTM and domain scans, the glycolysis, TCA and ETC codecs,
+  and steps of every valid state, which stays valid and conserves (glycolysis) or balances (TCA) its carbon, or
+  balances its electron pairs (ETC));
   `cyrius test` warning-free, `--bounds` and `cyrius audit` pass
 - MPFR sweep: `scripts/oracle/cr_verify.py` checks the four primitives on 5,314,811 arguments per target
   (`--quick`: 542,062), both paths, ELF, aarch64 and PE: 0 mismatches (`port-parity.md` §2e)
@@ -197,7 +202,7 @@ branch, 256 ns with three `expm1`); M2 part 4, metabolic_tick 17.6 → 117; M2 p
 152; M3 part 1, protein_lookup 3.4 → 6, molecular_weight 23 → 153, isoelectric_point 1,808 → 18,279 (correctly rounded
 pow), extinction_coefficient 31 → 167, chou_fasman 298 → 1,839, net_charge 143 → 1,636, composition 292 → 499; M3 part 2: substitution_score 2.3 → 18,
 needleman_wunsch_10 441 → 1,056, needleman_wunsch_300 173,870 → 571,517, score_alignment 62 → 194; M3 part 3: ptm_scan_20 190 →
-374; M3 part 4: domain_scan_20 141 → 383; M4a part 1: glycolysis_tick 113 → 755 (two correctly rounded pow); part 2: tca_tick 75 → 507 (one). The rest
+374; M3 part 4: domain_scan_20 141 → 383; M4a part 1: glycolysis_tick 113 → 755 (two correctly rounded pow); part 2: tca_tick 75 → 507 (one); M4b part 1: etc_tick 43 → 197 (none). The rest
 arrive with their milestones.
 Probe measurements (`port-parity.md` §3, measured not gated): the implicit NADH solves 582 / 259 ns
 (`balanced_nad_ratio` / `end_of_step_nadh`; Rust 155 / 98 ns); the network's 264-byte probe copy 11 ns; a
@@ -223,11 +228,10 @@ Rust crate (crates.io): mastishk 1.1.0, sharira 1.1.0, kiran 1.0.0. No Cyrius co
 
 ## Next
 
-M4b: the electron transport chain, β-oxidation and amino-acid catabolism (`etc.rs`, `beta_oxidation.rs`,
-`amino_catabolism.rs`: the ETC's `step` with `EtcDrive`, the crate-private regulated entry; single-step rows,
-trajectories and electron and nitrogen conservation, port plan §6).
+M4b part 2: β-oxidation (`beta_oxidation.rs`: the fatty-acyl-CoA spiral, its regulated entry; single-step rows,
+trajectories and carbon conservation, port plan §6). Then part 3, amino-acid catabolism (nitrogen conservation).
 
 Parity bookkeeping: `scripts/surface_parity.py` (every Rust public item of a ported module has its Cyrius name) and
-`scripts/rust_test_ledger.py` (`docs/development/rust-test-ledger.md`: 723 Rust tests, 400 ported, 0 due and
+`scripts/rust_test_ledger.py` (`docs/development/rust-test-ledger.md`: 723 Rust tests, 427 ported, 0 due and
 unported)
 run in `scripts/gates.sh` since M1 part 2.

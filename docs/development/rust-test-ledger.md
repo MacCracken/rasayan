@@ -6,7 +6,7 @@
 > milestone hasn't come. The golden corpus (`tests/golden/`) checks every ported function on its grid besides.
 > The 2 doc tests and the example are M9's.
 
-**723 Rust tests:** 400 ported; 80 at M4b, 38 at M5, 108 at M6, 62 at M7, 35 at M8.
+**723 Rust tests:** 427 ported; 53 at M4b, 38 at M5, 108 at M6, 62 at M7, 35 at M8.
 
 | Rust file | Tests | Ported | Due, unported | Later (milestone) |
 |---|---:|---:|---:|---|
@@ -18,7 +18,7 @@
 | `src/domain.rs` | 24 | 24 | 0 | — |
 | `src/energy.rs` | 29 | 29 | 0 | — |
 | `src/enzyme.rs` | 58 | 58 | 0 | — |
-| `src/etc.rs` | 24 | 0 | 0 | 24 (M4b) |
+| `src/etc.rs` | 24 | 24 | 0 | — |
 | `src/glycolysis.rs` | 25 | 25 | 0 | — |
 | `src/guard.rs` | 4 | 4 | 0 | — |
 | `src/hormonal.rs` | 25 | 0 | 0 | 25 (M7) |
@@ -38,9 +38,9 @@
 | `src/signal.rs` | 21 | 21 | 0 | — |
 | `src/signaling.rs` | 13 | 0 | 0 | 13 (M6) |
 | `src/tca.rs` | 26 | 26 | 0 | — |
-| `tests/integration.rs` | 70 | 35 | 0 | 10 (M4b), 4 (M5), 15 (M6), 6 (M7) |
+| `tests/integration.rs` | 70 | 38 | 0 | 7 (M4b), 4 (M5), 15 (M6), 6 (M7) |
 | `tests/validation.rs` | 25 | 25 | 0 | — |
-| **Total** | **723** | **400** | **0** | |
+| **Total** | **723** | **427** | **0** | |
 
 ## Where each is ported
 
@@ -176,6 +176,30 @@
 | `src/enzyme.rs` `test_validate_rejects_non_finite_and_zero_divisors` | `tests/enzyme.tcyr` `enzyme_params` |
 | `src/enzyme.rs` `test_validate_valid` | `tests/enzyme.tcyr` `enzyme_params` |
 | `src/enzyme.rs` `test_zero_inhibitor_ignores_ki` | `tests/enzyme.tcyr` `hardening_rates` |
+| `src/etc.rs` `test_adp_drives_atp_synthase` | `tests/etc.tcyr` `regulation` |
+| `src/etc.rs` `test_atp_per_nadh_ratio` | `tests/etc.tcyr` `ticking` |
+| `src/etc.rs` `test_atp_produced` | `tests/etc.tcyr` `ticking` |
+| `src/etc.rs` `test_consumption_capped_at_inputs` | `tests/etc.tcyr` `hardening` |
+| `src/etc.rs` `test_default_config_valid` | `tests/etc.tcyr` `validation` |
+| `src/etc.rs` `test_default_pump_split_is_4_4_2` | `tests/etc.tcyr` `pumps` |
+| `src/etc.rs` `test_default_state_valid` | `tests/etc.tcyr` `validation` |
+| `src/etc.rs` `test_h2o_is_twice_o2` | `tests/etc.tcyr` `ticking` |
+| `src/etc.rs` `test_invalid_dt_is_noop` | `tests/etc.tcyr` `hardening` |
+| `src/etc.rs` `test_large_dt_conserves_electrons` | `tests/etc.tcyr` `conservation` |
+| `src/etc.rs` `test_nadh_consumed` | `tests/etc.tcyr` `ticking` |
+| `src/etc.rs` `test_nan_inputs_sanitized` | `tests/etc.tcyr` `hardening` |
+| `src/etc.rs` `test_nan_state_recovers` | `tests/etc.tcyr` `hardening` |
+| `src/etc.rs` `test_no_nadh_no_ci` | `tests/etc.tcyr` `regulation` |
+| `src/etc.rs` `test_no_oxygen_no_civ` | `tests/etc.tcyr` `regulation` |
+| `src/etc.rs` `test_o2_consumed` | `tests/etc.tcyr` `ticking` |
+| `src/etc.rs` `test_pmf_stays_bounded` | `tests/etc.tcyr` `ticking` |
+| `src/etc.rs` `test_pump_stoichiometry_follows_config` | `tests/etc.tcyr` `pumps` |
+| `src/etc.rs` `test_respiratory_control` | `tests/etc.tcyr` `regulation` |
+| `src/etc.rs` `test_serde_roundtrip_config` | `tests/etc.tcyr` `serde` |
+| `src/etc.rs` `test_serde_roundtrip_state` | `tests/etc.tcyr` `serde` |
+| `src/etc.rs` `test_single_tick_rates_non_negative` | `tests/etc.tcyr` `ticking` |
+| `src/etc.rs` `test_validate_config_rejects_bad_values` | `tests/etc.tcyr` `validation` |
+| `src/etc.rs` `test_validate_state_rejects_nan` | `tests/etc.tcyr` `validation` |
 | `src/glycolysis.rs` `test_concentrations_non_negative` | `tests/glycolysis.tcyr` `ticking` |
 | `src/glycolysis.rs` `test_default_config_positive` | `tests/glycolysis.tcyr` `basics` |
 | `src/glycolysis.rs` `test_default_state_positive` | `tests/glycolysis.tcyr` `basics` |
@@ -400,8 +424,11 @@
 | `tests/integration.rs` `test_error_display_negative_concentration` | `tests/guard.tcyr` `error_display` |
 | `tests/integration.rs` `test_error_display_unknown_amino_acid` | `tests/guard.tcyr` `error_display` |
 | `tests/integration.rs` `test_error_display_unknown_pathway` | `tests/guard.tcyr` `error_display` |
+| `tests/integration.rs` `test_etc_flux_serde_roundtrip` | `tests/etc.tcyr` `serde` |
 | `tests/integration.rs` `test_extinction_coefficient_serialize` | `tests/protein.tcyr` `serde` |
+| `tests/integration.rs` `test_full_respiration_pipeline` | `tests/etc.tcyr` `pipeline` |
 | `tests/integration.rs` `test_glycolysis_feeds_tca` | `tests/tca.tcyr` `coupling` |
+| `tests/integration.rs` `test_glycolysis_tca_pathway_validation` | `tests/etc.tcyr` `validation` |
 | `tests/integration.rs` `test_goldman_with_custom_permeability` | `tests/membrane.tcyr` `goldman` |
 | `tests/integration.rs` `test_inhibition_hierarchy` | `tests/enzyme.tcyr` `reference_values` |
 | `tests/integration.rs` `test_ionic_state_serde_roundtrip` | `tests/membrane.tcyr` `serde` |

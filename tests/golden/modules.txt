@@ -6,6 +6,7 @@ constants_private
 domain
 energy
 enzyme
+etc
 glycolysis
 guard
 integrate

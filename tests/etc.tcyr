@@ -1,0 +1,538 @@
+# rasayan — src/etc.cyr: Rust 1.2.0's electron transport chain tests, ported
+# Stdlib auto-included via cyrius.cyml
+#
+# The 24 unit tests of `etc.rs` and the 3 integration tests (tests/integration.rs) that call only glycolysis, TCA and
+# the ETC, as they are written; tests/golden/etc.tsv checks every method, single step, trajectory and Rust's full
+# respiration pipeline besides. Beyond them: the trace event, the crate-private step with its drive, Complex I's
+# capacity, accumulate, the complex-rate view and the codecs' refusals.
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+include "src/integrate.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
+include "src/enzyme_data.cyr"
+include "src/enzyme.cyr"
+include "src/glycolysis_data.cyr"
+include "src/glycolysis.cyr"
+include "src/tca_data.cyr"
+include "src/tca.cyr"
+include "src/etc_data.cyr"
+include "src/etc.cyr"
+
+# 1 when |a − b| < tol.
+fn near(a: f64, b: f64, tol: f64) {
+    var d: f64 = f64_abs(a - b);
+    return d < tol;
+}
+
+# NaN (k 0), +inf (1), -inf (2): the non-finite values of Rust's hardening tests.
+fn nonfinite(k): f64 {
+    if (k == 0) { return _ry_nan(); }
+    var inf: f64 = _RY_INF;
+    if (k == 1) { return inf; }
+    return -inf;
+}
+
+# Complex rate i (0-based, Rust's `complex_rates[i]`) of flux `f`.
+fn rate(f: *RyEtcFlux, i): f64 {
+    var r: f64 = load64(ry_etc_flux_complex_rates(f) + 8 * i);
+    return r;
+}
+
+# 1 when the state validates.
+fn es_ok(p: *RyEtcState) {
+    var t, v = ry_etc_state_validate(p);
+    return is_ok(t);
+}
+
+# The validation outcome of the default config with field k (declaration order) set to x: 1 for Ok, else 0.
+fn cfg_ok_with(k, x: f64) {
+    var c: RyEtcConfig;
+    ry_etc_config_default(&c);
+    var w = &c;
+    store64(w + 8 * k, load64(&x));
+    var t, v = ry_etc_config_validate(&c);
+    return is_ok(t);
+}
+
+# Rust's run_etc: `steps` ticks of `dt` at NADH 0.5, FADH2 0.1, O2 1, ADP 0.5 from the default state into *s; *total
+# sums the amounts and keeps the last tick's rates.
+fn run_etc(steps, dt: f64, s: *RyEtcState, total: *RyEtcFlux) {
+    var c: RyEtcConfig;
+    var f: RyEtcFlux;
+    ry_etc_state_default(s);
+    ry_etc_config_default(&c);
+    ry_etc_flux_default(total);
+    var k = 0;
+    while (k < steps) {
+        ry_etc_state_tick(s, &c, 0.5, 0.1, 1.0, 0.5, dt, &f);
+        var w = total;
+        var o = &f;
+        var j = 0;
+        while (j < 5) {
+            var x: f64 = load64(w + 8 * j);
+            var y: f64 = load64(o + 8 * j);
+            var sum: f64 = x + y;
+            store64(w + 8 * j, load64(&sum));
+            j = j + 1;
+        }
+        memcpy(ry_etc_flux_complex_rates(total), ry_etc_flux_complex_rates(&f), 40);
+        k = k + 1;
+    }
+    return 0;
+}
+
+# ── the captured events ──
+var _ev_buf[1024];
+var _ev_len = 0;
+
+# sakshi's subscriber: keeps the last event's message.
+fn _ev_hook(ts, level, category, msg, msg_len, extra) {
+    var n = msg_len;
+    if (n > 1024) { n = 1024; }
+    memcpy(&_ev_buf, msg, n);
+    _ev_len = msg_len;
+    return 0;
+}
+
+# 1 if the last captured event is the C string `want`.
+fn _ev_is(want) {
+    var n = strlen(want);
+    if (_ev_len != n) { return 0; }
+    return memeq(&_ev_buf, want, n);
+}
+
+# rust src/etc.rs: test_default_state_valid, test_default_config_valid, test_validate_state_rejects_nan
+# rust src/etc.rs: test_validate_config_rejects_bad_values
+# rust tests/integration.rs: test_glycolysis_tca_pathway_validation
+fn validation() {
+    test_group("etc: defaults and validation");
+    var s: RyEtcState;
+    var c: RyEtcConfig;
+    ry_etc_state_default(&s);
+    assert_eq(es_ok(&s), 1, "the default state validates");
+    ry_etc_config_default(&c);
+    var t1, v1 = ry_etc_config_validate(&c);
+    assert_eq(is_ok(t1), 1, "the default config validates");
+    s.pmf = _ry_nan();
+    var t2, v2 = ry_etc_state_validate(&s);
+    assert_eq(v2, RY_ERR_NON_FINITE, "a NaN pmf is refused");
+    ry_etc_state_default(&s);
+    s.cytc_reduced = 1.5;
+    var t3, v3 = ry_etc_state_validate(&s);
+    assert_eq(v3, RY_ERR_INVALID_PARAMETER, "reduced cytochrome c above 1 is refused");
+    # Rust's nine cases, then a zero threshold, which passes.
+    var inf: f64 = _RY_INF;
+    assert_eq(cfg_ok_with(0, _ry_nan()), 0, "complex_i_vmax NaN");
+    assert_eq(cfg_ok_with(4, 0.0), 0, "complex_iv_km_o2 0");
+    assert_eq(cfg_ok_with(7, 0.0), 0, "atp_synthase_km_adp 0");
+    assert_eq(cfg_ok_with(10, 0.0), 0, "pmf_capacity 0");
+    assert_eq(cfg_ok_with(10, inf), 0, "pmf_capacity inf");
+    assert_eq(cfg_ok_with(6, 1.0), 0, "a threshold of 1");
+    assert_eq(cfg_ok_with(6, -0.1), 0, "a negative threshold");
+    assert_eq(cfg_ok_with(11, 5.0), 0, "h_per_nadh below h_per_fadh2");
+    assert_eq(cfg_ok_with(13, _ry_nan()), 0, "h_per_atp NaN");
+    assert_eq(cfg_ok_with(6, 0.0), 1, "a zero threshold passes");
+    assert_eq(cfg_ok_with(11, 6.0), 1, "h_per_nadh equal to h_per_fadh2 passes");
+    # The pathway defaults all validate together (Rust's integration test).
+    var g: RyGlycolysisState;
+    var gc: RyGlycolysisConfig;
+    var t: RyTcaState;
+    var tc: RyTcaConfig;
+    ry_glycolysis_state_default(&g);
+    ry_glycolysis_config_default(&gc);
+    ry_tca_state_default(&t);
+    ry_tca_config_default(&tc);
+    var a1, b1 = ry_glycolysis_state_validate(&g);
+    var a2, b2 = ry_glycolysis_config_validate(&gc);
+    var a3, b3 = ry_tca_state_validate(&t);
+    var a4, b4 = ry_tca_config_validate(&tc);
+    assert(is_ok(a1) + is_ok(a2) + is_ok(a3) + is_ok(a4) == 4, "glycolysis, TCA and ETC defaults all validate");
+    return 0;
+}
+
+# rust src/etc.rs: test_default_pump_split_is_4_4_2, test_pump_stoichiometry_follows_config
+fn pumps() {
+    test_group("etc: the proton pumps");
+    var c: RyEtcConfig;
+    ry_etc_config_default(&c);
+    var ci, ciii, civ = _ry_etc_config_pump_stoichiometry(&c);
+    var a: f64 = ci;
+    var b: f64 = ciii;
+    var d: f64 = civ;
+    assert(a == 4.0 && b == 4.0 && d == 2.0, "the defaults pump exactly 4, 4 and 2");
+    c.h_per_nadh = 12.0;
+    c.h_per_fadh2 = 9.0;
+    var ci2, ciii2, civ2 = _ry_etc_config_pump_stoichiometry(&c);
+    var x: f64 = ci2;
+    var y: f64 = ciii2;
+    var z: f64 = civ2;
+    var tol: f64 = 0.000000000001;
+    assert(x == 3.0 && near(y, 6.0, tol) && near(z, 3.0, tol) && x + y + z == 12.0, "12 / 9 splits 3, 6, 3");
+    var low: RyEtcConfig;
+    var high: RyEtcConfig;
+    ry_etc_config_default(&low);
+    ry_etc_config_default(&high);
+    low.h_per_nadh = 8.0;
+    high.h_per_nadh = 12.0;
+    var weak: RyEtcState;
+    var strong: RyEtcState;
+    var f: RyEtcFlux;
+    ry_etc_state_default(&weak);
+    ry_etc_state_default(&strong);
+    ry_etc_state_tick(&weak, &low, 0.5, 0.0, 1.0, 0.5, 0.1, &f);
+    ry_etc_state_tick(&strong, &high, 0.5, 0.0, 1.0, 0.5, 0.1, &f);
+    var pw: f64 = weak.pmf;
+    var ps: f64 = strong.pmf;
+    assert(ps > pw, "more H+ per NADH builds more pmf");
+    return 0;
+}
+
+# rust src/etc.rs: test_single_tick_rates_non_negative, test_atp_produced, test_nadh_consumed, test_o2_consumed
+# rust src/etc.rs: test_pmf_stays_bounded, test_h2o_is_twice_o2, test_atp_per_nadh_ratio
+fn ticking() {
+    test_group("etc: ticking");
+    var s: RyEtcState;
+    var c: RyEtcConfig;
+    var f: RyEtcFlux;
+    ry_etc_state_default(&s);
+    ry_etc_config_default(&c);
+    ry_etc_state_tick(&s, &c, 0.5, 0.1, 1.0, 0.5, 0.01, &f);
+    var bad = 0;
+    var i = 0;
+    while (i < 5) {
+        var r: f64 = rate(&f, i);
+        if (r < 0.0) { bad = bad + 1; }
+        i = i + 1;
+    }
+    assert_eq(bad, 0, "every complex runs forward from rest");
+    var total: RyEtcFlux;
+    run_etc(100, 0.1, &s, &total);
+    var atp: f64 = total.atp_produced;
+    var nadh: f64 = total.nadh_consumed;
+    var o2: f64 = total.o2_consumed;
+    var h2o: f64 = total.h2o_produced;
+    assert(atp > 0.0 && nadh > 0.0 && o2 > 0.0, "ATP made, NADH and O2 consumed");
+    assert(near(h2o, 2.0 * o2, 0.000000000001), "H2O is twice the O2");
+    run_etc(1000, 0.01, &s, &total);
+    assert_eq(es_ok(&s), 1, "pmf, QH2 and cyt c stay in [0, 1] over 1000 steps of 0.01 s");
+    ry_etc_state_default(&s);
+    var tn: f64 = 0.0;
+    var ta: f64 = 0.0;
+    var to: f64 = 0.0;
+    var k = 0;
+    while (k < 500) {
+        ry_etc_state_tick(&s, &c, 1.0, 0.0, 1.0, 1.0, 0.1, &f);
+        tn = tn + f.nadh_consumed;
+        ta = ta + f.atp_produced;
+        to = to + f.o2_consumed;
+        k = k + 1;
+    }
+    var ratio: f64 = ta / tn;
+    var p_o: f64 = ta / (2.0 * to);
+    assert(tn > 1.0 && ratio >= 2.0 && ratio <= 3.0 && p_o >= 2.0 && p_o <= 3.0, "~2.5 ATP per NADH, P/O ~2.5");
+    return 0;
+}
+
+# rust src/etc.rs: test_no_oxygen_no_civ, test_no_nadh_no_ci, test_respiratory_control, test_adp_drives_atp_synthase
+fn regulation() {
+    test_group("etc: respiratory control");
+    var s: RyEtcState;
+    var c: RyEtcConfig;
+    var a: RyEtcFlux;
+    var b: RyEtcFlux;
+    ry_etc_config_default(&c);
+    ry_etc_state_default(&s);
+    ry_etc_state_tick(&s, &c, 0.5, 0.1, 0.0, 0.5, 0.1, &a);
+    var civ: f64 = a.rate_civ;
+    assert(civ < 0.0000000001, "no O2, no Complex IV");
+    ry_etc_state_default(&s);
+    ry_etc_state_tick(&s, &c, 0.0, 0.0, 1.0, 0.5, 0.1, &a);
+    var ci: f64 = a.rate_ci;
+    assert(ci < 0.0000000001, "no NADH, no Complex I");
+    ry_etc_state_default(&s);
+    s.pmf = 0.2;
+    ry_etc_state_tick(&s, &c, 0.5, 0.1, 1.0, 0.5, 0.1, &a);
+    ry_etc_state_default(&s);
+    s.pmf = 0.9;
+    ry_etc_state_tick(&s, &c, 0.5, 0.1, 1.0, 0.5, 0.1, &b);
+    var lo: f64 = a.rate_ci;
+    var hi: f64 = b.rate_ci;
+    assert(hi < lo, "a high pmf slows Complex I");
+    ry_etc_state_default(&s);
+    ry_etc_state_tick(&s, &c, 0.5, 0.1, 1.0, 0.01, 0.1, &a);
+    ry_etc_state_default(&s);
+    ry_etc_state_tick(&s, &c, 0.5, 0.1, 1.0, 2.0, 0.1, &b);
+    var slow: f64 = a.rate_atp_synthase;
+    var fast: f64 = b.rate_atp_synthase;
+    assert(fast > slow, "more ADP drives ATP synthase faster");
+    return 0;
+}
+
+# rust src/etc.rs: test_invalid_dt_is_noop, test_nan_inputs_sanitized, test_nan_state_recovers
+# rust src/etc.rs: test_consumption_capped_at_inputs
+fn hardening() {
+    test_group("etc: hardening");
+    var s: RyEtcState;
+    var d: RyEtcState;
+    var c: RyEtcConfig;
+    var f: RyEtcFlux;
+    var zero: RyEtcFlux;
+    ry_etc_config_default(&c);
+    ry_etc_state_default(&d);
+    ry_etc_flux_default(&zero);
+    var k = 0;
+    while (k < 5) {
+        var dt: f64 = 0.0;
+        if (k == 1) { dt = -0.1; }
+        if (k > 1) { dt = nonfinite(k - 2); }
+        ry_etc_state_default(&s);
+        memset(&f, 255, 80);
+        ry_etc_state_tick(&s, &c, 0.5, 0.1, 1.0, 0.5, dt, &f);
+        assert(memeq(&s, &d, 24) == 1 && memeq(&f, &zero, 80) == 1, "an invalid dt changes nothing, a zero flux");
+        k = k + 1;
+    }
+    # (NaN, 0.1, 1, 0.5), (0.5, NaN, 1, 0.5), (0.5, 0.1, NaN, 0.5), (0.5, 0.1, 1, NaN), (inf, -1, 7, -inf)
+    var j = 0;
+    while (j < 5) {
+        var nadh: f64 = 0.5;
+        var fadh2: f64 = 0.1;
+        var o2: f64 = 1.0;
+        var adp: f64 = 0.5;
+        if (j == 0) { nadh = _ry_nan(); }
+        if (j == 1) { fadh2 = _ry_nan(); }
+        if (j == 2) { o2 = _ry_nan(); }
+        if (j == 3) { adp = _ry_nan(); }
+        if (j == 4) {
+            nadh = nonfinite(1);
+            fadh2 = -1.0;
+            o2 = 7.0;
+            adp = nonfinite(2);
+        }
+        ry_etc_state_default(&s);
+        ry_etc_state_tick(&s, &c, nadh, fadh2, o2, adp, 0.1, &f);
+        var fin = 1;
+        var w = &f;
+        var i = 0;
+        while (i < 10) {
+            var x: f64 = load64(w + 8 * i);
+            if (_ry_is_finite(x) == 0) { fin = 0; }
+            i = i + 1;
+        }
+        assert(es_ok(&s) == 1 && fin == 1, "bad inputs keep the state valid, the flux finite");
+        j = j + 1;
+    }
+    s.pmf = _ry_nan();
+    s.qh2_fraction = _ry_nan();
+    s.cytc_reduced = _ry_nan();
+    ry_etc_state_tick(&s, &c, 0.5, 0.1, 1.0, 0.5, 0.1, &f);
+    assert_eq(es_ok(&s), 1, "a NaN state recovers in one step");
+    memset(&s, 0, 24);
+    ry_etc_state_tick(&s, &c, 0.0001, 0.0002, 1.0, 0.001, 50.0, &f);
+    var used: f64 = f.nadh_consumed;
+    var fad: f64 = f.fadh2_consumed;
+    var made: f64 = f.atp_produced;
+    var tiny: f64 = 0.000000000000000001;
+    assert(near(used, 0.0001, tiny) && near(fad, 0.0002, tiny) && made <= 0.001, "nothing consumed beyond the supply");
+    return 0;
+}
+
+# rust src/etc.rs: test_large_dt_conserves_electrons
+fn conservation() {
+    test_group("etc: electrons");
+    var s: RyEtcState;
+    var c: RyEtcConfig;
+    var f: RyEtcFlux;
+    ry_etc_config_default(&c);
+    var dt: f64 = 1.0;
+    var r = 0;
+    while (r < 2) {
+        ry_etc_state_default(&s);
+        var stored0: f64 = s.qh2_fraction + s.cytc_reduced;
+        var e_in: f64 = 0.0;
+        var e_out: f64 = 0.0;
+        var ok = 1;
+        var i = 0;
+        while (i < 200) {
+            var nadh: f64 = 0.05;
+            if (i % 3 == 0) { nadh = 2.0; }
+            ry_etc_state_tick(&s, &c, nadh, 0.5, 1.0, 0.5, dt, &f);
+            var used: f64 = f.nadh_consumed;
+            var fad: f64 = f.fadh2_consumed;
+            var made: f64 = f.atp_produced;
+            if (es_ok(&s) == 0 || used > nadh || fad > 0.5 || made > 0.5) { ok = 0; }
+            e_in = e_in + (f.nadh_consumed + f.fadh2_consumed);
+            e_out = e_out + f.h2o_produced;
+            i = i + 1;
+        }
+        var stored: f64 = s.qh2_fraction + s.cytc_reduced - stored0;
+        var imbalance: f64 = e_in - e_out - stored;
+        assert(ok == 1 && near(imbalance, 0.0, 0.000000001), "electron pairs in = out + stored, for any dt");
+        dt = 5.0;
+        r = r + 1;
+    }
+    return 0;
+}
+
+# rust tests/integration.rs: test_full_respiration_pipeline
+fn pipeline() {
+    test_group("etc: full respiration");
+    var gc: RyGlycolysisConfig;
+    var tc: RyTcaConfig;
+    var ec: RyEtcConfig;
+    var g: RyGlycolysisState;
+    var t: RyTcaState;
+    var e: RyEtcState;
+    var gf: RyGlycolysisFlux;
+    var tf: RyTcaFlux;
+    var ef: RyEtcFlux;
+    ry_glycolysis_config_default(&gc);
+    ry_tca_config_default(&tc);
+    ry_etc_config_default(&ec);
+    ry_glycolysis_state_default(&g);
+    ry_tca_state_default(&t);
+    ry_etc_state_default(&e);
+    var made: f64 = 0.0;
+    var o2: f64 = 0.0;
+    var k = 0;
+    while (k < 200) {
+        ry_glycolysis_state_tick(&g, &gc, 6.0, 0.5, 700.0, 0.1, &gf);
+        var pyr: f64 = g.pyruvate;
+        ry_tca_state_tick(&t, &tc, pyr, 6.0, 0.5, 700.0, 0.1, &tf);
+        var left: f64 = g.pyruvate - tf.pyruvate_consumed;
+        var kept: f64 = _ry_max(left, 0.0);
+        g.pyruvate = kept;
+        var nadh_pool: f64 = gf.nadh_produced + tf.nadh_produced;
+        var fadh2: f64 = tf.fadh2_produced;
+        ry_etc_state_tick(&e, &ec, nadh_pool, fadh2, 1.0, 0.5, 0.1, &ef);
+        made = made + (gf.net_atp + tf.gtp_produced + ef.atp_produced);
+        o2 = o2 + ef.o2_consumed;
+        k = k + 1;
+    }
+    assert(made > 0.1 && o2 > 0.0, "glycolysis, TCA and the ETC make ATP and consume O2");
+    return 0;
+}
+
+# The crate-private entry points the metabolic network calls (M5): step with its drive, Complex I's capacity,
+# accumulate.
+fn network() {
+    test_group("etc: the network's entry points");
+    var s: RyEtcState;
+    var t: RyEtcState;
+    var c: RyEtcConfig;
+    var f: RyEtcFlux;
+    var g: RyEtcFlux;
+    var d: _RyEtcDrive;
+    ry_etc_config_default(&c);
+    ry_etc_state_default(&s);
+    ry_etc_state_default(&t);
+    ry_etc_state_tick(&s, &c, 0.5, 0.1, 1.0, 0.5, 0.1, &f);
+    d.nadh_conc = 0.5;
+    d.nadh_avail = 0.5;
+    d.fadh2 = 0.1;
+    d.oxygen = 1.0;
+    d.adp = 0.5;
+    _ry_etc_state_step(&t, &c, &d, 0.1, &g);
+    assert(memeq(&s, &t, 24) == 1 && memeq(&f, &g, 80) == 1, "tick is step with the same NADH twice");
+    ry_etc_state_default(&t);
+    d.nadh_avail = 0.00001;
+    _ry_etc_state_step(&t, &c, &d, 0.1, &g);
+    var used: f64 = g.nadh_consumed;
+    assert(used <= 0.00001, "Complex I consumes at most the NADH available");
+    ry_etc_state_default(&s);
+    var cap: f64 = _ry_etc_state_complex_i_capacity(&s, &c);
+    assert(near(cap, 3.5 * 0.7 * 0.4, 0.000000000001), "the capacity is Vmax × oxidized Q × (1 − pmf)");
+    var total: RyEtcFlux;
+    ry_etc_flux_default(&total);
+    _ry_etc_flux_accumulate(&total, &f, 0.5);
+    _ry_etc_flux_accumulate(&total, &f, 0.5);
+    var made: f64 = total.atp_produced;
+    var once: f64 = f.atp_produced;
+    var ci2: f64 = total.rate_ci;
+    var ci1: f64 = f.rate_ci;
+    assert(made == once + once && ci2 == ci1 * 0.5 + ci1 * 0.5, "amounts summed, rates weighted");
+    return 0;
+}
+
+# Rust's trace event, under the target `rasayan::etc`, its fields in Rust's order (the drive after its guards, the
+# state's pmf as it is).
+fn events() {
+    test_group("etc: trace event");
+    sakshi_set_emit_hook(&_ev_hook);
+    sakshi_set_level(SK_TRACE);
+    var s: RyEtcState;
+    var c: RyEtcConfig;
+    var f: RyEtcFlux;
+    ry_etc_state_default(&s);
+    ry_etc_config_default(&c);
+    ry_etc_state_tick(&s, &c, 0.5, 0.1, 2.0, 0.5, 0.01, &f);
+    assert_eq(_ev_is("rasayan::etc: etc_tick dt=0.01 nadh_conc=0.5 fadh2=0.1 oxygen=1 pmf=0.6"), 1, "etc_tick");
+    _ev_len = 0;
+    ry_etc_state_tick(&s, &c, 0.5, 0.1, 1.0, 0.5, 0.0, &f);
+    assert_eq(_ev_len, 0, "no event for an invalid dt");
+    sakshi_set_level(SK_INFO);
+    ry_etc_state_tick(&s, &c, 0.5, 0.1, 1.0, 0.5, 0.01, &f);
+    assert_eq(_ev_len, 0, "below TRACE, nothing");
+    sakshi_clear_emit_hook();
+    return 0;
+}
+
+# rust src/etc.rs: test_serde_roundtrip_state, test_serde_roundtrip_config
+# rust tests/integration.rs: test_etc_flux_serde_roundtrip
+fn serde() {
+    test_group("etc: serde round trips");
+    var sb = str_builder_new();
+    var s: RyEtcState;
+    var back: RyEtcState;
+    ry_etc_state_default(&s);
+    var t1, v1 = ry_etc_state_to_json(sb, &s);
+    var want = "{\"pmf\":0.6,\"qh2_fraction\":0.3,\"cytc_reduced\":0.2}";
+    assert_eq(memeq(load64(sb), want, strlen(want)), 1, "serde_json's document");
+    var t2, v2 = ry_etc_state_from_json(load64(sb), load64(sb + 8), &back);
+    assert(is_ok(t2) == 1 && memeq(&back, &s, 24) == 1, "the state reads back");
+    var c: RyEtcConfig;
+    var cb: RyEtcConfig;
+    ry_etc_config_default(&c);
+    store64(sb + 8, 0);
+    var t3, v3 = ry_etc_config_to_json(sb, &c);
+    var t4, v4 = ry_etc_config_from_json(load64(sb), load64(sb + 8), &cb);
+    assert(is_ok(t4) == 1 && memeq(&cb, &c, 112) == 1, "the config reads back");
+    var f: RyEtcFlux;
+    var fb: RyEtcFlux;
+    ry_etc_state_tick(&s, &c, 0.5, 0.1, 1.0, 0.5, 0.01, &f);
+    store64(sb + 8, 0);
+    var t5, v5 = ry_etc_flux_to_json(sb, &f);
+    var t6, v6 = ry_etc_flux_from_json(load64(sb), load64(sb + 8), &fb);
+    assert(is_ok(t6) == 1 && memeq(&fb, &f, 80) == 1, "a step's flux reads back, bit for bit");
+    var short = "[1,0.5,0.75,3,1.5,[1,2,3]]";
+    var t7, v7 = ry_etc_flux_from_json(short, strlen(short), &fb);
+    assert_eq(v7, RY_ERR_DESERIALIZE, "complex_rates must hold five numbers");
+    return 0;
+}
+
+# Runs the ETC suite.
+fn main() {
+    alloc_init();
+    validation();
+    pumps();
+    ticking();
+    regulation();
+    hardening();
+    conservation();
+    pipeline();
+    network();
+    events();
+    serde();
+    return assert_summary();
+}
+
+var exit_code = main();
+# assert_summary() returns the failure count; a wait status is 8 bits, so any failure exits 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

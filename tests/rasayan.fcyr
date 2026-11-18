@@ -7,7 +7,8 @@
 # The sequence readers and each type's codec join with their milestones: M2 part 2, IonicState's and
 # MembranePermeability's; part 3, SecondMessenger's; part 4, MetabolicState's; part 5, BioenergyState's. M3 part 1:
 # every protein function on the input as a sequence; part 2, alignment on its two halves; parts 3 and 4, the PTM and
-# domain scans. M4a: the glycolysis and TCA codecs, and steps of every state the readers accept.
+# domain scans. M4a: the glycolysis and TCA codecs, and steps of every state the readers accept; M4b part 1, the
+# ETC's.
 
 include "src/constants.cyr"
 include "src/constants_private.cyr"
@@ -39,6 +40,8 @@ include "src/glycolysis_data.cyr"
 include "src/glycolysis.cyr"
 include "src/tca_data.cyr"
 include "src/tca.cyr"
+include "src/etc_data.cyr"
+include "src/etc.cyr"
 
 var _fz_state = 0x2545F4914F6CDD1D;
 var _fz_bad = 0;
@@ -54,6 +57,7 @@ var _fz_ptm = 0;
 var _fz_domain = 0;
 var _fz_glycolysis = 0;
 var _fz_tca = 0;
+var _fz_etc = 0;
 
 # xorshift64*: the next pseudo-random word.
 fn fz_next(): i64 {
@@ -443,6 +447,76 @@ fn fuzz_tca(data, len) {
     return 0;
 }
 
+# The ETC codecs on one input: an accepted state, config or flux is finite and reads back bit for bit. An accepted
+# state that validates stays valid through a 0.5 s and a 50 s step, consumes no more NADH, FADH2 or ADP than it is
+# offered, and balances its electron pairs: what enters (NADH and FADH2 oxidized) is the water made plus what Q and
+# cytochrome c now hold more, to 1e-12.
+fn fuzz_etc(data, len) {
+    reset_via(_fz_arena);
+    var s: RyEtcState;
+    var sb2: RyEtcState;
+    var t1, v1 = ry_etc_state_from_json_a(_fz_arena, data, len, &s);
+    if (is_ok(t1) == 1) {
+        _fz_etc = _fz_etc + 1;
+        if (fz_all_finite(&s, 3) == 0) { _fz_bad = _fz_bad + 1; }
+        store64(_fz_sb + 8, 0);
+        var t2, v2 = ry_etc_state_to_json(_fz_sb, &s);
+        var t3, v3 = ry_etc_state_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &sb2);
+        if (is_ok(t2) == 0 || is_ok(t3) == 0 || memeq(&sb2, &s, 24) == 0) { _fz_bad = _fz_bad + 1; }
+        var tv, vv = ry_etc_state_validate(&s);
+        if (is_ok(tv) == 1) {
+            var c: RyEtcConfig;
+            var f: RyEtcFlux;
+            ry_etc_config_default(&c);
+            var stored0: f64 = s.qh2_fraction + s.cytc_reduced;
+            ry_etc_state_tick(&s, &c, 0.5, 0.1, 1.0, 0.5, 0.5, &f);
+            var e_in: f64 = f.nadh_consumed + f.fadh2_consumed;
+            var e_out: f64 = f.h2o_produced;
+            var over = 0;
+            var n1: f64 = f.nadh_consumed;
+            var a1: f64 = f.atp_produced;
+            if (n1 > 0.5 || a1 > 0.5) { over = 1; }
+            ry_etc_state_tick(&s, &c, 2.0, 0.5, 1.0, 0.5, 50.0, &f);
+            e_in = e_in + (f.nadh_consumed + f.fadh2_consumed);
+            e_out = e_out + f.h2o_produced;
+            var n2: f64 = f.nadh_consumed;
+            var fa2: f64 = f.fadh2_consumed;
+            if (n2 > 2.0 || fa2 > 0.5) { over = 1; }
+            var stored: f64 = s.qh2_fraction + s.cytc_reduced - stored0;
+            var imbalance: f64 = f64_abs(e_in - e_out - stored);
+            var tw, vw = ry_etc_state_validate(&s);
+            if (is_ok(tw) == 0 || over == 1 || fz_all_finite(&f, 10) == 0 || imbalance > 0.000000000001) {
+                _fz_bad = _fz_bad + 1;
+            }
+        }
+    }
+    var c2: RyEtcConfig;
+    var cb: RyEtcConfig;
+    var t4, v4 = ry_etc_config_from_json_a(_fz_arena, data, len, &c2);
+    if (is_ok(t4) == 1) {
+        _fz_etc = _fz_etc + 1;
+        store64(_fz_sb + 8, 0);
+        var t5, v5 = ry_etc_config_to_json(_fz_sb, &c2);
+        var t6, v6 = ry_etc_config_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &cb);
+        if (fz_all_finite(&c2, 14) == 0 || is_ok(t5) == 0 || is_ok(t6) == 0 || memeq(&cb, &c2, 112) == 0) {
+            _fz_bad = _fz_bad + 1;
+        }
+    }
+    var fx: RyEtcFlux;
+    var fb: RyEtcFlux;
+    var t7, v7 = ry_etc_flux_from_json_a(_fz_arena, data, len, &fx);
+    if (is_ok(t7) == 1) {
+        _fz_etc = _fz_etc + 1;
+        store64(_fz_sb + 8, 0);
+        var t8, v8 = ry_etc_flux_to_json(_fz_sb, &fx);
+        var t9, v9 = ry_etc_flux_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &fb);
+        if (fz_all_finite(&fx, 10) == 0 || is_ok(t8) == 0 || is_ok(t9) == 0 || memeq(&fb, &fx, 80) == 0) {
+            _fz_bad = _fz_bad + 1;
+        }
+    }
+    return 0;
+}
+
 # A NUL-terminated copy of the document builder `sb` holds (a seed).
 fn fz_seed_of(sb): i64 {
     var n = load64(sb + 8);
@@ -593,7 +667,7 @@ fn main() {
     var buf = alloc(cap + 1);
     _fz_arena = arena_allocator_growable(65536);
     _fz_sb = str_builder_new();
-    var seeds = alloc(8 * 45);
+    var seeds = alloc(8 * 48);
     store64(seeds, "trace");
     store64(seeds + 8, "DEBUG");
     store64(seeds + 16, "info,warn");
@@ -662,6 +736,20 @@ fn main() {
     store64(_fz_sb + 8, 0);
     var tt2, vt2 = ry_tca_flux_to_json(_fz_sb, &tfx);
     store64(seeds + 352, fz_seed_of(_fz_sb));
+    # The ETC documents: the default state, the default config and a step's flux as written.
+    store64(seeds + 360, "{\"pmf\":0.6,\"qh2_fraction\":0.3,\"cytc_reduced\":0.2}");
+    var ecf: RyEtcConfig;
+    var est: RyEtcState;
+    var efx: RyEtcFlux;
+    ry_etc_config_default(&ecf);
+    ry_etc_state_default(&est);
+    ry_etc_state_tick(&est, &ecf, 0.5, 0.1, 1.0, 0.5, 0.1, &efx);
+    store64(_fz_sb + 8, 0);
+    var te1, ve1 = ry_etc_config_to_json(_fz_sb, &ecf);
+    store64(seeds + 368, fz_seed_of(_fz_sb));
+    store64(_fz_sb + 8, 0);
+    var te2, ve2 = ry_etc_flux_to_json(_fz_sb, &efx);
+    store64(seeds + 376, fz_seed_of(_fz_sb));
     var i = 0;
     while (i < 50000) {
         var n = 0;
@@ -670,7 +758,7 @@ fn main() {
             var k = 0;
             while (k < n) { store8(buf + k, fz_below(256)); k = k + 1; }
         } else {
-            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(45)));
+            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(48)));
         }
         fuzz_main(buf, n);
         fuzz_json(buf, n);
@@ -681,6 +769,7 @@ fn main() {
         fuzz_domain(buf, n);
         fuzz_glycolysis(buf, n);
         fuzz_tca(buf, n);
+        fuzz_etc(buf, n);
         i = i + 1;
     }
     if (_fz_bad != 0) {
@@ -706,6 +795,8 @@ fn main() {
     fmt_int(_fz_glycolysis);
     print(", TCA documents read: ", 22);
     fmt_int(_fz_tca);
+    print(", ETC documents read: ", 22);
+    fmt_int(_fz_etc);
     println(")");
     return 0;
 }

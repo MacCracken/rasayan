@@ -647,7 +647,7 @@ fn json_rows(m: &mut Module) {
     ];
     for d in &state_docs {
         let r: Result<GlycolysisState, _> = serde_json::from_slice(d.as_bytes());
-        read_row(m, "serde_json::from_slice<GlycolysisState>", d, r.ok().map(|v| gs::vals(&v)), gs::NAMES, 0);
+        read_row(m, "serde_json::from_slice<GlycolysisState>", d, r.ok().map(|v| gs::vals(&v)), gs::NAMES, ("", 0));
     }
 
     let cj = serde_json::to_string(&cfg).unwrap_or_default();
@@ -664,7 +664,7 @@ fn json_rows(m: &mut Module) {
     ];
     for d in &cfg_docs {
         let r: Result<GlycolysisConfig, _> = serde_json::from_slice(d.as_bytes());
-        read_row(m, "serde_json::from_slice<GlycolysisConfig>", d, r.ok().map(|v| gc::vals(&v)), gc::NAMES, 0);
+        read_row(m, "serde_json::from_slice<GlycolysisConfig>", d, r.ok().map(|v| gc::vals(&v)), gc::NAMES, ("", 0));
     }
 
     let fj = serde_json::to_string(&flux).unwrap_or_default();
@@ -684,7 +684,7 @@ fn json_rows(m: &mut Module) {
     ];
     for d in &flux_docs {
         let r: Result<GlycolysisFlux, _> = serde_json::from_slice(d.as_bytes());
-        read_row(m, "serde_json::from_slice<GlycolysisFlux>", d, r.ok().map(|v| flux_vals(&v)), FLUX_NAMES, 10);
+        read_row(m, "serde_json::from_slice<GlycolysisFlux>", d, r.ok().map(|v| flux_vals(&v)), FLUX_NAMES, ("step_rates", 10));
     }
 }
 

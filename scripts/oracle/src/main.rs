@@ -32,6 +32,7 @@ mod m_alignment;
 mod m_constants;
 mod m_domain;
 mod m_energy;
+mod m_etc;
 mod m_enzyme;
 mod m_glycolysis;
 mod m_guard;
@@ -51,6 +52,7 @@ mod t_ai;
 mod t_alignment;
 mod t_constants;
 mod t_energy;
+mod t_etc;
 mod t_enzyme;
 mod t_glycolysis;
 mod t_membrane;
@@ -61,6 +63,7 @@ mod t_tca;
 mod t_protein;
 mod tsv;
 mod v_glycolysis;
+mod v_etc;
 mod v_guard;
 mod v_integrate;
 mod v_logging;
@@ -99,6 +102,7 @@ fn golden_modules(root: &Path) -> Result<Vec<tsv::Module>, String> {
         t_protein::golden(&read("protein")?)?,
         t_alignment::golden(&read("alignment")?, &amino_codes())?,
         t_energy::golden(&read("energy")?)?,
+        t_etc::golden(&read("etc")?)?,
         t_enzyme::golden(&read("enzyme")?)?,
         t_glycolysis::golden(&read("glycolysis")?)?,
         t_membrane::golden(&read("membrane")?)?,
@@ -144,6 +148,10 @@ fn cyrius_outputs(root: &Path, prov: &str) -> Result<Vec<Output>, String> {
         (
             "src/enzyme_data.cyr",
             t_enzyme::emit_cyr(&read("enzyme")?, prov)?,
+        ),
+        (
+            "src/etc_data.cyr",
+            t_etc::emit_cyr(&read("etc")?, prov)?,
         ),
         (
             "src/glycolysis_data.cyr",

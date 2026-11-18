@@ -15,9 +15,10 @@ fn toks(a: &[f64]) -> Vec<Tok> {
 /// The values a `from_slice` row records for object document `d`: serde_json's reads, with each number token
 /// re-parsed by core's correctly rounded `parse::<f64>` (rasayan 1.2.0's serde_json has no `float_roundtrip`, so its
 /// parse misreads some long decimals by an ulp; ADR 0004: read rows record the correctly rounded value). `names` are
-/// the f64 fields in order, then the `rates` numbers of `step_rates` (0: none). An array document (the sequence form) is
-/// recorded as read: its numbers are short.
-fn reread(d: &str, names: &[&str], rates: usize, got: &[f64]) -> (Vec<f64>, bool) {
+/// the f64 fields in order, then the numbers of the array field `array` = (its key, its length; 0: none). An array
+/// document (the sequence form) is recorded as read: its numbers are short.
+fn reread(d: &str, names: &[&str], array: (&str, usize), got: &[f64]) -> (Vec<f64>, bool) {
+    let (key, rates) = array;
     let mut v = got.to_vec();
     if d.trim_start().starts_with('[') {
         return (v, false);
@@ -33,8 +34,9 @@ fn reread(d: &str, names: &[&str], rates: usize, got: &[f64]) -> (Vec<f64>, bool
             v[k] = x;
         }
     }
-    if let Some(at) = d.find("\"step_rates\":[").filter(|_| rates > 0) {
-        let mut pos = at + "\"step_rates\":[".len();
+    let open = format!("\"{key}\":[");
+    if let Some(at) = d.find(&open).filter(|_| rates > 0) {
+        let mut pos = at + open.len();
         for k in 0..rates {
             if let Some(x) = token(pos) {
                 v[names.len() + k] = x;
@@ -47,12 +49,12 @@ fn reread(d: &str, names: &[&str], rates: usize, got: &[f64]) -> (Vec<f64>, bool
 }
 
 /// A `from_slice` row: the read values (re-read correctly rounded, noted where serde_json misread), or the refusal.
-pub fn read_row(m: &mut Module, name: &str, d: &str, got: Option<Vec<f64>>, names: &[&str], rates: usize) {
+pub fn read_row(m: &mut Module, name: &str, d: &str, got: Option<Vec<f64>>, names: &[&str], array: (&str, usize)) {
     let ins = [sb(d.as_bytes())];
     match got {
         None => m.row(name, Class::A, &ins, &[Tok::Err("Deserialize".to_string())]),
         Some(g) => {
-            let (v, changed) = reread(d, names, rates, &g);
+            let (v, changed) = reread(d, names, array, &g);
             if changed {
                 let read: Vec<String> = g.iter().map(|x| format!("{:016x}", x.to_bits())).collect();
                 let extra = format!("serde_json reads {}; the correctly rounded values are recorded", read.join(" "));

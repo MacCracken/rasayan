@@ -198,3 +198,21 @@ Measured at load 2.0–2.8, with the reference rows at their quiet values (micha
 helpers, which Rust inlines; the transfers are one call each since part 1's review. Nothing further to take out in
 review: the rate laws are `src/enzyme.cyr`'s public functions, multi-statement, so `#inline` does not take them.
 
+## M4b part 1: ETC
+
+| Benchmark | Rust 1.2.0 (ns) | Cyrius (ns) | Before review (ns) | Notes |
+|---|---|---|---|---|
+| etc_tick | 43.17 | 197 | 218 | Rust's loop body: a default state, one tick of 0.01 s at NADH 0.5, FADH2 0.1, O2 1, ADP 0.5; no transcendental |
+
+Cyrius only:
+
+| Benchmark | Cyrius (ns) | Notes |
+|---|---|---|
+| tick, the state stepped on (no reset) | 192 | |
+| full respiration, one step | 1,629 | Rust's integration loop body: glycolysis, TCA on its pyruvate, the ETC on their NADH and FADH2 |
+
+Measured at load 3.9–4.5 (another project's jobs), with the reference rows within 4 % of their quiet values
+(michaelis_menten 12 ns, nernst 81–83 ns). The tick makes about 40 calls (the guards, `_ry_min`, `_ry_max`, the
+three-value pump split, the transfers), which Rust inlines. The review wrote `_ry_guard_unit`'s clamp out, one call
+per guard instead of two (218 → 197 ns; the SecondMessenger tick at dt 0.01, which makes three, 105 → 91 ns).
+

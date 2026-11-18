@@ -947,9 +947,118 @@ TCA = {
     "tca::glycolysis_feeds_tca": _t_coupled,
 }
 
+# ── etc (M4b part 1) ──
+# EtcState::step in Rust's order (tick is step with the NADH concentration and availability the same). No primitive
+# is called: the model is here for the class-T rows (the trajectories and Rust's full respiration pipeline, which runs
+# glycolysis's and TCA's models too).
+
+E_DEFAULT = [3.5, 0.5, 6.0, 7.0, 0.01, 3.3, 0.3, 0.1, 0.05, 10.0, 100.0, 10.0, 6.0, 4.0]  # EtcConfig::default()
+E_STATE = 3
+E_KM_NADH = 0.002  # etc::COMPLEX_I_KM_NADH
+
+
+def _e_step(st, c, nadh_conc, nadh_avail, fadh2, oxygen, adp, dt):
+    """One EtcState::step on [pmf, qh2_fraction, cytc_reduced]: (state after, the 10 flux values)."""
+    if not (math.isfinite(dt) and dt > 0.0):
+        return list(st), [0.0] * 10
+    nadh_conc, nadh_avail, fadh2 = _conc(nadh_conc), _conc(nadh_avail), _conc(fadh2)
+    oxygen, adp = _unit(oxygen), _conc(adp)
+    pmf, qh2, cytc = _unit(st[0]), _unit(st[1]), _unit(st[2])
+    pc = 1.0 - pmf
+    ci_h = _rust_max(c[11] - c[12], 0.0)
+    civ_h = _rust_max(c[12] / 3.0, 0.0)
+    ciii_h = _rust_max(c[12] - civ_h, 0.0)
+    q_av = 1.0 - qh2
+    v_ci = c[0] * (nadh_conc / (E_KM_NADH + nadh_conc)) * q_av * pc
+    cii_cap = c[1] * q_av * dt
+    v_ciii = c[2] * qh2 * (1.0 - cytc) * pc
+    v_civ = c[3] * cytc * _fdiv(oxygen, c[4] + oxygen) * pc
+    drive = _fdiv(pmf - c[6], 1.0 - c[6]) if pmf > c[6] else 0.0
+    v_atp = c[5] * drive * _fdiv(adp, c[7] + adp)
+    v_leak = c[8] * pmf
+    a_civ = _take(v_civ * dt, cytc)
+    cytc -= a_civ
+    a_ciii = _take(v_ciii * dt, _rust_min(qh2, 1.0 - cytc))
+    qh2 -= a_ciii
+    cytc += a_ciii
+    a_ci = _take(v_ci * dt, _rust_min(nadh_avail, 1.0 - qh2))
+    qh2 += a_ci
+    a_cii = _take(_rust_min(fadh2, cii_cap), 1.0 - qh2)
+    qh2 += a_cii
+    h_pumped = a_ci * ci_h + a_ciii * ciii_h + a_civ * civ_h
+    h_avail = pmf * c[10] + h_pumped
+    a_atp = _take(v_atp * dt, adp)
+    h_leak = _conc(v_leak * dt * c[9])
+    h_demand = a_atp * c[13] + h_leak
+    if h_demand > h_avail:
+        scale = _fdiv(h_avail, h_demand)
+        a_atp *= scale
+        h_leak *= scale
+    h_consumed = a_atp * c[13] + h_leak
+    new_pmf = pmf + _fdiv(h_pumped - h_consumed, c[10])
+    o2 = 0.5 * a_civ
+    inv = 1.0 / dt
+    flux = [a_ci, a_cii, o2, a_atp, 2.0 * o2] + [x * inv for x in (a_ci, a_cii, a_ciii, a_civ, a_atp)]
+    return [_unit(new_pmf), _unit(qh2), _unit(cytc)], flux
+
+
+def _e_trajectory(a, P):
+    """A class-T script: the state, the config, then `1 nadh fadh2 o2 adp dt k`, `2 conc avail fadh2 o2 adp dt k`,
+    `3 field x`."""
+    st = list(a[:E_STATE])
+    c = list(E_DEFAULT)
+    n = a[E_STATE]
+    for j in range(n):
+        c[a[E_STATE + 1 + 2 * j]] = a[E_STATE + 2 + 2 * j]
+    k = E_STATE + 1 + 2 * n
+    flux = [0.0] * 10
+    while k < len(a):
+        op = a[k]
+        if op == 1:
+            nadh, fa, o, ad, dt, reps = a[k + 1:k + 7]
+            for _ in range(reps):
+                st, flux = _e_step(st, c, _conc(nadh), _conc(nadh), fa, o, ad, dt)
+            k += 7
+        elif op == 2:
+            conc, avail, fa, o, ad, dt, reps = a[k + 1:k + 8]
+            for _ in range(reps):
+                st, flux = _e_step(st, c, conc, avail, fa, o, ad, dt)
+            k += 8
+        elif op == 3:
+            st[a[k + 1]] = a[k + 2]
+            k += 3
+        else:
+            raise ValueError(f"no operation {op}")
+    return st + flux
+
+
+def _e_pipeline(a, P):
+    """Rust's test_full_respiration_pipeline loop: the three states, then `atp adp nad oxygen dt k`."""
+    g = list(a[:G_STATE])
+    t = list(a[G_STATE:G_STATE + T_STATE])
+    e = list(a[G_STATE + T_STATE:G_STATE + T_STATE + E_STATE])
+    atp, adp, nad, oxygen, dt, reps = a[G_STATE + T_STATE + E_STATE:]
+    made = o2 = 0.0
+    for _ in range(reps):
+        g, gf = _g_tick(g, list(G_DEFAULT), atp, adp, nad, 1.0, dt, P)
+        t, tf = _t_tick(t, list(T_DEFAULT), g[10], atp, adp, nad, dt, P)
+        g[10] = _rust_max(g[10] - tf[0], 0.0)
+        nadh = _conc(gf[3] + tf[1])
+        e, ef = _e_step(e, list(E_DEFAULT), nadh, nadh, tf[2], oxygen, adp, dt)
+        made += gf[2] + tf[3] + ef[3]
+        o2 += ef[2]
+    return g + t + e + [made, o2]
+
+
+ETC = {
+    "etc::EtcState::trajectory": _e_trajectory,
+    "etc::full_respiration": _e_pipeline,
+}
+
 # The modules with class-C (and class-T) rows beyond math, and their models.
 MODELS = {"integrate": INTEGRATE, "enzyme": ENZYME, "membrane": MEMBRANE, "signal": SIGNAL, "metabolism": METABOLISM,
-          "energy": ENERGY, "protein": PROTEIN, "glycolysis": GLYCOLYSIS, "tca": TCA}
+          "energy": ENERGY, "protein": PROTEIN, "glycolysis": GLYCOLYSIS, "tca": TCA,
+          "etc": ETC}
 
 
 def _arg(tok):

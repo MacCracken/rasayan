@@ -16,10 +16,36 @@ and integrators), part 2 (logging, the failure events, the surface-parity and Ru
 JSON writers and readers) follow: M1 is complete. M2 part 1 (enzyme), part 2 (membrane), part 3 (signal), part 4
 (metabolism) and part 5 (energy) follow: M2 is complete. M3 part 1 (protein), part 2 (alignment), part 3
 (ptm) and part 4 (domain) follow: M3 is complete. M4a part 1 (glycolysis) and part 2 (TCA) follow: M4a is
-complete.
+complete. M4b part 1 (the electron transport chain) follows.
 
 ### Added
 
+- **src/etc.cyr**, **src/etc_data.cyr** (M4b part 1) — `etc.rs` transcribed (P9: the five rates from the sanitized
+  state, then each carrier pool's consumers before its producers, the proton budget capped at the H+ there):
+  `RyEtcState`, `RyEtcConfig`, `RyEtcFlux` (the five complex rates as consecutive fields with
+  `ry_etc_flux_complex_rates` as the array view, [ADR 0002](docs/adr/0002-port-api-divergences.md) row 14); the
+  defaults from the generated consts and field-name blobs; both validators (the threshold in [0, 1), H+ per NADH at
+  least per FADH2); `ry_etc_state_tick`; the serde codecs of all three. Also the crate-private items the metabolic
+  network calls at M5: the `EtcDrive` struct (`_RyEtcDrive`), `step` (Complex I's rate at one NADH concentration, its
+  consumption capped at another), `complex_i_capacity`, `accumulate`, and the private `pump_stoichiometry` (a
+  three-value return). Rust's `etc_tick` trace event is a level-gated sakshi event under `rasayan::etc`
+- **tests/golden/etc.tsv** (M4b part 1, 1,572 rows, a new module, no transcendental: classes A, B and T) — the
+  defaults. Both validators over every field's edges, and pairs where Rust's check order picks the error. The pump
+  split over 59 configs, Complex I's capacity over 147 states and configs. 796 single `tick` rows: each state field
+  and each of the 14 parameters over its edges, 22 supplies (Rust's no-O2, no-NADH, ADP and NADH-only cases, the cap
+  test's tiny supplies over 50 s, every input at its Km), 20 time steps, and seeded states and configs. 114 `step` rows
+  with the NADH concentration and availability apart, 57 `accumulate` rows, 25 trajectories (Rust's runs, its P/O
+  test, the electron-conservation test at dt 1 and 5, NaN recovery, anoxia and reoxygenation, ADP depletion,
+  uncoupling, the network's drive), 7 rows of Rust's full respiration pipeline (glycolysis, TCA and the ETC
+  together), and the serde documents. Every row matches on the first run; every `tick` row also runs through the
+  copy's `step`, which must give the oracle's bits. `validate.py` re-derives every row (114,763 independent checks)
+- **tests/etc.tcyr** (M4b part 1, 55 checks) — the 24 `etc.rs` unit tests and the 3 integration tests that now
+  come due (`test_etc_flux_serde_roundtrip`, `test_glycolysis_tca_pathway_validation`,
+  `test_full_respiration_pipeline`), as they are written, and the network's entry points, the trace event and the
+  codecs' refusals: the Rust-test ledger at 427 of 723, 0 due and unported. The fuzz harness reads every input as
+  the three documents (984 read and written back bit for bit), and steps every accepted valid state: it stays valid,
+  consumes no more than it is offered, and balances its electron pairs to 1e-12
+- **benchmarks** (M4b part 1) — etc_tick, Rust → Cyrius: 43 → 197 ns
 - **src/tca.cyr**, **src/tca_data.cyr** (M4a part 2) — `tca.rs` transcribed (P9: PDH and the eight rates, then every
   pool-capped transfer, in Rust's order): `RyTcaState`, `RyTcaConfig` and `RyTcaFlux` (the nine step rates as
   consecutive fields with `ry_tca_flux_step_rates` as the array view, [ADR 0002](docs/adr/0002-port-api-divergences.md)
@@ -536,6 +562,18 @@ complete.
 
 ### Changed
 
+- **src/guard.cyr** (M4b part 1) — `_ry_guard_unit` writes Rust's `clamp(0.0, 1.0)` out (its two comparisons in its
+  order) instead of calling `_ry_clamp`: one call per guard. The 151 `guard::unit` rows and every tick row are
+  unchanged
+- **scripts/oracle/src/verbatim.rs**, **scripts/oracle/src/v_etc.rs** (M4b part 1) — the ETC's crate-private items
+  copied verbatim; the private `EtcConfig::pump_stoichiometry`, a method of the oracle's own public type, is compiled
+  as the one method of a local trait implemented for it
+- **scripts/oracle/src/reads.rs** (M4b part 1) — the array field's key is a parameter (`complex_rates`)
+- **tests/parity.tcyr** (M4b part 1) — the ETC dispatcher (`step` with the drive's five values) and the full
+  respiration pipeline rows, which run three ported pathways
+- **scripts/surface_parity.py**, **scripts/rust_test_ledger.py** (M4b part 1) — the ETC is ported: its 15 public
+  items have their names
+- **cyrius.cyml** (M4b part 1) — `src/etc_data.cyr` and `src/etc.cyr` in the three bundles after `src/tca.cyr`
 - **scripts/oracle/src/reads.rs** (M4a part 2) — the `from_slice` rows' re-read of each number at its correctly
   rounded value (ADR 0004), moved out of `m_glycolysis.rs` at its second user, the `step_rates` count a parameter;
   `validate.py`'s flux reader likewise (`serde_flux`). The glycolysis corpus is unchanged
@@ -678,6 +716,8 @@ complete.
 
 ### Performance
 
+- **src/guard.cyr** (M4b part 1, review) — `_ry_guard_unit` without its inner call: etc_tick 218 → 197 ns (Rust 43),
+  the SecondMessenger tick at dt 0.01 105 → 91 ns
 - **src/guard.cyr** (M4a part 1, review) — the transfer guards without their inner calls: guard/take 10 → 8 ns,
   guard/shift 17 → 10 ns; glycolysis_tick 808 → 755 ns (Rust 113: two correctly rounded `pow`, ~146 ns each, ADR
   0003), bioenergy_tick 152 → 148 ns (Rust 27)
