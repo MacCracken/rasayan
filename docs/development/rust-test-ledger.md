@@ -6,11 +6,11 @@
 > milestone hasn't come. The golden corpus (`tests/golden/`) checks every ported function on its grid besides.
 > The 2 doc tests and the example are M9's.
 
-**723 Rust tests:** 719 ported; 4 at M8.
+**723 Rust tests:** 723 ported; none left.
 
 | Rust file | Tests | Ported | Due, unported | Later (milestone) |
 |---|---:|---:|---:|---|
-| `src/ai.rs` | 4 | 0 | 0 | 4 (M8) |
+| `src/ai.rs` | 4 | 4 | 0 | — |
 | `src/alignment.rs` | 19 | 19 | 0 | — |
 | `src/amino_catabolism.rs` | 23 | 23 | 0 | — |
 | `src/beta_oxidation.rs` | 23 | 23 | 0 | — |
@@ -40,12 +40,16 @@
 | `src/tca.rs` | 26 | 26 | 0 | — |
 | `tests/integration.rs` | 70 | 70 | 0 | — |
 | `tests/validation.rs` | 25 | 25 | 0 | — |
-| **Total** | **723** | **719** | **0** | |
+| **Total** | **723** | **723** | **0** | |
 
 ## Where each is ported
 
 | Rust test | Cyrius test |
 |---|---|
+| `src/ai.rs` `test_client_clone` | `tests/ai.tcyr` `client` |
+| `src/ai.rs` `test_client_creation` | `tests/ai.tcyr` `client` |
+| `src/ai.rs` `test_crypto_provider_installed` | `tests/ai.tcyr` `client` |
+| `src/ai.rs` `test_custom_system_prompt` | `tests/ai.tcyr` `client` |
 | `src/alignment.rs` `test_blosum62_diagonal_positive` | `tests/alignment.tcyr` `matrices` |
 | `src/alignment.rs` `test_blosum62_known_values` | `tests/alignment.tcyr` `matrices` |
 | `src/alignment.rs` `test_blosum62_symmetric` | `tests/alignment.tcyr` `matrices` |

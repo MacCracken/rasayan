@@ -1,0 +1,237 @@
+# rasayan — src/ai_http.cyr: the hoosh requests of the biochemistry client (rust-old/src/ai.rs), on sandhi
+#
+# The half of src/ai.cyr that speaks HTTP ([lib.ai] only, after src/ai.cyr; its consumer declares sandhi): every
+# BiochemClient call that reaches the hoosh server, each on the caller's allocator. The request bodies, the answers'
+# mapping and the client itself are src/ai.cyr's, which the parity harness checks without sandhi;
+# scripts/probes/p7_hoosh.cyr runs these against a stub that answers as hoosh 2.12.3 does (probe 7), and tests/ai.tcyr
+# runs each against a server that is not there.
+
+# ── the requests (sandhi) ──
+
+# `<base_url><path>` (a C string on allocator a), or 0.
+#must_use
+fn _ry_ai_url(a, c: *RyBiochemClient, path): i64 {
+    var nb = strlen(c.base_url);
+    var np = strlen(path);
+    var u = alloc_via(a, nb + np + 1);
+    if (u == 0) { return 0; }
+    memcpy(u, c.base_url, nb);
+    memcpy(u + nb, path, np);
+    store8(u + nb + np, 0);
+    return u;
+}
+
+# The request headers on allocator a: `Accept: */*`, `Content-Type: application/json` for a POST, the bearer token
+# when the client has one.
+#must_use
+fn _ry_ai_headers(a, c: *RyBiochemClient, post): i64 {
+    var h = sandhi_headers_new_a(a);
+    if (h == 0) { return 0; }
+    if (post == 1) { sandhi_headers_set_a(a, h, "Content-Type", "application/json"); }
+    sandhi_headers_set_a(a, h, "Accept", "*/*");
+    if (c.token != 0) {
+        var nt = strlen(c.token);
+        var v = alloc_via(a, nt + 8);
+        if (v == 0) { return 0; }
+        memcpy(v, "Bearer ", 7);
+        memcpy(v + 7, c.token, nt);
+        store8(v + 7 + nt, 0);
+        sandhi_headers_set_a(a, h, "Authorization", v);
+    }
+    return h;
+}
+
+# The request options on allocator a: the client's deadlines; redirects followed, up to 10 hops (reqwest's default).
+#must_use
+fn _ry_ai_options(a, c: *RyBiochemClient): i64 {
+    var o = sandhi_http_options_new_a(a);
+    if (o == 0) { return 0; }
+    sandhi_http_options_connect_ms(o, c.connect_ms);
+    sandhi_http_options_total_ms(o, c.total_ms);
+    sandhi_http_options_read_ms(o, c.read_ms);
+    sandhi_http_options_follow_redirects(o, 1);
+    sandhi_http_options_max_hops(o, 10);
+    return o;
+}
+
+# The refusal `code` of request answer `r`, first emitting Rust's Display of the hoosh error as a DEBUG failure event:
+# `provider error: HTTP status <n>` or `provider error: an answer hoosh 1.3 would not read` (RY_ERR_PROVIDER), or the
+# transport's message (RY_ERR_HTTP).
+#must_use
+fn _ry_ai_fail(code, r): i64 {
+    if (code == RY_ERR_PROVIDER) {
+        var st = sandhi_http_status(r);
+        if (st >= 400 && st <= 599) {
+            var hd[24];
+            var b[64];
+            var sb = _ry_sb_on(&hd, &b, 64);
+            str_builder_add_cstr(sb, "HTTP status ");
+            str_builder_add_int(sb, st);
+            return _ry_fail_text(code, load64(sb), load64(sb + 8));
+        }
+        var why = "an answer hoosh 1.3 would not read";
+        return _ry_fail_text(code, why, strlen(why));
+    }
+    var msg = sandhi_http_err_message(r);
+    if (msg == 0) { msg = "no answer"; }
+    return _ry_fail_text(code, msg, strlen(msg));
+}
+
+# POSTs the chat of `system` and the `n` turns at `turns` with the client's model, and reads the answer into *out (its
+# strings on allocator a): Ok(0), Err(RY_ERR_HTTP) when the request got no answer, Err(RY_ERR_PROVIDER) for an error
+# answer or one hoosh 1.3 would not read, or Err(RY_ERR_OUT_OF_MEMORY). hoosh 1.3's `infer`, behind every query.
+#must_use
+fn _ry_ai_infer_a(a, c: *RyBiochemClient, system, turns: *RyMessage, n, out: *RyInferenceResponse): Result {
+    var body = _ry_ai_chat_body_a(a, c.model, system, turns, n);
+    var url = _ry_ai_url(a, c, "/v1/chat/completions");
+    var h = _ry_ai_headers(a, c, 1);
+    var o = _ry_ai_options(a, c);
+    if (body == 0 || url == 0 || h == 0 || o == 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    var r = sandhi_http_post_opts_a(a, url, h, body, strlen(body), o);
+    if (r == 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    if (sandhi_http_err_kind(r) != SANDHI_OK) { return Err(_ry_ai_fail(RY_ERR_HTTP, r)); }
+    var st = sandhi_http_status(r);
+    var tr, vr = _ry_ai_infer_parse_a(a, st, sandhi_http_body(r), sandhi_http_body_len(r), c.model, out);
+    if (is_err_result(tr) == 1) {
+        if (vr == RY_ERR_PROVIDER) { return Err(_ry_ai_fail(RY_ERR_PROVIDER, r)); }
+        return Err(vr);
+    }
+    return Ok(0);
+}
+
+# Sends one biochemistry question (after the system prompt; at most 2048 tokens, temperature 0.3) and reads the answer
+# into *out, on allocator a: Ok(0) or the Err of `_ry_ai_infer_a`. A DEBUG event gives the model and the question's
+# length. Mirrors `BiochemClient::query`.
+#must_use
+fn ry_biochem_client_query_a(a, c: *RyBiochemClient, question, out: *RyInferenceResponse): Result {
+    if (_ry_debug_on() == 1) {
+        var hd[24];
+        var b[256];
+        var ev = _ry_ev(&hd, &b, 256, "rasayan::ai", "rasayan::ai query");
+        _ry_ev_s(ev, "model", c.model, strlen(c.model));
+        _ry_ev_i(ev, "prompt_len", strlen(question));
+        _ry_debug(ev);
+    }
+    var t: RyMessage;
+    t.role = RY_ROLE_USER;
+    t.content = question;
+    return _ry_ai_infer_a(a, c, c.system_prompt, &t, 1, out);
+}
+
+# ry_biochem_client_query_a on the default allocator.
+#must_use
+fn ry_biochem_client_query(c: *RyBiochemClient, question, out: *RyInferenceResponse): Result {
+    return ry_biochem_client_query_a(default_alloc(), c, question, out);
+}
+
+# Sends a multi-turn conversation, the `n` turns at `turns` (user and assistant alternating), after the system prompt,
+# and reads the answer into *out, on allocator a. A DEBUG event gives the model and the turn count. Mirrors
+# `BiochemClient::chat`.
+#must_use
+fn ry_biochem_client_chat_a(a, c: *RyBiochemClient, turns: *RyMessage, n, out: *RyInferenceResponse): Result {
+    if (_ry_debug_on() == 1) {
+        var hd[24];
+        var b[256];
+        var ev = _ry_ev(&hd, &b, 256, "rasayan::ai", "rasayan::ai chat");
+        _ry_ev_s(ev, "model", c.model, strlen(c.model));
+        _ry_ev_i(ev, "turns", n);
+        _ry_debug(ev);
+    }
+    return _ry_ai_infer_a(a, c, c.system_prompt, turns, n, out);
+}
+
+# ry_biochem_client_chat_a on the default allocator.
+#must_use
+fn ry_biochem_client_chat(c: *RyBiochemClient, turns: *RyMessage, n, out: *RyInferenceResponse): Result {
+    return ry_biochem_client_chat_a(default_alloc(), c, turns, n, out);
+}
+
+# Asks for an enzyme's published kinetic parameters (Km, kcat, kcat/Km, inhibitors, optimal pH, function, with units),
+# on allocator a. Mirrors `BiochemClient::enzyme_query`.
+#must_use
+fn ry_biochem_client_enzyme_query_a(a, c: *RyBiochemClient, enzyme_name, out: *RyInferenceResponse): Result {
+    var p = _ry_ai_enzyme_prompt(a, enzyme_name);
+    if (p == 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return ry_biochem_client_query_a(a, c, p, out);
+}
+
+# ry_biochem_client_enzyme_query_a on the default allocator.
+#must_use
+fn ry_biochem_client_enzyme_query(c: *RyBiochemClient, enzyme_name, out: *RyInferenceResponse): Result {
+    return ry_biochem_client_enzyme_query_a(default_alloc(), c, enzyme_name, out);
+}
+
+# Asks about a metabolic pathway (enzymes, substrates, products, regulation, ATP/NADH yield, rate-limiting steps), on
+# allocator a. Mirrors `BiochemClient::pathway_query`.
+#must_use
+fn ry_biochem_client_pathway_query_a(a, c: *RyBiochemClient, pathway_name, out: *RyInferenceResponse): Result {
+    var p = _ry_ai_pathway_prompt(a, pathway_name);
+    if (p == 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return ry_biochem_client_query_a(a, c, p, out);
+}
+
+# ry_biochem_client_pathway_query_a on the default allocator.
+#must_use
+fn ry_biochem_client_pathway_query(c: *RyBiochemClient, pathway_name, out: *RyInferenceResponse): Result {
+    return ry_biochem_client_pathway_query_a(default_alloc(), c, pathway_name, out);
+}
+
+# Asks about a protein sequence (function, domains, modifications, localization, homologs), on allocator a. Mirrors
+# `BiochemClient::protein_query`.
+#must_use
+fn ry_biochem_client_protein_query_a(a, c: *RyBiochemClient, sequence, out: *RyInferenceResponse): Result {
+    var p = _ry_ai_protein_prompt(a, sequence);
+    if (p == 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return ry_biochem_client_query_a(a, c, p, out);
+}
+
+# ry_biochem_client_protein_query_a on the default allocator.
+#must_use
+fn ry_biochem_client_protein_query(c: *RyBiochemClient, sequence, out: *RyInferenceResponse): Result {
+    return ry_biochem_client_protein_query_a(default_alloc(), c, sequence, out);
+}
+
+# Whether the hoosh server answers `/v1/health` with a 2xx, on allocator a: 1, or 0 (an error answer or none). Mirrors
+# `BiochemClient::health` (whose Result is always Ok).
+#must_use
+fn ry_biochem_client_health_a(a, c: *RyBiochemClient): i64 {
+    var url = _ry_ai_url(a, c, "/v1/health");
+    var h = _ry_ai_headers(a, c, 0);
+    var o = _ry_ai_options(a, c);
+    if (url == 0 || h == 0 || o == 0) { return 0; }
+    var r = sandhi_http_get_opts_a(a, url, h, o);
+    if (r == 0 || sandhi_http_err_kind(r) != SANDHI_OK) { return _ry_ai_health_of(0 - 1); }
+    return _ry_ai_health_of(sandhi_http_status(r));
+}
+
+# ry_biochem_client_health_a on the default allocator.
+#must_use
+fn ry_biochem_client_health(c: *RyBiochemClient): i64 {
+    return ry_biochem_client_health_a(default_alloc(), c);
+}
+
+# The models the hoosh server lists into the `cap` RyModelInfo records at out (strings on allocator a): Ok(count), or
+# Err(RY_ERR_HTTP), Err(RY_ERR_PROVIDER), Err(RY_ERR_BUFFER_TOO_SMALL) or Err(RY_ERR_OUT_OF_MEMORY). Mirrors
+# `BiochemClient::list_models`.
+#must_use
+fn ry_biochem_client_list_models_a(a, c: *RyBiochemClient, out: *RyModelInfo, cap): Result {
+    var url = _ry_ai_url(a, c, "/v1/models");
+    var h = _ry_ai_headers(a, c, 0);
+    var o = _ry_ai_options(a, c);
+    if (url == 0 || h == 0 || o == 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    var r = sandhi_http_get_opts_a(a, url, h, o);
+    if (r == 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    if (sandhi_http_err_kind(r) != SANDHI_OK) { return Err(_ry_ai_fail(RY_ERR_HTTP, r)); }
+    var t, v = _ry_ai_models_parse_a(a, sandhi_http_status(r), sandhi_http_body(r), sandhi_http_body_len(r), out, cap);
+    if (is_err_result(t) == 1) {
+        if (v == RY_ERR_PROVIDER) { return Err(_ry_ai_fail(RY_ERR_PROVIDER, r)); }
+        return Err(v);
+    }
+    return Ok(v);
+}
+
+# ry_biochem_client_list_models_a on the default allocator.
+#must_use
+fn ry_biochem_client_list_models(c: *RyBiochemClient, out: *RyModelInfo, cap): Result {
+    return ry_biochem_client_list_models_a(default_alloc(), c, out, cap);
+}

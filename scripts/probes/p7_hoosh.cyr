@@ -1,18 +1,14 @@
-# Probe 7 (port plan P8, §4 step 9): the requests the Cyrius `ai` client will send hoosh 2.12.3, on sandhi, against
-# the loopback stub scripts/probes/p7_hoosh_stub.py (which answers as hoosh 2.12.3 does and records each raw
-# request), and the responses read back as the Rust client reads them.
+# Probe 7 (port plan P8, §4 step 9; since M8 part 2 the client itself): rasayan's `ai` client (src/ai.cyr and
+# src/ai_http.cyr, on sandhi) against the loopback stub scripts/probes/p7_hoosh_stub.py, which answers as hoosh
+# 2.12.3 does and records each raw request.
 #
-# - The same eight calls as the oracle bin probe_ai (rasayan 1.2.0's BiochemClient on hoosh 1.3's HooshClient):
-#   query, chat (three turns), enzyme_query, pathway_query, protein_query, query under a custom system prompt,
-#   health and list_models. Each chat body is written as Rust's `to_chat_body` gives it to serde_json: `json!` keys
-#   sorted (`max_tokens`, `messages`, `model`, `stream`, `temperature`; each message `content` then `role`), strings
-#   escaped as serde_json escapes them, `temperature` by src/fmtf.cyr's serde_json form. The prompts and the system
-#   prompt are transcribed from rust-old/src/ai.rs (the system prompt from src/ai_data.cyr, generated).
-# - Each response is read with bayan's value tree and printed as probe_ai prints Rust's InferenceResponse,
-#   Vec<ModelInfo> and health bool, so scripts/probes/p7_compare.py compares the two outputs line for line and the two
-#   stub logs request for request (port-parity.md §3, probe 7). This is M8's client in outline, not the client.
-# - sandhi is included from the pinned toolchain: it is not in [deps] stdlib (cyrius.cyml, [lib.ai]), so it is
-#   neither vendored nor locked here, which `cyrius build` does not mention (filed upstream, port plan §8).
+# - The same eight calls as the reference client scripts/probes/probe_ai.py (rasayan 1.2.0's BiochemClient on hoosh
+#   1.3's HooshClient, read as text): query, chat (three turns), enzyme_query, pathway_query, protein_query, query
+#   under a custom system prompt, health and list_models, each through `ry_biochem_client_*`. Each outcome is printed
+#   as probe_ai prints Rust's InferenceResponse, Vec<ModelInfo> and health bool, so scripts/probes/p7_compare.py
+#   compares the two outputs line for line and the two stub logs request for request (port-parity.md §3, probe 7).
+# - tests/ai.tcyr runs every call against a server that is not there; this probe the full exchange.
+# - sandhi is included from the pinned toolchain: it is not in [deps] stdlib (cyrius.cyml, [lib.ai]).
 #
 #   python3 -I -B scripts/probes/p7_hoosh_stub.py 18742 build/p7/cyrius.log 8 &
 #   cyrius build scripts/probes/p7_hoosh.cyr build/probes/p7_hoosh && ./build/probes/p7_hoosh http://127.0.0.1:18742
@@ -20,262 +16,112 @@
 include "lib/sandhi.cyr"
 include "lib/bayan.cyr"
 include "lib/args.cyr"
+include "src/constants.cyr"
 include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
 include "src/ai_data.cyr"
+include "src/ai_client_data.cyr"
+include "src/ai.cyr"
+include "src/ai_http.cyr"
 
-# ── the request body (Rust: hoosh 1.3's to_chat_body through serde_json) ────────────
-
-# Appends a JSON string: the NUL-terminated s, quoted and escaped as serde_json escapes (", \, \n, \r, \t, \b, \f,
-# other control bytes as \u00XX; everything else, UTF-8 included, as it is).
-fn _p7_str(sb, s): i64 {
-    str_builder_putc(sb, 34);
-    var n = strlen(s);
-    var k = 0;
-    while (k < n) {
-        var c = load8(s + k);
-        if (c == 34) {
-            str_builder_add_cstr(sb, "\\\"");
-        } elif (c == 92) {
-            str_builder_add_cstr(sb, "\\\\");
-        } elif (c == 10) {
-            str_builder_add_cstr(sb, "\\n");
-        } elif (c == 13) {
-            str_builder_add_cstr(sb, "\\r");
-        } elif (c == 9) {
-            str_builder_add_cstr(sb, "\\t");
-        } elif (c == 8) {
-            str_builder_add_cstr(sb, "\\b");
-        } elif (c == 12) {
-            str_builder_add_cstr(sb, "\\f");
-        } elif (c < 32) {
-            var hx = "0123456789abcdef";
-            str_builder_add_cstr(sb, "\\u00");
-            str_builder_putc(sb, load8(hx + (c >> 4)));
-            str_builder_putc(sb, load8(hx + (c & 15)));
-        } else {
-            str_builder_putc(sb, c);
-        }
-        k = k + 1;
-    }
-    str_builder_putc(sb, 34);
-    return 0;
-}
-
-# Appends one message, `{"content":…,"role":…}`.
-fn _p7_msg(sb, role, content): i64 {
-    str_builder_add_cstr(sb, "{\"content\":");
-    _p7_str(sb, content);
-    str_builder_add_cstr(sb, ",\"role\":");
-    _p7_str(sb, role);
-    str_builder_putc(sb, 125);
-    return 0;
-}
-
-# The chat body for `model` and the n messages in roles[] / contents[] (word arrays of NUL-terminated strings), with
-# BiochemClient's max_tokens 2048 and temperature 0.3, stream false. Returns the builder.
-fn _p7_body(model, roles, contents, n): i64 {
-    var sb = str_builder_new();
-    str_builder_add_cstr(sb, "{\"max_tokens\":2048,\"messages\":[");
-    var i = 0;
-    while (i < n) {
-        if (i > 0) { str_builder_putc(sb, 44); }
-        _p7_msg(sb, load64(roles + (8 * i)), load64(contents + (8 * i)));
-        i = i + 1;
-    }
-    str_builder_add_cstr(sb, "],\"model\":");
-    _p7_str(sb, model);
-    str_builder_add_cstr(sb, ",\"stream\":false,\"temperature\":");
-    var t: f64 = 0.3;
-    _ry_fmt_f64_json(sb, t);
-    str_builder_putc(sb, 125);
-    return sb;
-}
-
-# The system prompt (src/ai_data.cyr's blob) as a NUL-terminated string.
-#must_use
-fn _p7_system(): i64 {
-    return &_RY_AI_SYSTEM_PROMPT;
-}
-
-# ── the response (Rust: HooshClient::infer, ::list_models, ::health) ────────────────
-
-# Prints a string field as Rust's `{:?}` prints a plain one: quoted (the probe's texts have nothing to escape).
+# Prints a C string as Rust's `{:?}` prints a plain one: quoted (the probe's texts have nothing to escape).
 fn _p7_dbg(s): i64 {
     print("\"", 1);
-    if (s != 0) { print(str_data(s), str_len(s)); }
+    if (s != 0) { print(s, strlen(s)); }
     print("\"", 1);
     return 0;
 }
 
-# A u32 member of object o, 0 when absent (Rust: `.and_then(|u| u.x).unwrap_or(0)`).
-#must_use
-fn _p7_u32(o, key): i64 {
-    if (o == 0) { return 0; }
-    var v = bayan_json_v_obj_get_by_cstr(o, key);
-    if (v == 0 || bayan_json_v_tag(v) != JTAG_INT) { return 0; }
-    return bayan_json_v_int(v);
-}
-
-# One inference call's outcome, printed as probe_ai prints Rust's InferenceResponse.
-fn _p7_infer_show(label, r, model): i64 {
+# One inference call's outcome, printed as probe_ai prints Rust's InferenceResponse (or the error's name).
+fn _p7_show(label, t, v, r: *RyInferenceResponse): i64 {
     print(label, strlen(label));
-    var st = sandhi_http_status(r);
-    if (st < 200 || st > 299) {
-        print(": err status ", 13);
-        fmt_int(st);
-        println("");
+    if (is_err_result(t) == 1) {
+        print(": err ", 6);
+        var name = ry_error_name(v);
+        println(name);
         return 0;
     }
-    var v = bayan_json_v_parse_buf(sandhi_http_body(r), sandhi_http_body_len(r));
-    var text = 0;
-    var ch = bayan_json_v_obj_get_by_cstr(v, "choices");
-    if (ch != 0 && bayan_json_v_tag(ch) == JTAG_ARR && bayan_json_v_arr_len(ch) > 0) {
-        var m = bayan_json_v_obj_get_by_cstr(bayan_json_v_arr_get(ch, 0), "message");
-        if (m != 0) {
-            var c = bayan_json_v_obj_get_by_cstr(m, "content");
-            if (c != 0 && bayan_json_v_tag(c) == JTAG_STR) { text = bayan_json_v_str(c); }
-        }
-    }
-    var mv = bayan_json_v_obj_get_by_cstr(v, "model");
-    var ms = 0;
-    if (mv != 0 && bayan_json_v_tag(mv) == JTAG_STR) {
-        ms = bayan_json_v_str(mv);
-    } else {
-        ms = str_from(model);
-    }
-    var u = bayan_json_v_obj_get_by_cstr(v, "usage");
     print(": ok text=", 10);
-    _p7_dbg(text);
+    _p7_dbg(r.text);
     print(" model=", 7);
-    _p7_dbg(ms);
+    _p7_dbg(r.model);
     print(" usage=", 7);
-    fmt_int(_p7_u32(u, "prompt_tokens"));
+    fmt_int(r.prompt_tokens);
     print("/", 1);
-    fmt_int(_p7_u32(u, "completion_tokens"));
+    fmt_int(r.completion_tokens);
     print("/", 1);
-    fmt_int(_p7_u32(u, "total_tokens"));
-    # Rust's client names the provider "hoosh", whatever usage.provider says, and has no latency or tool calls.
-    println(" provider=\"hoosh\" latency_ms=0 tool_calls=0");
+    fmt_int(r.total_tokens);
+    print(" provider=", 10);
+    _p7_dbg(r.provider);
+    print(" latency_ms=", 12);
+    fmt_int(r.latency_ms);
+    print(" tool_calls=", 12);
+    fmt_int(r.tool_calls);
+    println("");
     return 0;
 }
 
-# The headers (a POST's: JSON in and out; a GET's: Accept alone, as reqwest sends them) and the options every request
-# carries: Rust's 10 s connect timeout, and both deadlines (sandhi's total_ms alone does
-# not bound a read blocked on the first byte: ushma's probe 7, filed upstream).
-var _p7_h = 0;
-var _p7_g = 0;
-var _p7_o = 0;
-
-# POSTs the chat body to <base>/v1/chat/completions and prints the outcome.
-fn _p7_chat(base, label, roles, contents, n): i64 {
-    var sb = _p7_body("llama3", roles, contents, n);
-    var bs = str_builder_build(sb);
-    var ub = str_builder_new();
-    str_builder_add_cstr(ub, base);
-    str_builder_add_cstr(ub, "/v1/chat/completions");
-    var url = str_data(str_builder_build(ub));
-    var r = sandhi_http_post_opts(url, _p7_h, str_data(bs), str_len(bs), _p7_o);
-    return _p7_infer_show(label, r, "llama3");
-}
-
-# A prompt of one user turn after the system prompt: query (Rust: BiochemClient::query).
-fn _p7_query(base, label, system, question): i64 {
-    var roles[16];
-    var contents[16];
-    store64(&roles, "system");
-    store64(&contents, system);
-    store64(&roles + 8, "user");
-    store64(&contents + 8, question);
-    return _p7_chat(base, label, &roles, &contents, 2);
-}
-
-# <base> + path.
-#must_use
-fn _p7_url(base, path): i64 {
-    var ub = str_builder_new();
-    str_builder_add_cstr(ub, base);
-    str_builder_add_cstr(ub, path);
-    return str_data(str_builder_build(ub));
+# The eight calls against the stub at `base`.
+fn _p7_online(base): i64 {
+    var c: RyBiochemClient;
+    ry_biochem_client_new(&c, base, "llama3");
+    var r: RyInferenceResponse;
+    var t1, v1 = ry_biochem_client_query(&c, "What is the Km of hexokinase for glucose?", &r);
+    _p7_show("query", t1, v1, &r);
+    var turns[48];                               # three RyMessage records
+    store64(&turns, RY_ROLE_USER);
+    store64(&turns + 8, "What does PFK-1 do?");
+    store64(&turns + 16, RY_ROLE_ASSISTANT);
+    store64(&turns + 24, "It phosphorylates fructose 6-phosphate.");
+    store64(&turns + 32, RY_ROLE_USER);
+    store64(&turns + 40, "And its main allosteric inhibitor?");
+    var t2, v2 = ry_biochem_client_chat(&c, &turns, 3, &r);
+    _p7_show("chat", t2, v2, &r);
+    var t3, v3 = ry_biochem_client_enzyme_query(&c, "hexokinase", &r);
+    _p7_show("enzyme_query", t3, v3, &r);
+    var t4, v4 = ry_biochem_client_pathway_query(&c, "glycolysis", &r);
+    _p7_show("pathway_query", t4, v4, &r);
+    var t5, v5 = ry_biochem_client_protein_query(&c, "MKTAYIAKQR", &r);
+    _p7_show("protein_query", t5, v5, &r);
+    var d: RyBiochemClient;
+    ry_biochem_client_new(&d, base, "llama3");
+    ry_biochem_client_with_system_prompt(&d, "Answer as a \"textbook\" would.\tUse SI units \\ cite sources.");
+    var t6, v6 = ry_biochem_client_query(&d, "Define Kcat.", &r);
+    _p7_show("custom_prompt", t6, v6, &r);
+    if (ry_biochem_client_health(&c) == 1) { println("health: ok true"); } else { println("health: ok false"); }
+    var models = alloc(1024);                    # sixteen RyModelInfo records, on the heap
+    var tm, n = ry_biochem_client_list_models(&c, models, 16);
+    if (is_err_result(tm) == 1) {
+        print("list_models: err ", 17);
+        println(ry_error_name(n));
+        return 0;
+    }
+    print("list_models: ok [", 17);
+    var i = 0;
+    while (i < n) {
+        var w = models + 64 * i;
+        if (i > 0) { print(", ", 2); }
+        print("{id=", 4);
+        _p7_dbg(load64(w));
+        print(" name=", 6);
+        _p7_dbg(load64(w + 8));
+        print(" provider=", 10);
+        _p7_dbg(load64(w + 16));
+        print(" parameters=None context_length=None available=", 47);
+        if (load64(w + 56) == 1) { print("true}", 5); } else { print("false}", 6); }
+        i = i + 1;
+    }
+    println("]");
+    return 0;
 }
 
 fn main(): i64 {
     alloc_init();
     var base = "http://127.0.0.1:18742";
     if (argc() > 1) { base = argv(1); }
-    _p7_h = sandhi_headers_new();
-    sandhi_headers_set(_p7_h, "Content-Type", "application/json");
-    sandhi_headers_set(_p7_h, "Accept", "*/*");
-    _p7_g = sandhi_headers_new();
-    sandhi_headers_set(_p7_g, "Accept", "*/*");
-    _p7_o = sandhi_http_options_new();
-    sandhi_http_options_connect_ms(_p7_o, 10000);
-    sandhi_http_options_total_ms(_p7_o, 30000);
-    sandhi_http_options_read_ms(_p7_o, 30000);
-    var sys = _p7_system();
-    _p7_query(base, "query", sys, "What is the Km of hexokinase for glucose?");
-    var roles[32];
-    var contents[32];
-    store64(&roles, "system");
-    store64(&contents, sys);
-    store64(&roles + 8, "user");
-    store64(&contents + 8, "What does PFK-1 do?");
-    store64(&roles + 16, "assistant");
-    store64(&contents + 16, "It phosphorylates fructose 6-phosphate.");
-    store64(&roles + 24, "user");
-    store64(&contents + 24, "And its main allosteric inhibitor?");
-    _p7_chat(base, "chat", &roles, &contents, 4);
-    var eq = str_builder_new();
-    str_builder_add_cstr(eq, "Provide the published kinetic parameters for hexokinase: Km, kcat, ");
-    str_builder_add_cstr(eq, "catalytic efficiency (kcat/Km), known inhibitors, optimal pH, ");
-    str_builder_add_cstr(eq, "and physiological function. Include units.");
-    _p7_query(base, "enzyme_query", sys, str_data(str_builder_build(eq)));
-    var pq = str_builder_new();
-    str_builder_add_cstr(pq, "Describe the glycolysis pathway: key enzymes, substrates, products, regulation points, ");
-    str_builder_add_cstr(pq, "ATP/NADH yield, and physiological significance. Include rate-limiting steps.");
-    _p7_query(base, "pathway_query", sys, str_data(str_builder_build(pq)));
-    var rq = str_builder_new();
-    str_builder_add_cstr(rq, "Analyze this protein sequence: MKTAYIAKQR\nPredict: likely function, ");
-    str_builder_add_cstr(rq, "domain composition, post-translational modifications, subcellular localization, ");
-    str_builder_add_cstr(rq, "and any known homologs.");
-    _p7_query(base, "protein_query", sys, str_data(str_builder_build(rq)));
-    _p7_query(base, "custom_prompt", "Answer as a \"textbook\" would.\tUse SI units \\ cite sources.", "Define Kcat.");
-    var hr = sandhi_http_get_opts(_p7_url(base, "/v1/health"), _p7_g, _p7_o);
-    var hs = sandhi_http_status(hr);
-    if (hs >= 200 && hs <= 299) { println("health: ok true"); } else { println("health: ok false"); }
-    var mr = sandhi_http_get_opts(_p7_url(base, "/v1/models"), _p7_g, _p7_o);
-    var ms = sandhi_http_status(mr);
-    if (ms < 200 || ms > 299) {
-        print("list_models: err status ", 24);
-        fmt_int(ms);
-        println("");
-        return 0;
-    }
-    var mv = bayan_json_v_parse_buf(sandhi_http_body(mr), sandhi_http_body_len(mr));
-    var data = bayan_json_v_obj_get_by_cstr(mv, "data");
-    print("list_models: ok [", 17);
-    var i = 0;
-    while (data != 0 && i < bayan_json_v_arr_len(data)) {
-        var e = bayan_json_v_arr_get(data, i);
-        var id = bayan_json_v_str(bayan_json_v_obj_get_by_cstr(e, "id"));
-        var ow = bayan_json_v_obj_get_by_cstr(e, "owned_by");
-        var prov = 0;
-        if (ow != 0 && bayan_json_v_tag(ow) == JTAG_STR) {
-            prov = bayan_json_v_str(ow);
-        } else {
-            prov = str_from("hoosh");
-        }
-        if (i > 0) { print(", ", 2); }
-        print("{id=", 4);
-        _p7_dbg(id);
-        print(" name=", 6);
-        _p7_dbg(id);
-        print(" provider=", 10);
-        _p7_dbg(prov);
-        print(" parameters=None context_length=None available=true}", 52);
-        i = i + 1;
-    }
-    println("]");
-    return 0;
+    return _p7_online(base);
 }
 
 var rr = main();

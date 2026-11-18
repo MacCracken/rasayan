@@ -105,6 +105,8 @@ include "src/hormonal.cyr"
 include "lib/bote-core.cyr"
 include "src/mcp_data.cyr"
 include "src/mcp.cyr"
+include "src/ai_client_data.cyr"
+include "src/ai.cyr"
 
 # pathway's solve_decreasing rows: the Rust tests' closures' contexts (`a - x`, `c - 3·n/(k + n)·c - n`, the constant
 # `v`).
@@ -5940,6 +5942,120 @@ fn _par_mcp(fp, fl): i64 {
     return 1;
 }
 
+# ── ai_client ───────────────────────────────────────────────────────────────────────────────
+# src/ai_client_data.cyr and src/ai.cyr (M8 part 2: the client, the bodies and the answers; no sandhi).
+# `BiochemClient::new` takes the base URL and the model and gives the client's three strings; a body row (`query`,
+# `chat`, `enzyme_query`, `pathway_query`, `protein_query`) takes the model, the system prompt and the question (a chat:
+# `i:n` then n pairs `i:role s:content`) and gives the request body; `HooshClient::infer_response` takes the status, the
+# answer and the request's model, `list_models_response` the status and the answer, `health_response` the status (-1: no
+# answer).
+
+var _par_ai_arena = 0;
+
+# The ai_client rows.
+fn _par_ai_client(fp, fl): i64 {
+    if (_par_ai_arena == 0) { _par_ai_arena = arena_allocator_growable(65536); }
+    reset_via(_par_ai_arena);
+    var a = _par_ai_arena;
+    if (_par_eq(fp, fl, "ai::BiochemClient::new") == 1) {
+        if (_par_in_n != 2) { return 0 - 1; }
+        var c: RyBiochemClient;
+        if (ry_biochem_client_new(&c, _par_in_cstr(0), _par_in_cstr(1)) == 0) { return 0 - 1; }
+        _par_got_text(c.base_url, strlen(c.base_url));
+        _par_got_text(c.model, strlen(c.model));
+        _par_got_text(c.system_prompt, strlen(c.system_prompt));
+        return 1;
+    }
+    var fname = 0;
+    if (_par_eq(fp, fl, "ai::BiochemClient::query") == 1) { fname = 1; }
+    if (_par_eq(fp, fl, "ai::BiochemClient::enzyme_query") == 1) { fname = 2; }
+    if (_par_eq(fp, fl, "ai::BiochemClient::pathway_query") == 1) { fname = 3; }
+    if (_par_eq(fp, fl, "ai::BiochemClient::protein_query") == 1) { fname = 4; }
+    if (fname != 0) {
+        if (_par_in_n != 3) { return 0 - 1; }
+        var q = _par_in_cstr(2);
+        if (fname == 2) { q = _ry_ai_enzyme_prompt(a, q); }
+        if (fname == 3) { q = _ry_ai_pathway_prompt(a, q); }
+        if (fname == 4) { q = _ry_ai_protein_prompt(a, q); }
+        var t: RyMessage;
+        t.role = RY_ROLE_USER;
+        t.content = q;
+        var body = _ry_ai_chat_body_a(a, _par_in_cstr(0), _par_in_cstr(1), &t, 1);
+        if (body == 0) { return 0 - 1; }
+        _par_got_text(body, strlen(body));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "ai::BiochemClient::chat") == 1) {
+        if (_par_in_n < 3 || _par_is_i(2) == 0) { return 0 - 1; }
+        var n = _par_in(2);
+        if (_par_in_n != 3 + 2 * n) { return 0 - 1; }
+        var turns = alloc_via(a, 16 * n + 16);
+        var k = 0;
+        while (k < n) {
+            store64(turns + 16 * k, _par_in(3 + 2 * k));
+            store64(turns + 16 * k + 8, _par_in_cstr(4 + 2 * k));
+            k = k + 1;
+        }
+        var cb = _ry_ai_chat_body_a(a, _par_in_cstr(0), _par_in_cstr(1), turns, n);
+        if (cb == 0) { return 0 - 1; }
+        _par_got_text(cb, strlen(cb));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "ai::HooshClient::infer_response") == 1) {
+        if (_par_in_n != 3 || _par_is_i(0) == 0) { return 0 - 1; }
+        var lw[8];
+        var doc = _par_in_bytes(1, &lw);
+        if (doc == 0) { return 0 - 1; }
+        var r: RyInferenceResponse;
+        var tr, vr = _ry_ai_infer_parse_a(a, _par_in(0), doc, load64(&lw), _par_in_cstr(2), &r);
+        if (is_err_result(tr) == 1) {
+            _par_got_err(vr);
+            return 1;
+        }
+        _par_got_text(r.text, strlen(r.text));
+        _par_got_text(r.model, strlen(r.model));
+        _par_got_i(r.prompt_tokens);
+        _par_got_i(r.completion_tokens);
+        _par_got_i(r.total_tokens);
+        _par_got_text(r.provider, strlen(r.provider));
+        _par_got_i(r.latency_ms);
+        _par_got_i(r.tool_calls);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "ai::HooshClient::list_models_response") == 1) {
+        if (_par_in_n != 2 || _par_is_i(0) == 0) { return 0 - 1; }
+        var lm[8];
+        var md = _par_in_bytes(1, &lm);
+        if (md == 0) { return 0 - 1; }
+        var cap = 16;
+        var out = alloc_via(a, 64 * cap);
+        var tm, count = _ry_ai_models_parse_a(a, _par_in(0), md, load64(&lm), out, cap);
+        if (is_err_result(tm) == 1) {
+            _par_got_err(count);
+            return 1;
+        }
+        _par_got_i(count);
+        var j = 0;
+        while (j < count) {
+            var w = out + 64 * j;
+            _par_got_text(load64(w), strlen(load64(w)));
+            _par_got_text(load64(w + 8), strlen(load64(w + 8)));
+            _par_got_text(load64(w + 16), strlen(load64(w + 16)));
+            _par_got_none();
+            _par_got_none();
+            _par_got_i(load64(w + 56));
+            j = j + 1;
+        }
+        return 1;
+    }
+    if (_par_eq(fp, fl, "ai::HooshClient::health_response") == 1) {
+        if (_par_in_n != 1 || _par_is_i(0) == 0) { return 0 - 1; }
+        _par_got_i(_ry_ai_health_of(_par_in(0)));
+        return 1;
+    }
+    return 0;
+}
+
 fn _par_dispatch(mp, ml, fp, fl): i64 {
     _par_got_n = 0;
     if (_par_eq(fp, fl, "const") == 1) { return _par_const(); }
@@ -5964,6 +6080,7 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
     if (_par_eq(mp, ml, "neurotransmitter") == 1) { return _par_neurotransmitter(fp, fl); }
     if (_par_eq(mp, ml, "hormonal") == 1) { return _par_hormonal(fp, fl); }
     if (_par_eq(mp, ml, "mcp") == 1) { return _par_mcp(fp, fl); }
+    if (_par_eq(mp, ml, "ai_client") == 1) { return _par_ai_client(fp, fl); }
     if (_par_eq(mp, ml, "enzyme") == 1) { return _par_enzyme(fp, fl); }
     if (_par_eq(mp, ml, "membrane") == 1) { return _par_membrane(fp, fl); }
     if (_par_eq(mp, ml, "signal") == 1) { return _par_signal(fp, fl); }

@@ -2418,8 +2418,243 @@ def mcp_data(defs):
     return "".join(out).rstrip("\n") + "\n"
 
 
+# ── ai_client (M8 part 2) ──
+#
+# ai.rs's BiochemClient on hoosh 1.3's HooshClient (its source read as text from the crate registry: client.rs is the
+# functional spec of the requests and the response mapping, as rust-old is of the rest). The rows: the client's
+# construction (the base URL with its trailing slashes trimmed, the model, the default system prompt); each call's
+# request body, as `to_chat_body` gives it to serde_json (a `Value`: keys sorted); and the mapping of each answer, as
+# `infer`, `list_models` and `health` read it (serde derive on the response structs: unknown fields ignored, a repeated
+# field or a missing required one refused, the sequence form taken; a status of 400–599 a Provider error).
+
+def hoosh_client_text():
+    """hoosh 1.3's client.rs, from the cargo registry (read as text; the crate is never built)."""
+    for base in sorted(pathlib.Path.home().glob(".cargo/registry/src/*/hoosh-1.3.0")):
+        p = base / "src/client.rs"
+        if p.exists():
+            return p.read_text()
+    raise SystemExit("gen: hoosh 1.3.0's src/client.rs is not in the cargo registry (the ai functional spec)")
+
+
+HOOSH_TEXT = (
+    "        if let Some(sys) = &request.system {\n"
+    "            msgs.push(serde_json::json!({\"role\": \"system\", \"content\": sys}));\n        }\n"
+    "        msgs.push(serde_json::json!({\"role\": \"user\", \"content\": request.prompt}));",
+    "    let mut body = serde_json::json!({\n        \"model\": request.model,\n        \"messages\": messages,\n"
+    "        \"stream\": request.stream,\n    });",
+    "            .error_for_status()",
+    "            .and_then(|c| c.message.content.clone())\n            .unwrap_or_default();",
+    "            model: parsed.model.unwrap_or_else(|| request.model.clone()),",
+    "                prompt_tokens: usage.and_then(|u| u.prompt_tokens).unwrap_or(0),",
+    "            provider: \"hoosh\".into(),\n            latency_ms: 0,",
+    "                name: m.id,\n                provider: m.owned_by.unwrap_or_else(|| \"hoosh\".into()),",
+    "            Ok(resp) => Ok(resp.status().is_success()),\n            Err(_) => Ok(false),",
+    "            base_url: base_url.into().trim_end_matches('/').to_string(),",
+)
+
+
+def ai_client():
+    mod = "ai_client"
+    hoosh = hoosh_client_text()
+    for line in HOOSH_TEXT:
+        if line not in hoosh:
+            raise SystemExit(f"gen: hoosh 1.3's client.rs no longer holds the modelled text {line[:60]!r}")
+    ai = rust_text("ai")
+    prompt = validate.rust_string(re.search(r'const SYSTEM_PROMPT: &str = "(.*?)";', ai, re.S).group(1))
+    for need in ("max_tokens: Some(2048),", "temperature: Some(0.3),", "all_messages.push(Message::new(Role::System, "
+                 "&self.system_prompt));"):
+        if need not in ai:
+            raise SystemExit(f"gen: ai.rs no longer holds {need!r}")
+
+    def template(fn):
+        body = ai[ai.index(f"pub async fn {fn}("):]
+        lit = re.search(r'format!\(\s*"((?:[^"\\]|\\.)*)"\s*\)', body, re.S).group(1)
+        return validate.rust_string(lit)
+
+    templates = {fn: template(fn) for fn in ("enzyme_query", "pathway_query", "protein_query")}
+    places = {fn: re.search(r"\{(\w+)\}", t).group(1) for fn, t in templates.items()}
+
+    def body(model, messages):
+        return sj_dumps({"model": model, "messages": [{"role": r, "content": c} for r, c in messages],
+                         "stream": False, "max_tokens": 2048, "temperature": 0.3})
+
+    m = g.Module(mod)
+    # The client: BiochemClient::new(base_url, model).
+    for base in ("http://localhost:8088", "http://localhost:8088/", "http://localhost:8088///", "", "/", "//",
+                 "https://hoosh.example:443/v1/", "http://[::1]:8088/", "http://h/é/"):
+        for model in ("llama3", "claude-sonnet-4-20250514", ""):
+            m.row("ai::BiochemClient::new", "A", [g.s(base), g.s(model)],
+                  [g.s(base.rstrip("/")), g.s(model), g.s(prompt)])
+    # The bodies: query (the system prompt, then the question), chat (the system prompt, then the turns), the three
+    # templated queries.
+    odd = ["What is the Km of hexokinase for glucose?", "", "a \"quote\", a \\ backslash, a\ttab, a\nnewline",
+           "\x01\x1f\x7f control bytes", "ünïcødé — 酵素 🧪", "Answer as a \"textbook\" would.\tUse SI units \\ cite sources."]
+    systems = [prompt, "Custom prompt", "", odd[2], odd[4]]
+    for model in ("llama3", "m\"odel"):
+        for sysp in systems:
+            for q in odd:
+                m.row("ai::BiochemClient::query", "A", [g.s(model), g.s(sysp), g.s(q)],
+                      [g.s(body(model, [("system", sysp), ("user", q)]))])
+    turns_sets = [[], [("user", "What does PFK-1 do?")],
+                  [("user", "What does PFK-1 do?"), ("assistant", "It phosphorylates fructose 6-phosphate."),
+                   ("user", "And its main allosteric inhibitor?")],
+                  [("system", "be brief"), ("tool", "{\"ok\":true}"), ("user", odd[2]), ("assistant", odd[4])]]
+    roles = {"system": 0, "user": 1, "assistant": 2, "tool": 3}
+    for sysp in systems[:3]:
+        for turns in turns_sets:
+            ins = [g.s("llama3"), g.s(sysp), g.i(len(turns))]
+            for r, c in turns:
+                ins += [g.i(roles[r]), g.s(c)]
+            m.row("ai::BiochemClient::chat", "A", ins, [g.s(body("llama3", [("system", sysp)] + turns))])
+    for fn, t in templates.items():
+        for arg in ("hexokinase", "glycolysis", "MKTAYIAKQR", "", odd[2], odd[4], "{enzyme_name}"):
+            q = t.replace("{" + places[fn] + "}", arg)
+            m.row(f"ai::BiochemClient::{fn}", "A", [g.s("llama3"), g.s(prompt), g.s(arg)],
+                  [g.s(body("llama3", [("system", prompt), ("user", q)]))])
+
+    # The answers. serde derive on hoosh's response structs, over validate.py's serde_json document model.
+    def fields(v, names):
+        if isinstance(v, tuple) and v[0] == "OBJ":
+            got = {}
+            for k, val in v[1]:
+                if not validate.utf8_ok(k):
+                    raise ValueError("key not UTF-8")
+                if k in names:
+                    if k in got:
+                        raise ValueError(f"duplicate field {k}")
+                    got[k] = val
+            return got
+        if isinstance(v, list):
+            if len(v) != len(names):
+                raise ValueError("invalid length")
+            return dict(zip(names, v))
+        raise ValueError("not a struct")
+
+    def opt(got, k, read):
+        if k not in got or got[k] is None:
+            return None
+        return read(got[k])
+
+    def need(got, k):
+        if k not in got:
+            raise ValueError(f"missing field {k}")
+        return got[k]
+
+    def vec(v, read):
+        if not isinstance(v, list):
+            raise ValueError("not a sequence")
+        return [read(x) for x in v]
+
+    def u32(v):
+        return validate.serde_int(v, 0, (1 << 32) - 1)
+
+    def choice(v):
+        msg = fields(need(fields(v, ["message"]), "message"), ["content"])
+        return opt(msg, "content", validate.serde_str)
+
+    def infer(status, doc, model):
+        if 400 <= status <= 599:
+            return None
+        try:
+            got = fields(validate.py_json(doc), ["model", "choices", "usage"])
+            mdl = opt(got, "model", validate.serde_str)
+            choices = vec(need(got, "choices"), choice)
+            usage = opt(got, "usage", lambda u: fields(u, ["prompt_tokens", "completion_tokens", "total_tokens"]))
+            toks_ = [0, 0, 0] if usage is None else \
+                [0 if opt(usage, k, u32) is None else opt(usage, k, u32)
+                 for k in ("prompt_tokens", "completion_tokens", "total_tokens")]
+        except (ValueError, UnicodeDecodeError, RecursionError):
+            return None
+        text = (choices[0] if choices else None) or ""
+        return [g.s(text), g.s(model if mdl is None else mdl)] + [g.i(x) for x in toks_] + \
+            [g.s("hoosh"), g.i(0), g.i(0)]
+
+    def models(status, doc):
+        if 400 <= status <= 599:
+            return None
+        try:
+            got = fields(validate.py_json(doc), ["data"])
+
+            def obj(v):
+                f_ = fields(v, ["id", "owned_by"])
+                return validate.serde_str(need(f_, "id")), opt(f_, "owned_by", validate.serde_str)
+            data = vec(need(got, "data"), obj)
+        except (ValueError, UnicodeDecodeError, RecursionError):
+            return None
+        out = [g.i(len(data))]
+        for i_, own in data:
+            out += [g.s(i_), g.s(i_), g.s("hoosh" if own is None else own), g.NONE, g.NONE, g.b(True)]
+        return out
+
+    ok = ('{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"llama3",'
+          '"choices":[{"index":0,"message":{"role":"assistant","content":"Km ~ 0.1 mM"},"finish_reason":"stop"}],'
+          '"usage":{"prompt_tokens":12,"completion_tokens":5,"total_tokens":17,"cost_micro_usd":0,"provider":"x"}}')
+    docs = [ok, ok.replace('"model":"llama3",', ""), ok.replace('"model":"llama3"', '"model":null'),
+            ok.replace('"model":"llama3"', '"model":3'), ok.replace(',"usage":{', ',"x":{'),
+            ok.replace('"usage":{', '"usage":null,"u":{'), ok.replace('"prompt_tokens":12,', ""),
+            ok.replace('"prompt_tokens":12', '"prompt_tokens":null'), ok.replace('"prompt_tokens":12', '"prompt_tokens":-1'),
+            ok.replace('"prompt_tokens":12', '"prompt_tokens":4294967295'),
+            ok.replace('"prompt_tokens":12', '"prompt_tokens":4294967296'),
+            ok.replace('"prompt_tokens":12', '"prompt_tokens":1.0'),
+            ok.replace('"content":"Km ~ 0.1 mM"', '"content":null'), ok.replace('"content":"Km ~ 0.1 mM"', '"c":1'),
+            ok.replace('"content":"Km ~ 0.1 mM"', '"content":5'),
+            ok.replace('"message":{"role":"assistant","content":"Km ~ 0.1 mM"}', '"msg":{}'),
+            ok.replace('"choices":[{', '"choices":[{"message":{"content":"first"}},{'),
+            ok.replace('"choices":[{"index":0,"message":{"role":"assistant","content":"Km ~ 0.1 mM"},'
+                       '"finish_reason":"stop"}]', '"choices":[]'),
+            ok.replace('"choices":[{', '"choices":[3,{'), ok.replace('"choices":', '"c":'),
+            ok.replace('"choices":[{"index":0,"message":{"role":"assistant","content":"Km ~ 0.1 mM"},'
+                       '"finish_reason":"stop"}]', '"choices":{}'),
+            ok.replace('"content":"Km ~ 0.1 mM"', '"content":"a \\"quote\\" \\\\ \\n \\u00e9 \\ud83e\\uddea"'),
+            ok.replace('"content":"Km ~ 0.1 mM"', '"content":"\\ud800"'),
+            '[null,[[{"content":"seq"}]],[1,2,3]]', '["m",[],null]', '["m",[]]', '{"choices":[]}',
+            '{"choices":[{"message":{}}]}', '{"choices":[{"message":[null]}]}', '{"choices":[{"message":["x",1]}]}',
+            '[]', '{}', 'null', '"x"', '', 'not json', '{"choices":[]} x', '{"choices":[],"choices":[]}',
+            '{"choices":[{"message":{"content":"x","content":"y"}}]}', ok.replace('"stop"', '"\x01"')]
+    for status in (200, 201, 299, 204, 302, 399, 400, 404, 429, 500, 503, 599, 600):
+        for doc in (docs if status == 200 else docs[:2]):
+            for model in (("llama3", "fallback") if status == 200 else ("llama3",)):
+                d = doc.encode("utf-8", "surrogateescape")
+                m.row("ai::HooshClient::infer_response", "A", [g.i(status), g.sb(d), g.s(model)],
+                      infer(status, d, model) or [g.err("Provider")])
+    mok = '{"object":"list","data":[{"id":"llama3","object":"model","owned_by":"ollama"},{"id":"gpt-4o"}]}'
+    mdocs = [mok, mok.replace('{"id":"gpt-4o"}', '{"id":"gpt-4o","owned_by":null}'), '{"data":[]}', '{"x":1}',
+             '{"data":[{"owned_by":"x"}]}', '{"data":[{"id":5}]}', '{"data":[["a","b"],["c",null]]}',
+             '{"data":[["a"]]}', '[[{"id":"q"}]]', '{"data":{}}', '{"data":[{"id":"x","owned_by":3}]}',
+             '{"data":[{"id":"x","id":"y"}]}', 'null', '', '{"data":[{"id":"é \\n"}]}']
+    for status in (200, 299, 302, 400, 404, 500, 599):
+        for doc in (mdocs if status == 200 else mdocs[:1]):
+            d = doc.encode("utf-8")
+            m.row("ai::HooshClient::list_models_response", "A", [g.i(status), g.sb(d)],
+                  models(status, d) or [g.err("Provider")])
+    for status in (-1, 0, 100, 199, 200, 204, 299, 300, 301, 404, 500, 503, 600):
+        m.row("ai::HooshClient::health_response", "A", [g.i(status)], [g.b(200 <= status <= 299)])
+    return m, {f"src/{mod}_data.cyr": ai_client_data(templates, places)}
+
+
+def ai_client_data(templates, places):
+    out = [data_header("ai client data: the three query prompts",
+                       [textwrap.fill("Each templated query of ai.rs (`enzyme_query`, `pathway_query`, "
+                                      "`protein_query`): its `format!` string split at its one placeholder into a head "
+                                      "and a tail, each NUL-terminated UTF-8 (the prompt is head, argument, tail). "
+                                      "tests/golden/ai_client.tsv pins the bodies they make. The system prompt is "
+                                      "src/ai_data.cyr's.", width=118)])]
+    for fn, t in templates.items():
+        head, tail = t.split("{" + places[fn] + "}")
+        up_ = fn.upper()
+        out.append(mcp_blob(f"_RY_AI_{up_}_HEAD", head, f"Rust: rasayan::ai::BiochemClient::{fn}: the prompt before "
+                            f"`{{{places[fn]}}}`."))
+        out.append(mcp_blob(f"_RY_AI_{up_}_TAIL", tail, f"Rust: rasayan::ai::BiochemClient::{fn}: the prompt after "
+                            f"`{{{places[fn]}}}`."))
+    return "".join(out).rstrip("\n") + "\n"
+
+
+
+EXTRAS = []
+
+
 MODULES = {"receptor": receptor, "nuclear_receptor": nuclear_receptor, "signaling": signaling,
-           "neurotransmitter": neurotransmitter, "hormonal": hormonal, "mcp": mcp}
+           "neurotransmitter": neurotransmitter, "hormonal": hormonal, "mcp": mcp, "ai_client": ai_client}
 
 
 def outputs(root):
@@ -2428,6 +2663,8 @@ def outputs(root):
         m, data = make()
         files[f"tests/golden/{name}.tsv"] = m.render(MPFR, REGENERATE)
         files.update(data)
+    for make in EXTRAS:
+        files.update(make())
     listed = (root / "tests/golden/modules.txt").read_text().split("\n")
     head = [ln for ln in listed if ln.startswith("#")]
     mods = sorted({ln for ln in listed if ln and not ln.startswith("#")} | set(MODULES))

@@ -1,0 +1,70 @@
+# rasayan ai benchmarks (M8 part 2)
+#
+# Rust 1.2.0 has no ai benchmark, so these are Cyrius-only measurements (docs/benchmarks-rust-v-cyrius.md): the parts
+# of a call the client spends outside the network, each on an arena reset per call: writing a query's request body and
+# reading a hoosh chat answer and a model list.
+
+include "src/constants.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
+include "src/ai_data.cyr"
+include "src/ai_client_data.cyr"
+include "src/ai.cyr"
+
+var _bn_sink = 0;
+
+# n calls of benchmark `kind` (0 a query body, 1 a chat answer read, 2 a model list read), an arena reset per call.
+fn _bn_ai(name, kind, doc, n): i64 {
+    var ar = arena_allocator_growable(65536);
+    var t[16];
+    store64(&t, RY_ROLE_USER);
+    store64(&t + 8, "What is the Km of hexokinase for glucose?");
+    var r[64];
+    var models[1024];
+    var len = 0;
+    if (doc != 0) { len = strlen(doc); }
+    var b = bench_new(name);
+    bench_batch_start(b);
+    var i = 0;
+    while (i < n) {
+        reset_via(ar);
+        if (kind == 0) {
+            var body = _ry_ai_chat_body_a(ar, "llama3", &_RY_AI_SYSTEM_PROMPT, &t, 1);
+            _bn_sink = _bn_sink ^ load8(body);
+        } elif (kind == 1) {
+            var t1, v1 = _ry_ai_infer_parse_a(ar, 200, doc, len, "llama3", &r);
+            _bn_sink = _bn_sink ^ t1;
+        } else {
+            var t2, v2 = _ry_ai_models_parse_a(ar, 200, doc, len, &models, 16);
+            _bn_sink = _bn_sink ^ v2;
+        }
+        i = i + 1;
+    }
+    bench_batch_stop(b, n);
+    bench_report(b);
+    return 0;
+}
+
+# Runs the ai benchmarks.
+fn main() {
+    alloc_init();
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "{\"id\":\"chatcmpl-1\",\"object\":\"chat.completion\",\"created\":1,");
+    str_builder_add_cstr(sb, "\"model\":\"llama3\",");
+    str_builder_add_cstr(sb, "\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",");
+    str_builder_add_cstr(sb, "\"content\":\"Km ~ 0.1 mM\"},");
+    str_builder_add_cstr(sb, "\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":5,");
+    str_builder_add_cstr(sb, "\"total_tokens\":17}}");
+    var answer = str_data(str_builder_build(sb));
+    var list = "{\"object\":\"list\",\"data\":[{\"id\":\"llama3\",\"owned_by\":\"ollama\"},{\"id\":\"gpt-4o\"}]}";
+    _bn_ai("ai/query body", 0, 0, 100000);
+    _bn_ai("ai/chat answer read", 1, answer, 100000);
+    _bn_ai("ai/model list read", 2, list, 100000);
+    if (_bn_sink == 1) { println(""); }
+    return 0;
+}
+
+var r = main();
+sys_exit_group(r);

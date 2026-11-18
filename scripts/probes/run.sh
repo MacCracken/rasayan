@@ -18,7 +18,8 @@
 #   claims and exit 1 if one fails;
 # - p6 (bote 3.8.15, part 3b) answers the reference MCP requests on x86_64 ELF, aarch64 and PE, and p6_compare.py must
 #   find every tools/call payload and the inputSchema byte-identical and no difference but the recorded ones;
-# - p7 (hoosh 2.12.3, P8): the reference client probe_ai.py and p7_hoosh each make the client's eight calls against their own
+# - p7 (hoosh 2.12.3, P8; since M8 part 2 rasayan's ai client itself): the reference client probe_ai.py and p7_hoosh
+#   each make the client's eight calls against their own
 #   loopback stub (p7_hoosh_stub.py, ports 18741 and 18742), and p7_compare.py must find the request lines, bodies,
 #   Content-Type and Accept, and every outcome line identical (x86_64 ELF);
 # - p10 (the manifest and the bundles) runs p10_manifest.sh, which checks its own claims (consumers on three targets);

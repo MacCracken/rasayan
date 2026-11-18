@@ -164,9 +164,11 @@ modules = [
     "src/mcp.cyr",
 ]
 
-# [lib.ai] (dist/rasayan-ai.cyr): [lib] plus the hoosh client's data (src/ai_data.cyr, the system prompt) and, at M8,
-# src/ai.cyr on sandhi (P5, P8; prakash's pattern). sandhi is not in [deps] stdlib: listed there it would be prepended
-# to every rasayan compile (pramana measured +0.8 s each); M8 decides how the client's tests get it (probe 10).
+# [lib.ai] (dist/rasayan-ai.cyr): [lib] plus the hoosh client: src/ai_data.cyr (the system prompt),
+# src/ai_client_data.cyr (the query prompts), src/ai.cyr and src/ai_http.cyr on sandhi (P5, P8, M8 part 2; prakash's
+# pattern). sandhi is not in [deps] stdlib: listed there it would be prepended to every rasayan compile (pramana
+# measured +0.8 s each), so its consumer declares it, and the client's tests and probe 7 include the toolchain's
+# lib/sandhi.cyr themselves (probe 10); the parity harness checks src/ai.cyr, which calls none of it.
 [lib.ai]
 modules = [
     "src/constants.cyr",
@@ -226,6 +228,78 @@ modules = [
     "src/hormonal_data.cyr",
     "src/hormonal.cyr",
     "src/ai_data.cyr",
+    "src/ai_client_data.cyr",
+    "src/ai.cyr",
+    "src/ai_http.cyr",
+]
+
+
+# [lib.full] (dist/rasayan-full.cyr): [lib] with both integrations, the MCP tools and the hoosh client (M8); its
+# consumer declares bote and sandhi.
+[lib.full]
+modules = [
+    "src/constants.cyr",
+    "src/constants_private.cyr",
+    "src/mathx_data.cyr",
+    "src/mathx.cyr",
+    "src/fmtf.cyr",
+    "src/error.cyr",
+    "src/guard.cyr",
+    "src/integrate.cyr",
+    "src/logging.cyr",
+    "src/json.cyr",
+    "src/protein_data.cyr",
+    "src/alignment_data.cyr",
+    "src/enzyme_data.cyr",
+    "src/enzyme.cyr",
+    "src/membrane_data.cyr",
+    "src/membrane.cyr",
+    "src/signal_data.cyr",
+    "src/signal.cyr",
+    "src/metabolism_data.cyr",
+    "src/metabolism.cyr",
+    "src/energy_data.cyr",
+    "src/energy.cyr",
+    "src/protein.cyr",
+    "src/alignment.cyr",
+    "src/ptm.cyr",
+    "src/domain.cyr",
+    "src/glycolysis_data.cyr",
+    "src/glycolysis.cyr",
+    "src/tca_data.cyr",
+    "src/tca.cyr",
+    "src/etc_data.cyr",
+    "src/etc.cyr",
+    "src/beta_oxidation_data.cyr",
+    "src/beta_oxidation.cyr",
+    "src/amino_catabolism_data.cyr",
+    "src/amino_catabolism.cyr",
+    "src/pathway_data.cyr",
+    "src/pathway.cyr",
+    "src/mapk_data.cyr",
+    "src/mapk.cyr",
+    "src/pi3k_data.cyr",
+    "src/pi3k.cyr",
+    "src/jak_stat_data.cyr",
+    "src/jak_stat.cyr",
+    "src/calcium_data.cyr",
+    "src/calcium.cyr",
+    "src/receptor_data.cyr",
+    "src/receptor.cyr",
+    "src/nuclear_receptor_data.cyr",
+    "src/nuclear_receptor.cyr",
+    "src/signaling_data.cyr",
+    "src/signaling.cyr",
+    "src/neurotransmitter_data.cyr",
+    "src/neurotransmitter.cyr",
+    "src/hormonal_data.cyr",
+    "src/hormonal.cyr",
+    "src/mcp_data.cyr",
+    "src/mcp.cyr",
+    "src/ai_data.cyr",
+    "src/ai_client_data.cyr",
+    "src/ai.cyr",
+    "src/ai_http.cyr",
 ]
 
 [test]

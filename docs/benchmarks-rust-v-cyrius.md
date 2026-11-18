@@ -427,3 +427,16 @@ server runs them.
 | mcp/ptm (18 residues) | 12.2 µs | the handler alone: the scan and nine sites written |
 
 Measured at load 0.2, with michaelis_menten at its quiet 11 ns.
+
+## M8 part 2: ai
+
+Rust 1.2.0 has no ai benchmark; these are Cyrius-only (`tests/ai.bcyr`), the client's work outside the network, each on
+an arena reset per call.
+
+| Benchmark | Cyrius | Notes |
+|---|---|---|
+| ai/query body | 7.3 µs | the system prompt (308 bytes) and the question, escaped and written as serde_json writes the body |
+| ai/chat answer read | 7.9 µs | a hoosh 2.12.3 chat completion read by serde's rules into the response |
+| ai/model list read | 3.4 µs | two models |
+
+Measured at load 0.2, with michaelis_menten at its quiet 11 ns.

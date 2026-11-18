@@ -16,7 +16,7 @@
 - [x] M5–M6 — the metabolic network; the signaling cascades (MAPK, PI3K, JAK-STAT, calcium, receptor, nuclear
   receptor, the signaling network). The reference moved to accuracy and the Rust tooling left (ADR 0005)
 - [x] M7 — the neuroendocrine modules: neurotransmitter, hormonal
-- [ ] M8 — MCP (part 1, done) and the AI client (part 2; plan §6)
+- [x] M8 — MCP and the AI client (plan §6)
 - [ ] M9 — release 2.0.0
 
 ## Backlog

@@ -72,7 +72,7 @@ PAT='OK|error|warn|FAIL' run cyrius build src/main.cyr build/rasayan
 bw=$(grep -i warning "$OUT/step.out" | grep -viE "$KNOWN" | wc -l)
 echo "rasayan warning lines (build): $bw"
 [ "$bw" -eq 0 ] || FAILED+=("cyrius build ($bw warning lines)")
-# Every bundle: [lib], [lib.mcp] and [lib.ai] (part 3b; src/mcp.cyr and src/ai.cyr join them at M8). --check is
+# Every bundle: [lib], [lib.mcp] (the MCP tools), [lib.ai] (the hoosh client) and [lib.full] (both; M8). --check is
 # read-only (dist/ is committed and must be current).
 PAT='current|stale|differ|error|checked' TAILN=6 run cyrius distlib --check
 
@@ -101,7 +101,9 @@ echo "=== three targets: parity summaries and per-function lines"
 sums=$(for t in _elf --bounds --win --aarch64; do grep -E 'parity summary' "$OUT/test$t.log"; done | sort -u | wc -l)
 echo "distinct parity summary lines across ELF, --bounds, PE, aarch64: $sums"
 [ "$sums" -eq 1 ] || FAILED+=("parity summaries differ across targets ($sums distinct)")
-gated() { grep -vE '^note:|~ f64_(exp|ln) builtin' "$1"; }
+# The libraries' own warnings are target-specific (a toolchain lib's PE syscall notes: sandhi's dynlib and fdlopen, since
+# M8 part 2) and are the known ones (KNOWN), so the comparison is of rasayan's lines.
+gated() { grep -vE '^note:|^ +note: CYRIUS_TARGET_WIN|^warning:lib/|~ f64_(exp|ln) builtin' "$1"; }
 for t in --bounds --win --aarch64; do
     if ! diff <(gated "$OUT/test_elf.log") <(gated "$OUT/test$t.log") > "$OUT/diff$t.out"; then
         echo "test $t differs from ELF beyond the builtin shadow lines:"

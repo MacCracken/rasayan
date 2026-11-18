@@ -1,0 +1,176 @@
+# rasayan — src/ai.cyr and src/ai_http.cyr: Rust 1.2.0's ai tests, ported
+# Stdlib auto-included via cyrius.cyml
+#
+# The 4 unit tests of `ai.rs`, as they are written (the crypto-provider one as its claim: a client builds with nothing
+# to install first, ADR 0002 row 9); tests/golden/ai_client.tsv checks every request body and every answer's reading
+# besides, and scripts/probes/p7_hoosh.cyr every call against a stub that answers as hoosh 2.12.3 does (probe 7).
+# Beyond them: each call against a server that is not there (127.0.0.1, port 1: Err(RY_ERR_HTTP), health 0), the
+# trailing slashes, the token and the deadlines, and the two DEBUG events.
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
+include "src/ai_data.cyr"
+include "src/ai_client_data.cyr"
+include "src/ai.cyr"
+include "lib/sandhi.cyr"
+include "src/ai_http.cyr"
+
+# 1 when the C strings a and b are equal.
+fn same(a, b) {
+    var n = strlen(a);
+    if (strlen(b) != n) { return 0; }
+    return memeq(a, b, n);
+}
+
+# 1 when the C string `s` contains the C string `needle`.
+fn contains(s, needle) {
+    var n = strlen(s);
+    var m = strlen(needle);
+    var k = 0;
+    while (k + m <= n) {
+        if (memeq(s + k, needle, m) == 1) { return 1; }
+        k = k + 1;
+    }
+    return 0;
+}
+
+# ── the captured events ──
+var _ev_log = 0;                                 # 4096 bytes on the heap (a static one counts towards the compiler's
+var _ev_at = 0;                                  # 128 KiB static-data advisory, which sandhi's TLS stack nears)
+
+# sakshi's subscriber: appends each event's message and a newline to the log.
+fn _ev_hook(ts, level, category, msg, msg_len, extra) {
+    if (_ev_log == 0) { _ev_log = alloc(4096); }
+    if (_ev_at + msg_len + 1 > 4096) { return 0; }
+    memcpy(_ev_log + _ev_at, msg, msg_len);
+    store8(_ev_log + _ev_at + msg_len, 10);
+    _ev_at = _ev_at + msg_len + 1;
+    store8(_ev_log + _ev_at, 0);
+    return 0;
+}
+
+# 1 when the line `want` (a C string) is in the log.
+fn _ev_has(want) {
+    var n = strlen(want);
+    var k = 0;
+    while (k + n < _ev_at) {
+        var start = 0;
+        if (k == 0 || load8(_ev_log + k - 1) == 10) { start = 1; }
+        if (start == 1 && memeq(_ev_log + k, want, n) == 1 && load8(_ev_log + k + n) == 10) { return 1; }
+        k = k + 1;
+    }
+    return 0;
+}
+
+# rust src/ai.rs: test_client_creation, test_custom_system_prompt, test_client_clone
+# rust src/ai.rs: test_crypto_provider_installed
+fn client() {
+    test_group("ai: the client");
+    var c: RyBiochemClient;
+    var ok = ry_biochem_client_new(&c, "http://localhost:8088", "llama3");
+    assert(ok == 1 && same(c.model, "llama3") == 1 && contains(c.system_prompt, "biochemistry") == 1,
+      "a client has its model and the biochemistry system prompt");
+    var d: RyBiochemClient;
+    ry_biochem_client_new(&d, "http://localhost:8088", "llama3");
+    ry_biochem_client_with_system_prompt(&d, "Custom prompt");
+    assert(same(d.system_prompt, "Custom prompt") == 1, "with_system_prompt replaces the prompt");
+    var e: RyBiochemClient;
+    memcpy(&e, &c, 56);                          # Rust's derive(Clone): the record's seven words, its strings shared
+    assert(same(e.model, c.model) == 1 && same(e.base_url, c.base_url) == 1 && e.system_prompt == c.system_prompt,
+      "a copy of the record is a clone");
+    var a: RyBiochemClient;
+    var b: RyBiochemClient;
+    var two = ry_biochem_client_new(&a, "http://localhost:8088", "llama3");
+    two = two + ry_biochem_client_new(&b, "http://localhost:8089", "llama3");
+    assert_eq(two, 2, "two clients build with nothing installed first (sandhi owns its TLS)");
+    return 0;
+}
+
+# The base URL, the token and the deadlines (hoosh 1.3's trimming; ADR 0002 rows 5–6).
+fn settings() {
+    test_group("ai: the settings");
+    var c: RyBiochemClient;
+    ry_biochem_client_new(&c, "http://localhost:8088///", "llama3");
+    assert(same(c.base_url, "http://localhost:8088") == 1, "the trailing slashes are trimmed");
+    assert(c.token == 0 && c.connect_ms == RY_AI_CONNECT_MS && c.total_ms == 0 && c.read_ms == 0,
+      "Rust's defaults: no token, 10 s to connect, no request deadline");
+    ry_biochem_client_with_token(&c, "s3cret");
+    ry_biochem_client_with_deadlines(&c, 60000, 30000);
+    assert(same(c.token, "s3cret") == 1 && c.total_ms == 60000 && c.read_ms == 30000, "a token and deadlines set");
+    ry_biochem_client_with_token(&c, 0);
+    assert(c.token == 0, "a token of 0 sends none");
+    return 0;
+}
+
+# Every call against a server that is not there: no answer, so Err(RY_ERR_HTTP) (hoosh's Http) and health 0.
+fn unreachable() {
+    test_group("ai: no server");
+    var c: RyBiochemClient;
+    ry_biochem_client_new(&c, "http://127.0.0.1:1", "llama3");
+    ry_biochem_client_with_token(&c, "t");
+    var r: RyInferenceResponse;
+    var t1, v1 = ry_biochem_client_query(&c, "What is the Km of hexokinase for glucose?", &r);
+    var turns[32];                               # two RyMessage records
+    store64(&turns, RY_ROLE_USER);
+    store64(&turns + 8, "What does PFK-1 do?");
+    store64(&turns + 16, RY_ROLE_ASSISTANT);
+    store64(&turns + 24, "It phosphorylates fructose 6-phosphate.");
+    var t2, v2 = ry_biochem_client_chat(&c, &turns, 2, &r);
+    var t3, v3 = ry_biochem_client_enzyme_query(&c, "hexokinase", &r);
+    var t4, v4 = ry_biochem_client_pathway_query(&c, "glycolysis", &r);
+    var t5, v5 = ry_biochem_client_protein_query(&c, "MKTAYIAKQR", &r);
+    var models[256];                             # four RyModelInfo records
+    var t6, v6 = ry_biochem_client_list_models(&c, &models, 4);
+    var http = 0;
+    if (is_err_result(t1) == 1 && v1 == RY_ERR_HTTP) { http = http + 1; }
+    if (is_err_result(t2) == 1 && v2 == RY_ERR_HTTP) { http = http + 1; }
+    if (is_err_result(t3) == 1 && v3 == RY_ERR_HTTP) { http = http + 1; }
+    if (is_err_result(t4) == 1 && v4 == RY_ERR_HTTP) { http = http + 1; }
+    if (is_err_result(t5) == 1 && v5 == RY_ERR_HTTP) { http = http + 1; }
+    if (is_err_result(t6) == 1 && v6 == RY_ERR_HTTP) { http = http + 1; }
+    assert_eq(http, 6, "every request with no answer is Err(RY_ERR_HTTP)");
+    assert_eq(ry_biochem_client_health(&c), 0, "health with no answer is 0, not an error");
+    return 0;
+}
+
+# Rust's two DEBUG events under the target `rasayan::ai`, and the failure's (`the HTTP request got no answer: …`).
+fn events() {
+    test_group("ai: debug events");
+    sakshi_set_emit_hook(&_ev_hook);
+    sakshi_set_level(SK_DEBUG);
+    var c: RyBiochemClient;
+    ry_biochem_client_new(&c, "http://127.0.0.1:1", "llama3");
+    var r: RyInferenceResponse;
+    var t1, v1 = ry_biochem_client_query(&c, "Define Kcat.", &r);
+    var turns[16];
+    store64(&turns, RY_ROLE_USER);
+    store64(&turns + 8, "hi");
+    var t2, v2 = ry_biochem_client_chat(&c, &turns, 1, &r);
+    sakshi_set_level(SK_INFO);
+    sakshi_clear_emit_hook();
+    assert_eq(_ev_has("rasayan::ai: rasayan::ai query model=llama3 prompt_len=12"), 1, "the query event");
+    assert_eq(_ev_has("rasayan::ai: rasayan::ai chat model=llama3 turns=1"), 1, "the chat event");
+    var failed = 0;
+    if (contains(_ev_log, "the HTTP request got no answer: ") == 1) { failed = 1; }
+    assert(is_err_result(t1) == 1 && is_err_result(t2) == 1 && failed == 1, "each failure is a DEBUG event too");
+    return 0;
+}
+
+# Runs the ai suite.
+fn main() {
+    alloc_init();
+    client();
+    settings();
+    unreachable();
+    events();
+    return assert_summary();
+}
+
+var exit_code = main();
+# assert_summary() returns the failure count; a wait status is 8 bits, so any failure exits 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

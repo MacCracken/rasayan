@@ -1977,3 +1977,31 @@ the i32 guards on `z` and `gap_penalty`, the matrices, the DP-cell cap, and the 
 
 **Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`, Cyrius only): a tools/call round trip 12.0 µs (probe 6: 13.5 µs),
 tools/list 50.3 µs, the kinetics handler 3.5 µs.
+
+### 11b. Part 2: ai (2026-11-18)
+
+**What is compared.** `tests/golden/ai_client.tsv` (new, 258 rows, class A), written by `gen.py` (`ai_client()`) from
+ai.rs and hoosh 1.3's client.rs (read as text from the cargo registry; the crate is never built), against src/ai.cyr:
+the client's construction (nine base URLs, trailing slashes trimmed as hoosh 1.3 does, three models); 93 request
+bodies (`query` under five system prompts with six questions and two models, `chat` with zero to four turns of every
+role, the three templated queries with seven arguments), each as `to_chat_body` gives serde_json; 104 chat answers
+(the model, the choices and the usage each absent, null or mistyped, the token counts at the u32 bounds and past them,
+a choice without its message, the first of two, an empty list, the sequence form, a repeated field, a raw control
+byte, a lone surrogate; statuses 200–600), 21 model lists and 13 health statuses, each as `infer`, `list_models` and
+`health` read them (serde's derive rules on the response structs, over validate.py's serde_json document model).
+
+| Check | Result |
+|---|---|
+| every row | 258 identical on the first run |
+| `gen.py --check` | the golden file and `src/ai_client_data.cyr` byte-identical on regeneration |
+| Rust tests | the 4 `ai.rs` tests ported (`tests/ai.tcyr`, 13 checks, every call against a server that is not there); **the ledger at 723 of 723**; surface parity 10 of 10 |
+| probe 7 | the client itself (`ry_biochem_client_*`) against the hoosh 2.12.3 stub, beside the reference client: 8 requests, the bodies byte-identical 6 of 6, `Content-Type` and `Accept` equal, the outcome lines identical 8 of 8 |
+| four targets (`scripts/gates.sh`, 537 s) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 124,970 ok, 81 accepted (ADR 3: 0), 0 failed; coverage 492 of 492 public fns executed |
+
+**Why the client is two files.** The compiler's advisory warns once a program's static data passes 128 KiB, and
+sigil's TLS code, which sandhi's requests reach, keeps its scratch (16–32 KB function-local arrays) static. The parity
+harness checks `src/ai.cyr`, which calls no sandhi, so its build stays clean; `tests/ai.tcyr` and probe 7 include
+`src/ai_http.cyr` and sandhi and stay under the line with their buffers on the heap.
+
+**Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`, Cyrius only): a query body 7.3 µs, a chat answer read 7.9 µs, a
+model list read 3.4 µs.

@@ -1,0 +1,414 @@
+# rasayan — src/ai.cyr: biochemistry queries through the hoosh inference gateway (rust-old/src/ai.rs), on sandhi
+#
+# `RyBiochemClient` is Rust's `BiochemClient`: a hoosh client with a biochemistry system prompt and query helpers
+# ([lib.ai] only). Rust's client wraps hoosh 1.3's `HooshClient` (reqwest, async); the port speaks the same HTTP to
+# hoosh 2.12.3 synchronously on sandhi (port plan P8, ADR 0002 rows 5–6; probe 7):
+# - `query`, `chat`, `enzyme_query`, `pathway_query` and `protein_query` POST `/v1/chat/completions` with the body
+#   hoosh 1.3's `to_chat_body` gives serde_json (`{"max_tokens":2048,"messages":[{"content":…,"role":…},…],
+#   "model":…,"stream":false,"temperature":0.3}`, keys sorted), `Content-Type: application/json`, `Accept: */*`;
+# - the answer maps as hoosh 1.3's `infer` maps it: a status of 400–599 is a Provider error, so is an answer serde would
+#   not read into its `ChatCompletionResp`; the text is the first choice's content (else empty), the model the answer's
+#   (else the request's), the three token counts (else 0), the provider "hoosh", no latency, no tool calls;
+# - `health` GETs `/v1/health`: 1 for a 2xx answer, 0 for any other or for no answer; `list_models` GETs `/v1/models`
+#   and maps each `data` entry as hoosh 1.3 does (the id twice, `owned_by` else "hoosh", available).
+# The deadlines are Rust's: 10 s to connect and none on the request (`ry_biochem_client_with_deadlines` sets a total
+# and a read deadline); no bearer token unless `ry_biochem_client_with_token` gives one (ADR 0002 rows 5–6). A request
+# that gets no answer is Err(RY_ERR_HTTP) (hoosh's `Http`), one that hoosh answers with an error or an unreadable body
+# Err(RY_ERR_PROVIDER) (hoosh's `Provider`), each with Rust's Display in a DEBUG failure event. Every call builds on
+# the caller's allocator (its `_a` form; the plain form on the default allocator): the request, the answer and the
+# strings the result points to. This file holds the client, the request bodies and the reading of the answers (the
+# parity harness checks them without sandhi); src/ai_http.cyr, after it, the requests.
+
+# ── the types ──
+
+# A chat turn's role (hoosh's `Role`), append-only.
+enum RyRole {
+    RY_ROLE_SYSTEM = 0;
+    RY_ROLE_USER = 1;
+    RY_ROLE_ASSISTANT = 2;
+    RY_ROLE_TOOL = 3;
+}
+
+# A chat turn (hoosh's `Message`): its role and its content, a C string.
+struct RyMessage {
+    role;
+    content;
+}
+
+# The client: the hoosh base URL (trailing slashes trimmed), the model, the system prompt and the optional bearer token
+# (C strings; 0 for no token), and the deadlines in ms (0 for none).
+struct RyBiochemClient {
+    base_url;
+    model;
+    system_prompt;
+    token;
+    connect_ms;
+    total_ms;
+    read_ms;
+}
+
+# An inference answer (hoosh's `InferenceResponse`): the text, the model and the provider (C strings on the call's
+# allocator), the token counts, the latency in ms and the number of tool calls.
+struct RyInferenceResponse {
+    text;
+    model;
+    prompt_tokens;
+    completion_tokens;
+    total_tokens;
+    provider;
+    latency_ms;
+    tool_calls;
+}
+
+# A model hoosh serves (hoosh's `ModelInfo`): its id, name and provider (C strings), its parameter count and context
+# length (each with a has_ flag: hoosh 1.3 never fills them) and whether it is available.
+struct RyModelInfo {
+    id;
+    name;
+    provider;
+    has_parameters;
+    parameters;
+    has_context_length;
+    context_length;
+    available;
+}
+
+# Rust's 10 s connect timeout (hoosh 1.3's reqwest client).
+const RY_AI_CONNECT_MS = 10000;
+
+# ── strings ──
+
+# A NUL-terminated copy of the `n` bytes at p on allocator a, or 0.
+#must_use
+fn _ry_ai_dup(a, p, n): i64 {
+    var out = alloc_via(a, n + 1);
+    if (out == 0) { return 0; }
+    if (n > 0) { memcpy(out, p, n); }
+    store8(out + n, 0);
+    return out;
+}
+
+# The role's name, as hoosh 1.3 writes it ("system", "user", "assistant", "tool"), or 0 for a value that is none.
+#must_use
+#pure
+fn ry_role_name(role): cstring {
+    match role {
+        RY_ROLE_SYSTEM => { return "system"; }
+        RY_ROLE_USER => { return "user"; }
+        RY_ROLE_ASSISTANT => { return "assistant"; }
+        RY_ROLE_TOOL => { return "tool"; }
+        _ => { return 0; }
+    }
+    return 0;
+}
+
+# ── the client ──
+
+# A client for the hoosh server at `base_url` (trailing slashes trimmed, as hoosh 1.3 does) with `model` and the
+# default biochemistry system prompt, into *out; the strings copied on the default allocator. 1, or 0 when the copy was
+# refused. Mirrors `BiochemClient::new`.
+fn ry_biochem_client_new(out: *RyBiochemClient, base_url, model): i64 {
+    var a = default_alloc();
+    var n = strlen(base_url);
+    while (n > 0 && load8(base_url + n - 1) == 47) { n = n - 1; }
+    var b = _ry_ai_dup(a, base_url, n);
+    var m = _ry_ai_dup(a, model, strlen(model));
+    if (b == 0 || m == 0) { return 0; }
+    out.base_url = b;
+    out.model = m;
+    out.system_prompt = &_RY_AI_SYSTEM_PROMPT;
+    out.token = 0;
+    out.connect_ms = RY_AI_CONNECT_MS;
+    out.total_ms = 0;
+    out.read_ms = 0;
+    return 1;
+}
+
+# Replaces the client's system prompt with a copy of `prompt`: 1, or 0 when the copy was refused (the prompt
+# unchanged). Mirrors `BiochemClient::with_system_prompt`.
+fn ry_biochem_client_with_system_prompt(c: *RyBiochemClient, prompt): i64 {
+    var p = _ry_ai_dup(default_alloc(), prompt, strlen(prompt));
+    if (p == 0) { return 0; }
+    c.system_prompt = p;
+    return 1;
+}
+
+# Sends `Authorization: Bearer <token>` with every request (hoosh 2.12.3 checks one when tokens are configured; Rust's
+# client never sends one), or none for a token of 0. 1, or 0 when the copy was refused. Cyrius only (ADR 0002 row 6).
+fn ry_biochem_client_with_token(c: *RyBiochemClient, token): i64 {
+    if (token == 0) {
+        c.token = 0;
+        return 1;
+    }
+    var t = _ry_ai_dup(default_alloc(), token, strlen(token));
+    if (t == 0) { return 0; }
+    c.token = t;
+    return 1;
+}
+
+# Sets the request's total and read deadlines in ms (0 for none, Rust's). Cyrius only (ADR 0002 row 5).
+fn ry_biochem_client_with_deadlines(c: *RyBiochemClient, total_ms, read_ms): i64 {
+    c.total_ms = total_ms;
+    c.read_ms = read_ms;
+    return 0;
+}
+
+# ── the request body ──
+
+# The chat body hoosh 1.3's `to_chat_body` gives serde_json for `model` and the `n` turns at `turns` (a system turn
+# first when `system` is not 0), as serde_json writes the `Value`: `{"max_tokens":2048,"messages":[{"content":…,
+# "role":…},…],"model":…,"stream":false,"temperature":0.3}`. The text (NUL-terminated) on allocator a, or 0 when the
+# allocator refused it or a role is none.
+#must_use
+fn _ry_ai_chat_body_a(a, model, system, turns: *RyMessage, n): i64 {
+    var sb = str_builder_new_a(a);
+    if (sb == 0) { return 0; }
+    var e = _ry_jw_byte(a, sb, 123);
+    e = e | _ry_jw_key(a, sb, "max_tokens", 1);
+    e = e | _ry_jw_i64(a, sb, 2048);
+    e = e | _ry_jw_key(a, sb, "messages", 0);
+    e = e | _ry_jw_byte(a, sb, 91);
+    var first = 1;
+    if (system != 0) {
+        e = e | _ry_ai_turn(a, sb, "system", system, 1);
+        first = 0;
+    }
+    var k = 0;
+    while (k < n) {
+        var t: *RyMessage = turns + k;            # a typed pointer: k turns on
+        var role = ry_role_name(t.role);
+        if (role == 0) { return 0; }
+        e = e | _ry_ai_turn(a, sb, role, t.content, first);
+        first = 0;
+        k = k + 1;
+    }
+    e = e | _ry_jw_byte(a, sb, 93);
+    e = e | _ry_jw_key(a, sb, "model", 0);
+    e = e | _ry_jw_str(a, sb, model, strlen(model));
+    e = e | _ry_jw_key(a, sb, "stream", 0);
+    e = e | _ry_jw_reserve(a, sb, 5);
+    if (e == 0) { str_builder_add_cstr(sb, "false"); }
+    e = e | _ry_jw_key(a, sb, "temperature", 0);
+    e = e | _ry_jw_f64(a, sb, 0.3);
+    e = e | _ry_jw_byte(a, sb, 125);
+    e = e | _ry_jw_byte(a, sb, 0);
+    if (e != 0) { return 0; }
+    return load64(sb);
+}
+
+# Appends one message object, `{"content":"<content>","role":"<role>"}` (a comma first unless `first`): 0, or -1.
+fn _ry_ai_turn(a, sb, role, content, first): i64 {
+    var e = 0;
+    if (first == 0) { e = _ry_jw_byte(a, sb, 44); }
+    e = e | _ry_jw_byte(a, sb, 123);
+    e = e | _ry_jw_key(a, sb, "content", 1);
+    e = e | _ry_jw_str(a, sb, content, strlen(content));
+    e = e | _ry_jw_key(a, sb, "role", 0);
+    e = e | _ry_jw_str(a, sb, role, strlen(role));
+    e = e | _ry_jw_byte(a, sb, 125);
+    return e;
+}
+
+# ── the answers (serde derive on hoosh 1.3's response structs) ──
+
+# The form of struct node `v` with `nfields` fields, as serde's derive reads it: 1 an object, 2 an array of exactly
+# `nfields` elements, 0 anything else. Mirrors `_ry_jr_form`.
+#must_use
+fn _ry_ai_form(v, nfields): i64 {
+    return _ry_jr_form(v, nfields);
+}
+
+# Field `name` (index i) of a struct node in `form`: its value node, or 0 when absent.
+#must_use
+fn _ry_ai_at(v, form, i, name): i64 {
+    return _ry_jr_at(v, form, i, name);
+}
+
+# An Option<String> field: (1, its bytes, length) for a string, (1, 0, 0) for absent or null (None), (0, 0, 0) for any
+# other value or invalid UTF-8 (serde refuses the document).
+fn _ry_ai_opt_str(x): (i64, i64, i64) {
+    if (x == 0 || bayan_json_v_tag(x) == JTAG_NULL) { return (1, 0, 0); }
+    var p[8];
+    var n[8];
+    if (_ry_jr_str(x, &p, &n) == 0) { return (0, 0, 0); }
+    return (1, load64(&p), load64(&n));
+}
+
+# An Option<u32> field: (1, n) for an integer in u32, (1, 0) for absent or null (None, read as 0), (0, 0) otherwise.
+fn _ry_ai_opt_u32(x): (i64, i64) {
+    if (x == 0 || bayan_json_v_tag(x) == JTAG_NULL) { return (1, 0); }
+    var n[8];
+    if (_ry_jr_int(x, 0, 4294967295, &n) == 0) { return (0, 0); }
+    return (1, load64(&n));
+}
+
+# A ChatChoice node, `{message: {content: Option<String>}}`: (1, the content's bytes, length; 0, 0 for None), or
+# (0, 0, 0) when serde would refuse it.
+fn _ry_ai_choice(v): (i64, i64, i64) {
+    var f1 = _ry_ai_form(v, 1);
+    if (f1 == 0) { return (0, 0, 0); }
+    var msg = _ry_ai_at(v, f1, 0, "message");
+    var f2 = _ry_ai_form(msg, 1);
+    if (f2 == 0) { return (0, 0, 0); }
+    return _ry_ai_opt_str(_ry_ai_at(msg, f2, 0, "content"));
+}
+
+# Reads a hoosh answer of `status` with the `n`-byte body at `body` as hoosh 1.3's `infer` reads it, for a request of
+# `model`, into *out (its strings on allocator a): Ok(0), or Err(RY_ERR_PROVIDER) for a status of 400–599 or a body
+# serde would not read into `ChatCompletionResp { model, choices, usage }`, or Err(RY_ERR_OUT_OF_MEMORY).
+#must_use
+fn _ry_ai_infer_parse_a(a, status, body, n, model, out: *RyInferenceResponse): Result {
+    if (status >= 400 && status <= 599) { return Err(RY_ERR_PROVIDER); }
+    var v = _ry_jr_parse(a, body, n);
+    var form = _ry_ai_form(v, 3);
+    if (form == 0) { return Err(RY_ERR_PROVIDER); }
+    var hm, mp, ml = _ry_ai_opt_str(_ry_ai_at(v, form, 0, "model"));
+    var ch = _ry_ai_at(v, form, 1, "choices");
+    if (hm == 0 || ch == 0 || bayan_json_v_tag(ch) != JTAG_ARR) { return Err(RY_ERR_PROVIDER); }
+    var tp = 0;
+    var tn = 0;
+    var k = 0;
+    while (k < bayan_json_v_arr_len(ch)) {
+        var hc, cp, cn = _ry_ai_choice(bayan_json_v_arr_get(ch, k));
+        if (hc == 0) { return Err(RY_ERR_PROVIDER); }
+        if (k == 0) {
+            tp = cp;
+            tn = cn;
+        }
+        k = k + 1;
+    }
+    var toks[24];
+    memset(&toks, 0, 24);
+    var u = _ry_ai_at(v, form, 2, "usage");
+    if (u != 0 && bayan_json_v_tag(u) != JTAG_NULL) {
+        var fu = _ry_ai_form(u, 3);
+        if (fu == 0) { return Err(RY_ERR_PROVIDER); }
+        var j = 0;
+        var name = "prompt_tokens";
+        while (j < 3) {
+            if (j == 1) { name = "completion_tokens"; }
+            if (j == 2) { name = "total_tokens"; }
+            var hu, nu = _ry_ai_opt_u32(_ry_ai_at(u, fu, j, name));
+            if (hu == 0) { return Err(RY_ERR_PROVIDER); }
+            store64(&toks + 8 * j, nu);
+            j = j + 1;
+        }
+    }
+    var text = _ry_ai_dup(a, tp, tn);
+    var mdl = 0;
+    if (mp != 0) {
+        mdl = _ry_ai_dup(a, mp, ml);
+    } else {
+        mdl = _ry_ai_dup(a, model, strlen(model));
+    }
+    if (text == 0 || mdl == 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    out.text = text;
+    out.model = mdl;
+    out.prompt_tokens = load64(&toks);
+    out.completion_tokens = load64(&toks + 8);
+    out.total_tokens = load64(&toks + 16);
+    out.provider = "hoosh";
+    out.latency_ms = 0;
+    out.tool_calls = 0;
+    return Ok(0);
+}
+
+# Reads a hoosh `/v1/models` answer of `status` with the `n`-byte body at `body` as hoosh 1.3's `list_models` reads it
+# (`ModelsResp { data: Vec<ModelObj { id, owned_by }> }`) into the `cap` RyModelInfo records at out (strings on
+# allocator a): Ok(count), Err(RY_ERR_PROVIDER) for a status of 400–599 or a body serde would refuse,
+# Err(RY_ERR_BUFFER_TOO_SMALL) for more than `cap` models (nothing written), or Err(RY_ERR_OUT_OF_MEMORY).
+#must_use
+fn _ry_ai_models_parse_a(a, status, body, n, out: *RyModelInfo, cap): Result {
+    if (status >= 400 && status <= 599) { return Err(RY_ERR_PROVIDER); }
+    var v = _ry_jr_parse(a, body, n);
+    var form = _ry_ai_form(v, 1);
+    if (form == 0) { return Err(RY_ERR_PROVIDER); }
+    var data = _ry_ai_at(v, form, 0, "data");
+    if (data == 0 || bayan_json_v_tag(data) != JTAG_ARR) { return Err(RY_ERR_PROVIDER); }
+    var count = bayan_json_v_arr_len(data);
+    var k = 0;
+    while (k < count) {
+        var e = bayan_json_v_arr_get(data, k);
+        var fe = _ry_ai_form(e, 2);
+        if (fe == 0) { return Err(RY_ERR_PROVIDER); }
+        var ip[8];
+        var in_[8];
+        if (_ry_jr_str(_ry_ai_at(e, fe, 0, "id"), &ip, &in_) == 0) { return Err(RY_ERR_PROVIDER); }
+        var ho, op, on = _ry_ai_opt_str(_ry_ai_at(e, fe, 1, "owned_by"));
+        if (ho == 0) { return Err(RY_ERR_PROVIDER); }
+        k = k + 1;
+    }
+    if (count > cap) { return Err(RY_ERR_BUFFER_TOO_SMALL); }
+    k = 0;
+    while (k < count) {
+        var e2 = bayan_json_v_arr_get(data, k);
+        var f2 = _ry_ai_form(e2, 2);
+        var jp[8];
+        var jn[8];
+        var ok = _ry_jr_str(_ry_ai_at(e2, f2, 0, "id"), &jp, &jn);
+        var h2, pp, pn = _ry_ai_opt_str(_ry_ai_at(e2, f2, 1, "owned_by"));
+        var id = _ry_ai_dup(a, load64(&jp), load64(&jn));
+        var prov = 0;
+        if (pp != 0) {
+            prov = _ry_ai_dup(a, pp, pn);
+        } else {
+            prov = "hoosh";
+        }
+        if (id == 0 || prov == 0 || ok == 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+        var mi: *RyModelInfo = out + k;            # a typed pointer: k records on
+        mi.id = id;
+        mi.name = id;
+        mi.provider = prov;
+        mi.has_parameters = 0;
+        mi.parameters = 0;
+        mi.has_context_length = 0;
+        mi.context_length = 0;
+        mi.available = 1;
+        k = k + 1;
+    }
+    return Ok(count);
+}
+
+# 1 for a health answer of `status` 200–299 (`StatusCode::is_success`), 0 for any other; a request that got no answer
+# is status -1 here and 0 too (hoosh 1.3 maps a transport error to Ok(false)).
+#must_use
+#pure
+fn _ry_ai_health_of(status): i64 {
+    if (status >= 200 && status <= 299) { return 1; }
+    return 0;
+}
+
+# ── the query prompts ──
+
+# The prompt `<head><arg><tail>` on allocator a (Rust's `format!` of one placeholder), or 0.
+#must_use
+fn _ry_ai_prompt(a, head, arg, tail): i64 {
+    var nh = strlen(head);
+    var na = strlen(arg);
+    var nt = strlen(tail);
+    var p = alloc_via(a, nh + na + nt + 1);
+    if (p == 0) { return 0; }
+    memcpy(p, head, nh);
+    memcpy(p + nh, arg, na);
+    memcpy(p + nh + na, tail, nt);
+    store8(p + nh + na + nt, 0);
+    return p;
+}
+
+# The enzyme query's prompt for `enzyme_name` on allocator a (ai.rs's `format!`, src/ai_client_data.cyr), or 0.
+#must_use
+fn _ry_ai_enzyme_prompt(a, enzyme_name): i64 {
+    return _ry_ai_prompt(a, &_RY_AI_ENZYME_QUERY_HEAD, enzyme_name, &_RY_AI_ENZYME_QUERY_TAIL);
+}
+
+# The pathway query's prompt for `pathway_name` on allocator a, or 0.
+#must_use
+fn _ry_ai_pathway_prompt(a, pathway_name): i64 {
+    return _ry_ai_prompt(a, &_RY_AI_PATHWAY_QUERY_HEAD, pathway_name, &_RY_AI_PATHWAY_QUERY_TAIL);
+}
+
+# The protein query's prompt for `sequence` on allocator a, or 0.
+#must_use
+fn _ry_ai_protein_prompt(a, sequence): i64 {
+    return _ry_ai_prompt(a, &_RY_AI_PROTEIN_QUERY_HEAD, sequence, &_RY_AI_PROTEIN_QUERY_TAIL);
+}

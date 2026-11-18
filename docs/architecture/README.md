@@ -6,4 +6,4 @@ Not decisions (those live in [`../adr/`](../adr/)) and not guides (those live in
 
 ## Items
 
-_Empty. Add a numbered entry (`001-kebab-case-title.md`) the first time the code has a non-obvious invariant a reader can't derive. Do not write entries for decisions — those are ADRs._
+- [001 — The compiler's static-data advisory, and why the ai client is two files](001-the-static-data-advisory-and-sandhi.md)
