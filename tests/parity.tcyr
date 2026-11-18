@@ -100,6 +100,8 @@ include "src/signaling_data.cyr"
 include "src/signaling.cyr"
 include "src/neurotransmitter_data.cyr"
 include "src/neurotransmitter.cyr"
+include "src/hormonal_data.cyr"
+include "src/hormonal.cyr"
 
 # pathway's solve_decreasing rows: the Rust tests' closures' contexts (`a - x`, `c - 3·n/(k + n)·c - n`, the constant
 # `v`).
@@ -5632,6 +5634,237 @@ fn _par_neurotransmitter_json(fp, fl): i64 {
     return 1;
 }
 
+# ── hormonal ────────────────────────────────────────────────────────────────────────────────
+# src/hormonal_data.cyr and src/hormonal.cyr (M7 part 2). A HormonalState row takes its six fields; a HormonalConfig
+# is the default with overrides, `i:n` then n pairs `i:field f:x` (0–19). tick takes the state, the config, the input's
+# five stimuli and `f:dt`, and gives the state after and the flux's four values; tick_with_acth_feedback takes `f:ki`
+# after dt. A trajectory row (class T) is a script: the state, the config, then `i:1 <5 × f> f:dt i:k`, `i:2 <5 × f>
+# f:dt f:ki i:k`, `i:3 i:field f:x` (set) and `i:4 i:field f:x` (add). The two bridges take three f64s.
+
+# Reads a hormonal config from input k into *c (the default, then the overrides): the index after it, or -1 when
+# malformed.
+fn _par_hm_in(k, c: *RyHormonalConfig): i64 {
+    ry_hormonal_config_default(c);
+    if (_par_is_i(k) == 0) { return 0 - 1; }
+    var n = _par_in(k);
+    var w = c;
+    var at = k + 1;
+    var j = 0;
+    while (j < n) {
+        if (_par_is_i(at) == 0 || _par_is_f(at + 1) == 0) { return 0 - 1; }
+        var field = _par_in(at);
+        if (field < 0 || field >= 20) { return 0 - 1; }
+        store64(w + 8 * field, _par_in(at + 1));
+        at = at + 2;
+        j = j + 1;
+    }
+    return at;
+}
+
+# Replays a hormonal trajectory script from input k on *s under *c: 1 with *f the last tick's flux, or -1 when
+# malformed.
+fn _par_hormonal_script(s: *RyHormonalState, c: *RyHormonalConfig, k, f: *RyHormonalFlux): i64 {
+    ry_hormonal_flux_default(f);
+    var inp: RyHormonalInput;
+    var w = s;
+    var at = k;
+    while (at < _par_in_n) {
+        if (_par_is_i(at) == 0) { return 0 - 1; }
+        var op = _par_in(at);
+        if (op == 1 && _par_all_f_from(at + 1, 6) == 1 && _par_is_i(at + 7) == 1) {
+            _par_fields_in(at + 1, &inp, 5);
+            var dt: f64 = _par_f(at + 6);
+            var n = _par_in(at + 7);
+            var j = 0;
+            while (j < n) {
+                ry_hormonal_state_tick(s, c, &inp, dt, f);
+                j = j + 1;
+            }
+            at = at + 8;
+        } elif (op == 2 && _par_all_f_from(at + 1, 7) == 1 && _par_is_i(at + 8) == 1) {
+            _par_fields_in(at + 1, &inp, 5);
+            var dt2: f64 = _par_f(at + 6);
+            var ki: f64 = _par_f(at + 7);
+            var n2 = _par_in(at + 8);
+            var j2 = 0;
+            while (j2 < n2) {
+                _ry_hormonal_state_tick_with_acth_feedback(s, c, &inp, dt2, ki, f);
+                j2 = j2 + 1;
+            }
+            at = at + 9;
+        } elif ((op == 3 || op == 4) && _par_is_i(at + 1) == 1 && _par_is_f(at + 2) == 1) {
+            var field = _par_in(at + 1);
+            if (field < 0 || field > 5) { return 0 - 1; }
+            var x: f64 = _par_f(at + 2);
+            if (op == 4) {
+                var old: f64 = load64(w + 8 * field);
+                x = old + x;
+            }
+            store64(w + 8 * field, x);
+            at = at + 3;
+        } else {
+            return 0 - 1;
+        }
+    }
+    return 1;
+}
+
+# The two bridge rows (three f64s, one f64), or 0 when the row is neither.
+fn _par_hormonal_bridge(fp, fl): i64 {
+    var which = 0;
+    if (_par_eq(fp, fl, "hormonal::cortisol_from_hpa") == 1) { which = 1; }
+    if (_par_eq(fp, fl, "hormonal::melatonin_from_serotonin") == 1) { which = 2; }
+    if (which == 0) { return 0; }
+    if (_par_in_n != 3 || _par_all_f(3) == 0) { return 0 - 1; }
+    var a: f64 = _par_f(0);
+    var b: f64 = _par_f(1);
+    var x: f64 = _par_f(2);
+    var y: f64 = 0.0;
+    if (which == 1) { y = ry_cortisol_from_hpa(a, b, x); }
+    if (which == 2) { y = ry_melatonin_from_serotonin(a, b, x); }
+    _par_got_f(y);
+    return 1;
+}
+
+# The hormonal rows: the defaults, the validators, the bridges, the ticks and trajectories, the serde rows.
+fn _par_hormonal(fp, fl): i64 {
+    var s: RyHormonalState;
+    var c: RyHormonalConfig;
+    var inp: RyHormonalInput;
+    var fx: RyHormonalFlux;
+    if (_par_eq(fp, fl, "hormonal::HormonalState::default") == 1) {
+        if (_par_in_n != 0) { return 0 - 1; }
+        ry_hormonal_state_default(&s);
+        _par_got_fields(&s, 6);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "hormonal::HormonalConfig::default") == 1) {
+        if (_par_in_n != 0) { return 0 - 1; }
+        ry_hormonal_config_default(&c);
+        _par_got_fields(&c, 20);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "hormonal::HormonalInput::default") == 1) {
+        if (_par_in_n != 0) { return 0 - 1; }
+        ry_hormonal_input_default(&inp);
+        _par_got_fields(&inp, 5);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "hormonal::HormonalConfig::validate") == 1) {
+        if (_par_hm_in(0, &c) != _par_in_n) { return 0 - 1; }
+        var tc, vc = ry_hormonal_config_validate(&c);
+        _par_got_outcome(tc, vc);
+        return 1;
+    }
+    var br = _par_hormonal_bridge(fp, fl);
+    if (br != 0) { return br; }
+    if (_par_in_n < 6 || _par_all_f_from(0, 6) == 0) { return _par_hormonal_json(fp, fl); }
+    _par_fields_in(0, &s, 6);
+    if (_par_in_n == 6) {
+        if (_par_eq(fp, fl, "hormonal::HormonalState::validate") == 1) {
+            var ts, vs = ry_hormonal_state_validate(&s);
+            _par_got_outcome(ts, vs);
+            return 1;
+        }
+        return _par_hormonal_json(fp, fl);
+    }
+    var k = _par_hm_in(6, &c);
+    if (k < 0) { return _par_hormonal_json(fp, fl); }
+    if (_par_eq(fp, fl, "hormonal::HormonalState::trajectory") == 1) {
+        if (_par_hormonal_script(&s, &c, k, &fx) != 1) { return 0 - 1; }
+        _par_got_fields(&s, 6);
+        _par_got_fields(&fx, 4);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "hormonal::HormonalState::tick") == 1) {
+        if (_par_in_n != k + 6 || _par_all_f_from(k, 6) == 0) { return 0 - 1; }
+        _par_fields_in(k, &inp, 5);
+        var dt: f64 = _par_f(k + 5);
+        ry_hormonal_state_tick(&s, &c, &inp, dt, &fx);
+        _par_got_fields(&s, 6);
+        _par_got_fields(&fx, 4);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "hormonal::HormonalState::tick_with_acth_feedback") == 1) {
+        if (_par_in_n != k + 7 || _par_all_f_from(k, 7) == 0) { return 0 - 1; }
+        _par_fields_in(k, &inp, 5);
+        var dt2: f64 = _par_f(k + 5);
+        var ki: f64 = _par_f(k + 6);
+        _ry_hormonal_state_tick_with_acth_feedback(&s, &c, &inp, dt2, ki, &fx);
+        _par_got_fields(&s, 6);
+        _par_got_fields(&fx, 4);
+        return 1;
+    }
+    return _par_hormonal_json(fp, fl);
+}
+
+# The serde rows of HormonalState, HormonalConfig, HormonalInput and HormonalFlux.
+fn _par_hormonal_json(fp, fl): i64 {
+    var s: RyHormonalState;
+    var c: RyHormonalConfig;
+    var inp: RyHormonalInput;
+    var fx: RyHormonalFlux;
+    if (_par_jsb == 0) { _par_jsb = str_builder_new(); }
+    var sb = _par_jsb;
+    store64(sb + 8, 0);
+    var wt = 0;
+    var wv = 0;
+    var wrote = 0;
+    if (_par_eq(fp, fl, "serde_json::to_string<HormonalState>") == 1 && _par_in_n == 6 && _par_all_f(6) == 1) {
+        _par_fields_in(0, &s, 6);
+        wt, wv = ry_hormonal_state_to_json(sb, &s);
+        wrote = 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::to_string<HormonalConfig>") == 1 && _par_in_n == 20 && _par_all_f(20) == 1) {
+        _par_fields_in(0, &c, 20);
+        wt, wv = ry_hormonal_config_to_json(sb, &c);
+        wrote = 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::to_string<HormonalInput>") == 1 && _par_in_n == 5 && _par_all_f(5) == 1) {
+        _par_fields_in(0, &inp, 5);
+        wt, wv = ry_hormonal_input_to_json(sb, &inp);
+        wrote = 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::to_string<HormonalFlux>") == 1 && _par_in_n == 4 && _par_all_f(4) == 1) {
+        _par_fields_in(0, &fx, 4);
+        wt, wv = ry_hormonal_flux_to_json(sb, &fx);
+        wrote = 1;
+    }
+    if (wrote == 1) {
+        if (is_err_result(wt) == 1) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    var kind = 0;
+    if (_par_eq(fp, fl, "serde_json::from_slice<HormonalState>") == 1) { kind = 1; }
+    if (_par_eq(fp, fl, "serde_json::from_slice<HormonalConfig>") == 1) { kind = 2; }
+    if (_par_eq(fp, fl, "serde_json::from_slice<HormonalInput>") == 1) { kind = 3; }
+    if (_par_eq(fp, fl, "serde_json::from_slice<HormonalFlux>") == 1) { kind = 4; }
+    if (kind == 0) { return 0; }
+    var lw[8];
+    var doc = _par_in_bytes(0, &lw);
+    if (doc == 0) { return 0 - 1; }
+    var len = load64(&lw);
+    if (_par_jarena == 0) { _par_jarena = arena_allocator_growable(65536); }
+    _par_json_gap = _par_has_neg_zero_int(doc, len);
+    reset_via(_par_jarena);
+    var rt = 0;
+    var rv = 0;
+    if (kind == 1) { rt, rv = ry_hormonal_state_from_json_a(_par_jarena, doc, len, &s); }
+    if (kind == 2) { rt, rv = ry_hormonal_config_from_json_a(_par_jarena, doc, len, &c); }
+    if (kind == 3) { rt, rv = ry_hormonal_input_from_json_a(_par_jarena, doc, len, &inp); }
+    if (kind == 4) { rt, rv = ry_hormonal_flux_from_json_a(_par_jarena, doc, len, &fx); }
+    if (is_err_result(rt) == 1) {
+        _par_got_err(rv);
+        return 1;
+    }
+    if (kind == 1) { _par_got_fields(&s, 6); }
+    if (kind == 2) { _par_got_fields(&c, 20); }
+    if (kind == 3) { _par_got_fields(&inp, 5); }
+    if (kind == 4) { _par_got_fields(&fx, 4); }
+    return 1;
+}
+
 fn _par_dispatch(mp, ml, fp, fl): i64 {
     _par_got_n = 0;
     if (_par_eq(fp, fl, "const") == 1) { return _par_const(); }
@@ -5654,6 +5887,7 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
     if (_par_eq(mp, ml, "nuclear_receptor") == 1) { return _par_nuclear_receptor(fp, fl); }
     if (_par_eq(mp, ml, "signaling") == 1) { return _par_signaling(fp, fl); }
     if (_par_eq(mp, ml, "neurotransmitter") == 1) { return _par_neurotransmitter(fp, fl); }
+    if (_par_eq(mp, ml, "hormonal") == 1) { return _par_hormonal(fp, fl); }
     if (_par_eq(mp, ml, "enzyme") == 1) { return _par_enzyme(fp, fl); }
     if (_par_eq(mp, ml, "membrane") == 1) { return _par_membrane(fp, fl); }
     if (_par_eq(mp, ml, "signal") == 1) { return _par_signal(fp, fl); }
@@ -5791,6 +6025,8 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "nuclear_receptor::NuclearReceptorState::tick") == 1) { return 0; }
     if (_par_eq(fp, fl, "signaling::SignalingNetwork::tick") == 1) { return 0; }
     if (_par_eq(fp, fl, "neurotransmitter::NeurotransmitterState::tick") == 1) { return 0; }
+    if (_par_eq(fp, fl, "hormonal::HormonalState::tick") == 1) { return 0; }
+    if (_par_eq(fp, fl, "hormonal::HormonalState::tick_with_acth_feedback") == 1) { return 0; }
     return 0 - 1;
 }
 

@@ -25,6 +25,25 @@ part 5 (receptor) is the first module its Python generator writes.
 
 ### Added
 
+- **src/hormonal.cyr**, **src/hormonal_data.cyr** (M7 part 2) — `hormonal.rs` transcribed: `RyHormonalState` (CRH, ACTH,
+  cortisol, melatonin, oxytocin, BDNF), `RyHormonalConfig` (20 rates, gains, Kms and the feedback Ki), `RyHormonalInput`
+  and `RyHormonalFlux`; the defaults (from `src/hormonal_data.cyr`, by `gen.py`); both validators (the config's 16
+  non-negative parameters first, then its four divisors, Rust's order); `ry_hormonal_state_tick` and the private
+  `_ry_hormonal_state_tick_with_acth_feedback` (the inputs sanitized; CRH → ACTH → cortisol with the hypothalamic and
+  pituitary feedback arms on the start-of-step cortisol; melatonin under light, oxytocin, BDNF; every level by
+  `produce_decay`); mastishk's two bridges (`ry_cortisol_from_hpa`, `ry_melatonin_from_serotonin`); the four codecs.
+  Rust's `hormonal_tick` trace event and its invalid-dt event under `rasayan::hormonal`
+- **tests/golden/hormonal.tsv** (M7 part 2, 1,121 rows: A 291, B 569, C 235, T 26) — `gen.py` (`hormonal()`, MPFR):
+  the three defaults, both validators over every field and Rust's check order, 150 bridge rows (every argument's edges,
+  mastishk's call shapes, seeded), 510 single ticks (26 step lengths at two drives, every state, input and config
+  field's edges, Rust's feedback cases, seeded) and 144 at an explicit pituitary Ki (4, inf, 10³⁰⁰, 0, −4, NaN, 1), 26
+  trajectories (Rust's runs: stress against rest, social contact, exercise, the hour at three stress levels, large
+  steps, the set point at dt 0.5 and 2 with and without the pituitary arm, the CRH bolus; a light sweep, NaN and inf
+  recovery, seeded) and the serde documents. All 1,121 match the port on the first run
+- **tests/hormonal.tcyr** (M7 part 2, 42 checks) — the 25 `hormonal.rs` unit tests and its 4 integration tests
+  (the stress-response chain with the transmitters among them), both events: the ledger at 688 of 723. The fuzz
+  harness reads the four documents (1,267 read and written back) and ticks every valid state and every valid config
+- **benchmarks** (M7 part 2) — hormonal_tick, Rust → Cyrius: 33.4 → 211 ns
 - **src/neurotransmitter.cyr**, **src/neurotransmitter_data.cyr** (M7 part 1) — `neurotransmitter.rs` transcribed:
   `RyNeurotransmitterState` (11 levels and precursor pools), `RyNeurotransmitterConfig` (21 rates and Kms) and
   `RyNeurotransmitterFlux` (14 rates); the defaults (from `src/neurotransmitter_data.cyr`, by `gen.py`); both validators

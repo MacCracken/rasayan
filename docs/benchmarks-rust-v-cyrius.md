@@ -400,3 +400,14 @@ Cyrius only: the state ticked on (no reset) 340 ns; a 100-s tick (every integrat
 824 ns. Measured at load 0.4, with the reference rows at their quiet values (michaelis_menten 11 ns, glycolysis_tick
 688 ns, mapk_tick 216 ns). A tick is six capped Michaelis-Menten syntheses, seven `produce_decay` and two `relax`
 integrations, and the two trace-level checks.
+
+## M7 part 2: hormonal
+
+| Benchmark | Rust 1.2.0 (ns) | Cyrius (ns) | Notes |
+|---|---|---|---|
+| hormonal_tick | 33.37 | 211 | Rust's loop body: a default state, one tick of 0.01 s at the default input |
+
+Cyrius only: the state ticked on (no reset) 208 ns; a 100-s tick (every integrator on its correctly rounded `exp_m1`)
+536 ns. Measured at load 0.6, with the reference rows at their quiet values (michaelis_menten 11 ns, glycolysis_tick
+690 ns, mapk_tick 215 ns). A tick is three Michaelis-Menten rates, the two feedback factors and the light factor, and
+six `produce_decay` integrations.

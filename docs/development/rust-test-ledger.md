@@ -6,7 +6,7 @@
 > milestone hasn't come. The golden corpus (`tests/golden/`) checks every ported function on its grid besides.
 > The 2 doc tests and the example are M9's.
 
-**723 Rust tests:** 659 ported; 29 at M7, 35 at M8.
+**723 Rust tests:** 688 ported; 35 at M8.
 
 | Rust file | Tests | Ported | Due, unported | Later (milestone) |
 |---|---:|---:|---:|---|
@@ -21,7 +21,7 @@
 | `src/etc.rs` | 24 | 24 | 0 | — |
 | `src/glycolysis.rs` | 25 | 25 | 0 | — |
 | `src/guard.rs` | 4 | 4 | 0 | — |
-| `src/hormonal.rs` | 25 | 0 | 0 | 25 (M7) |
+| `src/hormonal.rs` | 25 | 25 | 0 | — |
 | `src/integrate.rs` | 5 | 5 | 0 | — |
 | `src/jak_stat.rs` | 12 | 12 | 0 | — |
 | `src/mapk.rs` | 17 | 17 | 0 | — |
@@ -38,9 +38,9 @@
 | `src/signal.rs` | 21 | 21 | 0 | — |
 | `src/signaling.rs` | 13 | 13 | 0 | — |
 | `src/tca.rs` | 26 | 26 | 0 | — |
-| `tests/integration.rs` | 70 | 66 | 0 | 4 (M7) |
+| `tests/integration.rs` | 70 | 70 | 0 | — |
 | `tests/validation.rs` | 25 | 25 | 0 | — |
-| **Total** | **723** | **659** | **0** | |
+| **Total** | **723** | **688** | **0** | |
 
 ## Where each is ported
 
@@ -292,6 +292,31 @@
 | `src/guard.rs` `take_and_shift_cap_at_pool` | `tests/guard.tcyr` `take_and_shift_cap_at_pool` |
 | `src/guard.rs` `validators_ranges` | `tests/guard.tcyr` `validators_ranges` |
 | `src/guard.rs` `validators_reject_non_finite` | `tests/guard.tcyr` `validators_reject_non_finite` |
+| `src/hormonal.rs` `test_acth_feedback_path_shares_guards` | `tests/hormonal.tcyr` `hardening` |
+| `src/hormonal.rs` `test_bridge_functions` | `tests/hormonal.tcyr` `bridges` |
+| `src/hormonal.rs` `test_bridge_values_unchanged_for_valid_inputs` | `tests/hormonal.tcyr` `bridges` |
+| `src/hormonal.rs` `test_bridges_pinned_for_mastishk_call_shapes` | `tests/hormonal.tcyr` `bridges` |
+| `src/hormonal.rs` `test_concentrations_non_negative` | `tests/hormonal.tcyr` `dynamics` |
+| `src/hormonal.rs` `test_config_validate_rejects_nan_and_zero_divisors` | `tests/hormonal.tcyr` `validation` |
+| `src/hormonal.rs` `test_cortisol_from_hpa_monotone_and_bounded` | `tests/hormonal.tcyr` `monotone` |
+| `src/hormonal.rs` `test_cortisol_negative_feedback` | `tests/hormonal.tcyr` `dynamics` |
+| `src/hormonal.rs` `test_default_config_valid` | `tests/hormonal.tcyr` `validation` |
+| `src/hormonal.rs` `test_default_state_valid` | `tests/hormonal.tcyr` `validation` |
+| `src/hormonal.rs` `test_exercise_raises_bdnf` | `tests/hormonal.tcyr` `dynamics` |
+| `src/hormonal.rs` `test_large_dt_stable` | `tests/hormonal.tcyr` `hardening` |
+| `src/hormonal.rs` `test_light_suppresses_melatonin` | `tests/hormonal.tcyr` `dynamics` |
+| `src/hormonal.rs` `test_long_run_resting_steady_state` | `tests/hormonal.tcyr` `set_point` |
+| `src/hormonal.rs` `test_melatonin_from_serotonin_monotone_and_finite` | `tests/hormonal.tcyr` `monotone` |
+| `src/hormonal.rs` `test_one_hour_run_bounded` | `tests/hormonal.tcyr` `hardening` |
+| `src/hormonal.rs` `test_pituitary_feedback_lowers_acth_at_fixed_crh` | `tests/hormonal.tcyr` `pituitary` |
+| `src/hormonal.rs` `test_pituitary_feedback_shortens_crh_pulse_response` | `tests/hormonal.tcyr` `pulse` |
+| `src/hormonal.rs` `test_serde_roundtrip_config` | `tests/hormonal.tcyr` `serde` |
+| `src/hormonal.rs` `test_serde_roundtrip_state` | `tests/hormonal.tcyr` `serde` |
+| `src/hormonal.rs` `test_social_contact_raises_oxytocin` | `tests/hormonal.tcyr` `dynamics` |
+| `src/hormonal.rs` `test_state_validate_rejects_nan_and_negative` | `tests/hormonal.tcyr` `validation` |
+| `src/hormonal.rs` `test_stress_raises_cortisol` | `tests/hormonal.tcyr` `dynamics` |
+| `src/hormonal.rs` `test_tick_invalid_dt_is_noop` | `tests/hormonal.tcyr` `hardening` |
+| `src/hormonal.rs` `test_tick_non_finite_inputs_sanitized` | `tests/hormonal.tcyr` `hardening` |
 | `src/integrate.rs` `activate_saturated_on_stays_at_most_one` | `tests/integrate.tcyr` `activate_saturated_on_stays_at_most_one` |
 | `src/integrate.rs` `activate_stays_in_unit_interval` | `tests/integrate.tcyr` `activate_stays_in_unit_interval` |
 | `src/integrate.rs` `produce_decay_steady_state_and_degenerate` | `tests/integrate.tcyr` `produce_decay_steady_state_and_degenerate` |
@@ -643,6 +668,9 @@
 | `tests/integration.rs` `test_glycolysis_feeds_tca` | `tests/tca.tcyr` `coupling` |
 | `tests/integration.rs` `test_glycolysis_tca_pathway_validation` | `tests/etc.tcyr` `validation` |
 | `tests/integration.rs` `test_goldman_with_custom_permeability` | `tests/membrane.tcyr` `goldman` |
+| `tests/integration.rs` `test_hormonal_flux_serde_roundtrip` | `tests/hormonal.tcyr` `serde` |
+| `tests/integration.rs` `test_hormonal_input_serde_roundtrip` | `tests/hormonal.tcyr` `serde` |
+| `tests/integration.rs` `test_hormonal_long_run_stability` | `tests/hormonal.tcyr` `integration` |
 | `tests/integration.rs` `test_inhibition_hierarchy` | `tests/enzyme.tcyr` `reference_values` |
 | `tests/integration.rs` `test_ionic_state_serde_roundtrip` | `tests/membrane.tcyr` `serde` |
 | `tests/integration.rs` `test_jak_stat_config_serde_roundtrip` | `tests/jak_stat.tcyr` `serde` |
@@ -668,6 +696,7 @@
 | `tests/integration.rs` `test_network_zero_oxygen_graceful` | `tests/pathway.tcyr` `oxygen` |
 | `tests/integration.rs` `test_neurotransmitter_flux_serde_roundtrip` | `tests/neurotransmitter.tcyr` `serde` |
 | `tests/integration.rs` `test_neurotransmitter_long_run_stability` | `tests/neurotransmitter.tcyr` `long_runs` |
+| `tests/integration.rs` `test_nt_stress_response_chain` | `tests/hormonal.tcyr` `integration` |
 | `tests/integration.rs` `test_nuclear_receptor_config_serde_roundtrip` | `tests/nuclear_receptor.tcyr` `serde` |
 | `tests/integration.rs` `test_nuclear_receptor_flux_serde_roundtrip` | `tests/nuclear_receptor.tcyr` `serde` |
 | `tests/integration.rs` `test_pi3k_config_serde_roundtrip` | `tests/pi3k.tcyr` `serde` |

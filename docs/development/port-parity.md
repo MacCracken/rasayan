@@ -1922,3 +1922,30 @@ stimulus sweep, NaN and inf recovery, four seeded); the serde documents. Classes
 | four targets (`scripts/gates.sh`, 485 s) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 122,478 ok, 81 accepted (ADR 3: 0), 0 failed; coverage 445 of 445 public fns executed |
 
 **Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): neurotransmitter_tick 48.0 → 346 ns.
+
+### 10b. Part 2: hormonal (2026-11-18)
+
+**What is compared.** `tests/golden/hormonal.tsv` (new, 1,121 rows), written by `gen.py` (`hormonal()`: hormonal.rs's
+tick transcribed on the MPFR primitives, the integrators noting the `exp_m1` branch), against the Cyrius port. The
+rows: the three defaults; both validators (every state field over ten edges and NaN/negative pairs; every config field
+over the config edges; six orderings where Rust's check order picks the error: a NaN rate before a zero Km or Ki); the
+two bridges (150 rows: every argument over 17 edges, mastishk's call shapes, the old poles at feedback −2 and light
+−0.2, seeded); 510 single ticks (26 step lengths at two drives, every state, input and config field's edges, NaN,
+infinite and negative inputs together, Rust's feedback cases, 120 seeded) and 144 through the private
+`tick_with_acth_feedback` (the pituitary Ki at 4, inf, 10³⁰⁰, 0, −4, NaN and 1 with the hypothalamic Ki at its default,
+10¹⁵ and 10³⁰⁰); 26 trajectories (Rust's runs: 200 steps at rest and under stress, social contact, exercise, the 1,000
+steps of 0.01 s, steps of 10, 10³ and 10⁶ s, the hour at stress 0, 1 and 5, the resting set point at dt 0.5 and 2 and
+without the pituitary arm, the CRH bolus with and without it, a light sweep, NaN and inf recovery, four seeded); the
+serde documents. Classes: A 291, B 569, C 235 (an integrator's `exp_m1`), T 26. The set points land on Rust's
+recorded values (CRH 0.280237…, ACTH 0.322506…, cortisol 1.568407…; without the pituitary arm 0.260126…, 0.427768…,
+1.844288…).
+
+| Check | Result |
+|---|---|
+| every row | 1,121 identical on the first run |
+| `gen.py --check` | the golden file and `src/hormonal_data.cyr` byte-identical on regeneration |
+| Rust tests | the 25 `hormonal.rs` tests and its 4 integration tests ported (`tests/hormonal.tcyr`, 42 checks); the ledger at 688 of 723; surface parity 21 of 21 |
+| fuzz | the four documents (1,267 accepted, each written and read back bit for bit); a valid state, and the default state on a valid config, ticked 0.1 s and 100 s stay valid with finite fluxes |
+| four targets (`scripts/gates.sh`, 495 s) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 123,599 ok, 81 accepted (ADR 3: 0), 0 failed; coverage 470 of 470 public fns executed |
+
+**Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): hormonal_tick 33.4 → 211 ns.

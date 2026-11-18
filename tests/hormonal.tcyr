@@ -1,0 +1,855 @@
+# rasayan — src/hormonal.cyr: Rust 1.2.0's hormonal tests, ported
+# Stdlib auto-included via cyrius.cyml
+#
+# The 25 unit tests of `hormonal.rs` and the 4 integration tests (tests/integration.rs) that call the hormones (the
+# input and flux round trips, the long run, the stress-response chain with the transmitters), as they are written;
+# tests/golden/hormonal.tsv checks every method, bridge, single tick and trajectory besides. Beyond them: both trace
+# events and every codec's round trip.
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+include "src/integrate.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
+include "src/enzyme_data.cyr"
+include "src/enzyme.cyr"
+include "src/neurotransmitter_data.cyr"
+include "src/neurotransmitter.cyr"
+include "src/hormonal_data.cyr"
+include "src/hormonal.cyr"
+
+# 1 when the state validates.
+fn hs_ok(p: *RyHormonalState) {
+    var t, v = ry_hormonal_state_validate(p);
+    return is_ok(t);
+}
+
+# 1 when the config validates.
+fn hc_ok(c: *RyHormonalConfig) {
+    var t, v = ry_hormonal_config_validate(c);
+    return is_ok(t);
+}
+
+# Rust's test helper `run_hormonal`: `steps` ticks of `dt` at `stress` (the default input otherwise), from the
+# default state.
+fn run_hormonal(s: *RyHormonalState, steps, dt: f64, stress: f64) {
+    var c: RyHormonalConfig;
+    var inp: RyHormonalInput;
+    var f: RyHormonalFlux;
+    ry_hormonal_config_default(&c);
+    ry_hormonal_input_default(&inp);
+    inp.stress = stress;
+    ry_hormonal_state_default(s);
+    var k = 0;
+    while (k < steps) {
+        ry_hormonal_state_tick(s, &c, &inp, dt, &f);
+        k = k + 1;
+    }
+    return 0;
+}
+
+# Rust's `rest_with_acth_ki`: the default resting axis run `steps` ticks of `dt` with pituitary Ki `ki`.
+fn rest_with_acth_ki(s: *RyHormonalState, ki: f64, steps, dt: f64) {
+    var c: RyHormonalConfig;
+    var inp: RyHormonalInput;
+    var f: RyHormonalFlux;
+    ry_hormonal_config_default(&c);
+    ry_hormonal_input_default(&inp);
+    ry_hormonal_state_default(s);
+    var k = 0;
+    while (k < steps) {
+        _ry_hormonal_state_tick_with_acth_feedback(s, &c, &inp, dt, ki, &f);
+        k = k + 1;
+    }
+    return 0;
+}
+
+# 1 when every level is finite, >= 0 (> 0 when `strict`) and <= 20 (Rust's `levels` checks).
+fn levels_ok(s: *RyHormonalState, strict) {
+    var w = s;
+    var k = 0;
+    while (k < 6) {
+        var v: f64 = load64(w + 8 * k);
+        if (_ry_is_finite(v) == 0 || v < 0.0 || v > 20.0) { return 0; }
+        if (strict == 1 && v <= 0.0) { return 0; }
+        k = k + 1;
+    }
+    return 1;
+}
+
+# ── the captured events ──
+var _ev_buf[1024];
+var _ev_len = 0;
+
+# sakshi's subscriber: keeps the last event's message.
+fn _ev_hook(ts, level, category, msg, msg_len, extra) {
+    var n = msg_len;
+    if (n > 1024) { n = 1024; }
+    memcpy(&_ev_buf, msg, n);
+    _ev_len = msg_len;
+    return 0;
+}
+
+# 1 if the last captured event is the C string `want`.
+fn _ev_is(want) {
+    var n = strlen(want);
+    if (_ev_len != n) { return 0; }
+    return memeq(&_ev_buf, want, n);
+}
+
+# rust src/hormonal.rs: test_default_state_valid, test_default_config_valid
+# rust src/hormonal.rs: test_state_validate_rejects_nan_and_negative
+# rust src/hormonal.rs: test_config_validate_rejects_nan_and_zero_divisors
+fn validation() {
+    test_group("hormonal: defaults and validation");
+    var s: RyHormonalState;
+    var c: RyHormonalConfig;
+    ry_hormonal_state_default(&s);
+    ry_hormonal_config_default(&c);
+    assert(hs_ok(&s) == 1 && hc_ok(&c) == 1, "the defaults validate");
+    var nan: f64 = _ry_nan();
+    var inf: f64 = _RY_INF;
+    var refused = 0;
+    var k = 0;
+    while (k < 3) {
+        var bad: f64 = nan;
+        if (k == 1) { bad = inf; }
+        if (k == 2) { bad = 0.0 - 1.0; }
+        ry_hormonal_state_default(&s);
+        s.cortisol = bad;
+        if (hs_ok(&s) == 0) { refused = refused + 1; }
+        ry_hormonal_state_default(&s);
+        s.bdnf = bad;
+        if (hs_ok(&s) == 0) { refused = refused + 1; }
+        k = k + 1;
+    }
+    assert_eq(refused, 6, "a NaN, infinite or negative cortisol or BDNF is refused");
+    c.crh_basal_rate = nan;
+    var t1, v1 = ry_hormonal_config_validate(&c);
+    assert_eq(v1, RY_ERR_NON_FINITE, "a NaN CRH basal rate is non-finite");
+    ry_hormonal_config_default(&c);
+    c.melatonin_light_sensitivity = inf;
+    assert_eq(hc_ok(&c), 0, "an infinite light sensitivity is refused");
+    var zeros = 0;
+    k = 0;
+    while (k < 4) {
+        ry_hormonal_config_default(&c);
+        if (k == 0) { c.acth_km_crh = 0.0; }
+        if (k == 1) { c.cortisol_km_acth = 0.0; }
+        if (k == 2) { c.cortisol_feedback_ki = 0.0; }
+        if (k == 3) { c.nat_km_serotonin = 0.0; }
+        if (hc_ok(&c) == 0) { zeros = zeros + 1; }
+        k = k + 1;
+    }
+    assert_eq(zeros, 4, "every zero divisor is refused");
+    ry_hormonal_config_default(&c);
+    c.crh_stress_gain = 0.0;
+    c.bdnf_degradation_rate = 0.0;
+    assert_eq(hc_ok(&c), 1, "a zero gain and a zero degradation rate are allowed");
+    return 0;
+}
+
+# rust src/hormonal.rs: test_stress_raises_cortisol, test_cortisol_negative_feedback
+# rust src/hormonal.rs: test_light_suppresses_melatonin, test_social_contact_raises_oxytocin
+# rust src/hormonal.rs: test_exercise_raises_bdnf, test_concentrations_non_negative
+fn dynamics() {
+    test_group("hormonal: the axes");
+    var rest: RyHormonalState;
+    var hi: RyHormonalState;
+    run_hormonal(&rest, 200, 0.1, 0.0);
+    run_hormonal(&hi, 200, 0.1, 2.0);
+    var rc: f64 = rest.cortisol;
+    var hc: f64 = hi.cortisol;
+    assert(hc > rc, "stress raises cortisol");
+    var c: RyHormonalConfig;
+    var inp: RyHormonalInput;
+    var f: RyHormonalFlux;
+    ry_hormonal_config_default(&c);
+    ry_hormonal_input_default(&inp);
+    inp.stress = 1.0;
+    var start: RyHormonalState;
+    var low: RyHormonalState;
+    var high: RyHormonalState;
+    ry_hormonal_state_default(&start);
+    ry_hormonal_state_default(&low);
+    ry_hormonal_state_default(&high);
+    low.cortisol = 0.1;
+    high.cortisol = 10.0;
+    ry_hormonal_state_tick(&low, &c, &inp, 1.0, &f);
+    ry_hormonal_state_tick(&high, &c, &inp, 1.0, &f);
+    var lo_crh: f64 = low.crh;
+    var hi_crh: f64 = high.crh;
+    var lo_acth: f64 = low.acth;
+    var hi_acth: f64 = high.acth;
+    assert(hi_crh < lo_crh && hi_acth < lo_acth, "high cortisol suppresses CRH, and ACTH follows");
+    var k_dt: f64 = 0.0 - c.crh_degradation_rate * 1.0;
+    var decay: f64 = _ry_cr_exp(k_dt);
+    var carry: f64 = start.crh * decay;
+    var ratio: f64 = (lo_crh - carry) / (hi_crh - carry);
+    var ki: f64 = c.cortisol_feedback_ki;
+    var expected: f64 = (1.0 + 10.0 / ki) / (1.0 + 0.1 / ki);
+    var gap: f64 = ratio - expected;
+    assert(f64_abs(gap) < 0.000000001, "CRH secretion scales by 1 / (1 + cortisol / Ki)");
+    c.cortisol_feedback_ki = 1000000000000000.0;
+    ry_hormonal_state_default(&low);
+    ry_hormonal_state_default(&high);
+    low.cortisol = 0.1;
+    high.cortisol = 10.0;
+    ry_hormonal_state_tick(&low, &c, &inp, 1.0, &f);
+    ry_hormonal_state_tick(&high, &c, &inp, 1.0, &f);
+    var d_crh: f64 = low.crh - high.crh;
+    assert(f64_abs(d_crh) < 0.000000000001, "without feedback (Ki 10¹⁵) cortisol leaves CRH alone");
+    ry_hormonal_config_default(&c);
+    var dark: RyHormonalInput;
+    var bright: RyHormonalInput;
+    ry_hormonal_input_default(&dark);
+    ry_hormonal_input_default(&bright);
+    bright.light = 1.0;
+    var fd: RyHormonalFlux;
+    var fb: RyHormonalFlux;
+    var a: RyHormonalState;
+    var b: RyHormonalState;
+    ry_hormonal_state_default(&a);
+    ry_hormonal_state_default(&b);
+    ry_hormonal_state_tick(&a, &c, &dark, 0.1, &fd);
+    ry_hormonal_state_tick(&b, &c, &bright, 0.1, &fb);
+    var md: f64 = fd.melatonin_synthesis;
+    var mb: f64 = fb.melatonin_synthesis;
+    assert(mb < md, "light suppresses melatonin synthesis");
+    var alone: RyHormonalState;
+    run_hormonal(&alone, 100, 0.1, 0.0);
+    var social: RyHormonalInput;
+    ry_hormonal_input_default(&social);
+    social.social_stimulus = 2.0;
+    var active: RyHormonalInput;
+    ry_hormonal_input_default(&active);
+    active.neural_activity = 3.0;
+    ry_hormonal_state_default(&a);
+    ry_hormonal_state_default(&b);
+    var k = 0;
+    while (k < 100) {
+        ry_hormonal_state_tick(&a, &c, &social, 0.1, &f);
+        ry_hormonal_state_tick(&b, &c, &active, 0.1, &f);
+        k = k + 1;
+    }
+    var oxy: f64 = a.oxytocin;
+    var oxy0: f64 = alone.oxytocin;
+    var bdnf: f64 = b.bdnf;
+    var bdnf0: f64 = alone.bdnf;
+    assert(oxy > oxy0 && bdnf > bdnf0, "social contact raises oxytocin, exercise BDNF");
+    run_hormonal(&a, 1000, 0.01, 0.0);
+    assert_eq(hs_ok(&a), 1, "1000 steps of 0.01 s stay valid");
+    return 0;
+}
+
+# rust src/hormonal.rs: test_tick_invalid_dt_is_noop, test_tick_non_finite_inputs_sanitized
+# rust src/hormonal.rs: test_large_dt_stable, test_one_hour_run_bounded, test_acth_feedback_path_shares_guards
+fn hardening() {
+    test_group("hormonal: hardening");
+    var d: RyHormonalState;
+    var s: RyHormonalState;
+    var c: RyHormonalConfig;
+    var inp: RyHormonalInput;
+    var f: RyHormonalFlux;
+    var zero: RyHormonalFlux;
+    ry_hormonal_state_default(&d);
+    ry_hormonal_config_default(&c);
+    ry_hormonal_input_default(&inp);
+    ry_hormonal_flux_default(&zero);
+    inp.stress = 1.0;
+    var nan: f64 = _ry_nan();
+    var inf: f64 = _RY_INF;
+    var ninf: f64 = -inf;
+    var noop = 1;
+    var k = 0;
+    while (k < 5) {
+        var dt: f64 = 0.0;
+        if (k == 1) { dt = -0.1; }
+        if (k == 2) { dt = nan; }
+        if (k == 3) { dt = inf; }
+        if (k == 4) { dt = ninf; }
+        ry_hormonal_state_default(&s);
+        memset(&f, 255, 32);
+        ry_hormonal_state_tick(&s, &c, &inp, dt, &f);
+        if (memeq(&s, &d, 48) == 0 || memeq(&f, &zero, 32) == 0) { noop = 0; }
+        k = k + 1;
+    }
+    assert_eq(noop, 1, "an invalid dt changes nothing, a zero flux");
+    var sane = 1;
+    k = 0;
+    while (k < 4) {
+        var bad: f64 = nan;
+        if (k == 1) { bad = inf; }
+        if (k == 2) { bad = ninf; }
+        if (k == 3) { bad = 0.0 - 3.0; }
+        var bi: RyHormonalInput;
+        bi.stress = bad;
+        bi.serotonin = bad;
+        bi.light = bad;
+        bi.social_stimulus = bad;
+        bi.neural_activity = bad;
+        ry_hormonal_state_default(&s);
+        ry_hormonal_state_tick(&s, &c, &bi, 0.1, &f);
+        var fw = &f;
+        var j = 0;
+        while (j < 4) {
+            var v: f64 = load64(fw + 8 * j);
+            if (_ry_is_finite(v) == 0) { sane = 0; }
+            j = j + 1;
+        }
+        if (hs_ok(&s) == 0) { sane = 0; }
+        k = k + 1;
+    }
+    assert_eq(sane, 1, "NaN, infinite or negative inputs: a valid state, a finite flux");
+    var r0: f64 = 0.0;
+    var rneg: f64 = 0.0;
+    var rnan: f64 = 0.0;
+    var r1: f64 = 0.0;
+    var r7: f64 = 0.0;
+    k = 0;
+    while (k < 5) {
+        var li: RyHormonalInput;
+        ry_hormonal_input_default(&li);
+        if (k == 1) { li.light = -0.2; }
+        if (k == 2) { li.light = nan; }
+        if (k == 3) { li.light = 7.0; }
+        if (k == 4) { li.light = 1.0; }
+        ry_hormonal_state_default(&s);
+        ry_hormonal_state_tick(&s, &c, &li, 0.1, &f);
+        var m: f64 = f.melatonin_synthesis;
+        if (k == 0) { r0 = m; }
+        if (k == 1) { rneg = m; }
+        if (k == 2) { rnan = m; }
+        if (k == 3) { r7 = m; }
+        if (k == 4) { r1 = m; }
+        k = k + 1;
+    }
+    assert(rneg == r0 && rnan == r0 && r7 == r1, "light is clamped into [0, 1]");
+    var big: RyHormonalInput;
+    ry_hormonal_input_default(&big);
+    big.stress = 3.0;
+    big.social_stimulus = 2.0;
+    big.neural_activity = 4.0;
+    var stable = 1;
+    var r = 0;
+    while (r < 3) {
+        var step: f64 = 10.0;
+        if (r == 1) { step = 1000.0; }
+        if (r == 2) { step = 1000000.0; }
+        ry_hormonal_state_default(&s);
+        k = 0;
+        while (k < 5) {
+            ry_hormonal_state_tick(&s, &c, &big, step, &f);
+            k = k + 1;
+        }
+        if (levels_ok(&s, 0) == 0) { stable = 0; }
+        r = r + 1;
+    }
+    ry_hormonal_state_default(&s);
+    ry_hormonal_state_tick(&s, &c, &big, 1000000.0, &f);
+    var oxy_ss: f64 = (c.oxytocin_basal_rate + c.oxytocin_stimulus_gain * 2.0) / c.oxytocin_degradation_rate;
+    var og: f64 = s.oxytocin - oxy_ss;
+    assert(stable == 1 && f64_abs(og) < 0.000000001,
+      "steps of 10, 1000 and 10⁶ s stay finite and <= 20; one 10⁶-s step lands on the steady state");
+    var bounded = 1;
+    r = 0;
+    while (r < 3) {
+        var stress: f64 = 0.0;
+        if (r == 1) { stress = 1.0; }
+        if (r == 2) { stress = 5.0; }
+        run_hormonal(&s, 36000, 0.1, stress);
+        if (levels_ok(&s, 1) == 0 || hs_ok(&s) == 0) { bounded = 0; }
+        r = r + 1;
+    }
+    assert_eq(bounded, 1, "an hour at stress 0, 1 and 5: every level > 0 and <= 20");
+    var ni: RyHormonalInput;
+    ry_hormonal_input_default(&ni);
+    ni.stress = nan;
+    var guarded = 1;
+    r = 0;
+    while (r < 2) {
+        var ki: f64 = RY_HORMONAL_ACTH_FEEDBACK_KI;
+        if (r == 1) { ki = inf; }
+        k = 0;
+        while (k < 4) {
+            var dt2: f64 = 0.0;
+            if (k == 1) { dt2 = -1.0; }
+            if (k == 2) { dt2 = nan; }
+            if (k == 3) { dt2 = inf; }
+            ry_hormonal_state_default(&s);
+            memset(&f, 255, 32);
+            _ry_hormonal_state_tick_with_acth_feedback(&s, &c, &ni, dt2, ki, &f);
+            if (memeq(&s, &d, 48) == 0 || memeq(&f, &zero, 32) == 0) { guarded = 0; }
+            k = k + 1;
+        }
+        ry_hormonal_state_default(&s);
+        s.cortisol = 0x7E37E43C8800759C;        # 1e300
+        _ry_hormonal_state_tick_with_acth_feedback(&s, &c, &ni, 0.1, ki, &f);
+        if (hs_ok(&s) == 0) { guarded = 0; }
+        r = r + 1;
+    }
+    assert_eq(guarded, 1, "the explicit-Ki path shares the guards (an invalid dt, cortisol 10³⁰⁰)");
+    return 0;
+}
+
+# rust src/hormonal.rs: test_pituitary_feedback_lowers_acth_at_fixed_crh
+fn pituitary() {
+    test_group("hormonal: the pituitary arm");
+    var c: RyHormonalConfig;
+    var inp: RyHormonalInput;
+    var f: RyHormonalFlux;
+    ry_hormonal_config_default(&c);
+    ry_hormonal_input_default(&inp);
+    inp.stress = 1.0;
+    var start: RyHormonalState;
+    ry_hormonal_state_default(&start);
+    var no_hypo: RyHormonalConfig;
+    ry_hormonal_config_default(&no_hypo);
+    no_hypo.cortisol_feedback_ki = 0x7E37E43C8800759C;    # 1e300
+    var low: RyHormonalState;
+    var high: RyHormonalState;
+    ry_hormonal_state_default(&low);
+    ry_hormonal_state_default(&high);
+    low.cortisol = 0.1;
+    high.cortisol = 10.0;
+    ry_hormonal_state_tick(&low, &no_hypo, &inp, 1.0, &f);
+    ry_hormonal_state_tick(&high, &no_hypo, &inp, 1.0, &f);
+    var lc: f64 = low.crh;
+    var hcr: f64 = high.crh;
+    var la: f64 = low.acth;
+    var ha: f64 = high.acth;
+    assert(lc == hcr && ha < la, "CRH independent of cortisol; high cortisol suppresses ACTH at fixed CRH");
+    var k_dt: f64 = 0.0 - no_hypo.acth_degradation_rate * 1.0;
+    var decay: f64 = _ry_cr_exp(k_dt);
+    var carry: f64 = start.acth * decay;
+    var ratio: f64 = (la - carry) / (ha - carry);
+    var aki: f64 = RY_HORMONAL_ACTH_FEEDBACK_KI;
+    var expected: f64 = (1.0 + 10.0 / aki) / (1.0 + 0.1 / aki);
+    var gap: f64 = ratio - expected;
+    assert(f64_abs(gap) < 0.000000001, "ACTH secretion scales by 1 / (1 + cortisol / ACTH_FEEDBACK_KI)");
+    var inf: f64 = _RY_INF;
+    ry_hormonal_state_default(&low);
+    ry_hormonal_state_default(&high);
+    low.cortisol = 0.1;
+    high.cortisol = 10.0;
+    _ry_hormonal_state_tick_with_acth_feedback(&low, &no_hypo, &inp, 1.0, inf, &f);
+    _ry_hormonal_state_tick_with_acth_feedback(&high, &no_hypo, &inp, 1.0, inf, &f);
+    var la2: f64 = low.acth;
+    var ha2: f64 = high.acth;
+    assert(la2 == ha2, "with both arms off, cortisol leaves ACTH alone");
+    var both: RyHormonalState;
+    var hypo_only: RyHormonalState;
+    ry_hormonal_state_default(&both);
+    ry_hormonal_state_default(&hypo_only);
+    both.cortisol = 3.0;
+    hypo_only.cortisol = 3.0;
+    ry_hormonal_state_tick(&both, &c, &inp, 1.0, &f);
+    _ry_hormonal_state_tick_with_acth_feedback(&hypo_only, &c, &inp, 1.0, inf, &f);
+    var bc: f64 = both.crh;
+    var oc: f64 = hypo_only.crh;
+    var ba: f64 = both.acth;
+    var oa: f64 = hypo_only.acth;
+    assert(bc == oc && ba < oa, "the default config: the same CRH, lower ACTH with the pituitary arm");
+    return 0;
+}
+
+# 1 when |a − b| < `tol`.
+fn near(a: f64, b: f64, tol: f64) {
+    var d: f64 = a - b;
+    if (f64_abs(d) < tol) { return 1; }
+    return 0;
+}
+
+# rust src/hormonal.rs: test_long_run_resting_steady_state
+fn set_point() {
+    test_group("hormonal: the resting set point");
+    var c: RyHormonalConfig;
+    var inp: RyHormonalInput;
+    var f: RyHormonalFlux;
+    ry_hormonal_config_default(&c);
+    ry_hormonal_input_default(&inp);
+    var e0: f64 = 0.28023707037931;
+    var e1: f64 = 0.3225061612834975;
+    var e2: f64 = 1.568407272622667;
+    var p0: f64 = 0.2601261403007282;
+    var p1: f64 = 0.4277680481390475;
+    var p2: f64 = 1.84428877022476;
+    var tol: f64 = 0.000000001;
+    var tiny: f64 = 0.000000000001;
+    var s: RyHormonalState;
+    var ok = 1;
+    var r = 0;
+    while (r < 2) {
+        var steps = 20000;
+        var dt: f64 = 0.5;
+        if (r == 1) {
+            steps = 5000;
+            dt = 2.0;
+        }
+        rest_with_acth_ki(&s, RY_HORMONAL_ACTH_FEEDBACK_KI, steps, dt);
+        var crh: f64 = s.crh;
+        var acth: f64 = s.acth;
+        var cort: f64 = s.cortisol;
+        if (near(crh, e0, tol) == 0 || near(acth, e1, tol) == 0 || near(cort, e2, tol) == 0) { ok = 0; }
+        ry_hormonal_state_tick(&s, &c, &inp, dt, &f);
+        var net: f64 = f.cortisol_net;
+        var crh2: f64 = s.crh;
+        var acth2: f64 = s.acth;
+        var cort2: f64 = s.cortisol;
+        if (f64_abs(net) >= tiny || near(crh, crh2, tiny) == 0 || near(acth, acth2, tiny) == 0) { ok = 0; }
+        if (near(cort, cort2, tiny) == 0) { ok = 0; }
+        r = r + 1;
+    }
+    assert_eq(ok, 1, "dt 0.5 (the series factors) and dt 2 (exp_m1) land on the set point, a true steady state");
+    var inf: f64 = _RY_INF;
+    rest_with_acth_ki(&s, inf, 20000, 0.5);
+    var oc: f64 = s.crh;
+    var oa: f64 = s.acth;
+    var ocort: f64 = s.cortisol;
+    assert(near(oc, p0, tol) == 1 && near(oa, p1, tol) == 1 && near(ocort, p2, tol) == 1,
+      "without the pituitary arm: the pre-change set point");
+    assert(e1 < p1 && e2 < p2 && e0 > p0, "the extra arm lowers resting ACTH and cortisol, CRH rises slightly");
+    return 0;
+}
+
+# The cortisol excess over baseline after Rust's CRH bolus, 6000 steps of 0.1 s.
+var _excess = 0;
+
+# Rust's `crh_pulse_response`: a CRH bolus of 5 at the resting set point of pituitary Ki `ki`; fills out[0..3] with
+# the peak excess, the full width at half maximum (s) and the time back below half peak (s). 0 when the response did
+# not resolve to 1 % of the peak.
+fn crh_pulse_response(ki: f64, out) {
+    var c: RyHormonalConfig;
+    var inp: RyHormonalInput;
+    var f: RyHormonalFlux;
+    ry_hormonal_config_default(&c);
+    ry_hormonal_input_default(&inp);
+    var s: RyHormonalState;
+    rest_with_acth_ki(&s, ki, 5000, 1.0);
+    if (_excess == 0) { _excess = alloc(48000); }
+    var base: f64 = s.cortisol;
+    s.crh = s.crh + 5.0;
+    var dt: f64 = 0.1;
+    var n = 6000;
+    var k = 0;
+    while (k < n) {
+        _ry_hormonal_state_tick_with_acth_feedback(&s, &c, &inp, dt, ki, &f);
+        var e: f64 = s.cortisol - base;
+        store64(_excess + 8 * k, e);
+        k = k + 1;
+    }
+    var i_peak = 0;
+    k = 0;
+    while (k < n) {
+        var ek: f64 = load64(_excess + 8 * k);
+        var ep: f64 = load64(_excess + 8 * i_peak);
+        if (ek > ep) { i_peak = k; }
+        k = k + 1;
+    }
+    var peak: f64 = load64(_excess + 8 * i_peak);
+    var half: f64 = 0.5 * peak;
+    var i_up = 0;
+    var eu: f64 = load64(_excess);
+    while (eu < half) {
+        i_up = i_up + 1;
+        eu = load64(_excess + 8 * i_up);
+    }
+    var i_down = i_peak;
+    var ed: f64 = load64(_excess + 8 * i_down);
+    while (i_down < n - 1 && ed >= half) {
+        i_down = i_down + 1;
+        ed = load64(_excess + 8 * i_down);
+    }
+    var last: f64 = load64(_excess + 8 * (n - 1));
+    var iu: f64 = f64_from(i_up + 1);
+    var id: f64 = f64_from(i_down + 1);
+    var t_up: f64 = iu * dt;
+    var t_down: f64 = id * dt;
+    store64(out, peak);
+    store64(out + 8, t_down - t_up);
+    store64(out + 16, t_down);
+    if (last < 0.01 * peak) { return 1; }
+    return 0;
+}
+
+# rust src/hormonal.rs: test_pituitary_feedback_shortens_crh_pulse_response
+fn pulse() {
+    test_group("hormonal: the CRH pulse response");
+    var nw[24];
+    var od[24];
+    var r1 = crh_pulse_response(RY_HORMONAL_ACTH_FEEDBACK_KI, &nw);
+    var inf: f64 = _RY_INF;
+    var r2 = crh_pulse_response(inf, &od);
+    var pn: f64 = load64(&nw);
+    var fn_: f64 = load64(&nw + 8);
+    var bn: f64 = load64(&nw + 16);
+    var po: f64 = load64(&od);
+    var fo: f64 = load64(&od + 8);
+    var bo: f64 = load64(&od + 16);
+    assert(r1 == 1 && r2 == 1, "both responses resolve");
+    assert(fn_ < fo && bn < bo && pn < po, "the stronger feedback shortens and lowers the response");
+    return 0;
+}
+
+# rust src/hormonal.rs: test_bridge_functions, test_bridge_values_unchanged_for_valid_inputs
+# rust src/hormonal.rs: test_bridges_pinned_for_mastishk_call_shapes
+fn bridges() {
+    test_group("hormonal: the bridges");
+    var cort: f64 = ry_cortisol_from_hpa(1.0, 1.0, 1.0);
+    var mel: f64 = ry_melatonin_from_serotonin(1.0, 1.0, 0.0);
+    var mel_light: f64 = ry_melatonin_from_serotonin(1.0, 1.0, 1.0);
+    assert(cort > 0.0 && mel > 0.0 && mel_light < mel, "the bridges give rates; light suppresses melatonin");
+    var a1: f64 = 0.1 * 0.5 / (0.5 + 0.5);
+    var s1: f64 = a1 + 0.3;
+    var a2: f64 = 0.08 * s1 / (0.5 + s1);
+    var want_c: f64 = a2 / (1.0 + 0.1 / 2.0);
+    var got_c: f64 = ry_cortisol_from_hpa(0.5, 0.3, 0.1);
+    var v: f64 = 0.05 / (1.0 + 5.0 * 0.4);
+    var want_m: f64 = v * 0.5 / (0.5 + 0.5);
+    var got_m: f64 = ry_melatonin_from_serotonin(0.5, 1.0, 0.4);
+    var tight: f64 = 0.000000000000001;
+    assert(near(got_c, want_c, tight) == 1 && near(got_m, want_m, tight) == 1, "the closed forms, to 1e-15");
+    var pin_tol: f64 = 0.000000000001;
+    var m0: f64 = ry_melatonin_from_serotonin(0.5, 1.0, 0.0);
+    var m1: f64 = ry_melatonin_from_serotonin(0.5, 1.0, 1.0);
+    var ok = near(got_c, 0.031372549019607836, pin_tol) + near(m0, 0.025, pin_tol);
+    ok = ok + near(m1, 0.004166666666666667, pin_tol);
+    assert_eq(ok, 3, "mastishk's call shapes keep their recorded values");
+    return 0;
+}
+
+# Rust's INPUTS (ascending).
+var _inputs[72];
+
+# Fills Rust's INPUTS table.
+fn _tables() {
+    var inf: f64 = _RY_INF;
+    var ninf: f64 = -inf;
+    store64(&_inputs, ninf);
+    store64(&_inputs + 8, 0.0 - 5.0);
+    store64(&_inputs + 16, 0.0 - 2.0);
+    store64(&_inputs + 24, 0.0 - 0.45);
+    store64(&_inputs + 32, 0.0);
+    store64(&_inputs + 40, 0.1);
+    store64(&_inputs + 48, 1.0);
+    store64(&_inputs + 56, 5.0);
+    store64(&_inputs + 64, 1000000.0);
+    return 0;
+}
+
+# cortisol_from_hpa with input x at position `which` (0 crh, 1 acth, 2 feedback), the others 1.
+fn _hpa_at(which, x: f64): f64 {
+    var y: f64 = 0.0;
+    if (which == 0) { y = ry_cortisol_from_hpa(x, 1.0, 1.0); }
+    if (which == 1) { y = ry_cortisol_from_hpa(1.0, x, 1.0); }
+    if (which == 2) { y = ry_cortisol_from_hpa(1.0, 1.0, x); }
+    return y;
+}
+
+# rust src/hormonal.rs: test_cortisol_from_hpa_monotone_and_bounded, test_melatonin_from_serotonin_monotone_and_finite
+fn monotone() {
+    test_group("hormonal: the bridges' shape");
+    _tables();
+    var nan: f64 = _ry_nan();
+    var inf: f64 = _RY_INF;
+    var ok = 1;
+    var which = 0;
+    while (which < 2) {
+        var prev: f64 = -inf;
+        var k = 0;
+        while (k < 9) {
+            var x: f64 = load64(&_inputs + 8 * k);
+            var y: f64 = _hpa_at(which, x);
+            if (y < 0.0 || y >= 0.08 || y < prev) { ok = 0; }
+            prev = y;
+            k = k + 1;
+        }
+        var yn: f64 = _hpa_at(which, nan);
+        if (_ry_is_finite(yn) == 0) { ok = 0; }
+        which = which + 1;
+    }
+    var prev2: f64 = inf;
+    var k2 = 0;
+    while (k2 < 9) {
+        var fb: f64 = load64(&_inputs + 8 * k2);
+        var y2: f64 = _hpa_at(2, fb);
+        if (y2 < 0.0 || y2 >= 0.08 || y2 > prev2) { ok = 0; }
+        prev2 = y2;
+        k2 = k2 + 1;
+    }
+    var at_m2: f64 = ry_cortisol_from_hpa(1.0, 1.0, 0.0 - 2.0);
+    var at_0: f64 = ry_cortisol_from_hpa(1.0, 1.0, 0.0);
+    var at_m3: f64 = ry_cortisol_from_hpa(1.0, 1.0, 0.0 - 3.0);
+    var all_nan: f64 = ry_cortisol_from_hpa(nan, nan, nan);
+    var huge: f64 = 0x7E37E43C8800759C;          # 1e300
+    var sat: f64 = ry_cortisol_from_hpa(huge, huge, 0.0);
+    assert(ok == 1 && at_m2 == at_0 && at_m3 >= 0.0 && _ry_is_finite(all_nan) == 1 && sat <= 0.08,
+      "cortisol_from_hpa: in [0, 0.08), monotone, negative feedback as none, saturating");
+    ok = 1;
+    var prev3: f64 = -inf;
+    var k3 = 0;
+    while (k3 < 9) {
+        var sv: f64 = load64(&_inputs + 8 * k3);
+        var y3: f64 = ry_melatonin_from_serotonin(sv, 1.0, 0.0);
+        if (_ry_is_finite(y3) == 0 || y3 < 0.0 || y3 < prev3) { ok = 0; }
+        prev3 = y3;
+        k3 = k3 + 1;
+    }
+    var prev4: f64 = inf;
+    var k4 = 0;
+    while (k4 < 8) {
+        var light: f64 = 0.0 - 1.0;
+        if (k4 == 1) { light = -0.2; }
+        if (k4 == 2) { light = 0.0; }
+        if (k4 == 3) { light = 0.25; }
+        if (k4 == 4) { light = 0.5; }
+        if (k4 == 5) { light = 1.0; }
+        if (k4 == 6) { light = 2.0; }
+        if (k4 == 7) { light = inf; }
+        var y4: f64 = ry_melatonin_from_serotonin(1.0, 1.0, light);
+        if (_ry_is_finite(y4) == 0 || y4 < 0.0 || y4 > prev4) { ok = 0; }
+        prev4 = y4;
+        k4 = k4 + 1;
+    }
+    var mneg: f64 = ry_melatonin_from_serotonin(1.0, 1.0, -0.2);
+    var mz: f64 = ry_melatonin_from_serotonin(1.0, 1.0, 0.0);
+    var m0neg: f64 = ry_melatonin_from_serotonin(0.0, 1.0, -0.2);
+    var mnanl: f64 = ry_melatonin_from_serotonin(1.0, 1.0, nan);
+    var mall: f64 = ry_melatonin_from_serotonin(nan, nan, nan);
+    assert(ok == 1 && mneg == mz && m0neg == 0.0 && mnanl == mz && _ry_is_finite(mall) == 1,
+      "melatonin_from_serotonin: finite, rising in serotonin, falling in light, the old poles gone");
+    return 0;
+}
+
+# rust tests/integration.rs: test_hormonal_long_run_stability, test_nt_stress_response_chain
+fn integration() {
+    test_group("hormonal: integration");
+    var s: RyHormonalState;
+    var c: RyHormonalConfig;
+    var inp: RyHormonalInput;
+    var f: RyHormonalFlux;
+    ry_hormonal_config_default(&c);
+    ry_hormonal_input_default(&inp);
+    ry_hormonal_state_default(&s);
+    var k = 0;
+    while (k < 1000) {
+        ry_hormonal_state_tick(&s, &c, &inp, 0.1, &f);
+        k = k + 1;
+    }
+    var cort: f64 = s.cortisol;
+    assert(hs_ok(&s) == 1 && cort > 0.0, "100 s at rest: valid, cortisol present");
+    var nt: RyNeurotransmitterState;
+    var ntc: RyNeurotransmitterConfig;
+    var ntf: RyNeurotransmitterFlux;
+    ry_neurotransmitter_state_default(&nt);
+    ry_neurotransmitter_config_default(&ntc);
+    ry_hormonal_state_default(&s);
+    k = 0;
+    while (k < 100) {
+        ry_neurotransmitter_state_tick(&nt, &ntc, 0.05, 2.0, 0.1, &ntf);
+        var si: RyHormonalInput;
+        ry_hormonal_input_default(&si);
+        si.stress = 2.0;
+        si.serotonin = nt.serotonin;
+        ry_hormonal_state_tick(&s, &c, &si, 0.1, &f);
+        k = k + 1;
+    }
+    var d: RyHormonalState;
+    ry_hormonal_state_default(&d);
+    var hc: f64 = s.cortisol;
+    var dc: f64 = d.cortisol;
+    var ne: f64 = nt.norepinephrine;
+    assert(hc > dc && ne > 0.0, "the stress-response chain: cortisol rises, NE present");
+    return 0;
+}
+
+# Rust's two trace events, under the target `rasayan::hormonal`.
+fn events() {
+    test_group("hormonal: trace events");
+    sakshi_set_emit_hook(&_ev_hook);
+    sakshi_set_level(SK_TRACE);
+    var s: RyHormonalState;
+    var c: RyHormonalConfig;
+    var inp: RyHormonalInput;
+    var f: RyHormonalFlux;
+    ry_hormonal_state_default(&s);
+    ry_hormonal_config_default(&c);
+    ry_hormonal_input_default(&inp);
+    inp.stress = 0.0 - 2.0;
+    ry_hormonal_state_tick(&s, &c, &inp, 0.01, &f);
+    assert_eq(_ev_is("rasayan::hormonal: hormonal_tick dt=0.01 stress=0 cortisol=1"), 1, "hormonal_tick");
+    ry_hormonal_state_tick(&s, &c, &inp, 0.0 - 1.0, &f);
+    assert_eq(_ev_is("rasayan::hormonal: hormonal_tick skipped: invalid dt dt=-1"), 1, "an invalid dt is reported");
+    sakshi_set_level(SK_INFO);
+    _ev_len = 0;
+    ry_hormonal_state_tick(&s, &c, &inp, 0.01, &f);
+    assert_eq(_ev_len, 0, "below TRACE, nothing");
+    sakshi_clear_emit_hook();
+    return 0;
+}
+
+# rust src/hormonal.rs: test_serde_roundtrip_state, test_serde_roundtrip_config
+# rust tests/integration.rs: test_hormonal_input_serde_roundtrip, test_hormonal_flux_serde_roundtrip
+fn serde() {
+    test_group("hormonal: serde round trips");
+    var sb = str_builder_new();
+    var s: RyHormonalState;
+    var s2: RyHormonalState;
+    ry_hormonal_state_default(&s);
+    var t1, v1 = ry_hormonal_state_to_json(sb, &s);
+    var t2, v2 = ry_hormonal_state_from_json(load64(sb), load64(sb + 8), &s2);
+    assert(is_ok(t2) == 1 && memeq(&s2, &s, 48) == 1, "the state reads back");
+    var c: RyHormonalConfig;
+    var c2: RyHormonalConfig;
+    ry_hormonal_config_default(&c);
+    store64(sb + 8, 0);
+    var t3, v3 = ry_hormonal_config_to_json(sb, &c);
+    var t4, v4 = ry_hormonal_config_from_json(load64(sb), load64(sb + 8), &c2);
+    assert(is_ok(t4) == 1 && memeq(&c2, &c, 160) == 1, "the config reads back");
+    var inp: RyHormonalInput;
+    var i2: RyHormonalInput;
+    inp.stress = 0.5;
+    inp.serotonin = 0.4;
+    inp.light = 0.8;
+    inp.social_stimulus = 0.3;
+    inp.neural_activity = 0.6;
+    store64(sb + 8, 0);
+    var t5, v5 = ry_hormonal_input_to_json(sb, &inp);
+    var t6, v6 = ry_hormonal_input_from_json(load64(sb), load64(sb + 8), &i2);
+    assert(is_ok(t6) == 1 && memeq(&i2, &inp, 40) == 1, "an input reads back");
+    var f: RyHormonalFlux;
+    var f2: RyHormonalFlux;
+    ry_hormonal_state_tick(&s, &c, &inp, 0.01, &f);
+    store64(sb + 8, 0);
+    var t7, v7 = ry_hormonal_flux_to_json(sb, &f);
+    var t8, v8 = ry_hormonal_flux_from_json(load64(sb), load64(sb + 8), &f2);
+    assert(is_ok(t8) == 1 && memeq(&f2, &f, 32) == 1, "a tick's flux reads back, bit for bit");
+    return 0;
+}
+
+# Runs the hormonal suite.
+fn main() {
+    alloc_init();
+    validation();
+    dynamics();
+    hardening();
+    pituitary();
+    set_point();
+    pulse();
+    bridges();
+    monotone();
+    integration();
+    events();
+    serde();
+    return assert_summary();
+}
+
+var exit_code = main();
+# assert_summary() returns the failure count; a wait status is 8 bits, so any failure exits 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

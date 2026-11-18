@@ -15,7 +15,7 @@
   analysis, the metabolic pathways (glycolysis, TCA, the ETC, β-oxidation, amino-acid catabolism)
 - [x] M5–M6 — the metabolic network; the signaling cascades (MAPK, PI3K, JAK-STAT, calcium, receptor, nuclear
   receptor, the signaling network). The reference moved to accuracy and the Rust tooling left (ADR 0005)
-- [ ] M7 — the neuroendocrine modules: neurotransmitter (part 1, done), hormonal (part 2)
+- [x] M7 — the neuroendocrine modules: neurotransmitter, hormonal
 - [ ] M8 — MCP and the AI client (plan §6)
 - [ ] M9 — release 2.0.0
 

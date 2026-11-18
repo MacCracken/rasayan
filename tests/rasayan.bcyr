@@ -72,6 +72,8 @@ include "src/signaling_data.cyr"
 include "src/signaling.cyr"
 include "src/neurotransmitter_data.cyr"
 include "src/neurotransmitter.cyr"
+include "src/hormonal_data.cyr"
+include "src/hormonal.cyr"
 
 # Keeps the loops' results observable.
 var _bn_sink = 0;
@@ -1287,6 +1289,40 @@ fn _bn_neurotransmitter(name, kind, n): i64 {
     return 0;
 }
 
+# n calls of hormonal benchmark `kind`: 0 hormonal_tick (Rust's body: a default state, one tick of 0.01 s at the
+# default input), 1 the same state ticked on (no reset), 2 a 100 s tick; the flux kept.
+fn _bn_hormonal(name, kind, n): i64 {
+    var s: RyHormonalState;
+    var c: RyHormonalConfig;
+    var f: RyHormonalFlux;
+    var inp: RyHormonalInput;
+    ry_hormonal_state_default(&s);
+    ry_hormonal_config_default(&c);
+    ry_hormonal_input_default(&inp);
+    var acc: f64 = 0.0;
+    var b = bench_new(name);
+    bench_batch_start(b);
+    var i = 0;
+    while (i < n) {
+        if (kind == 0) {
+            ry_hormonal_state_default(&s);
+            ry_hormonal_state_tick(&s, &c, &inp, 0.01, &f);
+        } elif (kind == 1) {
+            ry_hormonal_state_tick(&s, &c, &inp, 0.01, &f);
+        } else {
+            ry_hormonal_state_default(&s);
+            ry_hormonal_state_tick(&s, &c, &inp, 100.0, &f);
+        }
+        var x: f64 = load64(&f);
+        acc = acc + x;
+        i = i + 1;
+    }
+    bench_batch_stop(b, n);
+    bench_report(b);
+    _bn_keep(acc);
+    return 0;
+}
+
 # Runs the benchmark suite (Rust twins arrive with each milestone).
 fn main(): i64 {
     alloc_init();
@@ -1418,6 +1454,9 @@ fn main(): i64 {
     _bn_neurotransmitter("neurotransmitter_tick", 0, 1000000);
     _bn_neurotransmitter("neurotransmitter/tick, no reset", 1, 1000000);
     _bn_neurotransmitter("neurotransmitter/tick 100 s", 2, 1000000);
+    _bn_hormonal("hormonal_tick", 0, 1000000);
+    _bn_hormonal("hormonal/tick, no reset", 1, 1000000);
+    _bn_hormonal("hormonal/tick 100 s", 2, 1000000);
     bench_batch_stop(b10, 50000);
     bench_report(b10);
     if (_bn_sink == 1) { println(""); }

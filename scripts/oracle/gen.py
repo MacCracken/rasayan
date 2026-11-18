@@ -20,6 +20,7 @@ import pathlib
 import re
 import struct
 import sys
+import textwrap
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -240,9 +241,14 @@ def defaults_data(module, title, prefix, types):
     """A data file of `Default` literals and field-name blobs. `types`: [(ty, infix, with_defaults)]."""
     text = rust_text(module)
     names_with = [ty for ty, _, d in types if d]
-    out = [data_header(title, [f"{' and '.join(f'{t}::default()' for t in names_with)}, from rasayan 1.2.0's source:"
-                               f" one f64 const per\nfield, as a round-trip decimal, the `Self {{ … }}` literals "
-                               f"evaluated.\ntests/golden/{module}.tsv pins them."])]
+    note = (f"{' and '.join(f'{t}::default()' for t in names_with)}, from rasayan 1.2.0's source: one f64 const per\n"
+            f"field, as a round-trip decimal, the `Self {{ … }}` literals evaluated.\ntests/golden/{module}.tsv pins them.")
+    if len(names_with) > 2:
+        listed = ", ".join(f"{t}::default()" for t in names_with[:-1]) + f" and {names_with[-1]}::default()"
+        note = textwrap.fill(f"{listed}, from rasayan 1.2.0's source: one f64 const per field, as a round-trip "
+                             f"decimal, the `Self {{ … }}` literals evaluated. tests/golden/{module}.tsv pins them.",
+                             width=118)
+    out = [data_header(title, [note])]
     for ty, infix, with_defaults in types:
         anchor = f"pub struct {ty} {{"
         out.append(doc_comment(text, anchor))
@@ -1368,8 +1374,257 @@ def neurotransmitter():
     return m, {f"src/{mod}_data.cyr": data}
 
 
+# ── hormonal (M7 part 2) ──
+
+def hormonal():
+    mod = "hormonal"
+    S = struct_names(mod, "HormonalState")
+    C = struct_names(mod, "HormonalConfig")
+    I = struct_names(mod, "HormonalInput")
+    F = struct_names(mod, "HormonalFlux")
+    sd = [x for _, x in defaults(mod, "HormonalState")]
+    cd = [x for _, x in defaults(mod, "HormonalConfig")]
+    idf = [x for _, x in defaults(mod, "HormonalInput")]
+    s_order = check_order(mod, "HormonalState")
+    c_order = check_order(mod, "HormonalConfig")
+    if sorted(n for n, _ in s_order) != sorted(S) or sorted(n for n, _ in c_order) != sorted(C):
+        raise SystemExit("gen: hormonal's validators do not guard every field once")
+    env = validate.module_env(validate.scan_items(mod, rust_src(mod)))
+    ACTH_KI = float(env("ACTH_FEEDBACK_KI"))
+    src = rust_src(mod)
+    for need in ("pub fn cortisol_from_hpa(", "pub fn melatonin_from_serotonin(", "fn tick_with_acth_feedback("):
+        if need not in src:
+            raise SystemExit(f"gen: hormonal.rs has no {need}")
+
+    def tick(st, c, inp, dt, ki):
+        if not valid_dt(dt):
+            return list(st), [0.0] * 4, False
+        stress, sero, light = conc(inp[0]), conc(inp[1]), unit(inp[2])
+        social, activity = conc(inp[3]), conc(inp[4])
+        crh, acth, cort, mel, oxy, bdnf = st
+        hit = []
+
+        def pd(x, prod, decay):
+            v, e = produce_decay(x, prod, decay, dt)
+            hit.append(e)
+            return v
+
+        cortisol_inhibition = div(1.0, 1.0 + div(cort, c[9]))
+        v_crh = (c[0] + c[1] * stress) * cortisol_inhibition
+        crh = pd(crh, v_crh, c[2])
+        pituitary_inhibition = div(1.0, 1.0 + div(cort, ki))
+        v_acth = michaelis_menten(crh, c[3], c[4]) * pituitary_inhibition
+        acth = pd(acth, v_acth, c[5])
+        v_cort = michaelis_menten(acth, c[6], c[7])
+        cortisol_net = v_cort - c[8] * cort
+        cort = pd(cort, v_cort, c[8])
+        light_suppression = div(1.0, 1.0 + light * c[13])
+        v_mel = michaelis_menten(sero, c[10] * light_suppression, c[11])
+        mel = pd(mel, v_mel, c[12])
+        v_oxy = c[14] + c[15] * social
+        oxy = pd(oxy, v_oxy, c[16])
+        v_bdnf = c[17] + c[18] * rmax(activity - 1.0, 0.0)
+        bdnf = pd(bdnf, v_bdnf, c[19])
+        return [crh, acth, cort, mel, oxy, bdnf], [cortisol_net, v_mel, v_oxy, v_bdnf], any(hit)
+
+    def cortisol_from_hpa(a):
+        effective_acth = michaelis_menten(conc(a[0]), 0.1, 0.5) + conc(a[1])
+        drive = michaelis_menten(effective_acth, 0.08, 0.5)
+        return div(drive, 1.0 + div(conc(a[2]), 2.0))
+
+    def melatonin_from_serotonin(a):
+        light_factor = div(1.0, 1.0 + unit(a[2]) * 5.0)
+        return michaelis_menten(conc(a[0]), 0.05 * conc(a[1]) * light_factor, 0.5)
+
+    m = g.Module(mod)
+    rng = Rng(0x686F_726D)
+    m.row("hormonal::HormonalState::default", "A", [], toks(sd))
+    m.row("hormonal::HormonalConfig::default", "A", [], toks(cd))
+    m.row("hormonal::HormonalInput::default", "A", [], toks(idf))
+
+    def seeded_state():
+        return [sd[k] * rng.log_uniform(-1.0, 1.0) for k in range(len(S))]
+
+    def seeded_cfg():
+        return [(k, cd[k] * rng.log_uniform(-1.0, 1.0)) for k in range(len(C))]
+
+    def seeded_input():
+        return [rng.log_uniform(-1.0, 1.0), rng.log_uniform(-1.0, 0.5), rng.unit(), rng.log_uniform(-1.0, 0.5),
+                rng.log_uniform(-0.5, 0.7)]
+
+    states = [list(sd)]
+    for k in range(len(S)):
+        for e in (0.0, -0.0, -1.0, 1e300, SUB, MAX, INF, -INF, NAN, -SUB):
+            a = list(sd)
+            a[k] = e
+            states.append(a)
+    for x, y in ((0, 5), (2, 3)):
+        for u, v in ((NAN, -1.0), (-1.0, NAN)):
+            a = list(sd)
+            a[x], a[y] = u, v
+            states.append(a)
+    for _ in range(15):
+        states.append(seeded_state())
+    for a in states:
+        m.row("hormonal::HormonalState::validate", "A", toks(a), outcome(validate_order(s_order, S, a)))
+    cases = [[]]
+    for k in range(len(C)):
+        for e in CFG_EDGES:
+            cases.append([(k, e)])
+    # The check order picks the error: a zero Km or Ki (checked second) after a NaN rate (checked first), and before it.
+    cases += [[(4, 0.0), (19, NAN)], [(19, NAN), (4, 0.0)], [(9, -1.0), (2, -1.0)], [(11, 0.0), (13, INF)],
+              [(1, NAN), (0, -1.0)], [(1, 0.0), (19, 0.0)]]
+    for _ in range(10):
+        cases.append(seeded_cfg())
+    for ov in cases:
+        m.row("hormonal::HormonalConfig::validate", "A", cfg_toks(ov), outcome(validate_order(c_order, C, cfg_of(cd, ov))))
+
+    args_edges = [0.0, -0.0, 1.0, 2.0, 0.5, 5.0, -1.0, -2.0, -3.0, 1e-300, 1e300, SUB, MAX, INF, -INF, NAN, 0.25]
+    for fn, model in (("hormonal::cortisol_from_hpa", cortisol_from_hpa),
+                      ("hormonal::melatonin_from_serotonin", melatonin_from_serotonin)):
+        base = [1.0, 1.0, 1.0] if fn.endswith("hpa") else [1.0, 1.0, 0.0]
+        rows = [list(base), [0.5, 0.3, 0.1], [0.5, 1.0, 0.0], [0.5, 1.0, 1.0], [0.5, 1.0, 0.4]]
+        for k in range(3):
+            for e in args_edges:
+                a = list(base)
+                a[k] = e
+                rows.append(a)
+        rows += [[NAN, NAN, NAN], [1e300, 1e300, 0.0], [0.0, 1.0, -0.2], [1.0, 1.0, 7.0]]
+        for _ in range(15):
+            rows.append([rng.log_uniform(-3.0, 2.0) for _ in range(3)])
+        for a in rows:
+            m.row(fn, "B", toks(a), [f(model(a))])
+
+    def tick_row(st, ov, inp, dt, ki=None):
+        after, flux, exp = tick(st, cfg_of(cd, ov), inp, dt, ACTH_KI if ki is None else ki)
+        name = "tick" if ki is None else "tick_with_acth_feedback"
+        ins = toks(st) + cfg_toks(ov) + toks(inp) + toks([dt] + ([] if ki is None else [ki]))
+        m.row(f"hormonal::HormonalState::{name}", "C" if exp else "B", ins, toks(after + flux))
+
+    stressed = [1.0, 1.0, 0.0, 0.0, 1.0]
+    for dt in (0.0, -0.0, -0.1, NAN, INF, -INF, SUB, 1e-300, 0.001, 0.01, 0.1, 0.3, 0.5, 0.52, 0.6, 1.0, 2.0, 3.0, 5.0,
+               10.0, 60.0, 100.0, 1000.0, 1e6, 1e300, MAX):
+        tick_row(sd, [], idf, dt)
+        tick_row(sd, [], stressed, dt)
+    for k in range(len(S)):
+        for e in (0.0, -1.0, 1e300, INF, NAN, 10.0, SUB, 0.1):
+            a = list(sd)
+            a[k] = e
+            tick_row(a, [], stressed, 0.1)
+            tick_row(a, [], stressed, 10.0)
+    for k in range(len(I)):
+        for e in (0.0, -0.0, -0.2, -3.0, 0.5, 1.0, 2.0, 7.0, 1e300, INF, -INF, NAN, SUB):
+            a = list(idf)
+            a[k] = e
+            tick_row(sd, [], a, 0.1)
+    for bad in (NAN, INF, -INF, -3.0):
+        tick_row(sd, [], [bad] * 5, 0.1)
+    for k in range(len(C)):
+        for e in (0.0, -1.0, 1e300, INF, NAN, 10.0, SUB, 1e15):
+            tick_row(sd, [(k, e)], stressed, 0.1)
+    # Rust's cases: cortisol 0.1 and 10 at stress 1 for 1 s (feedback on, and Ki at 10¹⁵ and 10³⁰⁰), cortisol 10³⁰⁰,
+    # the single 10⁶-s step at full drive.
+    for cort in (0.1, 3.0, 10.0, 1e300):
+        a = list(sd)
+        a[2] = cort
+        for ov in ([], [(9, 1e15)], [(9, 1e300)]):
+            tick_row(a, ov, stressed, 1.0)
+            for ki in (ACTH_KI, INF, 1e300, 0.0, -ACTH_KI, NAN, 1.0):
+                tick_row(a, ov, stressed, 1.0, ki)
+    tick_row(sd, [], [3.0, 1.0, 0.0, 2.0, 4.0], 1e6)
+    for _ in range(60):
+        st = seeded_state()
+        tick_row(st, seeded_cfg(), seeded_input(), rng.log_uniform(-3.0, 1.5))
+        tick_row(st, [], seeded_input(), 0.1)
+        tick_row(st, [], seeded_input(), rng.log_uniform(-2.0, 1.0), rng.log_uniform(-1.0, 2.0))
+
+    def traj(start, ov, ops):
+        c = cfg_of(cd, ov)
+        st = list(start)
+        flux = [0.0] * 4
+        ins = toks(start) + cfg_toks(ov)
+        for op in ops:
+            if op[0] == "tick":
+                _, inp, dt, k = op
+                for _ in range(k):
+                    st, flux, _e = tick(st, c, inp, dt, ACTH_KI)
+                ins += [i(1)] + toks(inp) + [f(dt), i(k)]
+            elif op[0] == "ki":
+                _, inp, dt, ki, k = op
+                for _ in range(k):
+                    st, flux, _e = tick(st, c, inp, dt, ki)
+                ins += [i(2)] + toks(inp) + [f(dt), f(ki), i(k)]
+            elif op[0] == "add":
+                _, field, x = op
+                st[field] = st[field] + x
+                ins += [i(4), i(field), f(x)]
+            else:
+                _, field, x = op
+                st[field] = x
+                ins += [i(3), i(field), f(x)]
+        m.row("hormonal::HormonalState::trajectory", "T", ins, toks(st + flux))
+
+    def at_stress(s):
+        return [s, 1.0, 0.0, 0.0, 1.0]
+
+    # Rust's runs: stress against rest, social contact, exercise, the 1000 steps of 0.01 s, large steps, the hour at
+    # three stress levels, the set point at dt 0.5 and 2 (and without the pituitary arm), the CRH bolus with and
+    # without that arm; a light sweep, NaN and inf recovery, seeded.
+    traj(sd, [], [("tick", at_stress(0.0), 0.1, 200)])
+    traj(sd, [], [("tick", at_stress(2.0), 0.1, 200)])
+    traj(sd, [], [("tick", [0.0, 1.0, 0.0, 2.0, 1.0], 0.1, 100)])
+    traj(sd, [], [("tick", [0.0, 1.0, 0.0, 0.0, 3.0], 0.1, 100)])
+    traj(sd, [], [("tick", idf, 0.01, 1000)])
+    for dt in (10.0, 1e3, 1e6):
+        traj(sd, [], [("tick", [3.0, 1.0, 0.0, 2.0, 4.0], dt, 5)])
+    for s in (0.0, 1.0, 5.0):
+        traj(sd, [], [("tick", at_stress(s), 0.1, 36000)])
+    traj(sd, [], [("ki", idf, 0.5, ACTH_KI, 20000), ("tick", idf, 0.5, 1)])
+    traj(sd, [], [("ki", idf, 2.0, ACTH_KI, 5000), ("tick", idf, 2.0, 1)])
+    traj(sd, [], [("ki", idf, 0.5, INF, 20000)])
+    for ki in (ACTH_KI, INF):
+        traj(sd, [], [("ki", idf, 1.0, ki, 5000), ("add", 0, 5.0), ("ki", idf, 0.1, ki, 6000)])
+    traj(sd, [], [("ki", idf, 1.0, ACTH_KI, 5000), ("add", 0, 5.0), ("tick", idf, 0.1, 600)])
+    for light in (0.0, 0.25, 1.0):
+        traj(sd, [], [("tick", [0.0, 1.0, light, 0.0, 1.0], 0.5, 400)])
+    traj(sd, [], [("set", 2, NAN), ("tick", at_stress(1.0), 0.1, 50)])
+    traj(sd, [], [("set", 0, INF), ("tick", at_stress(1.0), 0.1, 50)])
+    for _ in range(4):
+        traj(seeded_state(), seeded_cfg(), [("tick", seeded_input(), rng.log_uniform(-2.0, 0.5), 300)])
+
+    worked = list(sd)
+    flux = [0.0] * 4
+    rust_input = [0.5, 0.4, 0.8, 0.3, 0.6]
+    for _ in range(100):
+        worked, flux, _e = tick(worked, cd, rust_input, 0.1, ACTH_KI)
+    odd = [NAN, -0.0, 1e300, SUB, 0.1 + 0.2, 1e21, 1e-7, -1.0, INF, 2.5e-8, 123456.789, 7e-310, 0.5]
+    js, jc, ji, jf = json_struct(S, worked), json_struct(C, cd), json_struct(I, rust_input), json_struct(F, flux)
+    sd_doc = json_struct(S, sd)
+    serde_rows(m, "HormonalState", S, [sd, worked, odd[:len(S)]],
+               [js, "[" + ",".join(validate.json_f64(x) for x in sd) + "]", "[1,1,1]",
+                sd_doc.replace('"bdnf":1.0', '"bdnf":1.0,"z":[1,{"a":null}]', 1),
+                sd_doc.replace(',"bdnf":1.0', "", 1), sd_doc.replace('"acth":1.0', '"acth":"1"', 1),
+                sd_doc.replace('"crh":1.0', '"crh":-0.0', 1).replace('"cortisol":1.0', '"cortisol":1e-400', 1),
+                sd_doc[:-1] + ',"acth":2.0}'])
+    serde_rows(m, "HormonalConfig", C, [cd, (odd * 2)[:len(C)]],
+               [jc, "[" + ",".join(validate.json_f64(x) for x in cd) + "]",
+                jc.replace(f',"{C[-1]}":{validate.json_f64(cd[-1])}', "", 1),
+                jc.replace(f'"{C[1]}":{validate.json_f64(cd[1])}', f'"{C[1]}":null', 1)])
+    serde_rows(m, "HormonalInput", I, [idf, rust_input, odd[:len(I)]],
+               [ji, "[0.5,0.4,0.8,0.3,0.6]", "[1,2,3,4]", ji.replace(',"neural_activity":0.6', "", 1),
+                ji[:-1] + ',"extra":true}'])
+    serde_rows(m, "HormonalFlux", F, [[0.0] * 4, flux, odd[:4]],
+               [jf, "[1,2,3,4]", "[1,2,3]"])
+    data = defaults_data(mod, "hormonal data: the default levels, kinetic parameters and inputs", "HORMONAL",
+                         [("HormonalState", "HORMONAL_STATE", True),
+                          ("HormonalConfig", "HORMONAL_CONFIG", True),
+                          ("HormonalInput", "HORMONAL_INPUT", True),
+                          ("HormonalFlux", "HORMONAL_FLUX", False)])
+    return m, {f"src/{mod}_data.cyr": data}
+
+
 MODULES = {"receptor": receptor, "nuclear_receptor": nuclear_receptor, "signaling": signaling,
-           "neurotransmitter": neurotransmitter}
+           "neurotransmitter": neurotransmitter, "hormonal": hormonal}
 
 
 def outputs(root):

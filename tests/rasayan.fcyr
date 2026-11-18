@@ -65,6 +65,8 @@ include "src/signaling_data.cyr"
 include "src/signaling.cyr"
 include "src/neurotransmitter_data.cyr"
 include "src/neurotransmitter.cyr"
+include "src/hormonal_data.cyr"
+include "src/hormonal.cyr"
 
 var _fz_state = 0x2545F4914F6CDD1D;
 var _fz_bad = 0;
@@ -93,6 +95,7 @@ var _fz_receptor = 0;
 var _fz_nuclear_receptor = 0;
 var _fz_signaling = 0;
 var _fz_neurotransmitter = 0;
+var _fz_hormonal = 0;
 
 # xorshift64*: the next pseudo-random word.
 fn fz_next(): i64 {
@@ -1392,6 +1395,92 @@ fn fuzz_neurotransmitter(data, len) {
     return 0;
 }
 
+# Ticks hormonal state *s on config *c under Rust's integration-test input (stress 0.5, serotonin 0.4, light 0.8,
+# social contact 0.3, activity 0.6) for 0.1 s and then 100 s: a failure unless it still validates and every flux value
+# is finite.
+fn fz_hormonal_step(s: *RyHormonalState, c: *RyHormonalConfig) {
+    var f: RyHormonalFlux;
+    var i: RyHormonalInput;
+    i.stress = 0.5;
+    i.serotonin = 0.4;
+    i.light = 0.8;
+    i.social_stimulus = 0.3;
+    i.neural_activity = 0.6;
+    ry_hormonal_state_tick(s, c, &i, 0.1, &f);
+    var ok = fz_all_finite(&f, 4);
+    ry_hormonal_state_tick(s, c, &i, 100.0, &f);
+    if (fz_all_finite(&f, 4) == 0) { ok = 0; }
+    var tv, vv = ry_hormonal_state_validate(s);
+    if (is_ok(tv) == 0 || ok == 0) { _fz_bad = _fz_bad + 1; }
+    return 0;
+}
+
+# hormonal: the four codecs on one input (an accepted value holds only finite f64s and reads back bit for bit from what
+# it writes); a valid state stepped on the default config, and the default state on an accepted config that
+# validates (fz_hormonal_step).
+fn fuzz_hormonal(data, len) {
+    reset_via(_fz_arena);
+    var dc: RyHormonalConfig;
+    ry_hormonal_config_default(&dc);
+    var s: RyHormonalState;
+    var sb2: RyHormonalState;
+    var t1, v1 = ry_hormonal_state_from_json_a(_fz_arena, data, len, &s);
+    if (is_ok(t1) == 1) {
+        _fz_hormonal = _fz_hormonal + 1;
+        store64(_fz_sb + 8, 0);
+        var t2, v2 = ry_hormonal_state_to_json(_fz_sb, &s);
+        var t3, v3 = ry_hormonal_state_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &sb2);
+        if (fz_all_finite(&s, 6) == 0 || is_ok(t2) == 0 || is_ok(t3) == 0 || memeq(&sb2, &s, 48) == 0) {
+            _fz_bad = _fz_bad + 1;
+        }
+        var tv, vv = ry_hormonal_state_validate(&s);
+        if (is_ok(tv) == 1) { fz_hormonal_step(&s, &dc); }
+    }
+    var c2: RyHormonalConfig;
+    var cb: RyHormonalConfig;
+    var t4, v4 = ry_hormonal_config_from_json_a(_fz_arena, data, len, &c2);
+    if (is_ok(t4) == 1) {
+        _fz_hormonal = _fz_hormonal + 1;
+        store64(_fz_sb + 8, 0);
+        var t5, v5 = ry_hormonal_config_to_json(_fz_sb, &c2);
+        var t6, v6 = ry_hormonal_config_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &cb);
+        if (fz_all_finite(&c2, 20) == 0 || is_ok(t5) == 0 || is_ok(t6) == 0 || memeq(&cb, &c2, 160) == 0) {
+            _fz_bad = _fz_bad + 1;
+        }
+        var tc, vc = ry_hormonal_config_validate(&c2);
+        if (is_ok(tc) == 1) {
+            var d: RyHormonalState;
+            ry_hormonal_state_default(&d);
+            fz_hormonal_step(&d, &c2);
+        }
+    }
+    var fx: RyHormonalFlux;
+    var fb: RyHormonalFlux;
+    var t7, v7 = ry_hormonal_flux_from_json_a(_fz_arena, data, len, &fx);
+    if (is_ok(t7) == 1) {
+        _fz_hormonal = _fz_hormonal + 1;
+        store64(_fz_sb + 8, 0);
+        var t8, v8 = ry_hormonal_flux_to_json(_fz_sb, &fx);
+        var t9, v9 = ry_hormonal_flux_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &fb);
+        if (fz_all_finite(&fx, 4) == 0 || is_ok(t8) == 0 || is_ok(t9) == 0 || memeq(&fb, &fx, 32) == 0) {
+            _fz_bad = _fz_bad + 1;
+        }
+    }
+    var ix: RyHormonalInput;
+    var ib: RyHormonalInput;
+    var ta, va = ry_hormonal_input_from_json_a(_fz_arena, data, len, &ix);
+    if (is_ok(ta) == 1) {
+        _fz_hormonal = _fz_hormonal + 1;
+        store64(_fz_sb + 8, 0);
+        var tb, vb = ry_hormonal_input_to_json(_fz_sb, &ix);
+        var tq, vq = ry_hormonal_input_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &ib);
+        if (fz_all_finite(&ix, 5) == 0 || is_ok(tb) == 0 || is_ok(tq) == 0 || memeq(&ib, &ix, 40) == 0) {
+            _fz_bad = _fz_bad + 1;
+        }
+    }
+    return 0;
+}
+
 # A NUL-terminated copy of the document builder `sb` holds (a seed).
 fn fz_seed_of(sb): i64 {
     var n = load64(sb + 8);
@@ -1542,7 +1631,7 @@ fn main() {
     var buf = alloc(cap + 1);
     _fz_arena = arena_allocator_growable(65536);
     _fz_sb = str_builder_new();
-    var seeds = alloc(8 * 85);
+    var seeds = alloc(8 * 88);
     store64(seeds, "trace");
     store64(seeds + 8, "DEBUG");
     store64(seeds + 16, "info,warn");
@@ -1808,6 +1897,23 @@ fn main() {
     store64(_fz_sb + 8, 0);
     var tnez2, vnez2 = ry_neurotransmitter_flux_to_json(_fz_sb, &nezf);
     store64(seeds + 672, fz_seed_of(_fz_sb));
+    # The hormonal documents: the default state in the sequence form, the default config and a tick's flux
+    # as written.
+    store64(seeds + 680, "[1.0,1.0,1.0,0.5,0.3,1.0]");
+    var hozc: RyHormonalConfig;
+    var hozs: RyHormonalState;
+    var hozf: RyHormonalFlux;
+    var hozi: RyHormonalInput;
+    ry_hormonal_config_default(&hozc);
+    ry_hormonal_state_default(&hozs);
+    ry_hormonal_input_default(&hozi);
+    ry_hormonal_state_tick(&hozs, &hozc, &hozi, 0.1, &hozf);
+    store64(_fz_sb + 8, 0);
+    var thoz1, vhoz1 = ry_hormonal_config_to_json(_fz_sb, &hozc);
+    store64(seeds + 688, fz_seed_of(_fz_sb));
+    store64(_fz_sb + 8, 0);
+    var thoz2, vhoz2 = ry_hormonal_flux_to_json(_fz_sb, &hozf);
+    store64(seeds + 696, fz_seed_of(_fz_sb));
     var i = 0;
     while (i < 50000) {
         var n = 0;
@@ -1816,7 +1922,7 @@ fn main() {
             var k = 0;
             while (k < n) { store8(buf + k, fz_below(256)); k = k + 1; }
         } else {
-            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(85)));
+            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(88)));
         }
         fuzz_main(buf, n);
         fuzz_json(buf, n);
@@ -1839,6 +1945,7 @@ fn main() {
         fuzz_nuclear_receptor(buf, n);
         fuzz_signaling(buf, n);
         fuzz_neurotransmitter(buf, n);
+        fuzz_hormonal(buf, n);
         i = i + 1;
     }
     if (_fz_bad != 0) {
@@ -1890,6 +1997,8 @@ fn main() {
     fmt_int(_fz_signaling);
     print(", neurotransmitter documents read: ", 35);
     fmt_int(_fz_neurotransmitter);
+    print(", hormonal documents read: ", 27);
+    fmt_int(_fz_hormonal);
     println(")");
     return 0;
 }
