@@ -3,6 +3,7 @@ ai
 alignment
 constants
 constants_private
+domain
 energy
 enzyme
 guard

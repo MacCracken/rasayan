@@ -3889,6 +3889,156 @@ def check_ptm(root, rows, rep):
     return per
 
 
+# ── domain (M3 part 4): scan_domains, the serde documents ──
+#
+# scan_domains transcribed from domain.rs (the lines it stands for are pinned below): Python's str is Rust's chars(),
+# str.upper restricted to ASCII is to_ascii_uppercase, list.sort is the stable sort_by_key, and `at(k)` is
+# `chars.get(k)`.
+
+DOMAIN_TEXT = (
+    "    if sequence.is_empty() {\n        return None;\n    }",
+    "    let chars: Vec<char> = sequence.chars().map(|c| c.to_ascii_uppercase()).collect();",
+    "    for i in 0..n.saturating_sub(2) {\n        if chars[i] == 'R' && chars[i + 1] == 'G' && chars[i + 2] == 'D' {",
+    "    for i in 0..n.saturating_sub(3) {\n"
+    "        if chars[i] == 'D' && chars[i + 1] == 'E' && chars[i + 2] == 'A' && chars[i + 3] == 'D' {",
+    "    if let Some(tail) = chars.last_chunk::<4>()\n        && *tail == ['K', 'D', 'E', 'L']",
+    "        if (chars[i] == 'K' || chars[i] == 'R')\n            && (chars[i + 1] == 'K' || chars[i + 1] == 'R')\n"
+    "            && (chars[i + 3] == 'K' || chars[i + 3] == 'R')",
+    "    for i in 0..n.saturating_sub(7) {\n        if (chars[i] == 'A' || chars[i] == 'G')\n"
+    "            && chars[i + 5] == 'G'\n            && chars[i + 6] == 'K'\n"
+    "            && (chars[i + 7] == 'S' || chars[i + 7] == 'T')",
+    "    for (i, loop_) in chars.windows(EF_HAND_LEN).enumerate() {\n        if is_ef_hand_loop(loop_) {",
+    "    for i in 0..n.saturating_sub(21) {\n"
+    "        if chars[i] == 'L' && chars[i + 7] == 'L' && chars[i + 14] == 'L' && chars[i + 21] == 'L' {",
+    "    for i in 0..n.saturating_sub(ZF_C2H2_MIN_LEN - 1) {\n        if chars[i] != 'C' {\n            continue;\n        }\n"
+    "        for gap1 in 2..=4 {\n            let c2 = i + 1 + gap1;\n            if at(c2) != Some('C')\n",
+    "                    at(c2 + 4),\n                    Some('L' | 'I' | 'V' | 'M' | 'F' | 'Y' | 'W' | 'C')",
+    "            let h1 = c2 + 13;\n            if at(h1) != Some('H') {\n                continue;\n            }\n"
+    "            for gap2 in 3..=5 {\n                let h2 = h1 + 1 + gap2;\n                if at(h2) == Some('H') {",
+    "    hits.sort_by_key(|h| h.start);\n    Some(hits)",
+    "const ZF_C2H2_MIN_LEN: usize = 21;",
+    "const EF_HAND_LEN: usize = 12;",
+    "    p0 == 'D'\n        && p1 != 'W'\n        && matches!(p2, 'D' | 'N' | 'S')\n"
+    "        && !matches!(p3, 'I' | 'L' | 'V' | 'F' | 'Y' | 'W')\n"
+    "        && matches!(p4, 'D' | 'E' | 'N' | 'S' | 'T' | 'G')\n"
+    "        && matches!(p5, 'D' | 'N' | 'Q' | 'G' | 'H' | 'R' | 'K')\n        && !matches!(p6, 'G' | 'P')\n"
+    "        && matches!(p7, 'L' | 'I' | 'V' | 'M' | 'C')\n"
+    "        && matches!(p8, 'D' | 'E' | 'N' | 'Q' | 'S' | 'T' | 'A' | 'G' | 'C')\n        && matches!(p11, 'D' | 'E')",
+)
+DOMAIN_TYPES = ("ZincFingerC2H2", "LeuZipper", "EfHand", "WalkerA", "RgdMotif", "DeadBox", "CatalyticTriad", "Nls",
+                "KdelSignal")
+
+
+def domain_ef_hand(w):
+    return (len(w) == 12 and w[0] == "D" and w[1] != "W" and w[2] in "DNS" and w[3] not in "ILVFYW"
+            and w[4] in "DENSTG" and w[5] in "DNQGHRK" and w[6] not in "GP" and w[7] in "LIVMC"
+            and w[8] in "DENQSTAGC" and w[11] in "DE")
+
+
+def domain_scan(seq):
+    """domain::scan_domains: None, or [(start, end, type, fragment)] in Rust's order."""
+    if not seq:
+        return None
+    ch = [pr_up(c) for c in seq]
+    n = len(ch)
+    hits = []
+
+    def hit(a, b, typ):
+        hits.append((a, b, typ, "".join(ch[a:b + 1])))
+
+    def at(k):
+        return ch[k] if k < n else None
+
+    for k in range(max(n - 2, 0)):
+        if ch[k] == "R" and ch[k + 1] == "G" and ch[k + 2] == "D":
+            hit(k, k + 2, "RgdMotif")
+    for k in range(max(n - 3, 0)):
+        if ch[k] == "D" and ch[k + 1] == "E" and ch[k + 2] == "A" and ch[k + 3] == "D":
+            hit(k, k + 3, "DeadBox")
+    if n >= 4 and ch[n - 4:] == ["K", "D", "E", "L"]:
+        hits.append((n - 4, n - 1, "KdelSignal", "KDEL"))
+    for k in range(max(n - 3, 0)):
+        if ch[k] in ("K", "R") and ch[k + 1] in ("K", "R") and ch[k + 3] in ("K", "R"):
+            hit(k, k + 3, "Nls")
+    for k in range(max(n - 7, 0)):
+        if ch[k] in ("A", "G") and ch[k + 5] == "G" and ch[k + 6] == "K" and ch[k + 7] in ("S", "T"):
+            hit(k, k + 7, "WalkerA")
+    for k in range(max(n - 11, 0)):
+        if domain_ef_hand(ch[k:k + 12]):
+            hit(k, k + 11, "EfHand")
+    for k in range(max(n - 21, 0)):
+        if ch[k] == "L" and ch[k + 7] == "L" and ch[k + 14] == "L" and ch[k + 21] == "L":
+            hit(k, k + 21, "LeuZipper")
+    for k in range(max(n - 20, 0)):
+        if ch[k] != "C":
+            continue
+        for gap1 in range(2, 5):
+            c2 = k + 1 + gap1
+            if at(c2) != "C" or at(c2 + 4) not in ("L", "I", "V", "M", "F", "Y", "W", "C"):
+                continue
+            h1 = c2 + 13
+            if at(h1) != "H":
+                continue
+            for gap2 in range(3, 6):
+                h2 = h1 + 1 + gap2
+                if at(h2) == "H":
+                    hit(k, h2, "ZincFingerC2H2")
+    hits.sort(key=lambda x: x[0])
+    return hits
+
+
+def domain_hit_toks(x):
+    return [f"i:{x[0]}", f"i:{x[1]}", f"e:DomainType.{x[2]}", s_tok(x[3])]
+
+
+def check_domain(root, rows, rep):
+    """Every row of domain.tsv against the model; rows per function."""
+    text = (root / "rust-old/src/domain.rs").read_text()
+    for line in DOMAIN_TEXT:
+        if line not in text:
+            rep.fail("rust-old/src/domain.rs", f"no longer holds the modelled text {line[:60]!r}")
+            return {}
+    decl = re.search(r"pub enum DomainType \{(.*?)\n\}", text, re.S)
+    if decl is None or tuple(re.findall(r"^    (\w+),$", decl.group(1), re.M)) != DOMAIN_TYPES:
+        rep.fail("rust-old/src/domain.rs", f"DomainType's variants are not {DOMAIN_TYPES}")
+        return {}
+    per = {}
+    for n, fn, cls, ins, outs in rows:
+        where = f"domain.tsv:{n}"
+        try:
+            if fn == "domain::scan_domains":
+                hits = domain_scan(tok_bytes(ins[0]).decode("utf-8"))
+                want = ["n:"] if hits is None else [f"v:{len(hits)}"] + [t for x in hits for t in domain_hit_toks(x)]
+            elif fn == "serde_json::to_string<DomainType>":
+                v = ins[0].split(".", 1)[1]
+                if v not in DOMAIN_TYPES:
+                    raise ValueError(f"no DomainType::{v}")
+                want = [s_tok(json.dumps(v))]
+            elif fn == "serde_json::to_string<DomainHit>":
+                a, b = int(ins[0][2:]), int(ins[1][2:])
+                typ = ins[2].split(".", 1)[1]
+                frag = tok_bytes(ins[3]).decode("utf-8")
+                if typ not in DOMAIN_TYPES:
+                    raise ValueError("not a DomainHit")
+                want = [s_tok(f'{{"start":{a},"end":{b},"domain_type":"{typ}",'
+                              f'"fragment":{json.dumps(frag, ensure_ascii=False)}}}')]
+            else:
+                rep.fail(where, f"{fn}: no model")
+                continue
+        except (ValueError, IndexError, KeyError, UnicodeDecodeError) as e:
+            rep.fail(where, f"{fn}{tuple(x[:40] for x in ins)}: {e}")
+            continue
+        if cls != "A":
+            rep.fail(where, f"{fn}: class {cls}, every domain row is class A")
+            continue
+        per[fn] = per.get(fn, 0) + 1
+        if same_toks(outs, want):
+            rep.ok()
+        else:
+            rep.fail(where, f"{fn}{tuple(x[:40] for x in ins)}: golden {outs[:12]}, model {want[:12]}")
+    return per
+
+
 def main():
     root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
     rep = Report()
@@ -3933,6 +4083,7 @@ def main():
     al_rows = [r for r in tables.get("alignment.tsv", []) if r[1] != "alignment::substitution_score"]
     al_per = check_alignment(root, al_rows, extras.get("alignment", {}), rep)
     ptm_per = check_ptm(root, tables.get("ptm.tsv", []), rep)
+    dom_per = check_domain(root, tables.get("domain.tsv", []), rep)
     total = sum(len(v) for v in tables.values())
     n_items, n_excused = extras.get("_counts", (0, 0))
     print(f"files: {len(files)}; rows: {total}; math classes: {dict(sorted(counts.items()))}")
@@ -3962,10 +4113,11 @@ def main():
     print(f"protein: {sum(pr_per.values())} function and serde rows {dict(sorted(pr_per.items()))}")
     print(f"alignment: {sum(al_per.values())} score, Needleman-Wunsch and serde rows {dict(sorted(al_per.items()))}")
     print(f"ptm: {sum(ptm_per.values())} scan, count and serde rows {dict(sorted(ptm_per.items()))}")
+    print(f"domain: {sum(dom_per.values())} scan and serde rows {dict(sorted(dom_per.items()))}")
     print(
         f"independently checked: {rep.checked} (constants, src/constants.cyr, math classes A and B, the table rows, "
         f"every cell of the generated data files, every class-C math row against MPFR, guard, integrate and its "
-        f"corrections, logging, json, enzyme, membrane, signal, metabolism, energy, protein, alignment, ptm)"
+        f"corrections, logging, json, enzyme, membrane, signal, metabolism, energy, protein, alignment, ptm, domain)"
     )
     print(f"FAILURES: {rep.failures}")
     return 1 if rep.failures else 0

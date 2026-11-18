@@ -31,10 +31,9 @@ root = Path(sys.argv[1]).resolve()
 
 # The modules whose milestone has come.
 PORTED = ["constants", "error", "guard", "integrate", "logging", "enzyme", "membrane", "signal", "metabolism",
-          "energy", "protein", "alignment", "ptm"]
+          "energy", "protein", "alignment", "ptm", "domain"]
 # The rest, with their milestone (port plan §3.1).
 SCHEDULED = {
-    "domain": "M3",
     "glycolysis": "M4a", "tca": "M4a", "etc": "M4b", "beta_oxidation": "M4b", "amino_catabolism": "M4b",
     "pathway": "M5",
     "mapk": "M6", "pi3k": "M6", "jak_stat": "M6", "calcium": "M6", "receptor": "M6", "nuclear_receptor": "M6",
@@ -66,6 +65,8 @@ TYPES = {
     "AlignmentScore": ("RyAlignmentScore", "alignment_score"),
     "PtmType": ("RyPtmType", "ptm_type"),
     "PtmSite": ("RyPtmSite", "ptm_site"),
+    "DomainType": ("RyDomainType", "domain_type"),
+    "DomainHit": ("RyDomainHit", "domain_hit"),
 }
 # Rust item -> the Cyrius names that carry it ("fn x", "const X", "enum X", "struct X"), where the rules give none.
 MAPPED = {
@@ -79,6 +80,8 @@ MAPPED = {
         "const RY_MEMBRANE_DEFAULT_PERMEABILITY_P_NA", "const RY_MEMBRANE_DEFAULT_PERMEABILITY_P_K",
         "const RY_MEMBRANE_DEFAULT_PERMEABILITY_P_CL", "fn ry_membrane_permeability_default",
     ],
+    # The motif's own name, C2H2 (Cys2-His2), kept whole: the snake rule would split it into C2_H2.
+    "domain::DomainType::ZincFingerC2H2": ["RyDomainType RY_DOMAIN_TYPE_ZINC_FINGER_C2H2"],
 }
 # Public scalar constants: the Rust types src/constants.cyr carries as `const`.
 SCALAR = ("f64", "u32", "usize")

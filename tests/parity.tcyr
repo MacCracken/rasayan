@@ -71,6 +71,7 @@ include "src/energy.cyr"
 include "src/protein.cyr"
 include "src/alignment.cyr"
 include "src/ptm.cyr"
+include "src/domain.cyr"
 
 alloc_init();
 
@@ -2214,6 +2215,111 @@ fn _par_ptm(fp, fl): i64 {
     return 0;
 }
 
+# ── domain ──────────────────────────────────────────────────────────────────────────
+# src/domain.cyr (M3 part 4).
+
+# Input token k as a DomainType (`e:DomainType.<Variant>`): its RyDomainType value, by the port's own names; -1
+# otherwise.
+fn _par_domain_type(k): i64 {
+    if (k >= _par_in_n || load64(_par_in_k + 8 * k) != 101) { return 0 - 1; }
+    var p = load64(_par_in_v + 8 * k);
+    var l = load64(_par_in_l + 8 * k);
+    if (l < 12 || memeq(p, "DomainType.", 11) != 1) { return 0 - 1; }
+    var t = 0;
+    while (t < RY_DOMAIN_TYPE_COUNT) {
+        if (_par_eq(p + 11, l - 11, ry_domain_type_name(t)) == 1) { return t; }
+        t = t + 1;
+    }
+    return 0 - 1;
+}
+
+# An allocation as a *RyDomainHit (the cast-helper idiom).
+#must_use
+fn _par_as_hits(p): *RyDomainHit { return p; }
+
+# Appends DomainType t as its golden text (`DomainType.<Variant>`).
+fn _par_got_domain_type(t) {
+    var name = ry_domain_type_name(t);
+    var nl = strlen(name);
+    var buf = alloc(nl + 12);
+    memcpy(buf, "DomainType.", 11);
+    memcpy(buf + 11, name, nl);
+    store8(buf + 11 + nl, 0);
+    _par_got_e(buf);
+    return 0;
+}
+
+# The domain rows (src/domain.cyr, M3 part 4): scan_domains (each hit's start, end, type and fragment; a buffer one
+# hit short is refused and left as it was) and the serde rows.
+fn _par_domain(fp, fl): i64 {
+    var lw[8];
+    if (_par_eq(fp, fl, "domain::scan_domains") == 1) {
+        var seq = _par_in_bytes(0, &lw);
+        var n = load64(&lw);
+        if (_par_in_n != 1 || seq == 0) { return 0 - 1; }
+        var cap = RY_DOMAIN_MAX_HITS_PER_RESIDUE * n;
+        var hits: *RyDomainHit = _par_as_hits(alloc(40 * cap + 40));
+        var t, count = ry_scan_domains(seq, n, hits, cap);
+        if (is_err_result(t) == 1) { return 0 - 1; }
+        if (count < 0) {
+            _par_got_none();
+            return 1;
+        }
+        if (count > 0) {
+            var small: *RyDomainHit = _par_as_hits(alloc(40 * count));
+            store64(small, 0x5A5A5A5A);
+            var ts, vs = ry_scan_domains(seq, n, small, count - 1);
+            if (is_err_result(ts) == 0 || vs != RY_ERR_BUFFER_TOO_SMALL) { return 0 - 1; }
+            if (load64(small) != 0x5A5A5A5A) { return 0 - 1; }
+            var te, ve = ry_scan_domains(seq, n, small, count);
+            if (is_err_result(te) == 1 || ve != count) { return 0 - 1; }
+            if (memeq(small, hits, 40 * count) != 1) { return 0 - 1; }
+        }
+        _par_got_seq(count);
+        var k = 0;
+        while (k < count) {
+            var h: *RyDomainHit = hits + k;
+            _par_got_i(h.start);
+            _par_got_i(h.end);
+            _par_got_domain_type(h.domain_type);
+            var f = alloc(RY_DOMAIN_MAX_FRAGMENT_BYTES + 8);
+            var tf, fl2 = ry_domain_hit_fragment(seq, h, f, RY_DOMAIN_MAX_FRAGMENT_BYTES);
+            if (is_err_result(tf) == 1) { return 0 - 1; }
+            _par_got_text(f, fl2);
+            k = k + 1;
+        }
+        return 1;
+    }
+    if (_par_jsb == 0) { _par_jsb = str_builder_new(); }
+    var jb = _par_jsb;
+    store64(jb + 8, 0);
+    if (_par_eq(fp, fl, "serde_json::to_string<DomainType>") == 1) {
+        var dt = _par_domain_type(0);
+        if (_par_in_n != 1 || dt < 0) { return 0 - 1; }
+        var t1, v1 = ry_domain_type_to_json(jb, dt);
+        if (is_err_result(t1) == 1) { return 0 - 1; }
+        _par_got_text(load64(jb), load64(jb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::to_string<DomainHit>") == 1) {
+        if (_par_in_n != 4 || load64(_par_in_k) != 105 || load64(_par_in_k + 8) != 105) { return 0 - 1; }
+        var frag = _par_in_bytes(3, &lw);
+        var ht = _par_domain_type(2);
+        if (frag == 0 || ht < 0) { return 0 - 1; }
+        var hit: RyDomainHit;
+        hit.start = _par_in(0);
+        hit.end = _par_in(1);
+        hit.domain_type = ht;
+        hit.fragment_start = 0;
+        hit.fragment_len = load64(&lw);
+        var t2, v2 = ry_domain_hit_to_json(jb, frag, &hit);
+        if (is_err_result(t2) == 1) { return 0 - 1; }
+        _par_got_text(load64(jb), load64(jb + 8));
+        return 1;
+    }
+    return 0;
+}
+
 # ── routing and hooks ───────────────────────────────────────────────────────────────
 
 # Routes a row to its module's dispatcher. 0 (pending) for a module or function with no Cyrius code yet: the module
@@ -2225,6 +2331,7 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
     if (_par_eq(mp, ml, "protein") == 1) { return _par_protein(fp, fl); }
     if (_par_eq(mp, ml, "alignment") == 1) { return _par_alignment(fp, fl); }
     if (_par_eq(mp, ml, "ptm") == 1) { return _par_ptm(fp, fl); }
+    if (_par_eq(mp, ml, "domain") == 1) { return _par_domain(fp, fl); }
     if (_par_eq(mp, ml, "enzyme") == 1) { return _par_enzyme(fp, fl); }
     if (_par_eq(mp, ml, "membrane") == 1) { return _par_membrane(fp, fl); }
     if (_par_eq(mp, ml, "signal") == 1) { return _par_signal(fp, fl); }

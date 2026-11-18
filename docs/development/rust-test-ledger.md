@@ -6,7 +6,7 @@
 > milestone hasn't come. The golden corpus (`tests/golden/`) checks every ported function on its grid besides.
 > The 2 doc tests and the example are M9's.
 
-**723 Rust tests:** 323 ported; 24 at M3, 53 at M4a, 80 at M4b, 38 at M5, 108 at M6, 62 at M7, 35 at M8.
+**723 Rust tests:** 347 ported; 53 at M4a, 80 at M4b, 38 at M5, 108 at M6, 62 at M7, 35 at M8.
 
 | Rust file | Tests | Ported | Due, unported | Later (milestone) |
 |---|---:|---:|---:|---|
@@ -15,7 +15,7 @@
 | `src/amino_catabolism.rs` | 23 | 0 | 0 | 23 (M4b) |
 | `src/beta_oxidation.rs` | 23 | 0 | 0 | 23 (M4b) |
 | `src/calcium.rs` | 17 | 0 | 0 | 17 (M6) |
-| `src/domain.rs` | 24 | 0 | 0 | 24 (M3) |
+| `src/domain.rs` | 24 | 24 | 0 | — |
 | `src/energy.rs` | 29 | 29 | 0 | — |
 | `src/enzyme.rs` | 58 | 58 | 0 | — |
 | `src/etc.rs` | 24 | 0 | 0 | 24 (M4b) |
@@ -40,7 +40,7 @@
 | `src/tca.rs` | 26 | 0 | 0 | 26 (M4a) |
 | `tests/integration.rs` | 70 | 33 | 0 | 2 (M4a), 10 (M4b), 4 (M5), 15 (M6), 6 (M7) |
 | `tests/validation.rs` | 25 | 25 | 0 | — |
-| **Total** | **723** | **323** | **0** | |
+| **Total** | **723** | **347** | **0** | |
 
 ## Where each is ported
 
@@ -65,6 +65,30 @@
 | `src/alignment.rs` `test_score_alignment_saturates` | `tests/alignment.tcyr` `scoring` |
 | `src/alignment.rs` `test_score_alignment_unknown` | `tests/alignment.tcyr` `scoring` |
 | `src/alignment.rs` `test_unknown_residue` | `tests/alignment.tcyr` `matrices` |
+| `src/domain.rs` `test_catalytic_triad_not_produced` | `tests/domain.tcyr` `edges` |
+| `src/domain.rs` `test_dead_box` | `tests/domain.tcyr` `short_motifs` |
+| `src/domain.rs` `test_ef_hand` | `tests/domain.tcyr` `ef_hand` |
+| `src/domain.rs` `test_ef_hand_calmodulin` | `tests/domain.tcyr` `ef_hand` |
+| `src/domain.rs` `test_ef_hand_exclusions` | `tests/domain.tcyr` `ef_hand` |
+| `src/domain.rs` `test_empty` | `tests/domain.tcyr` `edges` |
+| `src/domain.rs` `test_kdel_edge_cases` | `tests/domain.tcyr` `short_motifs` |
+| `src/domain.rs` `test_kdel_not_internal` | `tests/domain.tcyr` `short_motifs` |
+| `src/domain.rs` `test_kdel_signal` | `tests/domain.tcyr` `short_motifs` |
+| `src/domain.rs` `test_leucine_zipper` | `tests/domain.tcyr` `zipper_and_fingers` |
+| `src/domain.rs` `test_lowercase` | `tests/domain.tcyr` `edges` |
+| `src/domain.rs` `test_nls` | `tests/domain.tcyr` `short_motifs` |
+| `src/domain.rs` `test_nls_kr_first_position` | `tests/domain.tcyr` `short_motifs` |
+| `src/domain.rs` `test_no_domains` | `tests/domain.tcyr` `edges` |
+| `src/domain.rs` `test_rgd_motif` | `tests/domain.tcyr` `short_motifs` |
+| `src/domain.rs` `test_sorted_by_position` | `tests/domain.tcyr` `edges` |
+| `src/domain.rs` `test_walker_a` | `tests/domain.tcyr` `walker_a` |
+| `src/domain.rs` `test_walker_a_alanine_start` | `tests/domain.tcyr` `walker_a` |
+| `src/domain.rs` `test_whitespace_and_non_ascii_do_not_panic` | `tests/domain.tcyr` `edges` |
+| `src/domain.rs` `test_zinc_finger_c2h2` | `tests/domain.tcyr` `zipper_and_fingers` |
+| `src/domain.rs` `test_zinc_finger_exact_length_at_c_terminus` | `tests/domain.tcyr` `zipper_and_fingers` |
+| `src/domain.rs` `test_zinc_finger_his_spacing` | `tests/domain.tcyr` `zipper_and_fingers` |
+| `src/domain.rs` `test_zinc_finger_requires_hydrophobic` | `tests/domain.tcyr` `zipper_and_fingers` |
+| `src/domain.rs` `test_zinc_finger_zif268` | `tests/domain.tcyr` `zipper_and_fingers` |
 | `src/energy.rs` `test_atp_demand_from_power` | `tests/energy.tcyr` `bridges` |
 | `src/energy.rs` `test_atp_demand_units_and_sanitizing` | `tests/energy.tcyr` `bridges` |
 | `src/energy.rs` `test_atp_demand_zero_power` | `tests/energy.tcyr` `bridges` |

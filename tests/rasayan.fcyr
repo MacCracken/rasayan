@@ -33,6 +33,7 @@ include "src/protein.cyr"
 include "src/alignment_data.cyr"
 include "src/alignment.cyr"
 include "src/ptm.cyr"
+include "src/domain.cyr"
 
 var _fz_state = 0x2545F4914F6CDD1D;
 var _fz_bad = 0;
@@ -45,6 +46,7 @@ var _fz_sb = 0;
 var _fz_protein = 0;
 var _fz_aligned = 0;
 var _fz_ptm = 0;
+var _fz_domain = 0;
 
 # xorshift64*: the next pseudo-random word.
 fn fz_next(): i64 {
@@ -344,6 +346,54 @@ fn fuzz_ptm(data, len) {
     return 0;
 }
 
+# A word as a *RyDomainHit (the cast-helper idiom).
+#must_use
+fn _fz_as_hits(p): *RyDomainHit { return p; }
+
+# domain: the scan on every input: Ok(-1) for an empty one, else at most nine hits per byte, sorted by start, each
+# inside the sequence (start <= end), of a type the scan reports, with a fragment range inside the input.
+fn fuzz_domain(data, len) {
+    reset_via(_fz_arena);
+    var cap = RY_DOMAIN_MAX_HITS_PER_RESIDUE * len;
+    var hits: *RyDomainHit = _fz_as_hits(alloc_via(_fz_arena, 40 * cap + 40));
+    var t, count = ry_scan_domains(data, len, hits, cap);
+    if (is_ok(t) == 0) {
+        _fz_bad = _fz_bad + 1;
+        return 0;
+    }
+    if (len == 0 || count < 0 || count > cap) {
+        if (len != 0 || count != 0 - 1) { _fz_bad = _fz_bad + 1; }
+        return 0;
+    }
+    var chars = 0;
+    var b = 0;
+    while (b < len) {
+        var lead = load8(data + b);
+        b = b + 1;
+        if (lead >= 128) {
+            while (b < len && (load8(data + b) & 192) == 128) { b = b + 1; }
+        }
+        chars = chars + 1;
+    }
+    var last = 0;
+    var k = 0;
+    while (k < count) {
+        var h: *RyDomainHit = hits + k;
+        var ty = h.domain_type;
+        if (h.start < last || h.start > h.end || h.end >= chars || h.end - h.start > 24) { _fz_bad = _fz_bad + 1; }
+        if (ty < 0 || ty >= RY_DOMAIN_TYPE_COUNT || ty == RY_DOMAIN_TYPE_CATALYTIC_TRIAD) { _fz_bad = _fz_bad + 1; }
+        var fs = h.fragment_start;
+        var fl = h.fragment_len;
+        if (fs < 0 || fl < h.end - h.start + 1 || fl > RY_DOMAIN_MAX_FRAGMENT_BYTES || fs + fl > len) {
+            _fz_bad = _fz_bad + 1;
+        }
+        last = h.start;
+        k = k + 1;
+    }
+    _fz_domain = _fz_domain + count;
+    return 0;
+}
+
 # Copies seed `s` into buf and applies up to three random edits. Returns the new length.
 fn fz_mutate(buf, cap, s): i64 {
     var n = strlen(s);
@@ -385,7 +435,7 @@ fn main() {
     var buf = alloc(cap + 1);
     _fz_arena = arena_allocator_growable(65536);
     _fz_sb = str_builder_new();
-    var seeds = alloc(8 * 37);
+    var seeds = alloc(8 * 39);
     store64(seeds, "trace");
     store64(seeds + 8, "DEBUG");
     store64(seeds + 16, "info,warn");
@@ -423,6 +473,8 @@ fn main() {
     store64(seeds + 272, "MKTAYIAKQRQISFVKSHFSRQMKVLAAGIVGLLLAQPSHAEKR");
     store64(seeds + 280, "MGSNKSKPKDKRASNSTAYCSAAERRSSNASA");
     store64(seeds + 288, "MGÉ🧬ASANÉSARRÉSSÉÉEcCnasa");
+    store64(seeds + 296, "RGDAADEADKKAKGAAAAGKSDKDGDGTITTKEAKDEL");
+    store64(seeds + 304, "PYACPVESCDRRFSRSDELTRHIRIHTGQKLAAAAAALAAAAAALAAAAAALCAACCCALLLAAAAAAHHHAHHHHH");
     var i = 0;
     while (i < 50000) {
         var n = 0;
@@ -431,7 +483,7 @@ fn main() {
             var k = 0;
             while (k < n) { store8(buf + k, fz_below(256)); k = k + 1; }
         } else {
-            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(37)));
+            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(39)));
         }
         fuzz_main(buf, n);
         fuzz_json(buf, n);
@@ -439,6 +491,7 @@ fn main() {
         fuzz_protein(buf, n);
         fuzz_alignment(buf, n);
         fuzz_ptm(buf, n);
+        fuzz_domain(buf, n);
         i = i + 1;
     }
     if (_fz_bad != 0) {
@@ -458,6 +511,8 @@ fn main() {
     fmt_int(_fz_aligned);
     print(", PTM sites: ", 13);
     fmt_int(_fz_ptm);
+    print(", domain hits: ", 15);
+    fmt_int(_fz_domain);
     println(")");
     return 0;
 }

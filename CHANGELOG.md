@@ -14,11 +14,29 @@ three-target baselines and `scripts/gates.sh`, step 9's probes 1–4, 8 and 12) 
 the profiles, and step 10's upstream drafts). M0 is complete. M1 part 1 (the foundation's error codes, guard layer
 and integrators), part 2 (logging, the failure events, the surface-parity and Rust-test gates) and part 3 (the
 JSON writers and readers) follow: M1 is complete. M2 part 1 (enzyme), part 2 (membrane), part 3 (signal), part 4
-(metabolism) and part 5 (energy) follow: M2 is complete. M3 parts 1–3 (protein, alignment, ptm)
-follow.
+(metabolism) and part 5 (energy) follow: M2 is complete. M3 part 1 (protein), part 2 (alignment), part 3
+(ptm) and part 4 (domain) follow: M3 is complete.
 
 ### Added
 
+- **src/domain.cyr** (M3 part 4) — `domain.rs` transcribed: `RyDomainType` (CatalyticTriad reserved, as in Rust),
+  `ry_scan_domains` (RGD, DEAD, C-terminal KDEL, the basic NLS, Walker A, the PS00018 EF-hand loop, the leucine
+  zipper's heptads and the PS00028 C2H2 finger at its nine spacings, matched by character with positions as
+  character indices; the hits go into a caller buffer of `RyDomainHit` records in Rust's sorted order, emitted in
+  that order with no sort, over a 32-slot ring of the characters ahead instead of Rust's `Vec<char>`),
+  `ry_domain_hit_fragment` (a fragment is a byte range into the sequence, read with ASCII letters uppercased) and the
+  serde writers of DomainType and DomainHit
+- **tests/golden/domain.tsv** (M3 part 4, 3,922 rows, a new module) — `scan_domains` over 3,895 sequences (the edges;
+  every Rust test's sequence; each slot of the eight patterns filled with 64 characters: both cases, whitespace,
+  control characters, `"` and `\`, 2- and 4-byte UTF-8; KDEL one character short of the C-terminus; the C2H2 finger
+  at every spacing from x(1)/x(2) to x(5)/x(6) and one C starting nine fingers; the six proteins and Zif268 in both
+  cases; 300 seeded sequences, 100 with motifs planted; a 3,000-residue protein) and the serde documents. All class
+  A, all matching on the first run; `validate.py` models every row (106,327 independent checks)
+- **tests/domain.tcyr** (M3 part 4, 35 checks) — the 24 `domain.rs` unit tests as they are written, and the Cyrius
+  forms (a buffer one hit short refused and left as it was, a lowercase fragment read uppercased, the documents): the
+  Rust-test ledger at 347 of 723, 0 due and unported. The fuzz harness scans every input: 12,503 hits, each sorted
+  by start, inside the sequence, of a type the scan reports, with a fragment range inside the input
+- **benchmarks** (M3 part 4) — domain_scan_20, Rust → Cyrius: 141 → 383 ns
 - **src/ptm.cyr** (M3 part 3) — `ptm.rs` transcribed: `RyPtmType`, `ry_scan_ptm_sites` (the PROSITE N-glycosylation,
   PKA, CK2 and N-myristoylation patterns, the Ser/Thr/Tyr acceptors and the Cys candidates, matched by character with
   positions as character indices; the sites go into a caller buffer of `RyPtmSite` records in Rust's sorted order,
@@ -468,6 +486,11 @@ follow.
 
 ### Changed
 
+- **tests/parity.tcyr** (M3 part 4) — the domain dispatcher: each scan row also checks that a buffer one hit short
+  is refused and left as it was, and that an exact buffer gives the same records
+- **scripts/surface_parity.py**, **scripts/rust_test_ledger.py** (M3 part 4) — domain is ported: its 14 public items
+  have their names (`ZincFingerC2H2` mapped to `RY_DOMAIN_TYPE_ZINC_FINGER_C2H2`, the motif's name kept whole)
+- **cyrius.cyml** (M3 part 4) — `src/domain.cyr` in the three bundles after `src/ptm.cyr`
 - **tests/parity.tcyr** (M3 part 3) — the ptm dispatcher: each scan row also checks that a buffer one site short is
   refused and left as it was, and that an exact buffer gives the same records
 - **scripts/surface_parity.py**, **scripts/rust_test_ledger.py** (M3 part 3) — ptm is ported: its 14 public items
@@ -585,6 +608,8 @@ follow.
 
 ### Performance
 
+- **src/domain.cyr** (M3 part 4, review) — each position's code and start byte loaded in place rather than through
+  the ring helper (`#inline` leaves about 1 ns a call): domain_scan_20 410 → 383 ns (Rust 141)
 - **src/ptm.cyr** (M3 part 3, review) — the scan decodes the next character in place, and the myristoylation check
   stops at a missing Gly before it reads its window: ptm_scan_20 560 → 374 ns (Rust 190)
 - **src/alignment.cyr** (M3 part 2, review) — one clamp per Needleman-Wunsch cell instead of three (the clamp of

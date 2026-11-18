@@ -1,0 +1,331 @@
+# rasayan — src/domain.cyr: Rust 1.2.0's domain tests, ported
+# Stdlib auto-included via cyrius.cyml
+#
+# The 24 unit tests of `domain.rs`, as they are written, and the Cyrius forms (the caller buffer, the fragment range,
+# the documents); tests/golden/domain.tsv checks scan_domains on its corpus besides. A sequence is a C string (its
+# bytes are the UTF-8 Rust's &str holds), or a byte buffer where it holds a NUL.
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
+include "src/domain.cyr"
+
+# The hits of the last scan, how many (-1 for None), and the sequence scanned.
+var _T_HITS = 0;
+var _T_COUNT = 0;
+var _T_SEQ = 0;
+
+# A word as a *RyDomainHit (the cast-helper idiom).
+#must_use
+fn as_hits(p): *RyDomainHit { return p; }
+
+# Scans the n bytes at seq into the shared buffer: the count, or -1 for None.
+fn scan_n(seq, n) {
+    if (_T_HITS == 0) { _T_HITS = alloc(40 * 9 * 160); }
+    var hits: *RyDomainHit = as_hits(_T_HITS);
+    var t, v = ry_scan_domains(seq, n, hits, 9 * 160);
+    if (is_err_result(t) == 1) { assert(0 == 1, "the scan fits the buffer"); }
+    _T_COUNT = v;
+    _T_SEQ = seq;
+    return v;
+}
+
+# scan_n on a C string.
+fn scan(seq) { return scan_n(seq, strlen(seq)); }
+
+# Hit k of the last scan.
+#must_use
+fn hit(k): *RyDomainHit {
+    var hits: *RyDomainHit = as_hits(_T_HITS);
+    return hits + k;
+}
+
+# The index of the j-th hit of type t in the last scan, or -1.
+fn nth_of(t, j) {
+    var k = 0;
+    var seen = 0;
+    while (k < _T_COUNT) {
+        var h: *RyDomainHit = hit(k);
+        if (h.domain_type == t) {
+            if (seen == j) { return k; }
+            seen = seen + 1;
+        }
+        k = k + 1;
+    }
+    return 0 - 1;
+}
+
+# How many hits of type t the last scan found.
+fn of_type(t) {
+    var k = 0;
+    var c = 0;
+    while (k < _T_COUNT) {
+        var h: *RyDomainHit = hit(k);
+        if (h.domain_type == t) { c = c + 1; }
+        k = k + 1;
+    }
+    return c;
+}
+
+# 1 when hit k's fragment is the C string want.
+fn fragment_is(k, want) {
+    if (k < 0) { return 0; }
+    var f[104];
+    var t, len = ry_domain_hit_fragment(_T_SEQ, hit(k), &f, 100);
+    if (is_err_result(t) == 1) { return 0; }
+    return len == strlen(want) && memeq(&f, want, len) == 1;
+}
+
+# The number of characters in the n bytes at p, as src/domain.cyr reads them.
+fn char_count(p, n) {
+    var c = 0;
+    var b = 0;
+    while (b < n) {
+        var lead = load8(p + b);
+        b = b + 1;
+        if (lead >= 128) {
+            while (b < n && (load8(p + b) & 192) == 128) { b = b + 1; }
+        }
+        c = c + 1;
+    }
+    return c;
+}
+
+# The C strings a, b and c joined (a fresh allocation).
+fn join(a, b, c) {
+    var na = strlen(a);
+    var nb = strlen(b);
+    var nc = strlen(c);
+    var out = alloc(na + nb + nc + 1);
+    memcpy(out, a, na);
+    memcpy(out + na, b, nb);
+    memcpy(out + na + nb, c, nc);
+    store8(out + na + nb + nc, 0);
+    return out;
+}
+
+# rust src/domain.rs: test_rgd_motif, test_dead_box, test_kdel_signal, test_kdel_not_internal, test_nls
+# rust src/domain.rs: test_nls_kr_first_position, test_kdel_edge_cases
+fn short_motifs() {
+    test_group("domain: RGD, DEAD, KDEL, NLS");
+    scan("AARGDA");
+    var r = nth_of(RY_DOMAIN_TYPE_RGD_MOTIF, 0);
+    assert(of_type(RY_DOMAIN_TYPE_RGD_MOTIF) == 1 && hit(r).start == 2 && fragment_is(r, "RGD") == 1, "RGD at 2");
+    scan("AADEADA");
+    var d = nth_of(RY_DOMAIN_TYPE_DEAD_BOX, 0);
+    assert(of_type(RY_DOMAIN_TYPE_DEAD_BOX) == 1 && fragment_is(d, "DEAD") == 1, "DEAD");
+    var K = RY_DOMAIN_TYPE_KDEL_SIGNAL;
+    scan("AAAAKDEL");
+    var kd = nth_of(K, 0);
+    assert(of_type(K) == 1 && hit(kd).start == 4, "C-terminal KDEL at 4");
+    scan("KDELAAAA");
+    assert(of_type(K) == 0, "KDEL only at the C-terminus");
+    scan("AKKAK");
+    var nl = nth_of(RY_DOMAIN_TYPE_NLS, 0);
+    assert(of_type(RY_DOMAIN_TYPE_NLS) == 1 && fragment_is(nl, "KKAK") == 1, "NLS KKAK");
+    scan("ARKAR");
+    nl = nth_of(RY_DOMAIN_TYPE_NLS, 0);
+    assert(of_type(RY_DOMAIN_TYPE_NLS) == 1 && fragment_is(nl, "RKAR") == 1, "NLS [KR] first: RKAR");
+    scan("KDEL");
+    var whole = of_type(K) == 1;
+    scan("kdel");
+    var lower = of_type(K) == 1;
+    scan("DEL");
+    var short = of_type(K) == 0;
+    scan("AKDEL\n");
+    assert(whole && lower && short && of_type(K) == 0, "KDEL alone, lowercase; DEL; a trailing newline");
+    return 0;
+}
+
+# rust src/domain.rs: test_walker_a, test_walker_a_alanine_start
+fn walker_a() {
+    test_group("domain: Walker A (PS00017)");
+    var W = RY_DOMAIN_TYPE_WALKER_A;
+    scan("GAAAAGKS");
+    assert(of_type(W) == 1 && fragment_is(nth_of(W, 0), "GAAAAGKS") == 1, "G-x(4)-GKS");
+    scan("APESSGKT");
+    assert(of_type(W) == 1 && fragment_is(nth_of(W, 0), "APESSGKT") == 1, "[AG] takes A");
+    scan("SPESSGKT");
+    assert(of_type(W) == 0, "S does not start it");
+    return 0;
+}
+
+# rust src/domain.rs: test_ef_hand, test_ef_hand_calmodulin, test_ef_hand_exclusions
+fn ef_hand() {
+    test_group("domain: EF-hand (PS00018)");
+    var E = RY_DOMAIN_TYPE_EF_HAND;
+    scan("DKDGDGTITTKE");
+    var k = nth_of(E, 0);
+    assert(of_type(E) == 1 && hit(k).start == 0 && hit(k).end == 11, "calmodulin loop I, 0 .. 11");
+    scan("DADADED");
+    assert(of_type(E) == 0, "the old 7-residue core is no PS00018 match");
+    var a = "MADQLTEEQIAEFKEAFSLFDKDGDGTITTKELGTVMRSLGQNPTEAELQDMINEVDADGNGTIDF";
+    var cam = join(a, "PEFLTMMARKMKDTDSEEEIREAFRVFDKDGNGYISAAELRHVMTNLGEKLTDEEVDEMIREADIDG", "DGQVNYEEFVQMMTAK");
+    scan(cam);
+    var four = of_type(E) == 4;
+    var loops = fragment_is(nth_of(E, 0), "DKDGDGTITTKE") == 1 && fragment_is(nth_of(E, 1), "DADGNGTIDFPE") == 1;
+    loops = loops && fragment_is(nth_of(E, 2), "DKDGNGYISAAE") == 1 && fragment_is(nth_of(E, 3), "DIDGDGQVNYEE") == 1;
+    assert(four && loops, "calmodulin's four loops, in order");
+    var linker = 0;
+    while (memeq(cam + linker, "DTDSEEE", 7) != 1) { linker = linker + 1; }
+    var clear = 1;
+    var j = 0;
+    while (j < 4) {
+        var h: *RyDomainHit = hit(nth_of(E, j));
+        if (h.end >= linker && h.start <= linker + 6) { clear = 0; }
+        j = j + 1;
+    }
+    assert(clear == 1, "nothing in the central linker helix");
+    var none = 1;
+    scan("DWDGDGTITTKE");
+    if (of_type(E) != 0) { none = 0; }
+    scan("DKDIDGTITTKE");
+    if (of_type(E) != 0) { none = 0; }
+    scan("DKDGDGGITTKE");
+    if (of_type(E) != 0) { none = 0; }
+    scan("DKDGDGTATTKE");
+    if (of_type(E) != 0) { none = 0; }
+    assert(none == 1, "W at 1, I at 3, G at 6, A at 7 each kill the loop");
+    return 0;
+}
+
+# rust src/domain.rs: test_leucine_zipper, test_zinc_finger_c2h2, test_zinc_finger_exact_length_at_c_terminus
+# rust src/domain.rs: test_zinc_finger_requires_hydrophobic, test_zinc_finger_his_spacing, test_zinc_finger_zif268
+fn zipper_and_fingers() {
+    test_group("domain: the leucine zipper, C2H2 fingers (PS00028)");
+    var L = RY_DOMAIN_TYPE_LEU_ZIPPER;
+    var Z = RY_DOMAIN_TYPE_ZINC_FINGER_C2H2;
+    scan("LAAAAAALAAAAAALAAAAAAL");
+    var k = nth_of(L, 0);
+    assert(of_type(L) == 1 && hit(k).start == 0 && hit(k).end == 21, "L at 0, 7, 14, 21");
+    scan("CAACAAALAAAAAAAAHAAAHAAA");
+    k = nth_of(Z, 0);
+    assert(of_type(Z) == 1 && hit(k).start == 0 && hit(k).end == 20, "C2H2 0 .. 20, padded");
+    scan("CAACAAALAAAAAAAAHAAAH");
+    k = nth_of(Z, 0);
+    assert(of_type(Z) == 1 && hit(k).start == 0 && hit(k).end == 20, "the shortest finger at the C-terminus");
+    scan("CAACAAAAAAAAAAAAHAAAH");
+    assert(of_type(Z) == 0, "A at second-C + 4: no hydrophobic, no finger");
+    var spaced = 1;
+    var g = 2;
+    while (g <= 6) {
+        var spacer = alloc(8);
+        memset(spacer, 65, g);
+        store8(spacer + g, 0);
+        var seq = join("CAACAAALAAAAAAAAH", spacer, "H");
+        scan(seq);
+        var want = 0;
+        if (g >= 3 && g <= 5) { want = 1; }
+        if (of_type(Z) != want) { spaced = 0; }
+        if (want == 1 && hit(nth_of(Z, 0)).end != strlen(seq) - 1) { spaced = 0; }
+        g = g + 1;
+    }
+    assert(spaced == 1, "H-x(3,5)-H matches, x(2) and x(6) do not, the finger ends at the last H");
+    scan("PYACPVESCDRRFSRSDELTRHIRIHTGQK");
+    assert(of_type(Z) == 1 && fragment_is(nth_of(Z, 0), "CPVESCDRRFSRSDELTRHIRIH") == 1, "Zif268 finger 1");
+    return 0;
+}
+
+# rust src/domain.rs: test_empty, test_lowercase, test_no_domains, test_sorted_by_position
+# rust src/domain.rs: test_catalytic_triad_not_produced, test_whitespace_and_non_ascii_do_not_panic
+fn edges() {
+    test_group("domain: order, edges, non-ASCII");
+    assert(scan("") == 0 - 1, "empty: None");
+    var upper = scan("AARGDA");
+    assert(upper >= 0 && scan("aargda") == upper, "lowercase finds as many");
+    assert(scan("AAAA") == 0, "AAAA: no hits");
+    scan("RGDAADEAD");
+    var sorted = _T_COUNT > 1;
+    var k = 1;
+    while (k < _T_COUNT) {
+        if (hit(k - 1).start > hit(k).start) { sorted = 0; }
+        k = k + 1;
+    }
+    assert(sorted, "hits by start");
+    scan("GDSGGPHAAAAAADAAAACGSH");
+    assert(of_type(RY_DOMAIN_TYPE_CATALYTIC_TRIAD) == 0, "CatalyticTriad is reserved: never reported");
+    var buf[8];
+    store8(&buf, 0);
+    memcpy(&buf + 1, "KDEL", 4);
+    var inside = 1;
+    var e = 0;
+    while (e < 6) {
+        var s = "ACD\nEFG";
+        if (e == 1) { s = "ACDÉFG"; }
+        if (e == 2) { s = "RG🧬D"; }
+        if (e == 3) { s = "É"; }
+        if (e == 4) { s = "CAACAAALAAAAAAAAHAAAÉ"; }
+        var n = strlen(s);
+        if (e == 5) {
+            s = &buf;
+            n = 5;
+        }
+        if (scan_n(s, n) < 0) { inside = 0; }
+        var j = 0;
+        while (j < _T_COUNT) {
+            var h: *RyDomainHit = hit(j);
+            if (h.start > h.end || h.end >= char_count(s, n)) { inside = 0; }
+            j = j + 1;
+        }
+        e = e + 1;
+    }
+    assert(inside == 1, "whitespace, non-ASCII and NUL: every hit inside the sequence");
+    scan("ÉRGD");
+    var r = nth_of(RY_DOMAIN_TYPE_RGD_MOTIF, 0);
+    assert(r >= 0 && hit(r).start == 1 && hit(r).end == 3, "positions are character indices");
+    return 0;
+}
+
+# The Cyrius forms: the caller buffer (ADR 0002 row 3), the fragment range (row 4), the documents.
+fn forms() {
+    test_group("domain: the Cyrius forms");
+    var seq = "RGDAADEADKKAKDEL";
+    var n = strlen(seq);
+    var count = scan(seq);
+    var small: *RyDomainHit = as_hits(alloc(40 * count));
+    store64(small, 77);
+    var t, v = ry_scan_domains(seq, n, small, count - 1);
+    var refused = is_err_result(t) == 1 && v == RY_ERR_BUFFER_TOO_SMALL;
+    assert(refused && load64(small) == 77, "one hit short: refused, and nothing written");
+    var t2, v2 = ry_scan_domains(seq, n, small, count);
+    assert(is_err_result(t2) == 0 && v2 == count && memeq(small, _T_HITS, 40 * count) == 1, "exactly enough");
+    scan("aakdel");
+    var k = nth_of(RY_DOMAIN_TYPE_KDEL_SIGNAL, 0);
+    assert(k >= 0 && fragment_is(k, "KDEL") == 1, "a lowercase fragment reads uppercased");
+    var f[8];
+    var t3, v3 = ry_domain_hit_fragment(_T_SEQ, hit(k), &f, 3);
+    assert(is_err_result(t3) == 1 && v3 == RY_ERR_BUFFER_TOO_SMALL, "a fragment buffer too small: refused");
+    var sb = str_builder_new();
+    var t4, v4 = ry_domain_hit_to_json(sb, _T_SEQ, hit(k));
+    var want = "{\"start\":2,\"end\":5,\"domain_type\":\"KdelSignal\",\"fragment\":\"KDEL\"}";
+    assert(load64(sb + 8) == strlen(want) && memeq(load64(sb), want, strlen(want)) == 1, "a hit's document");
+    store64(sb + 8, 0);
+    var t5, v5 = ry_domain_type_to_json(sb, RY_DOMAIN_TYPE_ZINC_FINGER_C2H2);
+    assert(load64(sb + 8) == 16 && memeq(load64(sb), "\"ZincFingerC2H2\"", 16) == 1, "a type by name");
+    var t6, v6 = ry_domain_type_to_json(sb, RY_DOMAIN_TYPE_COUNT);
+    assert(is_err_result(t6) == 1, "a value that is no type is refused");
+    return 0;
+}
+
+# Runs the domain suite.
+fn main() {
+    alloc_init();
+    short_motifs();
+    walker_a();
+    ef_hand();
+    zipper_and_fingers();
+    edges();
+    forms();
+    return assert_summary();
+}
+
+var exit_code = main();
+# assert_summary() returns the failure count; a wait status is 8 bits, so any failure exits 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

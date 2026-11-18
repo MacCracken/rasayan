@@ -146,3 +146,14 @@ Measured at load 4.0–4.7 (another project's jobs), with the reference rows 2�
 ns against 80, score_alignment 199 against 194). The review decoded the next character in the scan loop itself
 instead of two helper calls per character (560 → 447 ns). It also stopped the myristoylation check at a missing Gly
 before it decodes its six-character window (447 → 384; 374 on the final run).
+
+## M3 part 4: domain
+
+| Benchmark | Rust 1.2.0 (ns) | Cyrius (ns) | Before review (ns) | Notes |
+|---|---|---|---|---|
+| domain_scan_20 | 140.60 | 383 | 410 | the 20 residues once (no hit); a caller buffer of 180 records, where Rust allocates a Vec of chars and a Vec of hits |
+
+Measured at load 2.3–2.5, with the reference rows at their quiet values (michaelis_menten 12 ns, nernst 79 ns). A
+probe of the scan: 109 ns for one residue (filling the ring's first 26 positions), 322 ns for 20 residues that start
+no pattern, 1,268 ns for 100. That is about 12 ns a character for the decode and the first-character dispatch. The
+review loaded each position's code and start byte in place instead of through the ring helper (410 → 383 ns).

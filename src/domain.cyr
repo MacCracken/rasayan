@@ -1,0 +1,298 @@
+# domain.cyr — motif-based protein domain detection: the C2H2 zinc finger (PROSITE PS00028), the EF-hand loop
+# (PS00018), Walker A / P-loop (PS00017), leucine-zipper heptads, the DEAD tetrapeptide, RGD, a basic NLS tetrapeptide
+# and C-terminal KDEL (Rust 1.2.0's `domain.rs`, transcribed). Consensus patterns, not profile models: the short ones
+# occur by chance in most proteins, so a hit is a candidate.
+#
+# A sequence is `(seq, n)`: n bytes of UTF-8 at seq (Rust's `&str`). Rust matches `chars()` and reports character
+# indices, and its wildcard (`x`) and exclusion (`{W}`) slots take any character, a non-ASCII one included; so the scan
+# steps by character and counts positions in characters, as src/ptm.cyr does. An ASCII byte is one character, any
+# other byte begins one that takes the continuation bytes after it (Rust's `chars()` for valid UTF-8; invalid input,
+# which a Rust `&str` cannot hold, is read the same way). Every result is exact (class A in tests/golden/domain.tsv).
+#
+# The Cyrius forms (ADR 0002 rows 2–4):
+# - DomainType is `enum RyDomainType`, its values Rust's declaration order (append-only); CatalyticTriad is reserved,
+#   as in Rust: no scan reports it;
+# - `scan_domains`'s `Option<Vec<DomainHit>>` fills a caller buffer of RyDomainHit records and returns Ok(count),
+#   Ok(-1) for None (an empty sequence; a Some may be empty), or Err(RY_ERR_BUFFER_TOO_SMALL), with nothing written;
+# - DomainHit's `fragment: String` is a byte range into the caller's sequence, Rust's fragment being those characters
+#   with ASCII letters uppercased (`ry_domain_hit_fragment` writes it);
+# - DomainType and DomainHit write `ry_<type>_to_json` (and `_a`, on an allocator).
+
+# The kinds of domain and motif (Rust's `DomainType`). The values are append-only.
+enum RyDomainType {
+    RY_DOMAIN_TYPE_ZINC_FINGER_C2H2 = 0;
+    RY_DOMAIN_TYPE_LEU_ZIPPER = 1;
+    RY_DOMAIN_TYPE_EF_HAND = 2;
+    RY_DOMAIN_TYPE_WALKER_A = 3;
+    RY_DOMAIN_TYPE_RGD_MOTIF = 4;
+    RY_DOMAIN_TYPE_DEAD_BOX = 5;
+    RY_DOMAIN_TYPE_CATALYTIC_TRIAD = 6;
+    RY_DOMAIN_TYPE_NLS = 7;
+    RY_DOMAIN_TYPE_KDEL_SIGNAL = 8;
+}
+
+# The number of DomainType values.
+const RY_DOMAIN_TYPE_COUNT = 9;
+
+# The most hits that start at one character (a C starting a C2H2 finger at each of its 3 × 3 spacings), so 9 · n
+# records always hold the hits of an n-byte sequence.
+const RY_DOMAIN_MAX_HITS_PER_RESIDUE = 9;
+
+# The longest fragment: a C2H2 finger at its widest spacings, C-x(4)-C-x(3)-[..]-x(8)-H-x(5)-H, 25 characters of at
+# most 4 bytes.
+const RY_DOMAIN_MAX_FRAGMENT_BYTES = 100;
+
+# The variant name of a DomainType (`"ZincFingerC2H2"`, as serde writes it), or 0 for a value that is none.
+#must_use
+#pure
+fn ry_domain_type_name(t): cstring {
+    match t {
+        RY_DOMAIN_TYPE_ZINC_FINGER_C2H2 => { return "ZincFingerC2H2"; }
+        RY_DOMAIN_TYPE_LEU_ZIPPER => { return "LeuZipper"; }
+        RY_DOMAIN_TYPE_EF_HAND => { return "EfHand"; }
+        RY_DOMAIN_TYPE_WALKER_A => { return "WalkerA"; }
+        RY_DOMAIN_TYPE_RGD_MOTIF => { return "RgdMotif"; }
+        RY_DOMAIN_TYPE_DEAD_BOX => { return "DeadBox"; }
+        RY_DOMAIN_TYPE_CATALYTIC_TRIAD => { return "CatalyticTriad"; }
+        RY_DOMAIN_TYPE_NLS => { return "Nls"; }
+        RY_DOMAIN_TYPE_KDEL_SIGNAL => { return "KdelSignal"; }
+        _ => { return 0; }
+    }
+    return 0;
+}
+
+# A detected domain or motif (Rust's `DomainHit`): the first and last character index (inclusive), the RyDomainType,
+# and the fragment as the byte range [fragment_start, fragment_start + fragment_len) of the scanned sequence.
+struct RyDomainHit {
+    start;
+    end;
+    domain_type;
+    fragment_start;
+    fragment_len;
+}
+
+# Word p of the 32-slot ring at r (a position's character code or start byte).
+#must_use
+#inline
+fn _ry_domain_at(r, p): i64 { return load64(r + 8 * (p & 31)); }
+
+# Writes hit k (when k < cap) and returns k + 1.
+#must_use
+fn _ry_domain_put(out: *RyDomainHit, cap, k, start, end, domain_type, from, to): i64 {
+    if (k < cap) {
+        var h: *RyDomainHit = out + k;
+        h.start = start;
+        h.end = end;
+        h.domain_type = domain_type;
+        h.fragment_start = from;
+        h.fragment_len = to - from;
+    }
+    return k + 1;
+}
+
+# 1 when the 12 characters from position i of code ring rc are a PS00018 EF-hand loop,
+# `D-{W}-[DNS]-{ILVFYW}-[DENSTG]-[DNQGHRK]-{GP}-[LIVMC]-[DENQSTAGC]-x(2)-[DE]` (the D at i already tested; a position
+# past the end is -1 and matches nothing). Mirrors domain.rs's private `is_ef_hand_loop`.
+#must_use
+fn _ry_domain_ef_hand(rc, i): i64 {
+    var p11 = _ry_domain_at(rc, i + 11);
+    if (p11 != 68 && p11 != 69) { return 0; }
+    if (_ry_domain_at(rc, i + 1) == 87) { return 0; }
+    var p2 = _ry_domain_at(rc, i + 2);
+    if (p2 != 68 && p2 != 78 && p2 != 83) { return 0; }
+    var p3 = _ry_domain_at(rc, i + 3);
+    if (p3 == 73 || p3 == 76 || p3 == 86 || p3 == 70 || p3 == 89 || p3 == 87) { return 0; }
+    var p4 = _ry_domain_at(rc, i + 4);
+    if (p4 != 68 && p4 != 69 && p4 != 78 && p4 != 83 && p4 != 84 && p4 != 71) { return 0; }
+    var p5 = _ry_domain_at(rc, i + 5);
+    if (p5 != 68 && p5 != 78 && p5 != 81 && p5 != 71 && p5 != 72 && p5 != 82 && p5 != 75) { return 0; }
+    var p6 = _ry_domain_at(rc, i + 6);
+    if (p6 == 71 || p6 == 80) { return 0; }
+    var p7 = _ry_domain_at(rc, i + 7);
+    if (p7 != 76 && p7 != 73 && p7 != 86 && p7 != 77 && p7 != 67) { return 0; }
+    var p8 = _ry_domain_at(rc, i + 8);
+    var d8 = p8 == 68 || p8 == 69 || p8 == 78 || p8 == 81 || p8 == 83;
+    if (d8 == 0 && p8 != 84 && p8 != 65 && p8 != 71 && p8 != 67) { return 0; }
+    return 1;
+}
+
+# The scan: the hits of the n > 0 bytes at seq in Rust's order, the first `cap` written to out (none when cap is 0);
+# returns how many there are. Rust runs each pattern over the whole sequence in turn and then sorts the hits stably by
+# start; every pattern is anchored at its start, so at each position this emits that position's hits in the order of
+# Rust's passes (RGD, DEAD, KDEL, NLS, Walker A, EF-hand, the zipper, the C2H2 fingers by spacing), which is the sorted
+# order, with no sort. Each pattern names its first residue, so the position's first character picks the passes. A
+# 32-slot ring holds the codes (an ASCII byte uppercased, 256 for a non-ASCII character, -1 past the end) and start
+# bytes of positions i .. i + 25, the farthest a finger reaches; past the end a start is n.
+#must_use
+fn _ry_domain_scan(seq, n, out: *RyDomainHit, cap): i64 {
+    var rc[256];
+    var rb[256];
+    var top = 0;
+    var tb = 0;
+    var k = 0;
+    var i = 0;
+    while (1 == 1) {
+        while (top < i + 26) {
+            var slot = 8 * (top & 31);
+            if (tb < n) {
+                var lead = load8(seq + tb);
+                store64(&rb + slot, tb);
+                tb = tb + 1;
+                if (lead >= 128) {
+                    lead = 256;
+                    while (tb < n && (load8(seq + tb) & 192) == 128) { tb = tb + 1; }
+                } elif (lead >= 97 && lead <= 122) {
+                    lead = lead - 32;
+                }
+                store64(&rc + slot, lead);
+            } else {
+                store64(&rc + slot, 0 - 1);
+                store64(&rb + slot, n);
+            }
+            top = top + 1;
+        }
+        # Position i's code and start byte, loaded in place (the helper's call costs about 1 ns a load here).
+        var c0 = load64(&rc + 8 * (i & 31));
+        if (c0 < 0) { return k; }
+        var b0 = load64(&rb + 8 * (i & 31));
+        if (c0 == 82 || c0 == 75) {
+            var c1 = _ry_domain_at(&rc, i + 1);
+            var c2 = _ry_domain_at(&rc, i + 2);
+            var c3 = _ry_domain_at(&rc, i + 3);
+            if (c0 == 82 && c1 == 71 && c2 == 68) {
+                k = _ry_domain_put(out, cap, k, i, i + 2, RY_DOMAIN_TYPE_RGD_MOTIF, b0, _ry_domain_at(&rb, i + 3));
+            }
+            if (c0 == 75 && c1 == 68 && c2 == 69 && c3 == 76 && _ry_domain_at(&rc, i + 4) < 0) {
+                k = _ry_domain_put(out, cap, k, i, i + 3, RY_DOMAIN_TYPE_KDEL_SIGNAL, b0, _ry_domain_at(&rb, i + 4));
+            }
+            if ((c1 == 75 || c1 == 82) && (c3 == 75 || c3 == 82)) {
+                k = _ry_domain_put(out, cap, k, i, i + 3, RY_DOMAIN_TYPE_NLS, b0, _ry_domain_at(&rb, i + 4));
+            }
+        } elif (c0 == 68) {
+            var d1 = _ry_domain_at(&rc, i + 1);
+            var d2 = _ry_domain_at(&rc, i + 2);
+            var d3 = _ry_domain_at(&rc, i + 3);
+            if (d1 == 69 && d2 == 65 && d3 == 68) {
+                k = _ry_domain_put(out, cap, k, i, i + 3, RY_DOMAIN_TYPE_DEAD_BOX, b0, _ry_domain_at(&rb, i + 4));
+            }
+            if (_ry_domain_ef_hand(&rc, i) == 1) {
+                k = _ry_domain_put(out, cap, k, i, i + 11, RY_DOMAIN_TYPE_EF_HAND, b0, _ry_domain_at(&rb, i + 12));
+            }
+        } elif (c0 == 65 || c0 == 71) {
+            var w7 = _ry_domain_at(&rc, i + 7);
+            var walker = _ry_domain_at(&rc, i + 5) == 71 && _ry_domain_at(&rc, i + 6) == 75;
+            if (walker && (w7 == 83 || w7 == 84)) {
+                k = _ry_domain_put(out, cap, k, i, i + 7, RY_DOMAIN_TYPE_WALKER_A, b0, _ry_domain_at(&rb, i + 8));
+            }
+        } elif (c0 == 76) {
+            var heptads = _ry_domain_at(&rc, i + 7) == 76 && _ry_domain_at(&rc, i + 14) == 76;
+            if (heptads && _ry_domain_at(&rc, i + 21) == 76) {
+                k = _ry_domain_put(out, cap, k, i, i + 21, RY_DOMAIN_TYPE_LEU_ZIPPER, b0, _ry_domain_at(&rb, i + 22));
+            }
+        } elif (c0 == 67) {
+            var gap1 = 2;
+            while (gap1 <= 4) {
+                var cp = i + 1 + gap1;
+                var hy = _ry_domain_at(&rc, cp + 4);
+                var hydrophobic = hy == 76 || hy == 73 || hy == 86 || hy == 77;
+                hydrophobic = hydrophobic || hy == 70 || hy == 89 || hy == 87 || hy == 67;
+                var h1 = cp + 13;
+                if (_ry_domain_at(&rc, cp) == 67 && hydrophobic && _ry_domain_at(&rc, h1) == 72) {
+                    var gap2 = 3;
+                    while (gap2 <= 5) {
+                        var h2 = h1 + 1 + gap2;
+                        if (_ry_domain_at(&rc, h2) == 72) {
+                            var to = _ry_domain_at(&rb, h2 + 1);
+                            k = _ry_domain_put(out, cap, k, i, h2, RY_DOMAIN_TYPE_ZINC_FINGER_C2H2, b0, to);
+                        }
+                        gap2 = gap2 + 1;
+                    }
+                }
+                gap1 = gap1 + 1;
+            }
+        }
+        i = i + 1;
+    }
+    return k;
+}
+
+# Scans the n bytes of UTF-8 at seq for known domain motifs into the `cap` RyDomainHit records at out, sorted by start
+# (the hits at one start in Rust's detection order). Ok(count) (0 when none is found), Ok(-1) for an empty sequence
+# (Rust's None), or Err(RY_ERR_BUFFER_TOO_SMALL) when more than `cap` hits are found (nothing is written;
+# RY_DOMAIN_MAX_HITS_PER_RESIDUE · n records always suffice). Positions are character indices. Mirrors
+# `domain::scan_domains`.
+#must_use
+fn ry_scan_domains(seq, n, out: *RyDomainHit, cap): Result {
+    if (n <= 0) { return Ok(0 - 1); }
+    if (cap < RY_DOMAIN_MAX_HITS_PER_RESIDUE * n && _ry_domain_scan(seq, n, out, 0) > cap) {
+        return Err(_ry_fail_text(RY_ERR_BUFFER_TOO_SMALL, "scan_domains", 12));
+    }
+    return Ok(_ry_domain_scan(seq, n, out, cap));
+}
+
+# Writes hit h's fragment, as Rust's `DomainHit::fragment` holds it (the bytes of seq it spans, ASCII letters
+# uppercased), into the `cap` bytes at buf: Ok(length), or Err(RY_ERR_BUFFER_TOO_SMALL) (nothing written).
+# RY_DOMAIN_MAX_FRAGMENT_BYTES always suffice.
+#must_use
+fn ry_domain_hit_fragment(seq, h: *RyDomainHit, buf, cap): Result {
+    var len = h.fragment_len;
+    if (len > cap) { return Err(RY_ERR_BUFFER_TOO_SMALL); }
+    var p = seq + h.fragment_start;
+    var k = 0;
+    while (k < len) {
+        var c = load8(p + k);
+        if (c >= 97 && c <= 122) { c = c - 32; }
+        store8(buf + k, c);
+        k = k + 1;
+    }
+    return Ok(len);
+}
+
+# ── JSON (P7: serde_json's documents) ──
+
+# Appends DomainType `t` as serde_json writes a unit variant (`"EfHand"`): Ok(0), Err(RY_ERR_INVALID_PARAMETER) for a
+# value that is none, or Err(RY_ERR_OUT_OF_MEMORY). Serialize only in Rust.
+#must_use
+fn ry_domain_type_to_json_a(a, sb, t): Result {
+    var name = ry_domain_type_name(t);
+    if (name == 0) { return Err(RY_ERR_INVALID_PARAMETER); }
+    if (_ry_jw_unit(a, sb, name) != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return Ok(0);
+}
+
+# ry_domain_type_to_json_a on the default allocator (a builder from str_builder_new).
+#must_use
+fn ry_domain_type_to_json(sb, t): Result {
+    return ry_domain_type_to_json_a(default_alloc(), sb, t);
+}
+
+# Appends DomainHit `h` of sequence `seq` as serde_json writes it, `{"start":…,"end":…,"domain_type":…,"fragment":…}`
+# (the fragment as ry_domain_hit_fragment gives it): Ok(0), Err(RY_ERR_INVALID_PARAMETER) for a hit that no scan gives
+# (a type that is none, a fragment over RY_DOMAIN_MAX_FRAGMENT_BYTES), or Err(RY_ERR_OUT_OF_MEMORY). Serialize only in
+# Rust.
+#must_use
+fn ry_domain_hit_to_json_a(a, sb, seq, h: *RyDomainHit): Result {
+    var name = ry_domain_type_name(h.domain_type);
+    if (name == 0) { return Err(RY_ERR_INVALID_PARAMETER); }
+    var f[104];
+    var tf, len = ry_domain_hit_fragment(seq, h, &f, RY_DOMAIN_MAX_FRAGMENT_BYTES);
+    if (is_err_result(tf) == 1) { return Err(RY_ERR_INVALID_PARAMETER); }
+    var r = _ry_jw_byte(a, sb, 123);
+    r = r | _ry_jw_key(a, sb, "start", 1);
+    r = r | _ry_jw_u64(a, sb, h.start);
+    r = r | _ry_jw_key(a, sb, "end", 0);
+    r = r | _ry_jw_u64(a, sb, h.end);
+    r = r | _ry_jw_key(a, sb, "domain_type", 0);
+    r = r | _ry_jw_unit(a, sb, name);
+    r = r | _ry_jw_key(a, sb, "fragment", 0);
+    r = r | _ry_jw_str(a, sb, &f, len);
+    r = r | _ry_jw_byte(a, sb, 125);
+    if (r != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return Ok(0);
+}
+
+# ry_domain_hit_to_json_a on the default allocator.
+#must_use
+fn ry_domain_hit_to_json(sb, seq, h: *RyDomainHit): Result {
+    return ry_domain_hit_to_json_a(default_alloc(), sb, seq, h);
+}

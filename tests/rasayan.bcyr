@@ -43,6 +43,7 @@ include "src/protein.cyr"
 include "src/alignment_data.cyr"
 include "src/alignment.cyr"
 include "src/ptm.cyr"
+include "src/domain.cyr"
 
 # Keeps the loops' results observable.
 var _bn_sink = 0;
@@ -686,6 +687,29 @@ fn _bn_ptm(name, n): i64 {
     return 0;
 }
 
+# A word as a *RyDomainHit (the cast-helper idiom).
+#must_use
+fn _bn_as_hits(p): *RyDomainHit { return p; }
+
+# `n` scans of Rust's domain_scan_20 peptide (the 20 residues once) into a caller buffer of 180 hits.
+fn _bn_domain(name, n): i64 {
+    var seq = "ACDEFGHIKLMNPQRSTVWY";
+    var hits: *RyDomainHit = _bn_as_hits(alloc(40 * 180));
+    var b = bench_new(name);
+    var found = 0;
+    bench_batch_start(b);
+    var i = 0;
+    while (i < n) {
+        var t, v = ry_scan_domains(seq, 20, hits, 180);
+        found = found + v;
+        i = i + 1;
+    }
+    bench_batch_stop(b, n);
+    bench_report(b);
+    _bn_sink = _bn_sink ^ found;
+    return 0;
+}
+
 # One benchmark of the JSON writers: `kind` 0 the serde_json f64 form, 1 the Display form, 2 a ten-field document.
 fn _bn_json(name, kind, n): i64 {
     var b = bench_new(name);
@@ -776,6 +800,7 @@ fn main(): i64 {
     _bn_align("needleman_wunsch_300", 2, 1000);
     _bn_align("score_alignment", 3, 1000000);
     _bn_ptm("ptm_scan_20", 1000000);
+    _bn_domain("domain_scan_20", 1000000);
     var br = bench_new("json/read MembranePermeability (3 f64)");
     bench_batch_start(br);
     _bn_read("{\"p_na\":0.04,\"p_k\":1.0,\"p_cl\":0.45}", 3, "p_na\0p_k\0p_cl\0", 100000);

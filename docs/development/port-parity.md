@@ -1259,3 +1259,56 @@ in one pass; a smaller one gets a counting pass first, so a refused buffer is ne
 **Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): ptm_scan_20 is 374 ns against
 Rust's 190 (Rust allocates a Vec and a String per site; the port writes a caller buffer). The review decoded the
 next character in the loop itself and stopped the myristoylation check at a missing Gly: 560 → 374 ns.
+
+### 6d. Part 4: domain (2026-11-17)
+
+**What is compared.** `tests/golden/domain.tsv` is a new module of 3,922 rows through the oracle's public API.
+`scan_domains` runs over 3,895 sequences:
+- the edges and every Rust test's sequence;
+- 3,200 with one slot of a pattern filled with each of the 64 slot characters from §6c (50 slots). The slots are RGD's three,
+  DEAD's four, the C-terminal KDEL's four, NLS's four, Walker A's five, all twelve of the EF-hand loop's, the leucine
+  zipper's heptad positions and one wildcard, and eight of the C2H2 finger's and five of Zif268's;
+- 128 with KDEL followed by one of the 64 characters, or preceded by one;
+- the C2H2 finger at all 25 spacings from x(1)/x(2) to x(5)/x(6), bare, padded and lowercase, and two sequences where
+  one C starts nine fingers (the per-character bound);
+- the six proteins and Zif268 in both cases;
+- 300 seeded sequences, 100 seeded sequences with a motif planted, and a 3,000-residue protein.
+
+The serde documents cover the nine `DomainType` values and 18 hits, with escapes and non-ASCII in their fragments.
+Every row is class A.
+
+| Check | Result |
+|---|---|
+| every row | identical on the first run; each scan row also checks that a buffer one hit short is refused and left as it was, and that an exact buffer gives the same records |
+| corrected oracle | no arithmetic: no `domain.cr.tsv` |
+| `validate.py` | every row re-derived from its own transcription of `domain.rs` (pinned lines; `DomainType`'s variants read from its source), each pattern as its own pass followed by a stable sort, as Rust does it; 106,327 checks in all |
+| Rust tests | 24 ported (`tests/domain.tcyr`, 35 checks: the unit tests and the Cyrius forms); the ledger at 347 of 723, 0 due and unported |
+| fuzz | every input scanned: Ok(-1) only when empty, hits sorted by start, inside the sequence, at most 25 characters long, never CatalyticTriad, a fragment range inside the input (12,503 hits) |
+| three targets (`scripts/gates.sh`, 257 s) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 103,660 ok, 234 accepted, 0 failed; coverage 143 of 143 public fns executed |
+
+**The Cyrius forms** (ADR 0002 rows 2–4) are ptm's (§6c): `RyDomainType`, append-only values 0–8 in Rust's
+declaration order (CatalyticTriad reserved and never reported, as in Rust); hits of five words into a caller buffer;
+`Ok(count)` or `Ok(-1)`; a fragment as a byte range read with ASCII letters uppercased. Characters are read the same
+way. Rust runs eight passes over a `Vec<char>`, one per pattern, and then sorts stably by start. Every pattern is
+anchored at its start, so the port makes one pass and emits each start's hits in the order of Rust's passes. That is
+the sorted order with no sort. Each pattern names its first residue, so the first character picks the patterns to
+test. The look-ahead is a 32-slot ring of codes and start bytes for positions i to i + 25: the widest C2H2 finger,
+C-x(4)-C-x(3)-[..]-x(8)-H-x(5)-H, ends at i + 24, and its fragment's end byte is the start of i + 25. A position past
+the end has code −1 and start byte n, so a pattern that names a residue in a missing position fails, as Rust's bounds
+do. One character starts at most nine hits (`RY_DOMAIN_MAX_HITS_PER_RESIDUE`: a C at the three first spacings times
+the three second spacings); the corpus reaches nine.
+
+**Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): domain_scan_20 is 383 ns against Rust's 141. A probe put the
+cost at about 12 ns a character with no pattern triggered (one decode, one dispatch on the first character) plus
+about 90 ns to fill the ring for the first 26 positions. The review loaded each position's code and start byte in
+place instead of through the two-parameter ring helper, which `#inline` does not fully inline: 410 → 383 ns.
+
+### 6e. M3 complete
+
+Four modules, 27,323 golden rows of their own (protein 14,065, alignment 5,768, ptm 3,568, domain 3,922), every one
+matching the oracle with no row accepted: glibc's `pow` was correctly rounded on all 12,341 class-C protein rows
+(`protein.cr.tsv` is empty), and the other three modules are integer and character work, class A. Two modules are
+new to the corpus (ptm, domain). The shared forms M3 settled are a sequence as `(ptr, n)` UTF-8, `Vec` results in
+caller buffers with `RY_ERR_BUFFER_TOO_SMALL` and nothing written on a refusal, and strings owned by a result as byte
+ranges into the input. Byte reading where every non-residue is rejected or skipped (protein, alignment) and character
+reading where a wildcard can take any character (ptm, domain) are both used. 139 Rust tests are ported with them.

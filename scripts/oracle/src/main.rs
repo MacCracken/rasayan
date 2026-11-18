@@ -30,6 +30,7 @@ mod glibc;
 mod grids;
 mod m_alignment;
 mod m_constants;
+mod m_domain;
 mod m_energy;
 mod m_enzyme;
 mod m_guard;
@@ -80,6 +81,7 @@ fn golden_modules(root: &Path) -> Result<Vec<tsv::Module>, String> {
     let read = |m: &str| rustsrc::Source::read(root, m);
     let mut v = vec![
         m_constants::emit(),
+        m_domain::emit(),
         m_guard::emit(),
         m_integrate::emit(),
         m_json::emit(),
