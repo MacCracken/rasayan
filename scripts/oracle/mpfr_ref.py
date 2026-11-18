@@ -1486,11 +1486,113 @@ PATHWAY = {
     "pathway::MetabolicNetwork::trajectory": _n_trajectory_row,
 }
 
+# ── mapk (M6 part 1) ──
+# MapkState::tick_with_raf_inhibition (tick is its zero-inhibition case) in Rust's order: the ERK feedback from the
+# step's start, Ras and Raf by integrate's `activate`, MEK and ERK by the dual-phosphorylation relax, each tier from
+# the one above's updated value; sub-steps of dt / ceil(dt / 0.5) (at most 1000) past 0.5 s. The primitive is the
+# integrators' exp_m1 (past the series cutoff); Michaelis-Menten is arithmetic.
+
+MK_DEFAULT = [0.1, 1.0, 0.5, 0.1, 0.4, 0.8, 0.1, 0.5, 1.0, 0.1, 0.5, 0.5]  # MapkConfig::default(), declaration order
+
+
+def _mk_dual_ss(on, off):
+    a = _fdiv(on, on + off)
+    a2 = a * a
+    return _fdiv(a2, (1.0 - a) + a2)
+
+
+def _mk_dual(x, on, off, dt, P):
+    rate = on + off
+    if rate <= 0.0:
+        return x
+    return _unit(_relax_any(x, _mk_dual_ss(on, off), rate, dt, P))
+
+
+def _mk_step(st, c, gf, raf_inh, h, P):
+    ras, raf, mek, erk = st
+    feedback = _fdiv(1.0, 1.0 + _fdiv(erk * c[11], 0.1))
+    k_ras = c[0] * gf * feedback
+    v_ras = k_ras * (1.0 - ras)
+    ras = _activate_any(ras, k_ras, c[1], h, P)
+    k_raf = _mm(ras, c[2], c[3]) * feedback
+    v_raf = k_raf * (1.0 - raf)
+    raf = _activate_any(raf, k_raf, c[4] + raf_inh, h, P)
+    k_mek = _mm(raf, c[5], c[6])
+    v_mek = k_mek * (1.0 - mek)
+    mek = _mk_dual(mek, k_mek, c[7], h, P)
+    k_erk = _mm(mek, c[8], c[9])
+    v_erk = k_erk * (1.0 - erk)
+    erk = _mk_dual(erk, k_erk, c[10], h, P)
+    return [ras, raf, mek, erk], [v_ras, v_raf, v_mek, v_erk]
+
+
+def _mk_tick(st, c, gf, raf_inh, dt, P):
+    if not (math.isfinite(dt) and dt > 0.0):
+        return list(st), [0.0] * 4
+    gf, raf_inh = _unit(gf), _conc(raf_inh)
+    if dt <= 0.5:
+        return _mk_step(st, c, gf, raf_inh, dt, P)
+    q = dt / 0.5
+    up = q if math.isinf(q) else float(math.ceil(q))
+    n = int(min(max(up, 1.0), 1000.0))
+    h = dt / float(n)
+    st, flux = _mk_step(st, c, gf, raf_inh, h, P)
+    for _ in range(1, n):
+        st, _ = _mk_step(st, c, gf, raf_inh, h, P)
+    return st, flux
+
+
+def _mk_config(a, at):
+    c = list(MK_DEFAULT)
+    n = a[at]
+    for j in range(n):
+        c[a[at + 1 + 2 * j]] = a[at + 2 + 2 * j]
+    return c, at + 1 + 2 * n
+
+
+def _mk_tick_row(a, P, raf):
+    c, k = _mk_config(a, 4)
+    if raf:
+        st, flux = _mk_tick(a[:4], c, a[k], a[k + 1], a[k + 2], P)
+    else:
+        st, flux = _mk_tick(a[:4], c, a[k], 0.0, a[k + 1], P)
+    return st + flux
+
+
+def _mk_trajectory(a, P):
+    st = list(a[:4])
+    c, k = _mk_config(a, 4)
+    flux = [0.0] * 4
+    while k < len(a):
+        op = a[k]
+        if op == 1:
+            for _ in range(a[k + 3]):
+                st, flux = _mk_tick(st, c, a[k + 1], 0.0, a[k + 2], P)
+            k += 4
+        elif op == 2:
+            for _ in range(a[k + 4]):
+                st, flux = _mk_tick(st, c, a[k + 1], a[k + 2], a[k + 3], P)
+            k += 5
+        elif op == 3:
+            st[a[k + 1]] = a[k + 2]
+            k += 3
+        else:
+            raise ValueError(f"no operation {op}")
+    return st + flux
+
+
+MAPK = {
+    "mapk::MapkState::tick": lambda a, P: _mk_tick_row(a, P, False),
+    "mapk::MapkState::tick_with_raf_inhibition": lambda a, P: _mk_tick_row(a, P, True),
+    "mapk::dual_phosphorylation": lambda a, P: [_mk_dual(a[0], a[1], a[2], a[3], P)],
+    "mapk::MapkState::trajectory": _mk_trajectory,
+}
+
 # The modules with class-C (and class-T) rows beyond math, and their models.
 MODELS = {"integrate": INTEGRATE, "enzyme": ENZYME, "membrane": MEMBRANE, "signal": SIGNAL, "metabolism": METABOLISM,
           "energy": ENERGY, "protein": PROTEIN, "glycolysis": GLYCOLYSIS, "tca": TCA,
           "etc": ETC, "beta_oxidation": BETA_OXIDATION,
-          "amino_catabolism": AMINO_CATABOLISM, "pathway": PATHWAY}
+          "amino_catabolism": AMINO_CATABOLISM, "pathway": PATHWAY, "mapk": MAPK}
 
 
 def _arg(tok):

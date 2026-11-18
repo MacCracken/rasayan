@@ -1671,3 +1671,46 @@ the private step checked against the oracle's `tick_in` on every row. The produc
 network allocates nothing over 10⁶ steps (probes 2 and 5); the sub-step counts follow Rust's division (probe 1). All
 38 of the network's Rust tests are ported. M5 also split the 16 pathway JSON readers into node readers, and found the
 stdlib's byte-loop `memcpy` on the step's path (an addendum to the open cyrius issue, drafted).
+
+## 9. M6 (Signaling)
+
+M6 ports one module per part, in the port plan's order: mapk, pi3k, jak_stat, calcium, receptor, nuclear_receptor,
+then the signaling network that couples them.
+
+### 9a. Part 1: MAPK (2026-11-17)
+
+**What is compared.** `tests/golden/mapk.tsv` (new, 877 rows), through the oracle's public API and, for the
+crate-private `tick_with_raf_inhibition` and the private `step`, `dual_phospho_steady_state` and
+`dual_phosphorylation`, a verbatim copy (`scripts/oracle/src/v_mapk.rs`: the simulation `impl` on a mirror of
+`MapkState`, the public `tick` with it; the two functions as one block). The copy calls `integrate` through a local
+module in front of `v_integrate.rs`'s copies that notes when `activate` or `relax` takes the `exp_m1` branch, which
+makes the row class C. Every `tick` row also runs through the oracle's API and the two must agree bit for bit. The
+rows cover:
+- the two defaults, both validators over every field's edges, pairs where the order picks the error, seeded values;
+- 419 single ticks: the default at 24 step lengths (the invalid ones, frame times, exact multiples of 0.5 s and an
+  ulp either side — 1, 2, 3, 7, 10 and 1000 sub-steps — the 1000-step cap and far past it) at two growth factors;
+  each state field over its edges at 0.01 s and 2 s; the growth factor's edges at three step lengths; each config
+  field over its edges; feedback off; 60 seeded states and configs;
+- 60 Raf-inhibited ticks (the inhibition over its edges at four step lengths, seeded runs), 55
+  `dual_phospho_steady_state` and 90 `dual_phosphorylation` rows;
+- 25 trajectories: Rust's runs to the steady state (full and no stimulus, feedback off and five-fold, dt 1000), a
+  six-point dose-response sweep with and without feedback, stimulus on then off, the same minute at 0.01 s and 5 s,
+  Akt's inhibition switched on mid-run, NaN recovery, four seeded runs;
+- the serde documents.
+
+Classes: A 228 (validators, defaults, documents), B 282, C 342 (an `exp_m1` step), T 25.
+
+| Check | Result |
+|---|---|
+| every row | 826 identical on the first run; 51 differ from the golden row by 1–12 ulp, each the corrected oracle's row |
+| corrected oracle | `mpfr_ref.py` models the cascade and reproduces all 367 class-C and -T rows with glibc's `exp_m1`; MPFR's changes 51 (`mapk.cr.tsv`: 42 ticks, 8 Raf-inhibited ticks, 1 trajectory), where glibc misrounds an `exp_m1` and the cascade carries it; the port equals the corrected row on all 51 (ADR 3) |
+| `validate.py` | every row re-derived from its own transcription of `mapk.rs` (its spans pinned, the defaults and constants read from the source; the integrators through integrate's model), with MPFR's `exp_m1` and the recorded libm; 122,249 checks in all; one flipped value per function is reported, 14 of 15, the 15th a NaN's payload (any NaN matches; a finite flip in that row is caught) |
+| Rust tests | the 17 `mapk.rs` tests and its 2 integration tests ported (`tests/mapk.tcyr`, 31 checks); the ledger at 537 of 723, 0 due and unported; surface parity 17 of 17 |
+| fuzz | every input also read as the three documents (791 accepted, each written and read back bit for bit); a valid state, and the default state on a valid config, ticked 0.1 s and 100 s, stay in [0, 1] with finite fluxes |
+| four targets (`scripts/gates.sh`, 791 s, every step green) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 116,888 ok, 286 accepted (ADR 3: 205), 0 failed; coverage 303 of 303 public fns executed |
+
+**The Cyrius forms** (ADR 0002 rows 7, 10): the state advances in place, the flux fills the caller's record; the
+sub-step count is `ceil(dt / 0.5)` clamped to [1, 1000] and converted saturating (probe 1); the codecs are all-f64
+documents, with node readers the signaling network will call.
+
+**Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): mapk_tick 48.8 → 235 ns.

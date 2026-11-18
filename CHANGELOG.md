@@ -19,9 +19,34 @@ JSON writers and readers) follow: M1 is complete. M2 part 1 (enzyme), part 2 (me
 complete. M4b part 1 (the electron transport chain), part 2 (β-oxidation) and part 3 (amino-acid catabolism)
 follow: M4b is complete, and with it M4. M5 part 1 (the metabolic network's types, validators, solve layer and
 codecs), part 2 (its step) and part 3 (the steady-state run, the long runs, the soak) follow: M5 is complete.
+M6 part 1 (the MAPK cascade) follows.
 
 ### Added
 
+- **src/mapk.cyr**, **src/mapk_data.cyr** (M6 part 1) — `mapk.rs` transcribed: `RyMapkState`, `RyMapkConfig`,
+  `RyMapkFlux`; the defaults from the generated consts and the three types' field-name blobs; both validators;
+  `ry_mapk_state_tick` and the crate-private `tick_with_raf_inhibition` (the signaling network's Akt → Raf crosstalk):
+  the ERK feedback from the step's start, Ras and Raf by integrate's `activate`, MEK and ERK by the
+  dual-phosphorylation relax (the private `dual_phospho_steady_state` and `dual_phosphorylation`), sub-steps of
+  `dt / ceil(dt / 0.5)` capped at 1000 past 0.5 s; the serde codecs of all three, with node readers for the signaling
+  network. Rust's `mapk_tick` trace event is a level-gated sakshi event under `rasayan::mapk`
+- **tests/golden/mapk.tsv** (M6 part 1, 877 rows, a new module: A 228, B 282, C 342, T 25) — the defaults, both
+  validators over every field's edges, 419 single ticks (the default at 24 step lengths: frame times, exact multiples
+  of 0.5 s and an ulp either side, the 1000-step cap; each state field and each config field over its edges; the
+  growth factor's edges; seeded states and configs), 60 Raf-inhibited ticks, the dual-phosphorylation helpers (103
+  rows), 25 trajectories (Rust's runs to the steady state with and without feedback, a dose-response sweep, stimulus
+  on and off, Akt's inhibition switched on, NaN recovery, seeded runs) and the serde documents. Every tick runs
+  through the oracle's API and a verbatim copy (`v_mapk.rs`), which must agree bit for bit; it is class C where
+  `activate` or `relax` takes the `exp_m1` branch. `mapk.cr.tsv` holds 51 rows: glibc's `exp_m1` misrounds on those
+  steps (1–12 ulp through the cascade), and the port gives the correctly rounded rows (ADR 3). `validate.py`
+  re-derives every row (122,249 independent checks) and catches each of 15 flipped values but one that changed only a
+  NaN's payload (any NaN matches; a finite flip in that row is caught)
+- **tests/mapk.tcyr** (M6 part 1, 31 checks) — the 17 `mapk.rs` unit tests (the explicit-Euler reference, the
+  dt-100 stability with strong feedback, the bisected Hill coefficient of the ERK dose response) and the 2 MAPK
+  integration tests, as they are written, and the trace event: the Rust-test ledger at 537 of 723. The fuzz harness
+  reads every input as the three documents (791 read and written back bit for bit) and ticks every valid state and
+  config, which stay in [0, 1]
+- **benchmarks** (M6 part 1) — mapk_tick, Rust → Cyrius: 48.8 → 235 ns
 - **src/pathway.cyr** (M5 part 3) — `ry_metabolic_network_run_to_steady_state`: ticks until the exponential moving
   average of the net ATP flux (ALPHA 0.1, seeded from the second tick) moves by less than the tolerance, checked from
   the 12th tick; the last flux into the caller's record and the ticks returned (Rust's `usize` an i64; below 1, no

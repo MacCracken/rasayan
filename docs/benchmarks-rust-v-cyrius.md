@@ -284,3 +284,20 @@ moves a byte at a time: 496 bytes cost 1.9 µs there and 65 ns by struct assignm
 fluxes and `tick`'s 496-byte copy were a quarter of a tick. They are struct assignments now, and the zeroing a word
 loop: `tick` went from 15.3 to 11.3 µs in the same loaded conditions, the same as one `step`.
 
+## M6 part 1: MAPK
+
+| Benchmark | Rust 1.2.0 (ns) | Cyrius (ns) | Notes |
+|---|---|---|---|
+| mapk_tick | 48.77 | 234–235 | Rust's loop body: a default state, one tick of 0.01 s at growth factor 0.5 (the series branch) |
+
+Cyrius only:
+
+| Benchmark | Cyrius (ns) | Notes |
+|---|---|---|
+| tick, the state ticked on (no reset) | 230–231 | |
+| tick of 5 s (10 sub-steps of 0.5 s) | 4,370–4,376 | each sub-step's four integrator calls on the `exp_m1` branch (a correctly rounded `exp_m1` each) |
+
+Measured on a quiet machine (load 3.6–3.7, two runs), with the reference rows at their quiet values (michaelis_menten
+12 ns, glycolysis_tick 734–758 ns, amino_catab_tick 106–107 ns). A step is three Michaelis-Menten rates, two
+`activate` and two `relax` calls, the feedback and the guards.
+

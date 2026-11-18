@@ -80,6 +80,8 @@ modules = [
     "src/amino_catabolism.cyr",
     "src/pathway_data.cyr",
     "src/pathway.cyr",
+    "src/mapk_data.cyr",
+    "src/mapk.cyr",
 ]
 
 # [lib.mcp] (dist/rasayan-mcp.cyr): [lib] plus src/mcp.cyr, the eight bote tools, at M8. Its consumer declares bote
@@ -124,6 +126,8 @@ modules = [
     "src/amino_catabolism.cyr",
     "src/pathway_data.cyr",
     "src/pathway.cyr",
+    "src/mapk_data.cyr",
+    "src/mapk.cyr",
 ]
 
 # [lib.ai] (dist/rasayan-ai.cyr): [lib] plus the hoosh client's data (src/ai_data.cyr, the system prompt) and, at M8,
@@ -169,6 +173,8 @@ modules = [
     "src/amino_catabolism.cyr",
     "src/pathway_data.cyr",
     "src/pathway.cyr",
+    "src/mapk_data.cyr",
+    "src/mapk.cyr",
     "src/ai_data.cyr",
 ]
 

@@ -1,0 +1,523 @@
+# rasayan — src/mapk.cyr: Rust 1.2.0's MAPK cascade tests, ported
+# Stdlib auto-included via cyrius.cyml
+#
+# The 17 unit tests of `mapk.rs` and the 2 integration tests (tests/integration.rs) that call only the cascade, as
+# they are written; tests/golden/mapk.tsv checks every method, single tick, sub-step boundary and trajectory besides.
+# Beyond them: the trace event and every codec's round trip.
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+include "src/integrate.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
+include "src/enzyme_data.cyr"
+include "src/enzyme.cyr"
+include "src/mapk_data.cyr"
+include "src/mapk.cyr"
+
+# 1 when |a − b| < tol.
+fn near(a: f64, b: f64, tol: f64) {
+    var d: f64 = f64_abs(a - b);
+    return d < tol;
+}
+
+# 1 when the state validates.
+fn ms_ok(p: *RyMapkState) {
+    var t, v = ry_mapk_state_validate(p);
+    return is_ok(t);
+}
+
+# 1 when the config validates.
+fn mc_ok(c: *RyMapkConfig) {
+    var t, v = ry_mapk_config_validate(c);
+    return is_ok(t);
+}
+
+# Rust's test helper `run`: `(seconds / dt).round()` ticks at growth factor `gf`.
+fn run(s: *RyMapkState, c: *RyMapkConfig, gf: f64, dt: f64, seconds: f64) {
+    var f: RyMapkFlux;
+    var q: f64 = seconds / dt;
+    var r: f64 = f64_round(q);
+    var steps = _ry_f64_to_u32(r);
+    var k = 0;
+    while (k < steps) {
+        ry_mapk_state_tick(s, c, gf, dt, &f);
+        k = k + 1;
+    }
+    return 0;
+}
+
+# Rust's test helper `euler_tick`: an explicit-Euler step of the same ODEs, the small-dt reference.
+fn euler_tick(s: *RyMapkState, c: *RyMapkConfig, gf: f64, dt: f64) {
+    var fb: f64 = (s.erk_pp * c.erk_feedback_strength) / 0.1;
+    var feedback: f64 = 1.0 / (1.0 + fb);
+    var on1: f64 = ((c.ras_activation_rate * gf) * (1.0 - s.ras_gtp)) * feedback;
+    var ras: f64 = s.ras_gtp + (on1 - c.ras_gap_rate * s.ras_gtp) * dt;
+    s.ras_gtp = ras;
+    var vmax: f64 = c.raf_vmax * (1.0 - s.raf_active);
+    var mm: f64 = ry_michaelis_menten(ras, vmax, c.raf_km);
+    var on2: f64 = mm * feedback;
+    var raf: f64 = s.raf_active + (on2 - c.raf_phosphatase_rate * s.raf_active) * dt;
+    s.raf_active = raf;
+    var on3: f64 = ry_michaelis_menten(raf, c.mek_vmax, c.mek_km);
+    var mek: f64 = euler_dual(s.mek_pp, on3, c.mek_phosphatase_rate, dt);
+    s.mek_pp = mek;
+    var on4: f64 = ry_michaelis_menten(mek, c.erk_vmax, c.erk_km);
+    var erk: f64 = euler_dual(s.erk_pp, on4, c.erk_phosphatase_rate, dt);
+    s.erk_pp = erk;
+    return 0;
+}
+
+# euler_tick's `dual` closure: x + (on + off)·(ρ² / (1 + ρ + ρ²) − x)·dt, ρ = on / off.
+fn euler_dual(x: f64, on: f64, off: f64, dt: f64): f64 {
+    var rho: f64 = on / off;
+    var target: f64 = (rho * rho) / ((1.0 + rho) + rho * rho);
+    var y: f64 = x + ((on + off) * (target - x)) * dt;
+    return y;
+}
+
+# Rust's `erk_steady_state`: ERK-PP after 40 ticks of 25 s at growth factor `gf`.
+fn erk_steady_state(c: *RyMapkConfig, gf: f64): f64 {
+    var s: RyMapkState;
+    var f: RyMapkFlux;
+    ry_mapk_state_default(&s);
+    var k = 0;
+    while (k < 40) {
+        ry_mapk_state_tick(&s, c, gf, 25.0, &f);
+        k = k + 1;
+    }
+    var erk: f64 = s.erk_pp;
+    return erk;
+}
+
+# Rust's `ec` closure: the growth factor reaching fraction `p` of the ERK response, by 40 bisections.
+fn ec(c: *RyMapkConfig, lo: f64, hi: f64, p: f64): f64 {
+    var target: f64 = lo + p * (hi - lo);
+    var a: f64 = 0.0;
+    var b: f64 = 1.0;
+    var k = 0;
+    while (k < 40) {
+        var m: f64 = 0.5 * (a + b);
+        var e: f64 = erk_steady_state(c, m);
+        if (e < target) {
+            a = m;
+        } else {
+            b = m;
+        }
+        k = k + 1;
+    }
+    var r: f64 = 0.5 * (a + b);
+    return r;
+}
+
+# Rust's `erk_hill_coefficient`: ln 81 / ln(EC90 / EC10).
+fn erk_hill_coefficient(c: *RyMapkConfig): f64 {
+    var lo: f64 = erk_steady_state(c, 0.0);
+    var hi: f64 = erk_steady_state(c, 1.0);
+    var e90: f64 = ec(c, lo, hi, 0.9);
+    var e10: f64 = ec(c, lo, hi, 0.1);
+    var num: f64 = _ry_cr_ln(81.0);
+    var den: f64 = _ry_cr_ln(e90 / e10);
+    var r: f64 = num / den;
+    return r;
+}
+
+# ── the captured events ──
+var _ev_buf[1024];
+var _ev_len = 0;
+
+# sakshi's subscriber: keeps the last event's message.
+fn _ev_hook(ts, level, category, msg, msg_len, extra) {
+    var n = msg_len;
+    if (n > 1024) { n = 1024; }
+    memcpy(&_ev_buf, msg, n);
+    _ev_len = msg_len;
+    return 0;
+}
+
+# 1 if the last captured event is the C string `want`.
+fn _ev_is(want) {
+    var n = strlen(want);
+    if (_ev_len != n) { return 0; }
+    return memeq(&_ev_buf, want, n);
+}
+
+# rust src/mapk.rs: test_default_valid, test_validate_rejects_nan_and_zero_km
+fn validation() {
+    test_group("mapk: defaults and validation");
+    var s: RyMapkState;
+    var c: RyMapkConfig;
+    ry_mapk_state_default(&s);
+    ry_mapk_config_default(&c);
+    assert(ms_ok(&s) == 1 && mc_ok(&c) == 1, "the defaults validate");
+    var inf: f64 = _RY_INF;
+    var nan: f64 = _ry_nan();
+    var refused = 0;
+    var k = 0;
+    while (k < 4) {
+        ry_mapk_config_default(&c);
+        if (k == 0) { c.raf_km = 0.0; }
+        if (k == 1) { c.erk_km = 0.0; }
+        if (k == 2) { c.mek_vmax = nan; }
+        if (k == 3) { c.erk_feedback_strength = inf; }
+        if (mc_ok(&c) == 0) { refused = refused + 1; }
+        k = k + 1;
+    }
+    assert_eq(refused, 4, "each of Rust's four bad configs is refused");
+    s.erk_pp = nan;
+    var t1, v1 = ry_mapk_state_validate(&s);
+    assert_eq(v1, RY_ERR_NON_FINITE, "a NaN ERK is refused");
+    ry_mapk_config_default(&c);
+    c.raf_km = 0.0;
+    var t2, v2 = ry_mapk_config_validate(&c);
+    assert_eq(v2, RY_ERR_INVALID_PARAMETER, "a zero Km is an invalid parameter");
+    return 0;
+}
+
+# rust src/mapk.rs: test_growth_factor_activates_erk, test_no_stimulus_low_activity, test_negative_feedback
+# rust src/mapk.rs: test_erk_feedback_ki_used, test_erk_monotone_in_growth_factor_and_bounded, test_bounded
+fn ticking() {
+    test_group("mapk: the cascade");
+    var s: RyMapkState;
+    var c: RyMapkConfig;
+    var f: RyMapkFlux;
+    ry_mapk_config_default(&c);
+    ry_mapk_state_default(&s);
+    var k = 0;
+    while (k < 200) {
+        ry_mapk_state_tick(&s, &c, 1.0, 0.1, &f);
+        k = k + 1;
+    }
+    var on: f64 = s.erk_pp;
+    assert(on > RY_MAPK_MAPK_STATE_DEFAULT_ERK_PP, "growth factor activates ERK");
+    ry_mapk_state_default(&s);
+    k = 0;
+    while (k < 200) {
+        ry_mapk_state_tick(&s, &c, 0.0, 0.1, &f);
+        k = k + 1;
+    }
+    var off: f64 = s.erk_pp;
+    assert(off < 0.3, "ERK stays low without stimulus");
+    var hi: RyMapkState;
+    var lo: RyMapkState;
+    var fh: RyMapkFlux;
+    var fl: RyMapkFlux;
+    ry_mapk_state_default(&hi);
+    hi.erk_pp = 0.9;
+    ry_mapk_state_default(&lo);
+    lo.erk_pp = 0.01;
+    ry_mapk_state_tick(&hi, &c, 1.0, 0.1, &fh);
+    ry_mapk_state_tick(&lo, &c, 1.0, 0.1, &fl);
+    var rh: f64 = fh.ras_activation;
+    var rl: f64 = fl.ras_activation;
+    assert(rh < rl, "high ERK suppresses Ras activation");
+    var half: RyMapkConfig;
+    var open: RyMapkConfig;
+    ry_mapk_config_default(&half);
+    half.erk_feedback_strength = RY_MAPK_ERK_FEEDBACK_KI / 0.5;
+    ry_mapk_config_default(&open);
+    open.erk_feedback_strength = 0.0;
+    var a: RyMapkState;
+    var b: RyMapkState;
+    var f1: RyMapkFlux;
+    var f0: RyMapkFlux;
+    ry_mapk_state_default(&a);
+    a.erk_pp = 0.5;
+    b = a;
+    ry_mapk_state_tick(&a, &half, 1.0, 0.01, &f1);
+    ry_mapk_state_tick(&b, &open, 1.0, 0.01, &f0);
+    var x1: f64 = f1.ras_activation;
+    var x0: f64 = f0.ras_activation;
+    assert(near(x1, 0.5 * x0, 0.000000000001), "the feedback halves at erk_pp · strength = ERK_FEEDBACK_KI");
+    var prev: f64 = -1.0;
+    var mono = 1;
+    var r = 0;
+    while (r < 7) {
+        var gf: f64 = 0.0;
+        if (r == 1) { gf = 0.05; }
+        if (r == 2) { gf = 0.1; }
+        if (r == 3) { gf = 0.25; }
+        if (r == 4) { gf = 0.5; }
+        if (r == 5) { gf = 0.75; }
+        if (r == 6) { gf = 1.0; }
+        ry_mapk_state_default(&s);
+        run(&s, &c, gf, 0.05, 300.0);
+        var erk: f64 = s.erk_pp;
+        if (ms_ok(&s) == 0 || erk < prev - 0.000000001) { mono = 0; }
+        prev = erk;
+        r = r + 1;
+    }
+    assert(mono == 1 && prev > 0.1, "ERK's steady state rises with the growth factor, bounded");
+    ry_mapk_state_default(&s);
+    k = 0;
+    while (k < 1000) {
+        ry_mapk_state_tick(&s, &c, 1.0, 0.01, &f);
+        k = k + 1;
+    }
+    assert_eq(ms_ok(&s), 1, "1000 steps of 0.01 s stay in [0, 1]");
+    return 0;
+}
+
+# rust src/mapk.rs: test_small_dt_matches_euler, test_huge_dt_stable, test_substeps_match_short_ticks
+fn integration() {
+    test_group("mapk: the exact steps");
+    var c: RyMapkConfig;
+    var n: RyMapkState;
+    var o: RyMapkState;
+    var f: RyMapkFlux;
+    ry_mapk_config_default(&c);
+    ry_mapk_state_default(&n);
+    ry_mapk_state_default(&o);
+    var k = 0;
+    while (k < 20000) {
+        ry_mapk_state_tick(&n, &c, 0.7, 0.001, &f);
+        euler_tick(&o, &c, 0.7, 0.001);
+        k = k + 1;
+    }
+    var close = 1;
+    var wn = &n;
+    var wo = &o;
+    var j = 0;
+    while (j < 4) {
+        var a: f64 = load64(wn + 8 * j);
+        var b: f64 = load64(wo + 8 * j);
+        var scale: f64 = _ry_max(f64_abs(b), 0.000001);
+        if (f64_abs(a - b) > 0.01 * scale) { close = 0; }
+        j = j + 1;
+    }
+    assert_eq(close, 1, "small steps match explicit Euler to 1 %");
+    var strong: RyMapkConfig;
+    ry_mapk_config_default(&strong);
+    strong.erk_feedback_strength = 5.0;
+    var stable = 1;
+    var m = 0;
+    while (m < 2) {
+        var cp = &c;
+        if (m == 1) { cp = &strong; }
+        var g = 0;
+        while (g < 5) {
+            var gf: f64 = 0.02;
+            if (g == 1) { gf = 0.05; }
+            if (g == 2) { gf = 0.1; }
+            if (g == 3) { gf = 0.3; }
+            if (g == 4) { gf = 1.0; }
+            var s: RyMapkState;
+            ry_mapk_state_default(&s);
+            k = 0;
+            while (k < 50) {
+                ry_mapk_state_tick(&s, cp, gf, 100.0, &f);
+                if (ms_ok(&s) == 0) { stable = 0; }
+                k = k + 1;
+            }
+            var before: f64 = s.erk_pp;
+            ry_mapk_state_tick(&s, cp, gf, 100.0, &f);
+            var after: f64 = s.erk_pp;
+            var fine: RyMapkState;
+            ry_mapk_state_default(&fine);
+            run(&fine, cp, gf, 0.01, 300.0);
+            var fe: f64 = fine.erk_pp;
+            if (near(after, before, 0.000000001) == 0 || near(after, fe, 0.000001) == 0) { stable = 0; }
+            g = g + 1;
+        }
+        m = m + 1;
+    }
+    assert_eq(stable, 1, "dt 100 settles without alternating, on the fine-step steady state");
+    var coarse: RyMapkState;
+    var short: RyMapkState;
+    ry_mapk_state_default(&coarse);
+    ry_mapk_state_default(&short);
+    k = 0;
+    while (k < 10) {
+        ry_mapk_state_tick(&coarse, &c, 0.4, 5.0, &f);
+        k = k + 1;
+    }
+    k = 0;
+    while (k < 100) {
+        ry_mapk_state_tick(&short, &c, 0.4, RY_MAPK_SUBSTEP_MAX_DT, &f);
+        k = k + 1;
+    }
+    assert_eq(memeq(&coarse, &short, 32), 1, "a long tick is exactly its sub-steps");
+    return 0;
+}
+
+# rust src/mapk.rs: test_dual_phospho_steady_state, test_erk_dose_response_is_ultrasensitive
+fn ultrasensitivity() {
+    test_group("mapk: distributive dual phosphorylation");
+    var tiny: f64 = 0.000000000000001;
+    var r1: f64 = _ry_mapk_dual_phospho_steady_state(1.0, 1.0);
+    var r2: f64 = _ry_mapk_dual_phospho_steady_state(2.0, 1.0);
+    var r3: f64 = _ry_mapk_dual_phospho_steady_state(3.0, 0.0);
+    var r4: f64 = _ry_mapk_dual_phospho_steady_state(0.0, 3.0);
+    assert(near(r1, 1.0 / 3.0, tiny) && near(r2, 4.0 / 7.0, tiny) && r3 == 1.0 && r4 == 0.0,
+      "ρ = 1 → 1/3, ρ = 2 → 4/7, off = 0 → 1, on = 0 → 0");
+    var matches = 1;
+    var i = 1;
+    while (i < 200) {
+        var rho: f64 = f64_from(i) * 0.05;
+        var expected: f64 = (rho * rho) / ((1.0 + rho) + rho * rho);
+        var got: f64 = _ry_mapk_dual_phospho_steady_state(rho, 1.0);
+        if (near(got, expected, 0.00000000000001) == 0) { matches = 0; }
+        i = i + 1;
+    }
+    var small: f64 = _ry_mapk_dual_phospho_steady_state(0.01, 1.0);
+    assert(matches == 1 && near(small / 0.0001, 1.0, 0.02), "ρ² / (1 + ρ + ρ²), ≈ ρ² at small ρ");
+    var same: f64 = _ry_mapk_dual_phosphorylation(0.3, 0.0, 0.0, 1.0);
+    var inside = 1;
+    var d = 0;
+    while (d < 4) {
+        var dt: f64 = 0.000001;
+        if (d == 1) { dt = 0.01; }
+        if (d == 2) { dt = 1.0; }
+        if (d == 3) { dt = 1000000.0; }
+        var y1: f64 = _ry_mapk_dual_phosphorylation(0.0, 5.0, 0.0, dt);
+        var y2: f64 = _ry_mapk_dual_phosphorylation(1.0, 0.0, 5.0, dt);
+        var y3: f64 = _ry_mapk_dual_phosphorylation(0.5, 1000.0, 0.001, dt);
+        if (y1 < 0.0 || y1 > 1.0 || y2 < 0.0 || y2 > 1.0 || y3 < 0.0 || y3 > 1.0) { inside = 0; }
+        d = d + 1;
+    }
+    var mx: f64 = 0x7FEFFFFFFFFFFFFF;            # f64::MAX
+    var big: f64 = _ry_mapk_dual_phosphorylation(0.4, mx, mx, 1.0);
+    assert(same == 0.3 && inside == 1 && big == 0.0, "no rate leaves x; any dt stays in [0, 1]; an overflow gives 0");
+    var c: RyMapkConfig;
+    var open: RyMapkConfig;
+    ry_mapk_config_default(&c);
+    ry_mapk_config_default(&open);
+    open.erk_feedback_strength = 0.0;
+    var nh_open: f64 = erk_hill_coefficient(&open);
+    var nh: f64 = erk_hill_coefficient(&c);
+    assert(nh_open > 1.5 && nh > 1.0 && nh < nh_open, "ultrasensitive without feedback; the feedback linearizes it");
+    return 0;
+}
+
+# rust src/mapk.rs: test_invalid_dt_is_noop, test_nan_and_negative_input, test_raf_inhibition_lowers_raf
+fn hardening() {
+    test_group("mapk: hardening");
+    var s: RyMapkState;
+    var d: RyMapkState;
+    var c: RyMapkConfig;
+    var f: RyMapkFlux;
+    var zero: RyMapkFlux;
+    ry_mapk_config_default(&c);
+    ry_mapk_state_default(&d);
+    ry_mapk_flux_default(&zero);
+    var inf: f64 = _RY_INF;
+    var nan: f64 = _ry_nan();
+    var k = 0;
+    while (k < 4) {
+        var dt: f64 = 0.0;
+        if (k == 1) { dt = -0.1; }
+        if (k == 2) { dt = nan; }
+        if (k == 3) { dt = inf; }
+        ry_mapk_state_default(&s);
+        memset(&f, 255, 32);
+        ry_mapk_state_tick(&s, &c, 1.0, dt, &f);
+        assert(memeq(&s, &d, 32) == 1 && memeq(&f, &zero, 32) == 1, "an invalid dt changes nothing, a zero flux");
+        k = k + 1;
+    }
+    var a: RyMapkState;
+    var b: RyMapkState;
+    ry_mapk_state_default(&a);
+    ry_mapk_state_default(&b);
+    ry_mapk_state_tick(&a, &c, nan, 0.1, &f);
+    ry_mapk_state_tick(&b, &c, 0.0, 0.1, &f);
+    var e1 = memeq(&a, &b, 32);
+    ry_mapk_state_tick(&a, &c, -5.0, 0.1, &f);
+    ry_mapk_state_tick(&b, &c, 0.0, 0.1, &f);
+    var e2 = memeq(&a, &b, 32);
+    assert(e1 == 1 && e2 == 1 && ms_ok(&a) == 1, "a NaN or negative growth factor is no stimulus");
+    _ry_mapk_state_tick_with_raf_inhibition(&a, &c, 1.0, nan, 0.1, &f);
+    _ry_mapk_state_tick_with_raf_inhibition(&b, &c, 1.0, 0.0, 0.1, &f);
+    var e3 = memeq(&a, &b, 32);
+    _ry_mapk_state_tick_with_raf_inhibition(&a, &c, 1.0, -3.0, 0.1, &f);
+    _ry_mapk_state_tick_with_raf_inhibition(&b, &c, 1.0, 0.0, 0.1, &f);
+    var e4 = memeq(&a, &b, 32);
+    assert(e3 == 1 && e4 == 1, "a NaN or negative Raf inhibition is none");
+    ry_mapk_state_default(&a);
+    ry_mapk_state_default(&b);
+    k = 0;
+    while (k < 100) {
+        _ry_mapk_state_tick_with_raf_inhibition(&a, &c, 1.0, 0.0, 0.1, &f);
+        _ry_mapk_state_tick_with_raf_inhibition(&b, &c, 1.0, 2.0, 0.1, &f);
+        k = k + 1;
+    }
+    var ra: f64 = a.raf_active;
+    var rb: f64 = b.raf_active;
+    assert(rb < ra && ms_ok(&b) == 1, "Akt's inhibition lowers Raf");
+    return 0;
+}
+
+# Rust's trace event, under the target `rasayan::mapk`, its fields in Rust's order (the growth factor sanitized).
+fn events() {
+    test_group("mapk: trace event");
+    sakshi_set_emit_hook(&_ev_hook);
+    sakshi_set_level(SK_TRACE);
+    var s: RyMapkState;
+    var c: RyMapkConfig;
+    var f: RyMapkFlux;
+    ry_mapk_state_default(&s);
+    ry_mapk_config_default(&c);
+    ry_mapk_state_tick(&s, &c, 1.5, 0.01, &f);
+    assert_eq(_ev_is("rasayan::mapk: mapk_tick dt=0.01 growth_factor=1 erk=0.01"), 1, "mapk_tick");
+    _ev_len = 0;
+    ry_mapk_state_tick(&s, &c, 0.5, 0.0, &f);
+    assert_eq(_ev_len, 0, "no event for an invalid dt");
+    sakshi_set_level(SK_INFO);
+    ry_mapk_state_tick(&s, &c, 0.5, 0.01, &f);
+    assert_eq(_ev_len, 0, "below TRACE, nothing");
+    sakshi_clear_emit_hook();
+    return 0;
+}
+
+# rust src/mapk.rs: test_serde_roundtrip
+# rust tests/integration.rs: test_mapk_config_serde_roundtrip, test_mapk_flux_serde_roundtrip
+fn serde() {
+    test_group("mapk: serde round trips");
+    var sb = str_builder_new();
+    var s: RyMapkState;
+    var sb2: RyMapkState;
+    ry_mapk_state_default(&s);
+    var t1, v1 = ry_mapk_state_to_json(sb, &s);
+    var t2, v2 = ry_mapk_state_from_json(load64(sb), load64(sb + 8), &sb2);
+    assert(is_ok(t2) == 1 && memeq(&sb2, &s, 32) == 1, "the state reads back");
+    var c: RyMapkConfig;
+    var cb: RyMapkConfig;
+    ry_mapk_config_default(&c);
+    store64(sb + 8, 0);
+    var t3, v3 = ry_mapk_config_to_json(sb, &c);
+    var t4, v4 = ry_mapk_config_from_json(load64(sb), load64(sb + 8), &cb);
+    assert(is_ok(t4) == 1 && memeq(&cb, &c, 96) == 1, "the config reads back");
+    var f: RyMapkFlux;
+    var fb: RyMapkFlux;
+    ry_mapk_state_tick(&s, &c, 0.5, 0.01, &f);
+    store64(sb + 8, 0);
+    var t5, v5 = ry_mapk_flux_to_json(sb, &f);
+    var t6, v6 = ry_mapk_flux_from_json(load64(sb), load64(sb + 8), &fb);
+    assert(is_ok(t6) == 1 && memeq(&fb, &f, 32) == 1, "a tick's flux reads back, bit for bit");
+    var short = "[0.05,0.02,0.01]";
+    var t7, v7 = ry_mapk_state_from_json(short, strlen(short), &sb2);
+    assert_eq(v7, RY_ERR_DESERIALIZE, "a short sequence is refused");
+    return 0;
+}
+
+# Runs the MAPK suite.
+fn main() {
+    alloc_init();
+    validation();
+    ticking();
+    integration();
+    ultrasensitivity();
+    hardening();
+    events();
+    serde();
+    return assert_summary();
+}
+
+var exit_code = main();
+# assert_summary() returns the failure count; a wait status is 8 bits, so any failure exits 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

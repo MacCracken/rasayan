@@ -6,7 +6,7 @@
 > milestone hasn't come. The golden corpus (`tests/golden/`) checks every ported function on its grid besides.
 > The 2 doc tests and the example are M9's.
 
-**723 Rust tests:** 518 ported; 108 at M6, 62 at M7, 35 at M8.
+**723 Rust tests:** 537 ported; 89 at M6, 62 at M7, 35 at M8.
 
 | Rust file | Tests | Ported | Due, unported | Later (milestone) |
 |---|---:|---:|---:|---|
@@ -24,7 +24,7 @@
 | `src/hormonal.rs` | 25 | 0 | 0 | 25 (M7) |
 | `src/integrate.rs` | 5 | 5 | 0 | — |
 | `src/jak_stat.rs` | 12 | 0 | 0 | 12 (M6) |
-| `src/mapk.rs` | 17 | 0 | 0 | 17 (M6) |
+| `src/mapk.rs` | 17 | 17 | 0 | — |
 | `src/mcp.rs` | 31 | 0 | 0 | 31 (M8) |
 | `src/membrane.rs` | 19 | 19 | 0 | — |
 | `src/metabolism.rs` | 26 | 26 | 0 | — |
@@ -38,9 +38,9 @@
 | `src/signal.rs` | 21 | 21 | 0 | — |
 | `src/signaling.rs` | 13 | 0 | 0 | 13 (M6) |
 | `src/tca.rs` | 26 | 26 | 0 | — |
-| `tests/integration.rs` | 70 | 49 | 0 | 15 (M6), 6 (M7) |
+| `tests/integration.rs` | 70 | 51 | 0 | 13 (M6), 6 (M7) |
 | `tests/validation.rs` | 25 | 25 | 0 | — |
-| **Total** | **723** | **518** | **0** | |
+| **Total** | **723** | **537** | **0** | |
 
 ## Where each is ported
 
@@ -280,6 +280,23 @@
 | `src/integrate.rs` `produce_decay_steady_state_and_degenerate` | `tests/integrate.tcyr` `produce_decay_steady_state_and_degenerate` |
 | `src/integrate.rs` `relax_matches_analytic_and_is_stable` | `tests/integrate.tcyr` `relax_matches_analytic_and_is_stable` |
 | `src/integrate.rs` `step_factors_match_exp_across_the_series_boundary` | `tests/integrate.tcyr` `step_factors_match_exp_across_the_series_boundary` |
+| `src/mapk.rs` `test_bounded` | `tests/mapk.tcyr` `ticking` |
+| `src/mapk.rs` `test_default_valid` | `tests/mapk.tcyr` `validation` |
+| `src/mapk.rs` `test_dual_phospho_steady_state` | `tests/mapk.tcyr` `ultrasensitivity` |
+| `src/mapk.rs` `test_erk_dose_response_is_ultrasensitive` | `tests/mapk.tcyr` `ultrasensitivity` |
+| `src/mapk.rs` `test_erk_feedback_ki_used` | `tests/mapk.tcyr` `ticking` |
+| `src/mapk.rs` `test_erk_monotone_in_growth_factor_and_bounded` | `tests/mapk.tcyr` `ticking` |
+| `src/mapk.rs` `test_growth_factor_activates_erk` | `tests/mapk.tcyr` `ticking` |
+| `src/mapk.rs` `test_huge_dt_stable` | `tests/mapk.tcyr` `integration` |
+| `src/mapk.rs` `test_invalid_dt_is_noop` | `tests/mapk.tcyr` `hardening` |
+| `src/mapk.rs` `test_nan_and_negative_input` | `tests/mapk.tcyr` `hardening` |
+| `src/mapk.rs` `test_negative_feedback` | `tests/mapk.tcyr` `ticking` |
+| `src/mapk.rs` `test_no_stimulus_low_activity` | `tests/mapk.tcyr` `ticking` |
+| `src/mapk.rs` `test_raf_inhibition_lowers_raf` | `tests/mapk.tcyr` `hardening` |
+| `src/mapk.rs` `test_serde_roundtrip` | `tests/mapk.tcyr` `serde` |
+| `src/mapk.rs` `test_small_dt_matches_euler` | `tests/mapk.tcyr` `integration` |
+| `src/mapk.rs` `test_substeps_match_short_ticks` | `tests/mapk.tcyr` `integration` |
+| `src/mapk.rs` `test_validate_rejects_nan_and_zero_km` | `tests/mapk.tcyr` `validation` |
 | `src/membrane.rs` `test_fick` | `tests/membrane.tcyr` `fick` |
 | `src/membrane.rs` `test_fick_non_finite_returns_zero` | `tests/membrane.tcyr` `fick` |
 | `src/membrane.rs` `test_fick_units_and_sign` | `tests/membrane.tcyr` `fick` |
@@ -522,6 +539,8 @@
 | `tests/integration.rs` `test_kinetic_fit_serde_roundtrip` | `tests/enzyme.tcyr` `serde` |
 | `tests/integration.rs` `test_known_enzyme_serialize` | `tests/enzyme.tcyr` `serde` |
 | `tests/integration.rs` `test_lineweaver_burk_and_eadie_hofstee_agree` | `tests/enzyme.tcyr` `fits` |
+| `tests/integration.rs` `test_mapk_config_serde_roundtrip` | `tests/mapk.tcyr` `serde` |
+| `tests/integration.rs` `test_mapk_flux_serde_roundtrip` | `tests/mapk.tcyr` `serde` |
 | `tests/integration.rs` `test_membrane_permeability_serde_roundtrip` | `tests/membrane.tcyr` `serde` |
 | `tests/integration.rs` `test_membrane_potential_physiological_range` | `tests/membrane.tcyr` `goldman` |
 | `tests/integration.rs` `test_metabolic_energy_charge_consistency` | `tests/metabolism.tcyr` `yields` |

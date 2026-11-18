@@ -14,6 +14,7 @@ guard
 integrate
 json
 logging
+mapk
 math
 membrane
 metabolism
