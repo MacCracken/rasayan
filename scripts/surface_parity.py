@@ -33,10 +33,10 @@ root = Path(sys.argv[1]).resolve()
 PORTED = ["constants", "error", "guard", "integrate", "logging", "enzyme", "membrane", "signal", "metabolism",
           "energy", "protein", "alignment", "ptm", "domain", "glycolysis", "tca", "etc", "beta_oxidation",
           "amino_catabolism", "pathway", "mapk", "pi3k", "jak_stat",
-          "calcium", "receptor", "nuclear_receptor", "signaling", "neurotransmitter", "hormonal"]
+          "calcium", "receptor", "nuclear_receptor", "signaling", "neurotransmitter", "hormonal", "mcp"]
 # The rest, with their milestone (port plan §3.1).
 SCHEDULED = {
-    "mcp": "M8", "ai": "M8",
+    "ai": "M8",
 }
 WIRING = {
     "lib": "module declarations and the `logging` / `mcp` / `ai` features: the [lib] / [lib.mcp] / [lib.ai] lists",

@@ -1,0 +1,186 @@
+# rasayan mcp fuzz harness
+#
+# `cyrius fuzz --poison --bounds` runs it beside tests/rasayan.fcyr (port plan §6: every reader of untrusted input).
+# M8 part 1: the eight MCP handlers, whose arguments come from an MCP client. 20,000 seeded inputs, a quarter random
+# bytes and the rest mutations of argument documents for every tool (the harness's xorshift64* and byte edits), each
+# handed to all eight handlers on an arena reset per input. Every reply must be one JSON object that bayan reads back,
+# an `error` member always a string; and the handlers never read past the input.
+
+include "lib/bote-core.cyr"
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+include "src/integrate.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
+include "src/protein_data.cyr"
+include "src/alignment_data.cyr"
+include "src/enzyme_data.cyr"
+include "src/enzyme.cyr"
+include "src/membrane_data.cyr"
+include "src/membrane.cyr"
+include "src/signal_data.cyr"
+include "src/signal.cyr"
+include "src/metabolism_data.cyr"
+include "src/metabolism.cyr"
+include "src/protein.cyr"
+include "src/alignment.cyr"
+include "src/ptm.cyr"
+include "src/domain.cyr"
+include "src/mcp_data.cyr"
+include "src/mcp.cyr"
+
+var _fz_state = 0x2545F4914F6CDD1D;
+var _fz_bad = 0;
+var _fz_errors = 0;
+var _fz_answers = 0;
+
+# xorshift64*: the next pseudo-random word.
+fn fz_next(): i64 {
+    var x = _fz_state;
+    x = x ^ ((x >> 12) & 0x000FFFFFFFFFFFFF);
+    x = x ^ (x << 25);
+    x = x ^ ((x >> 27) & 0x0000001FFFFFFFFF);
+    _fz_state = x;
+    return x * 0x2545F4914F6CDD1D;
+}
+
+# A pseudo-random integer in 0 .. n - 1.
+fn fz_below(n): i64 {
+    var r = fz_next() & 0x7FFFFFFFFFFFFFFF;
+    return r % n;
+}
+
+# Copies seed s into buf (cap bytes) and applies up to three byte edits, insertions, deletions, truncations or case
+# flips: the new length.
+fn fz_mutate(buf, cap, s): i64 {
+    var n = strlen(s);
+    if (n > cap) { n = cap; }
+    memcpy(buf, s, n);
+    var edits = fz_below(4);
+    var k = 0;
+    while (k < edits) {
+        var op = fz_below(5);
+        if (op == 0 && n > 0) { store8(buf + fz_below(n), fz_below(256)); }
+        if (op == 1 && n < cap) {
+            var at = fz_below(n + 1);
+            var j = n;
+            while (j > at) { store8(buf + j, load8(buf + j - 1)); j = j - 1; }
+            store8(buf + at, fz_below(256));
+            n = n + 1;
+        }
+        if (op == 2 && n > 0) {
+            var at2 = fz_below(n);
+            var j2 = at2;
+            while (j2 + 1 < n) { store8(buf + j2, load8(buf + j2 + 1)); j2 = j2 + 1; }
+            n = n - 1;
+        }
+        if (op == 3) { n = fz_below(n + 1); }
+        if (op == 4 && n > 0) {
+            var at3 = fz_below(n);
+            var c = load8(buf + at3);
+            if (c >= 97 && c <= 122) { store8(buf + at3, c - 32); }
+        }
+        k = k + 1;
+    }
+    return n;
+}
+
+# Checks one reply: a JSON object bayan reads back, its `error` (if any) a string.
+fn fz_check(a, r) {
+    if (r == 0) {
+        _fz_bad = _fz_bad + 1;
+        return 0;
+    }
+    var v = bayan_json_v_parse_buf_a(a, r, strlen(r));
+    if (v == 0 || bayan_json_v_tag(v) != JTAG_OBJ) {
+        _fz_bad = _fz_bad + 1;
+        return 0;
+    }
+    var e = bayan_json_v_obj_get_by_cstr(v, "error");
+    if (e != 0) {
+        if (bayan_json_v_tag(e) != JTAG_STR) { _fz_bad = _fz_bad + 1; }
+        _fz_errors = _fz_errors + 1;
+    } else {
+        _fz_answers = _fz_answers + 1;
+    }
+    return 0;
+}
+
+# All eight handlers on one input.
+fn fuzz_mcp(a, data, len) {
+    fz_check(a, _ry_mcp_kinetics_a(a, data, len));
+    fz_check(a, _ry_mcp_metabolism_a(a, data, len));
+    fz_check(a, _ry_mcp_signal_a(a, data, len));
+    fz_check(a, _ry_mcp_protein_a(a, data, len));
+    fz_check(a, _ry_mcp_membrane_a(a, data, len));
+    fz_check(a, _ry_mcp_alignment_a(a, data, len));
+    fz_check(a, _ry_mcp_ptm_a(a, data, len));
+    fz_check(a, _ry_mcp_domain_a(a, data, len));
+    return 0;
+}
+
+# Runs the handlers over 20,000 seeded inputs and reports.
+fn main() {
+    alloc_init();
+    var cap = 1024;
+    var buf = alloc(cap + 1);
+    var ar = arena_allocator_growable(65536);
+    var seeds = alloc(8 * 24);
+    store64(seeds, "{\"function\":\"michaelis_menten\",\"substrate\":1.0,\"vmax\":10.0,\"km\":1.0}");
+    store64(seeds + 8, "{\"function\":\"hill\",\"substrate\":1.0,\"vmax\":10.0,\"km\":1.0,\"n\":2.0}");
+    store64(seeds + 16, "{\"function\":\"q10\",\"substrate\":1.0,\"q10_value\":2.0,\"temp\":320.0,\"km\":310.0}");
+    store64(seeds + 24, "{\"function\":\"arrhenius\",\"a\":1e13,\"ea\":50000.0,\"temp\":310.0}");
+    store64(seeds + 32, "{\"function\":\"sequential\",\"substrate\":1,\"substrate_b\":2,\"vmax\":3,\"km_b\":5}");
+    store64(seeds + 40, "{\"action\":\"regenerate_atp\",\"dt\":1.0,\"oxygen\":0.5}");
+    store64(seeds + 48, "{\"action\":\"consume_atp\",\"amount\":2.5}");
+    store64(seeds + 56, "{\"function\":\"dose_response\",\"ligand\":2.0,\"ec50\":2.0,\"emax\":10.0,\"n\":1.0}");
+    store64(seeds + 64, "{\"function\":\"receptor_occupancy\",\"ligand\":1.0,\"ec50\":3.0}");
+    store64(seeds + 72, "{\"function\":\"isoelectric_point\",\"sequence\":\"MKTAYIAKQR\",\"pka_set\":\"bjellqvist\"}");
+    store64(seeds + 80, "{\"function\":\"composition\",\"sequence\":\"acdefghik\"}");
+    store64(seeds + 88, "{\"function\":\"chou_fasman\",\"sequence\":\"AAAAAELLLLPGGKK\"}");
+    store64(seeds + 96, "{\"function\":\"net_charge\",\"sequence\":\"ACDKH\",\"ph\":6.5}");
+    store64(seeds + 104, "{\"function\":\"lookup\",\"code\":\"W\"}");
+    store64(seeds + 112, "{\"function\":\"nernst\",\"temp\":310.0,\"z\":1,\"c_out\":4.0,\"c_in\":155.0}");
+    store64(seeds + 120, "{\"function\":\"goldman\",\"temp\":300}");
+    store64(seeds + 128, "{\"function\":\"fick\",\"d\":1e-9,\"dc\":5.0,\"dx\":1e-6}");
+    store64(seeds + 136, "{\"function\":\"substitution\",\"residue_a\":\"W\",\"residue_b\":\"C\",\"matrix\":\"pam\"}");
+    store64(seeds + 144, "{\"function\":\"score\",\"seq_a\":\"ACDEF\",\"seq_b\":\"ACDEG\",\"matrix\":\"pam250\"}");
+    store64(seeds + 152, "{\"function\":\"needleman_wunsch\",\"seq_a\":\"HEAGAWGHEE\",\"seq_b\":\"PAWHEAE\"}");
+    store64(seeds + 160, "{\"sequence\":\"NASTNGTRRASVAKRGSY\"}");
+    store64(seeds + 168, "{\"sequence\":\"CAACAAAHAAAAAAAAHAAAHAARGDGKSDEAD\"}");
+    store64(seeds + 176, "{\"function\":\"molecular_weight\",\"sequence\":\"AG\"}");
+    store64(seeds + 184, "{\"function\":\"extinction_coefficient\",\"sequence\":\"WYCC\"}");
+    var i = 0;
+    while (i < 20000) {
+        var n = 0;
+        if (fz_below(4) == 0) {
+            n = fz_below(41);
+            var k = 0;
+            while (k < n) { store8(buf + k, fz_below(256)); k = k + 1; }
+        } else {
+            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(24)));
+        }
+        reset_via(ar);
+        fuzz_mcp(ar, buf, n);
+        i = i + 1;
+    }
+    if (_fz_bad != 0) {
+        print("mcp fuzz: malformed replies: ", 29);
+        println_int(_fz_bad);
+        return 1;
+    }
+    print("mcp fuzz: ok (20000 inputs, 160000 replies; answers: ", 53);
+    fmt_int(_fz_answers);
+    print(", error records: ", 17);
+    fmt_int(_fz_errors);
+    println(")");
+    return 0;
+}
+
+var r = main();
+sys_exit_group(r);

@@ -1949,3 +1949,31 @@ recorded values (CRH 0.280237…, ACTH 0.322506…, cortisol 1.568407…; withou
 | four targets (`scripts/gates.sh`, 495 s) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 123,599 ok, 81 accepted (ADR 3: 0), 0 failed; coverage 470 of 470 public fns executed |
 
 **Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): hormonal_tick 33.4 → 211 ns.
+
+## 11. M8: the integrations
+
+### 11a. Part 1: mcp (2026-11-18)
+
+**What is compared.** `tests/golden/mcp.tsv` (new, 1,113 rows, class A), written by `gen.py` (`mcp()`): mcp.rs read as
+text for the eight tool definitions (each `*_def()`'s properties, its `ToolDef::new` name and description, its
+required list; `tools()`'s order; `tool_names()`), and each handler transcribed on Python models of the library calls
+(validate.py's enzyme, membrane and metabolism models, the protein and alignment tables it reads from the source, the
+PTM and domain scans; MPFR's pow, exp and ln), its arguments read as serde_json's `Value` accessors read them (an
+integer literal an integer, every other number a correctly rounded f64; `as_f64` takes both, `as_i64` an integer only)
+and its reply written as serde_json writes a `Value` (object keys sorted). The rows: `tool_names`; each definition
+(name, description and the inputSchema text); `register_tools`; 1,103 handler replies: every function of every tool
+on valid arguments, each argument missing, given as a string and over 15 edges (±0, ±1, 2, 0.5, 10⁻³⁰⁰, 10³⁰⁰, the
+smallest subnormal, the largest double, 0.1, the integers 3, −3, 0, 10⁻⁷), seeded arguments, non-finite results,
+unknown functions and actions, non-object documents, the four pKa sets, the pH range, `lookup`'s one-character rule,
+the i32 guards on `z` and `gap_penalty`, the matrices, the DP-cell cap, and the PTM and domain scans.
+
+| Check | Result |
+|---|---|
+| every row | 1,113 identical on the first run |
+| `gen.py --check` | the golden file and `src/mcp_data.cyr` byte-identical on regeneration |
+| Rust tests | the 31 `mcp.rs` tests ported (`tests/mcp.tcyr`, 21 checks; the dispatcher ones through bote's codec); the ledger at 719 of 723; surface parity 5 of 5 |
+| fuzz | `tests/mcp.fcyr`: the eight handlers on 20,000 inputs (a quarter random bytes, the rest mutated argument documents), 160,000 replies, each one JSON object bayan reads back, an `error` always a string |
+| four targets (`scripts/gates.sh`, 515 s) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 124,712 ok, 81 accepted (ADR 3: 0), 0 failed; coverage 473 of 473 public fns executed |
+
+**Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`, Cyrius only): a tools/call round trip 12.0 µs (probe 6: 13.5 µs),
+tools/list 50.3 µs, the kinetics handler 3.5 µs.

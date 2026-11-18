@@ -102,6 +102,9 @@ include "src/neurotransmitter_data.cyr"
 include "src/neurotransmitter.cyr"
 include "src/hormonal_data.cyr"
 include "src/hormonal.cyr"
+include "lib/bote-core.cyr"
+include "src/mcp_data.cyr"
+include "src/mcp.cyr"
 
 # pathway's solve_decreasing rows: the Rust tests' closures' contexts (`a - x`, `c - 3·n/(k + n)·c - n`, the constant
 # `v`).
@@ -5865,6 +5868,78 @@ fn _par_hormonal_json(fp, fl): i64 {
     return 1;
 }
 
+# ── mcp ─────────────────────────────────────────────────────────────────────────────────────
+# src/mcp_data.cyr and src/mcp.cyr (M8 part 1), on lib/bote-core.cyr. `mcp::tool_names` gives the eight names;
+# `mcp::tools` `i:k` tool k's name, description and inputSchema text; `mcp::register_tools` the count registered on a
+# new dispatcher; a `mcp::<tool>_handler` row takes its arguments document (`sb:`) and gives the reply text, through
+# the handler's `_a` form on an arena reset per row.
+
+var _par_mcp_arena = 0;
+
+# The mcp rows.
+fn _par_mcp(fp, fl): i64 {
+    if (_par_eq(fp, fl, "mcp::tool_names") == 1) {
+        if (_par_in_n != 0) { return 0 - 1; }
+        var names[64];
+        var tn, count = ry_tool_names(&names, 8);
+        if (is_err_result(tn) == 1) { return 0 - 1; }
+        var k = 0;
+        while (k < count) {
+            var s = load64(&names + 8 * k);
+            _par_got_text(s, strlen(s));
+            k = k + 1;
+        }
+        return 1;
+    }
+    if (_par_eq(fp, fl, "mcp::tools") == 1) {
+        if (_par_in_n != 1 || _par_is_i(0) == 0) { return 0 - 1; }
+        var t[32];
+        if (_ry_mcp_tool(_par_in(0), &t) == 0) { return 0 - 1; }
+        var j = 0;
+        while (j < 3) {
+            var p = load64(&t + 8 * j);
+            _par_got_text(p, strlen(p));
+            j = j + 1;
+        }
+        return 1;
+    }
+    if (_par_eq(fp, fl, "mcp::register_tools") == 1) {
+        if (_par_in_n != 0) { return 0 - 1; }
+        var d = dispatcher_new(tool_registry_new());
+        _par_got_i(ry_register_tools(d));
+        return 1;
+    }
+    var which = 0;
+    if (_par_eq(fp, fl, "mcp::kinetics_handler") == 1) { which = 1; }
+    if (_par_eq(fp, fl, "mcp::metabolism_handler") == 1) { which = 2; }
+    if (_par_eq(fp, fl, "mcp::signal_handler") == 1) { which = 3; }
+    if (_par_eq(fp, fl, "mcp::protein_handler") == 1) { which = 4; }
+    if (_par_eq(fp, fl, "mcp::membrane_handler") == 1) { which = 5; }
+    if (_par_eq(fp, fl, "mcp::alignment_handler") == 1) { which = 6; }
+    if (_par_eq(fp, fl, "mcp::ptm_handler") == 1) { which = 7; }
+    if (_par_eq(fp, fl, "mcp::domain_handler") == 1) { which = 8; }
+    if (which == 0) { return 0; }
+    if (_par_in_n != 1) { return 0 - 1; }
+    var lw[8];
+    var doc = _par_in_bytes(0, &lw);
+    if (doc == 0) { return 0 - 1; }
+    var len = load64(&lw);
+    if (_par_mcp_arena == 0) { _par_mcp_arena = arena_allocator_growable(65536); }
+    reset_via(_par_mcp_arena);
+    var a = _par_mcp_arena;
+    var r = 0;
+    if (which == 1) { r = _ry_mcp_kinetics_a(a, doc, len); }
+    if (which == 2) { r = _ry_mcp_metabolism_a(a, doc, len); }
+    if (which == 3) { r = _ry_mcp_signal_a(a, doc, len); }
+    if (which == 4) { r = _ry_mcp_protein_a(a, doc, len); }
+    if (which == 5) { r = _ry_mcp_membrane_a(a, doc, len); }
+    if (which == 6) { r = _ry_mcp_alignment_a(a, doc, len); }
+    if (which == 7) { r = _ry_mcp_ptm_a(a, doc, len); }
+    if (which == 8) { r = _ry_mcp_domain_a(a, doc, len); }
+    _par_got_text(r, strlen(r));
+    return 1;
+}
+
 fn _par_dispatch(mp, ml, fp, fl): i64 {
     _par_got_n = 0;
     if (_par_eq(fp, fl, "const") == 1) { return _par_const(); }
@@ -5888,6 +5963,7 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
     if (_par_eq(mp, ml, "signaling") == 1) { return _par_signaling(fp, fl); }
     if (_par_eq(mp, ml, "neurotransmitter") == 1) { return _par_neurotransmitter(fp, fl); }
     if (_par_eq(mp, ml, "hormonal") == 1) { return _par_hormonal(fp, fl); }
+    if (_par_eq(mp, ml, "mcp") == 1) { return _par_mcp(fp, fl); }
     if (_par_eq(mp, ml, "enzyme") == 1) { return _par_enzyme(fp, fl); }
     if (_par_eq(mp, ml, "membrane") == 1) { return _par_membrane(fp, fl); }
     if (_par_eq(mp, ml, "signal") == 1) { return _par_signal(fp, fl); }

@@ -100,8 +100,8 @@ modules = [
     "src/hormonal.cyr",
 ]
 
-# [lib.mcp] (dist/rasayan-mcp.cyr): [lib] plus src/mcp.cyr, the eight bote tools, at M8. Its consumer declares bote
-# itself (`[deps.bote]`, as rasayan does behind `[features] mcp`). Until M8 it is [lib]'s list.
+# [lib.mcp] (dist/rasayan-mcp.cyr): [lib] plus src/mcp_data.cyr and src/mcp.cyr, the eight bote tools (M8). Its
+# consumer declares bote itself (`[deps.bote]`, as rasayan does behind `[features] mcp`).
 [lib.mcp]
 modules = [
     "src/constants.cyr",
@@ -160,6 +160,8 @@ modules = [
     "src/neurotransmitter.cyr",
     "src/hormonal_data.cyr",
     "src/hormonal.cyr",
+    "src/mcp_data.cyr",
+    "src/mcp.cyr",
 ]
 
 # [lib.ai] (dist/rasayan-ai.cyr): [lib] plus the hoosh client's data (src/ai_data.cyr, the system prompt) and, at M8,

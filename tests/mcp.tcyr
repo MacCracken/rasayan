@@ -1,0 +1,379 @@
+# rasayan — src/mcp.cyr: Rust 1.2.0's mcp tests, ported
+# Stdlib auto-included via cyrius.cyml
+#
+# The 31 unit tests of `mcp.rs`, as they are written: the dispatcher ones through bote (tools/list and tools/call by
+# `codec_process_message`), the handler ones through each handler's `_a` form; tests/golden/mcp.tsv checks every
+# definition and 1,103 handler replies byte for byte besides. Beyond them: the registration event.
+
+include "lib/bote-core.cyr"
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+include "src/integrate.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
+include "src/protein_data.cyr"
+include "src/alignment_data.cyr"
+include "src/enzyme_data.cyr"
+include "src/enzyme.cyr"
+include "src/membrane_data.cyr"
+include "src/membrane.cyr"
+include "src/signal_data.cyr"
+include "src/signal.cyr"
+include "src/metabolism_data.cyr"
+include "src/metabolism.cyr"
+include "src/protein.cyr"
+include "src/alignment.cyr"
+include "src/ptm.cyr"
+include "src/domain.cyr"
+include "src/mcp_data.cyr"
+include "src/mcp.cyr"
+
+# ── calling a handler ──
+
+# The reply tree of handler `which` (1 kinetics, 2 metabolism, 3 signal, 4 protein, 5 membrane, 6 alignment, 7 ptm,
+# 8 domain) on the arguments document `doc` (a C string), on the default allocator.
+fn call(which, doc): i64 {
+    var a = default_alloc();
+    var n = strlen(doc);
+    var r = 0;
+    if (which == 1) { r = _ry_mcp_kinetics_a(a, doc, n); }
+    if (which == 2) { r = _ry_mcp_metabolism_a(a, doc, n); }
+    if (which == 3) { r = _ry_mcp_signal_a(a, doc, n); }
+    if (which == 4) { r = _ry_mcp_protein_a(a, doc, n); }
+    if (which == 5) { r = _ry_mcp_membrane_a(a, doc, n); }
+    if (which == 6) { r = _ry_mcp_alignment_a(a, doc, n); }
+    if (which == 7) { r = _ry_mcp_ptm_a(a, doc, n); }
+    if (which == 8) { r = _ry_mcp_domain_a(a, doc, n); }
+    return bayan_json_v_parse_buf(r, strlen(r));
+}
+
+# 1 when reply `v` has the key `key`.
+fn has(v, key) {
+    if (bayan_json_v_obj_get_by_cstr(v, key) != 0) { return 1; }
+    return 0;
+}
+
+# Number `key` of reply `v` as an f64 (NaN when absent or not a number).
+fn num(v, key): f64 {
+    var h, x = _ry_mcp_f64(v, key);
+    if (h == 0) {
+        var nan: f64 = _ry_nan();
+        return nan;
+    }
+    return x;
+}
+
+# 1 when string `key` of reply `v` is the C string `lit`.
+fn str_is(v, key, lit) {
+    return _ry_mcp_is(_ry_mcp_str(v, key), lit);
+}
+
+# 1 when the C string `needle` occurs in the `n` bytes at `p`.
+fn contains(p, n, needle) {
+    var m = strlen(needle);
+    var k = 0;
+    while (k + m <= n) {
+        if (memeq(p + k, needle, m) == 1) { return 1; }
+        k = k + 1;
+    }
+    return 0;
+}
+
+# 1 when reply `v` is an error whose message contains `needle`.
+fn err_has(v, needle) {
+    var s = _ry_mcp_str(v, "error");
+    if (s == 0) { return 0; }
+    return contains(str_data(s), str_len(s), needle);
+}
+
+# A NUL-terminated `{"<key>":"<n copies of c>"<tail>}` (tail a C string of further members, starting with a comma).
+fn doc_of(key, c, n, tail): i64 {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "{\"");
+    str_builder_add_cstr(sb, key);
+    str_builder_add_cstr(sb, "\":\"");
+    var k = 0;
+    while (k < n) {
+        str_builder_putc(sb, c);
+        k = k + 1;
+    }
+    str_builder_add_cstr(sb, "\"");
+    str_builder_add_cstr(sb, tail);
+    str_builder_add_cstr(sb, "}");
+    return str_data(str_builder_build(sb));
+}
+
+# ── the captured events ──
+var _ev_buf[1024];
+var _ev_len = 0;
+var _ev_count = 0;
+
+# sakshi's subscriber: keeps the last event's message and counts them.
+fn _ev_hook(ts, level, category, msg, msg_len, extra) {
+    var n = msg_len;
+    if (n > 1024) { n = 1024; }
+    memcpy(&_ev_buf, msg, n);
+    _ev_len = msg_len;
+    _ev_count = _ev_count + 1;
+    return 0;
+}
+
+# rust src/mcp.rs: test_create_dispatcher, test_tools_annotated_read_only
+# rust src/mcp.rs: test_register_tools_counts_successes, test_dispatch_tools_call_end_to_end, test_tool_names
+fn dispatcher() {
+    test_group("mcp: the dispatcher");
+    var d = ry_create_dispatcher();
+    var resp = codec_process_message("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}", d, 0);
+    var v = bayan_json_v_parse_buf(resp, strlen(resp));
+    var tools = bayan_json_v_obj_get_by_cstr(bayan_json_v_obj_get_by_cstr(v, "result"), "tools");
+    assert(tools != 0 && bayan_json_v_arr_len(tools) == RY_MCP_TOOL_COUNT, "tools/list lists every tool");
+    var names[64];
+    var tn, count = ry_tool_names(&names, 8);
+    var listed = 0;
+    var read_only = 0;
+    var k = 0;
+    while (k < count) {
+        var name = load64(&names + 8 * k);
+        var j = 0;
+        while (j < bayan_json_v_arr_len(tools)) {
+            var t = bayan_json_v_arr_get(tools, j);
+            if (str_is(t, "name", name) == 1) {
+                listed = listed + 1;
+                var ann = bayan_json_v_obj_get_by_cstr(t, "annotations");
+                var ro = bayan_json_v_obj_get_by_cstr(ann, "readOnlyHint");
+                var de = bayan_json_v_obj_get_by_cstr(ann, "destructiveHint");
+                if (ro != 0 && de != 0 && bayan_json_v_bool(ro) == 1 && bayan_json_v_bool(de) == 0) {
+                    read_only = read_only + 1;
+                }
+            }
+            j = j + 1;
+        }
+        k = k + 1;
+    }
+    assert(listed == 8 && read_only == 8, "every name listed, every tool read-only and not destructive");
+    var d2 = dispatcher_new(tool_registry_new());
+    assert_eq(ry_register_tools(d2), 8, "register_tools counts its successes");
+    var call_req = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"rasayan_kinetics\",";
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, call_req);
+    str_builder_add_cstr(sb, "\"arguments\":{\"function\":\"michaelis_menten\",\"substrate\":1.0,\"vmax\":10.0,");
+    str_builder_add_cstr(sb, "\"km\":1.0}}}");
+    var r2 = codec_process_message(str_data(str_builder_build(sb)), d, 0);
+    var v2 = bayan_json_v_parse_buf(r2, strlen(r2));
+    var res = bayan_json_v_obj_get_by_cstr(v2, "result");
+    var is_err = bayan_json_v_obj_get_by_cstr(res, "isError");
+    var failed = 0;
+    if (is_err != 0 && bayan_json_v_bool(is_err) == 1) { failed = 1; }
+    assert(has(v2, "error") == 0 && res != 0 && failed == 0 && contains(r2, strlen(r2), "5.0") == 1,
+      "tools/call end to end: no error, the rate in the text block");
+    var small[8];
+    var ts, vs = ry_tool_names(&small, 7);
+    assert(is_ok(tn) == 1 && count == 8 && is_err_result(ts) == 1,
+      "tool_names: the eight names; a buffer under 8 is refused");
+    return 0;
+}
+
+# rust src/mcp.rs: test_sequence_length_cap, test_alignment_cell_cap
+fn limits() {
+    test_group("mcp: the input limits");
+    var long = RY_MCP_MAX_SEQUENCE_LEN + 1;
+    var m1 = call(4, doc_of("sequence", 65, long, ",\"function\":\"molecular_weight\""));
+    var m2 = call(7, doc_of("sequence", 65, long, ""));
+    var m3 = call(8, doc_of("sequence", 65, long, ""));
+    var b = doc_of("seq_b", 65, long, "");
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "{\"function\":\"score\",\"seq_a\":");
+    var bs = b + 9;                              # b without its `{"seq_b":`: the quoted sequence and the `}`
+    str_builder_add_cstr(sb, bs);
+    var m4doc = str_data(str_builder_build(sb));
+    var m4 = call(6, m4doc);
+    var capped = err_has(m1, "too long") + err_has(m2, "too long") + err_has(m3, "too long") + err_has(m4, "too long");
+    assert_eq(capped, 4, "a sequence past the limit is too long, for every tool");
+    var ok = call(7, doc_of("sequence", 65, RY_MCP_MAX_SEQUENCE_LEN, ""));
+    assert_eq(has(ok, "sites"), 1, "at the limit is fine");
+    var sb2 = str_builder_new();
+    str_builder_add_cstr(sb2, "{\"function\":\"needleman_wunsch\",\"seq_a\":");
+    var a = doc_of("x", 65, 10000, "");
+    str_builder_add_cstr(sb2, a + 5);
+    var nw = str_data(str_builder_build(sb2));
+    var nwn = strlen(nw);
+    store8(nw + nwn - 1, 44);                    # `}` → `,`: then seq_b
+    var tail = doc_of("seq_b", 65, 2501, "");
+    var sb3 = str_builder_new();
+    str_builder_add_cstr(sb3, nw);
+    str_builder_add_cstr(sb3, tail + 1);
+    var cells = call(6, str_data(str_builder_build(sb3)));
+    assert_eq(err_has(cells, "DP cells"), 1, "10,000 × 2,501 exceeds the cell cap");
+    return 0;
+}
+
+# rust src/mcp.rs: test_alignment_rejects_unknown_matrix_and_bad_gap, test_nernst_rejects_truncating_valence
+# rust src/mcp.rs: test_non_finite_results_are_errors, test_q10_temp_ref
+# rust src/mcp.rs: test_metabolism_regenerate_uses_dt_and_oxygen
+fn hardening() {
+    test_group("mcp: hardening");
+    var r1 = call(6, "{\"function\":\"needleman_wunsch\",\"seq_a\":\"ACD\",\"seq_b\":\"ACD\",\"matrix\":\"blosum99\"}");
+    var nwd = "{\"function\":\"needleman_wunsch\",\"seq_a\":\"ACD\",\"seq_b\":\"ACD\",";
+    var g = str_builder_new();
+    str_builder_add_cstr(g, nwd);
+    str_builder_add_cstr(g, "\"gap_penalty\":-2147483649}");
+    var r2 = call(6, str_data(str_builder_build(g)));
+    var r3 = call(6, "{\"function\":\"needleman_wunsch\",\"seq_a\":\"ACD\",\"seq_b\":\"ACD\",\"matrix\":\"pam250\"}");
+    assert(err_has(r1, "unknown matrix") == 1 && err_has(r2, "out of range") == 1 && has(r3, "score") == 1,
+      "an unknown matrix and an i32-overflowing gap are refused; pam250 scores");
+    var n1 = call(5, "{\"function\":\"nernst\",\"temp\":310.0,\"z\":4294967297,\"c_out\":4.0,\"c_in\":155.0}");
+    var n2 = call(5, "{\"function\":\"nernst\",\"temp\":310.0,\"z\":0,\"c_out\":4.0,\"c_in\":155.0}");
+    assert(err_has(n1, "out of range") == 1 && has(n2, "error") == 1, "z = 2^32 + 1 is out of range; z = 0 refused");
+    var k1 = call(1, "{\"function\":\"michaelis_menten\",\"substrate\":1.0,\"vmax\":10.0,\"km\":-1.0}");
+    var f1 = call(5, "{\"function\":\"fick\",\"d\":1.0,\"dc\":1.0,\"dx\":0.0}");
+    var rate: f64 = num(k1, "rate");
+    var flux: f64 = num(f1, "flux");
+    var ok1 = 0;
+    if (has(k1, "rate") == 0 || _ry_is_finite(rate) == 1) { ok1 = 1; }
+    var ok2 = 0;
+    if (has(f1, "flux") == 0 || _ry_is_finite(flux) == 1) { ok2 = 1; }
+    assert(ok1 == 1 && ok2 == 1, "a zero denominator or thickness gives no non-finite number");
+    var q1 = call(1, "{\"function\":\"q10\",\"substrate\":1.0,\"q10_value\":2.0,\"temp\":320.0,\"temp_ref\":310.0}");
+    var q2 = call(1, "{\"function\":\"q10\",\"substrate\":1.0,\"q10_value\":2.0,\"temp\":300.0,\"km\":310.0}");
+    var g1: f64 = num(q1, "rate") - 2.0;
+    var g2: f64 = num(q2, "rate") - 0.5;
+    assert(f64_abs(g1) < 0.000000001 && f64_abs(g2) < 0.000000001, "q10 honours temp_ref, and the legacy km");
+    var aer = call(2, "{\"action\":\"regenerate_atp\",\"dt\":1.0,\"oxygen\":1.0}");
+    var an = call(2, "{\"action\":\"regenerate_atp\",\"dt\":1.0,\"oxygen\":0.0}");
+    var atp_a: f64 = num(aer, "atp");
+    var atp_n: f64 = num(an, "atp");
+    var flag = bayan_json_v_obj_get_by_cstr(an, "is_anaerobic");
+    var b1 = call(2, "{\"action\":\"regenerate_atp\",\"oxygen\":2.0}");
+    var b2 = call(2, "{\"action\":\"consume_atp\",\"amount\":-5.0}");
+    assert(atp_a > atp_n && flag != 0 && bayan_json_v_bool(flag) == 1 && has(b1, "error") == 1
+      && has(b2, "error") == 1, "regenerate uses dt and oxygen; an oxygen of 2 and a negative amount are refused");
+    return 0;
+}
+
+# rust src/mcp.rs: test_protein_pka_set_selection, test_protein_lookup_requires_single_letter
+# rust src/mcp.rs: test_protein_molecular_weight, test_protein_isoelectric_point, test_protein_chou_fasman
+# rust src/mcp.rs: test_protein_lookup
+fn protein() {
+    test_group("mcp: protein");
+    var ubq = "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG";
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "{\"function\":\"isoelectric_point\",\"sequence\":\"");
+    str_builder_add_cstr(sb, ubq);
+    str_builder_add_cstr(sb, "\"");
+    var head = str_data(str_builder_build(sb));
+    var d0 = str_builder_new();
+    str_builder_add_cstr(d0, head);
+    str_builder_add_cstr(d0, "}");
+    var dl = str_builder_new();
+    str_builder_add_cstr(dl, head);
+    str_builder_add_cstr(dl, ",\"pka_set\":\"lehninger\"}");
+    var db = str_builder_new();
+    str_builder_add_cstr(db, head);
+    str_builder_add_cstr(db, ",\"pka_set\":\"bjellqvist\"}");
+    var pd: f64 = num(call(4, str_data(str_builder_build(d0))), "pI");
+    var pl: f64 = num(call(4, str_data(str_builder_build(dl))), "pI");
+    var pb: f64 = num(call(4, str_data(str_builder_build(db))), "pI");
+    var gap: f64 = pb - 6.56;
+    var bad = call(4, "{\"function\":\"net_charge\",\"sequence\":\"ACDK\",\"pka_set\":\"nope\"}");
+    assert(pd == pl && f64_abs(gap) < 0.01 && err_has(bad, "unknown pka_set") == 1,
+      "the default pKa set is Lehninger; Bjellqvist gives ExPASy's 6.56; an unknown set is refused");
+    var l1 = call(4, "{\"function\":\"lookup\",\"code\":\"AB\"}");
+    var l2 = call(4, "{\"function\":\"lookup\",\"code\":\"\"}");
+    assert(has(l1, "error") == 1 && has(l2, "error") == 1, "lookup takes exactly one letter");
+    var mw = call(4, "{\"function\":\"molecular_weight\",\"sequence\":\"AG\"}");
+    var pi = call(4, "{\"function\":\"isoelectric_point\",\"sequence\":\"ACDK\"}");
+    var cf = call(4, "{\"function\":\"chou_fasman\",\"sequence\":\"AAAAAELLLL\"}");
+    var la = call(4, "{\"function\":\"lookup\",\"code\":\"A\"}");
+    assert(has(mw, "molecular_weight_da") == 1 && has(pi, "pI") == 1 && has(cf, "prediction") == 1
+      && str_is(la, "name", "Alanine") == 1, "weight, pI, Chou-Fasman and lookup answer");
+    return 0;
+}
+
+# rust src/mcp.rs: test_kinetics_michaelis_menten, test_kinetics_hill, test_kinetics_missing_params
+# rust src/mcp.rs: test_kinetics_unknown_function, test_metabolism_status, test_signal_dose_response
+# rust src/mcp.rs: test_signal_dose_response_argument_order
+fn kinetics() {
+    test_group("mcp: kinetics, metabolism, signal");
+    var mm = call(1, "{\"function\":\"michaelis_menten\",\"substrate\":1.0,\"vmax\":10.0,\"km\":1.0}");
+    var rate: f64 = num(mm, "rate");
+    var g: f64 = rate - 5.0;
+    var hill = call(1, "{\"function\":\"hill\",\"substrate\":1.0,\"vmax\":10.0,\"km\":1.0,\"n\":2.0}");
+    var miss = call(1, "{\"function\":\"michaelis_menten\"}");
+    var bogus = call(1, "{\"function\":\"bogus\"}");
+    assert(has(mm, "rate") == 1 && f64_abs(g) < 0.01 && has(hill, "rate") == 1 && has(miss, "error") == 1
+      && has(bogus, "error") == 1, "MM at Km is Vmax/2; Hill answers; missing and unknown are errors");
+    var st = call(2, "{\"action\":\"status\"}");
+    var d1 = call(3, "{\"function\":\"dose_response\",\"ligand\":1.0,\"ec50\":1.0,\"emax\":1.0,\"n\":1.0}");
+    var d2 = call(3, "{\"function\":\"dose_response\",\"ligand\":2.0,\"ec50\":2.0,\"emax\":10.0,\"n\":1.0}");
+    var r1: f64 = num(d1, "response") - 0.5;
+    var r2: f64 = num(d2, "response") - 5.0;
+    assert(has(st, "energy_charge") == 1 && f64_abs(r1) < 0.01 && f64_abs(r2) < 0.000000001,
+      "status gives the energy charge; [L] = EC50 is half of Emax, in Rust's argument order");
+    return 0;
+}
+
+# rust src/mcp.rs: test_membrane_nernst, test_membrane_units, test_alignment_substitution
+# rust src/mcp.rs: test_alignment_needleman_wunsch, test_ptm_scan, test_domain_scan
+fn tools() {
+    test_group("mcp: membrane, alignment, ptm, domain");
+    var n = call(5, "{\"function\":\"nernst\",\"temp\":310.0,\"z\":1,\"c_out\":4.0,\"c_in\":155.0}");
+    var mv: f64 = num(n, "potential_mv");
+    var v: f64 = num(n, "potential_v");
+    var dv: f64 = v - mv / 1000.0;
+    var gm = call(5, "{\"function\":\"goldman\",\"temp\":310.0}");
+    var gmv: f64 = num(gm, "potential_mv");
+    assert(has(n, "potential_mv") == 1 && mv >= -110.0 && mv < -80.0 && f64_abs(dv) < 0.000000000001
+      && gmv >= -90.0 && gmv < -50.0, "the potentials are in mV and V (the old ×1000 slip gone)");
+    var sw = str_builder_new();
+    str_builder_add_cstr(sw, "{\"function\":\"substitution\",\"residue_a\":\"W\",\"residue_b\":\"W\",");
+    str_builder_add_cstr(sw, "\"matrix\":\"blosum62\"}");
+    var sub = call(6, str_data(str_builder_build(sw)));
+    var s: f64 = num(sub, "score");
+    var nw = call(6, "{\"function\":\"needleman_wunsch\",\"seq_a\":\"ACDEF\",\"seq_b\":\"ACDEF\"}");
+    var p = call(7, "{\"sequence\":\"ANST\"}");
+    var c: f64 = num(p, "count");
+    var dm = call(8, "{\"sequence\":\"AARGDA\"}");
+    assert(s == 11.0 && has(nw, "score") == 1 && has(p, "sites") == 1 && c > 0.0 && has(dm, "domains") == 1,
+      "W/W scores 11; NW, the PTM scan and the domain scan answer");
+    return 0;
+}
+
+# Rust's registration event, `rasayan::mcp: registered MCP tool tool=<name>` at DEBUG.
+fn events() {
+    test_group("mcp: the registration event");
+    sakshi_set_emit_hook(&_ev_hook);
+    sakshi_set_level(SK_DEBUG);
+    _ev_count = 0;
+    var d = dispatcher_new(tool_registry_new());
+    var n = ry_register_tools(d);
+    var want = "rasayan::mcp: registered MCP tool tool=rasayan_domain";
+    var last = 0;
+    if (_ev_len == strlen(want) && memeq(&_ev_buf, want, _ev_len) == 1) { last = 1; }
+    assert(n == 8 && _ev_count >= 8 && last == 1, "one DEBUG event per tool registered");
+    sakshi_set_level(SK_INFO);
+    sakshi_clear_emit_hook();
+    return 0;
+}
+
+# Runs the mcp suite.
+fn main() {
+    alloc_init();
+    dispatcher();
+    limits();
+    hardening();
+    protein();
+    kinetics();
+    tools();
+    events();
+    return assert_summary();
+}
+
+var exit_code = main();
+# assert_summary() returns the failure count; a wait status is 8 bits, so any failure exits 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

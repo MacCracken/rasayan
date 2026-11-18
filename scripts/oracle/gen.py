@@ -15,6 +15,7 @@ field's edges (A), its pure helpers (B), single steps (B, or C where a step reac
 scripts (T) and its serde documents (A); and its data file: the `Default` literals as one f64 const per field (a
 positional decimal that round-trips) and each type's field names as a NUL-separated blob.
 """
+import json
 import math
 import pathlib
 import re
@@ -1623,8 +1624,802 @@ def hormonal():
     return m, {f"src/{mod}_data.cyr": data}
 
 
+# ── mcp (M8 part 1) ──
+#
+# mcp.rs's eight tools: their definitions (the name, the description and the inputSchema as serde_json writes the
+# schema Value: keys sorted), the handler of each on argument documents, and `tool_names` / `register_tools`. A
+# handler row is its arguments document in and its reply out, the reply as serde_json writes Rust's `json!` Value
+# (object keys sorted, f64s in serde_json's form). The handlers' library calls are modelled here on the source's
+# formulas and the tables validate.py reads from the same source, in binary64 with MPFR's pow, exp and ln.
+
+MCP_LIT = r'"((?:[^"\\]|\\.)*)"'
+
+
+def mcp_defs():
+    """[(stem, name, description, {prop: {type, description[, enum]}}, required)] in `tools()`'s order."""
+    src = rust_text("mcp")
+    lib = src[:src.index("#[cfg(test)]")]
+    found = {}
+    for m in re.finditer(r"fn (\w+)_def\(\) -> ToolDef \{(.*?)\n\}", lib, re.S):
+        body = m.group(2)
+        props = {}
+        for p in re.finditer(r'props\.insert\(\s*' + MCP_LIT + r'\.into\(\),\s*prop_(f64|str|i32|enum)\(\s*' + MCP_LIT
+                             + r'(?:,\s*&\[(.*?)\],?)?\s*\),?\s*\);', body, re.S):
+            key, kind, desc, enum = p.group(1), p.group(2), validate.rust_string(p.group(3)), p.group(4)
+            entry = {"type": {"f64": "number", "str": "string", "i32": "integer", "enum": "string"}[kind],
+                     "description": desc}
+            if kind == "enum":
+                entry["enum"] = [validate.rust_string(v) for v in re.findall(MCP_LIT, enum)]
+            props[key] = entry
+        if body.count("props.insert(") != len(props):
+            raise SystemExit(f"gen: {m.group(1)}_def has a property the model does not read")
+        d = re.search(r'ToolDef::new\(\s*' + MCP_LIT + r',\s*' + MCP_LIT + r',\s*ToolSchema::new\(\s*"object",\s*props,'
+                      r'\s*vec!\[(.*?)\]\s*\),?\s*\)', body, re.S)
+        if not d:
+            raise SystemExit(f"gen: {m.group(1)}_def's ToolDef is not the modelled shape")
+        required = [validate.rust_string(v) for v in re.findall(MCP_LIT, d.group(3))]
+        found[m.group(1)] = (m.group(1), validate.rust_string(d.group(1)), validate.rust_string(d.group(2)), props,
+                             required)
+    order = re.findall(r"\((\w+)_def\(\), Arc::new\((\w+)_handler\)\)", validate.fn_body(lib, "tools"))
+    if [a for a, b in order] != [b for a, b in order] or sorted(a for a, _ in order) != sorted(found):
+        raise SystemExit("gen: mcp.rs's tools() does not pair each *_def with its *_handler")
+    defs = [found[a] for a, _ in order]
+    names = re.findall(MCP_LIT, validate.fn_body(lib, "tool_names"))
+    if names != [d[1] for d in defs]:
+        raise SystemExit("gen: tool_names() is not tools()'s order")
+    return defs
+
+
+def sj_dumps(v):
+    """serde_json's text of a `Value`: object keys sorted, f64s in its form, strings with its escapes."""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if v is None:
+        return "null"
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float):
+        return validate.json_f64(v)
+    if isinstance(v, str):
+        return sj_str(v)
+    if isinstance(v, list):
+        return "[" + ",".join(sj_dumps(x) for x in v) + "]"
+    return "{" + ",".join(f"{sj_str(k)}:{sj_dumps(v[k])}" for k in sorted(v)) + "}"
+
+
+def sj_str(s):
+    """serde_json's string escapes: \", \\, \\n, \\r, \\t, \\b, \\f, other control bytes as \\u00XX."""
+    out = ['"']
+    for ch in s:
+        o = ord(ch)
+        if ch == '"':
+            out.append('\\"')
+        elif ch == "\\":
+            out.append("\\\\")
+        elif ch == "\n":
+            out.append("\\n")
+        elif ch == "\r":
+            out.append("\\r")
+        elif ch == "\t":
+            out.append("\\t")
+        elif ch == "\b":
+            out.append("\\b")
+        elif ch == "\f":
+            out.append("\\f")
+        elif o < 0x20:
+            out.append(f"\\u{o:04x}")
+        else:
+            out.append(ch)
+    out.append('"')
+    return "".join(out)
+
+
+def sj_loads(text):
+    """serde_json's Value of a document: an integer literal in i64 or u64 range an int, every other number an f64
+    (correctly rounded, as serde_json's float parser gives it)."""
+    def pint(s):
+        n = int(s)
+        if -(1 << 63) <= n < (1 << 64) and s != "-0":
+            return n
+        return float(s)
+
+    def bad(s):
+        raise ValueError(f"not JSON: {s}")
+    return json.loads(text, parse_int=pint, parse_constant=bad)
+
+
+def as_f64(v):
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return float(v)
+
+
+def as_i64(v):
+    if isinstance(v, bool) or not isinstance(v, int) or not -(1 << 63) <= v < (1 << 63):
+        return None
+    return v
+
+
+def mcp():
+    mod = "mcp"
+    defs = mcp_defs()
+    src = rust_src("mcp")
+    cenv = validate.module_env(validate.scan_items("constants", rust_src("constants")))
+    R_GAS, FARADAY = float(cenv("R_GAS")), float(cenv("FARADAY"))
+    menv = validate.module_env(validate.scan_items("mcp", src))
+    MAX_SEQ, MAX_CELLS = int(menv("MAX_SEQUENCE_LEN")), int(menv("MAX_ALIGNMENT_CELLS"))
+    pr = validate.protein_rows(ROOT, validate.scan_items("protein", rust_src("protein")))[2]
+    al = validate.alignment_rows(ROOT, validate.scan_items("alignment", rust_src("alignment")))[2]
+    acids = {a["code"]: a for a in pr["acids"]}
+    side, sets = pr["side"], {v: pr["sets"][c] for v, c in zip(pr["variants"], pr["set_order"])}
+    bj_n, bj_c = pr["bj"]["bjellqvist_n_term"], pr["bj"]["bjellqvist_c_term"]
+    water = validate.scalar_value(pr["consts"]["protein::WATER_AVG_MASS"], {})
+    ext = {k: validate.scalar_value(pr["consts"][f"protein::{k}"], {}) for k in ("EXT_TRP", "EXT_TYR", "EXT_CYSTINE")}
+    cf_table = {r[0]: (int(r[1]), int(r[2]), int(r[3]), tuple(int(x) for x in r[4:8])) for r in pr["cf"]}
+    cf_k = {name: int(validate.scalar_value(pr["consts"][f"protein::{name}"], {})) for name in validate.CF_CONSTS}
+    mats = {v: al["tables"][c] for v, c in al["matrix"].items()}
+    a_index = {c: k for k, c in enumerate(al["order"])}
+    mb = validate.membrane_rows(ROOT, validate.scan_items("membrane", rust_src("membrane")))[2]
+    ionic = [float(x) for _, x in mb["ionic"]]
+    perm = [float(x) for _, x in mb["fields"]]
+    met = [x for _, x in defaults("metabolism", "MetabolicState")]
+    menv2 = validate.module_env(validate.scan_items("metabolism", rust_src("metabolism")))
+    KEQ, CLEAR = float(menv2("ADENYLATE_KINASE_KEQ")), float(menv2("LACTATE_CLEARANCE_RATE"))
+    up = validate.pr_up
+    pw, ex, ln = mpfr_ref.pow, mpfr_ref.exp, mpfr_ref.log
+
+    # ── the library calls, on the source's formulas ──
+
+    def look(c):
+        u = up(c)
+        return acids.get(u) if "A" <= u <= "Z" else None
+
+    def chain(seq, name):
+        nt, ct, sv = sets[name]
+        if name == "Bjellqvist":
+            first = next((a["code"] for a in map(look, seq) if a), None)
+            last = next((a["code"] for a in map(look, reversed(seq)) if a), None)
+            nt = bj_n[0].get(first, bj_n[1])
+            ct = bj_c[0].get(last, bj_c[1])
+        return nt, ct, sv
+
+    def charge(seq, ph, name):
+        cnt = [sum(1 for c in seq if up(c) == grp[0]) for grp in side]
+        nt, ct, sv = chain(seq, name)
+        z = 1.0 / (1.0 + pw(10.0, ph - nt))
+        z -= 1.0 / (1.0 + pw(10.0, ct - ph))
+        for k, grp in enumerate(side):
+            if cnt[k] == 0:
+                continue
+            if grp[2] > 0.0:
+                z += float(cnt[k]) / (1.0 + pw(10.0, ph - sv[k]))
+            else:
+                z -= float(cnt[k]) / (1.0 + pw(10.0, sv[k] - ph))
+        return z
+
+    def pi(seq, name):
+        if not seq or any(look(c) is None for c in seq):
+            return None
+        lo, hi = 0.0, 14.0
+        while (hi - lo) > 0.001:
+            mid = (lo + hi) / 2.0
+            if charge(seq, mid, name) > 0.0:
+                lo = mid
+            else:
+                hi = mid
+        return (lo + hi) / 2.0
+
+    def mw(seq):
+        if not seq or any(look(c) is None for c in seq):
+            return None
+        total = water
+        for c in seq:
+            total += look(c)["mw"] - water
+        return total
+
+    def extinction(seq):
+        if not seq or any(look(c) is None for c in seq):
+            return None
+        ups = [up(c) for c in seq]
+        base = float(ups.count("W")) * ext["EXT_TRP"] + float(ups.count("Y")) * ext["EXT_TYR"]
+        return base + float(ups.count("C") // 2) * ext["EXT_CYSTINE"], base
+
+    def a_idx(c):
+        return a_index.get(up(c))
+
+    def substitution(a, b, m):
+        i, j = a_idx(a), a_idx(b)
+        return None if i is None or j is None else m[i][j]
+
+    def score_alignment(a, b, m):
+        if not a or len(a.encode()) != len(b.encode()):
+            return None
+        score, ident = 0, 0
+        for x, y in zip(a, b):
+            s = substitution(x, y, m)
+            if s is None:
+                return None
+            score = validate.sat32(score + s)
+            if up(x) == up(y):
+                ident += 1
+        ln_ = len(a.encode())
+        return score, ident, ln_, ident / ln_
+
+    def needleman_wunsch(a, b, m, gap):
+        ia, ib = [a_idx(c) for c in a], [a_idx(c) for c in b]
+        if None in ia or None in ib or not ia or not ib:
+            return None
+        rws, cols = (ia, ib) if len(ia) >= len(ib) else (ib, ia)
+        prev = [0]
+        edge = 0
+        for _c in cols:
+            edge = validate.sat32(edge + gap)
+            prev.append(edge)
+        for r in rws:
+            row = m[r]
+            curr = [validate.sat32(prev[0] + gap)]
+            for j, c in enumerate(cols):
+                curr.append(max(validate.sat32(prev[j] + row[c]), validate.sat32(prev[j + 1] + gap),
+                                validate.sat32(curr[j] + gap)))
+            prev = curr
+        return prev[-1]
+
+    def energy(st):
+        r = validate.mt_scaled(st[0], st[1], KEQ)
+        if r is None:
+            return 0.0
+        _scale, t, l, amp = r
+        return (t + 0.5 * (l - amp)) / (t + l)
+
+    def regen(st, dt):
+        return validate.mt_regen(st, dt, CLEAR, mpfr_ref.expm1)[0]
+
+    def arrhenius(a, ea, t):
+        if t <= 0.0:
+            return 0.0
+        return a * ex(-ea / (R_GAS * t))
+
+    def q10(rate, q, t, tref):
+        return rate * pw(q, (t - tref) / 10.0) if math.isfinite(q) and q > 0.0 else 0.0
+
+    def occupancy(lig, kd):
+        l_ = validate.e_conc(lig)
+        d = kd + l_
+        return l_ / d if l_ > 0.0 and kd >= 0.0 and math.isfinite(d) else 0.0
+
+    def nernst(t, z, out, inn):
+        return validate.m_nernst(t, z, out, inn, ln)
+
+    # ── the handlers ──
+
+    def err(msg):
+        return {"error": msg}
+
+    def get(p, k):
+        return p.get(k) if isinstance(p, dict) else None
+
+    def gf(p, k):
+        return as_f64(get(p, k))
+
+    def gs(p, k):
+        v = get(p, k)
+        return v if isinstance(v, str) else None
+
+    def gi32(p, k):
+        v = as_i64(get(p, k))
+        if v is None:
+            return True, None
+        if -(1 << 31) <= v < (1 << 31):
+            return True, v
+        return False, err(f"'{k}' out of range: {v}")
+
+    def gseq(p, k, usage):
+        s_ = gs(p, k)
+        if s_ is None:
+            return False, err(usage)
+        n = len(s_.encode())
+        if n > MAX_SEQ:
+            return False, err(f"'{k}' too long: {n} bytes (max {MAX_SEQ})")
+        return True, s_
+
+    def finite(name, value, ok):
+        if math.isfinite(value):
+            return ok(value)
+        return err(f"{name} is not finite ({validate.display_f64(value)}) — check inputs for zero/negative constants")
+
+    def need(p, keys):
+        vals = [gf(p, k) for k in keys]
+        return None if any(v is None for v in vals) else vals
+
+    def rate_of(fname, keys, usage, fn):
+        def h(p):
+            vals = need(p, keys)
+            if vals is None:
+                return err(usage)
+            return finite("rate", fn(*vals), lambda r: {"rate": r, "function": fname})
+        return h
+
+    kin = {
+        "michaelis_menten": rate_of("michaelis_menten", ("substrate", "vmax", "km"),
+                                    "michaelis_menten requires: substrate, vmax, km", validate.e_mm),
+        "hill": rate_of("hill", ("substrate", "vmax", "km", "n"), "hill requires: substrate, vmax, km, n",
+                        lambda s_, v, k, n: validate.e_hill(s_, v, k, n, pw)),
+        "competitive_inhibition": rate_of("competitive_inhibition", ("substrate", "inhibitor", "vmax", "km", "ki"),
+                                          "competitive_inhibition requires: substrate, inhibitor, vmax, km, ki",
+                                          validate.e_competitive),
+        "mixed_inhibition": rate_of("mixed_inhibition", ("substrate", "inhibitor", "vmax", "km", "ki", "ki_prime"),
+                                    "mixed_inhibition requires: substrate, inhibitor, vmax, km, ki, ki_prime",
+                                    validate.e_mixed),
+        "substrate_inhibition": rate_of("substrate_inhibition", ("substrate", "vmax", "km", "ksi"),
+                                        "substrate_inhibition requires: substrate, vmax, km, ksi",
+                                        validate.e_substrate),
+        "arrhenius": rate_of("arrhenius", ("a", "ea", "temp"), "arrhenius requires: a, ea, temp", arrhenius),
+        "ping_pong": rate_of("ping_pong", ("substrate", "substrate_b", "vmax", "km", "km_b"),
+                             "ping_pong requires: substrate, substrate_b, vmax, km, km_b", validate.e_ping_pong),
+        "sequential": rate_of("sequential", ("substrate", "substrate_b", "vmax", "km", "km_b", "ki"),
+                              "sequential requires: substrate, substrate_b, vmax, km, km_b, ki",
+                              validate.e_sequential),
+    }
+
+    def kinetics(p):
+        f_ = gs(p, "function")
+        if f_ is None:
+            return err("missing 'function' parameter")
+        if f_ == "q10":
+            vals = need(p, ("substrate", "q10_value", "temp"))
+            if vals is None:
+                return err("q10 requires: substrate (base rate), q10_value, temp (target temp K)")
+            tref = gf(p, "temp_ref")
+            if tref is None:
+                tref = gf(p, "km")
+            if tref is None:
+                tref = 310.0
+            return finite("rate", q10(*vals, tref), lambda r: {"rate": r, "function": "q10", "temp_ref": tref})
+        if f_ in kin:
+            return kin[f_](p)
+        return err(f"unknown kinetics function: {f_}")
+
+    def metabolism(p):
+        act = gs(p, "action")
+        if act is None:
+            return err("missing 'action' parameter")
+        st = list(met)
+        if act == "status":
+            return {"atp": st[0], "adp": st[1], "energy_charge": energy(st)}
+        if act == "energy_charge":
+            return {"energy_charge": energy(st)}
+        if act == "consume_atp":
+            amount = gf(p, "amount")
+            amount = 1.0 if amount is None else amount
+            if not (math.isfinite(amount) and amount >= 0.0):
+                return err("consume_atp: 'amount' must be a finite number >= 0")
+            st = validate.mt_consume(st, amount)[1]
+            return {"atp": st[0], "adp": st[1], "energy_charge": energy(st)}
+        if act == "regenerate_atp":
+            dt = gf(p, "dt")
+            if dt is None:
+                dt = gf(p, "amount")
+            dt = 1.0 if dt is None else dt
+            if not (math.isfinite(dt) and dt >= 0.0):
+                return err("regenerate_atp: 'dt' must be a finite number >= 0")
+            o2 = gf(p, "oxygen")
+            if o2 is not None:
+                if not 0.0 <= o2 <= 1.0:
+                    return err("regenerate_atp: 'oxygen' must be in [0, 1]")
+                st[4] = o2
+            st = regen(st, dt)
+            return {"atp": st[0], "adp": st[1], "energy_charge": energy(st),
+                    "is_anaerobic": st[4] < 0.5 or st[5] > 4.0}
+        return err(f"unknown metabolism action: {act}")
+
+    def signal(p):
+        f_ = gs(p, "function")
+        if f_ is None:
+            return err("missing 'function' parameter")
+        if f_ == "dose_response":
+            vals = need(p, ("ligand", "ec50", "emax", "n"))
+            if vals is None:
+                return err("dose_response requires: ligand, ec50, emax, n")
+            lig, ec50, emax, n = vals
+            return finite("response", validate.e_hill(lig, emax, ec50, n, pw),
+                          lambda r: {"response": r, "function": "dose_response"})
+        if f_ == "receptor_occupancy":
+            vals = need(p, ("ligand", "ec50"))
+            if vals is None:
+                return err("receptor_occupancy requires: ligand, ec50 (as Kd)")
+            return finite("occupancy", occupancy(*vals), lambda o: {"occupancy": o, "function": "receptor_occupancy"})
+        return err(f"unknown signal function: {f_}")
+
+    def pka_set(p):
+        name = gs(p, "pka_set")
+        name = "lehninger" if name is None else name
+        table = {"lehninger": "Lehninger", "bjellqvist": "Bjellqvist", "emboss": "Emboss", "ipc": "Ipc"}
+        if name in table:
+            return True, table[name]
+        return False, err(f"unknown pka_set: {name} (expected lehninger, bjellqvist, emboss or ipc)")
+
+    def protein(p):
+        f_ = gs(p, "function")
+        if f_ is None:
+            return err("missing 'function' parameter")
+        if f_ == "lookup":
+            code = gs(p, "code") or ""
+            if len(code) != 1:
+                return err("lookup requires: code (exactly one letter)")
+            a = look(code)
+            if a is None:
+                return err(f"unknown amino acid: {code}")
+            pka = a["side_chain_pka"]
+            return {"code": a["code"], "abbr": a["abbr"], "name": a["name"], "mw": a["mw"],
+                    "hydrophobicity": a["hydrophobicity"], "side_chain_pka": None if pka is None else pka[1]}
+        if f_ not in ("molecular_weight", "composition", "isoelectric_point", "extinction_coefficient",
+                      "chou_fasman", "net_charge"):
+            return err(f"unknown protein function: {f_}")
+        ok, seq = gseq(p, "sequence", f"{f_} requires: sequence")
+        if not ok:
+            return seq
+        if f_ == "molecular_weight":
+            if not seq:
+                return err("molecular_weight: empty sequence")
+            w = mw(seq)
+            if w is None:
+                return err("invalid sequence — contains unknown residues")
+            return {"molecular_weight_da": w, "sequence_length": len(seq)}
+        if f_ == "composition":
+            cnt = {}
+            for c in seq:
+                u = up(c)
+                if "A" <= u <= "Z":
+                    cnt[u] = cnt.get(u, 0) + 1
+            return {"composition": cnt, "sequence_length": len(seq)}
+        if f_ == "isoelectric_point":
+            ok, name = pka_set(p)
+            if not ok:
+                return name
+            r = pi(seq, name)
+            return err("invalid sequence") if r is None else {"pI": r}
+        if f_ == "extinction_coefficient":
+            r = extinction(seq)
+            return err("invalid sequence") if r is None else {"oxidized": r[0], "reduced": r[1]}
+        if f_ == "chou_fasman":
+            r = validate.chou_fasman_model(seq, cf_table, cf_k)
+            return err("invalid sequence") if r is None else {"prediction": r, "per_residue": list(r)}
+        ph = gf(p, "ph")
+        ph = 7.0 if ph is None else ph
+        if not 0.0 <= ph <= 14.0:
+            return err("net_charge: 'ph' must be in [0, 14]")
+        ok, name = pka_set(p)
+        if not ok:
+            return name
+        return {"net_charge": charge(seq, ph, name), "ph": ph}
+
+    def membrane(p):
+        f_ = gs(p, "function")
+        if f_ is None:
+            return err("missing 'function' parameter")
+        if f_ == "nernst":
+            ok, z = gi32(p, "z")
+            if not ok:
+                return z
+            t, co, ci = gf(p, "temp"), gf(p, "c_out"), gf(p, "c_in")
+            if t is None or z is None or co is None or ci is None:
+                return err("nernst requires: temp, z, c_out, c_in")
+            if z == 0 or t <= 0.0 or co <= 0.0 or ci <= 0.0:
+                return err("nernst requires z != 0, temp > 0, c_out > 0, c_in > 0")
+            return finite("potential", nernst(t, z, co, ci), lambda mv: {"potential_v": mv / 1000.0, "potential_mv": mv})
+        if f_ == "goldman":
+            t = gf(p, "temp")
+            t = 310.0 if t is None else t
+            if t <= 0.0:
+                return err("goldman requires temp > 0")
+            return finite("potential", validate.m_goldman(t, ionic, perm, ln),
+                          lambda mv: {"potential_v": mv / 1000.0, "potential_mv": mv,
+                                      "note": "using default neuron ionic state"})
+        if f_ == "fick":
+            vals = need(p, ("d", "dc", "dx"))
+            if vals is None:
+                return err("fick requires: d (diffusion coefficient), dc (concentration gradient), dx (thickness)")
+            return finite("flux", validate.m_fick(*vals), lambda x: {"flux": x})
+        return err(f"unknown membrane function: {f_}")
+
+    def alignment(p):
+        f_ = gs(p, "function")
+        if f_ is None:
+            return err("missing 'function' parameter")
+        mname = gs(p, "matrix")
+        mname = "blosum62" if mname is None else mname
+        if mname not in ("blosum62", "pam250"):
+            return err(f"unknown matrix: {mname} (expected blosum62 or pam250)")
+        m = mats["Blosum62" if mname == "blosum62" else "Pam250"]
+        if f_ == "substitution":
+            a, b = gs(p, "residue_a"), gs(p, "residue_b")
+            a, b = (a[0] if a else None), (b[0] if b else None)
+            if a is None or b is None:
+                return err("substitution requires: residue_a, residue_b")
+            s_ = substitution(a, b, m)
+            return err("unknown residue") if s_ is None else {"score": s_, "residue_a": a, "residue_b": b}
+        if f_ in ("score", "needleman_wunsch"):
+            usage = "score requires: seq_a, seq_b (equal length)" if f_ == "score" else \
+                "needleman_wunsch requires: seq_a, seq_b"
+            oka, a = gseq(p, "seq_a", usage)
+            okb, b = gseq(p, "seq_b", usage)
+            if not oka:
+                return a
+            if not okb:
+                return b
+            if f_ == "score":
+                r = score_alignment(a, b, m)
+                if r is None:
+                    return err("alignment failed — check sequences are equal length with valid residues")
+                return {"score": r[0], "identities": r[1], "length": r[2], "identity": r[3]}
+            na, nb = len(a.encode()), len(b.encode())
+            if na * nb > MAX_CELLS:
+                return err(f"needleman_wunsch: {na} x {nb} exceeds {MAX_CELLS} DP cells")
+            ok, gap = gi32(p, "gap_penalty")
+            if not ok:
+                return gap
+            gap = -4 if gap is None else gap
+            r = needleman_wunsch(a, b, m, gap)
+            return err("alignment failed — check sequences contain valid residues") if r is None else \
+                {"score": r, "gap_penalty": gap}
+        return err(f"unknown alignment function: {f_}")
+
+    def ptm(p):
+        ok, seq = gseq(p, "sequence", "missing 'sequence' parameter")
+        if not ok:
+            return seq
+        sites = validate.ptm_scan(seq)
+        if sites is None:
+            return err("empty sequence")
+        out = [{"position": x[0], "residue": x[1], "type": x[2], "motif": x[3]} for x in sites]
+        return {"sites": out, "count": len(out)}
+
+    def domain(p):
+        ok, seq = gseq(p, "sequence", "missing 'sequence' parameter")
+        if not ok:
+            return seq
+        hits = validate.domain_scan(seq)
+        if hits is None:
+            return err("empty sequence")
+        out = [{"start": x[0], "end": x[1], "type": x[2], "fragment": x[3]} for x in hits]
+        return {"domains": out, "count": len(out)}
+
+    handlers = {"kinetics": kinetics, "metabolism": metabolism, "signal": signal, "protein": protein,
+                "membrane": membrane, "alignment": alignment, "ptm": ptm, "domain": domain}
+    for stem, *_ in defs:
+        if f"fn {stem}_handler(params: Value) -> Value" not in src:
+            raise SystemExit(f"gen: mcp.rs has no {stem}_handler")
+
+    # ── the rows ──
+
+    m = g.Module(mod)
+    m.row("mcp::tool_names", "A", [], [g.s(d[1]) for d in defs])
+    for k, (stem, name, desc, props, required) in enumerate(defs):
+        schema = sj_dumps({"type": "object", "properties": props, "required": required})
+        m.row("mcp::tools", "A", [g.i(k)], [g.s(name), g.s(desc), g.s(schema)])
+    m.row("mcp::register_tools", "A", [], [g.i(len(defs))])
+
+    def call(stem, args):
+        doc = args if isinstance(args, str) else sj_dumps(args)
+        m.row(f"mcp::{stem}_handler", "A", [g.sb(doc.encode("utf-8"))], [g.s(sj_dumps(handlers[stem](sj_loads(doc))))])
+
+    rng = Rng(0x6D63_7020)
+    odd = [0.0, -0.0, 1.0, -1.0, 2.0, 0.5, 1e-300, 1e300, 5e-324, 1.7976931348623157e308, 0.1, 3, -3, 0, 1e-7]
+
+    # kinetics
+    base = {"substrate": 1.0, "vmax": 10.0, "km": 1.0, "n": 2.0, "inhibitor": 0.5, "ki": 0.3, "ki_prime": 0.7,
+            "ksi": 4.0, "a": 1e13, "ea": 50000.0, "temp": 310.0, "q10_value": 2.0, "temp_ref": 300.0,
+            "substrate_b": 2.0, "km_b": 0.4}
+    needs = {"michaelis_menten": ["substrate", "vmax", "km"], "hill": ["substrate", "vmax", "km", "n"],
+             "competitive_inhibition": ["substrate", "inhibitor", "vmax", "km", "ki"],
+             "mixed_inhibition": ["substrate", "inhibitor", "vmax", "km", "ki", "ki_prime"],
+             "substrate_inhibition": ["substrate", "vmax", "km", "ksi"], "arrhenius": ["a", "ea", "temp"],
+             "q10": ["substrate", "q10_value", "temp"],
+             "ping_pong": ["substrate", "substrate_b", "vmax", "km", "km_b"],
+             "sequential": ["substrate", "substrate_b", "vmax", "km", "km_b", "ki"]}
+    for fname, keys in needs.items():
+        full = {"function": fname, **{k: base[k] for k in keys}}
+        call("kinetics", full)
+        for k in keys:
+            call("kinetics", {kk: v for kk, v in full.items() if kk != k})
+            call("kinetics", {**full, k: str(base[k])})
+            for x in odd:
+                call("kinetics", {**full, k: x})
+        for _ in range(6):
+            call("kinetics", {"function": fname, **{k: rng.log_uniform(-3.0, 3.0) for k in keys}})
+    call("kinetics", {"function": "q10", "substrate": 1.0, "q10_value": 2.0, "temp": 320.0, "temp_ref": 310.0})
+    call("kinetics", {"function": "q10", "substrate": 1.0, "q10_value": 2.0, "temp": 300.0, "km": 310.0})
+    call("kinetics", {"function": "q10", "substrate": 1.0, "q10_value": 2.0, "temp": 300.0, "km": 310.0,
+                      "temp_ref": 290.0})
+    call("kinetics", {"function": "q10", "substrate": 1.0, "q10_value": 2.0, "temp": 300.0, "temp_ref": "x"})
+    call("kinetics", {"function": "michaelis_menten", "substrate": 1e308, "vmax": 1e308, "km": 1.0})
+    call("kinetics", {"function": "michaelis_menten", "substrate": 1.0, "vmax": 10.0, "km": -1.0})
+    call("kinetics", {"function": "arrhenius", "a": 1e300, "ea": -1e6, "temp": 1.0})
+    call("kinetics", {"function": "q10", "substrate": 1e300, "q10_value": 10.0, "temp": 1000.0, "temp_ref": 0.0})
+    for doc in ('{"function":"bogus"}', '{"function":"Michaelis_Menten","substrate":1}', '{"function":3}',
+                '{"function":null}', '{}', '[]', '"michaelis_menten"', '{"substrate":1.0}', 'null',
+                '{"function":"michaelis_menten","substrate":true,"vmax":10.0,"km":1.0}',
+                '{"function":"michaelis_menten","substrate":1,"vmax":10,"km":1}',
+                '{"function":"michaelis_menten","substrate":9007199254740993,"vmax":10,"km":1}',
+                '{"function":"michaelis_menten","substrate":1.0,"vmax":10.0,"km":1.0,"note":"x"}',
+                '{"function":"\\u00e9\\"\\\\\\n"}', '{"function":"mélange"}'):
+        call("kinetics", doc)
+
+    # metabolism
+    for doc in ({"action": "status"}, {"action": "energy_charge"}, {"action": "consume_atp"},
+                {"action": "consume_atp", "amount": 2.5}, {"action": "consume_atp", "amount": 0},
+                {"action": "consume_atp", "amount": 100.0}, {"action": "consume_atp", "amount": -5.0},
+                {"action": "consume_atp", "amount": -0.0}, {"action": "consume_atp", "amount": "1"},
+                {"action": "consume_atp", "amount": 1e308}, {"action": "regenerate_atp"},
+                {"action": "regenerate_atp", "dt": 1.0, "oxygen": 1.0}, {"action": "regenerate_atp", "dt": 1.0,
+                                                                         "oxygen": 0.0},
+                {"action": "regenerate_atp", "dt": 0.1}, {"action": "regenerate_atp", "amount": 3.0},
+                {"action": "regenerate_atp", "dt": 2.0, "amount": 3.0}, {"action": "regenerate_atp", "dt": 0},
+                {"action": "regenerate_atp", "dt": -1.0}, {"action": "regenerate_atp", "oxygen": 2.0},
+                {"action": "regenerate_atp", "oxygen": -0.0}, {"action": "regenerate_atp", "oxygen": "x"},
+                {"action": "regenerate_atp", "dt": 100.0, "oxygen": 0.3}, {"action": "regenerate_atp",
+                                                                           "dt": 1e300},
+                {"action": "fly"}, {"action": 1}, {}, {"action": "STATUS"}):
+        call("metabolism", doc)
+    for _ in range(8):
+        call("metabolism", {"action": "regenerate_atp", "dt": rng.log_uniform(-2.0, 2.0), "oxygen": rng.unit()})
+
+    # signal
+    for doc in ({"function": "dose_response", "ligand": 1.0, "ec50": 1.0, "emax": 1.0, "n": 1.0},
+                {"function": "dose_response", "ligand": 2.0, "ec50": 2.0, "emax": 10.0, "n": 1.0},
+                {"function": "dose_response", "ligand": 0.5, "ec50": 2.0, "emax": 10.0, "n": 2.5},
+                {"function": "dose_response", "ligand": 0.0, "ec50": 2.0, "emax": 10.0, "n": 1.0},
+                {"function": "dose_response", "ligand": 1.0, "ec50": 0.0, "emax": 10.0, "n": 1.0},
+                {"function": "dose_response", "ligand": 1.0, "ec50": 1.0, "emax": 1e308, "n": 1.0},
+                {"function": "dose_response", "ligand": 1.0, "ec50": 1.0, "emax": 1.0},
+                {"function": "receptor_occupancy", "ligand": 1.0, "ec50": 3.0},
+                {"function": "receptor_occupancy", "ligand": -1.0, "ec50": 3.0},
+                {"function": "receptor_occupancy", "ligand": 1e308, "ec50": 1e308},
+                {"function": "receptor_occupancy", "ligand": 1.0}, {"function": "potency"}, {}):
+        call("signal", doc)
+    for _ in range(10):
+        call("signal", {"function": "dose_response", "ligand": rng.log_uniform(-3.0, 3.0),
+                        "ec50": rng.log_uniform(-3.0, 3.0), "emax": rng.log_uniform(-1.0, 2.0),
+                        "n": rng.log_uniform(-0.5, 0.7)})
+
+    # protein
+    ubq = "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG"
+    seqs = ["AG", "ACDK", "AAAAAELLLL", ubq, "acdefghiklmnpqrstvwy", "WYCC", "C", "", "AXB", "AB", "A1", "ÄA",
+            "MKTAYIAKQRQISFVKSHFSRQ", "PPPPGGGG", "EEEEKKKK"]
+    for f_ in ("molecular_weight", "composition", "isoelectric_point", "extinction_coefficient", "chou_fasman",
+               "net_charge"):
+        for s_ in seqs:
+            call("protein", {"function": f_, "sequence": s_})
+        call("protein", {"function": f_})
+        call("protein", {"function": f_, "sequence": 5})
+    for s_ in (ubq, "ACDK", "KKKK", "DDDD", "MDEK"):
+        for ps in ("lehninger", "bjellqvist", "emboss", "ipc"):
+            call("protein", {"function": "isoelectric_point", "sequence": s_, "pka_set": ps})
+            call("protein", {"function": "net_charge", "sequence": s_, "pka_set": ps, "ph": 6.5})
+    for ph in (0, 0.0, 14.0, 14, -0.1, 14.5, 3.3, "7"):
+        call("protein", {"function": "net_charge", "sequence": "ACDKH", "ph": ph})
+    for doc in ({"function": "net_charge", "sequence": "ACDK", "pka_set": "nope"},
+                {"function": "isoelectric_point", "sequence": "ACDK", "pka_set": "Lehninger"},
+                {"function": "isoelectric_point", "sequence": "ACDK", "pka_set": 3},
+                {"function": "net_charge", "sequence": "ACDK", "ph": 20, "pka_set": "nope"},
+                {"function": "fold", "sequence": "ACDK"}, {"function": "fold"}, {}):
+        call("protein", doc)
+    for code in ("A", "a", "W", "Y", "Z", "B", "J", "O", "U", "X", "AB", "", "1", "é", " "):
+        call("protein", {"function": "lookup", "code": code})
+    call("protein", {"function": "lookup"})
+    call("protein", {"function": "lookup", "code": 65})
+
+    # membrane
+    for doc in ({"function": "nernst", "temp": 310.0, "z": 1, "c_out": 4.0, "c_in": 155.0},
+                {"function": "nernst", "temp": 310.0, "z": 2, "c_out": 2.0, "c_in": 0.0001},
+                {"function": "nernst", "temp": 310.0, "z": -1, "c_out": 110.0, "c_in": 10.0},
+                {"function": "nernst", "temp": 310.0, "z": 0, "c_out": 4.0, "c_in": 155.0},
+                {"function": "nernst", "temp": 310.0, "z": 4294967297, "c_out": 4.0, "c_in": 155.0},
+                {"function": "nernst", "temp": 310.0, "z": -2147483649, "c_out": 4.0, "c_in": 155.0},
+                {"function": "nernst", "temp": 310.0, "z": 2147483647, "c_out": 4.0, "c_in": 155.0},
+                {"function": "nernst", "temp": 310.0, "z": -2147483648, "c_out": 4.0, "c_in": 155.0},
+                {"function": "nernst", "temp": 310.0, "z": 1.0, "c_out": 4.0, "c_in": 155.0},
+                {"function": "nernst", "temp": 0.0, "z": 1, "c_out": 4.0, "c_in": 155.0},
+                {"function": "nernst", "temp": 310.0, "z": 1, "c_out": -4.0, "c_in": 155.0},
+                {"function": "nernst", "temp": 310.0, "z": 1, "c_out": 4.0, "c_in": 0.0},
+                {"function": "nernst", "temp": 310.0, "z": 1, "c_out": 1e308, "c_in": 1e-308},
+                {"function": "nernst", "temp": 310.0, "z": 1, "c_out": 4.0},
+                {"function": "nernst", "temp": 1e308, "z": 1, "c_out": 4.0, "c_in": 155.0},
+                {"function": "nernst", "temp": "310", "z": 1, "c_out": 4.0, "c_in": 155.0},
+                {"function": "goldman"}, {"function": "goldman", "temp": 310.0}, {"function": "goldman", "temp": 300},
+                {"function": "goldman", "temp": 0.0}, {"function": "goldman", "temp": -5.0},
+                {"function": "goldman", "temp": 1e308}, {"function": "goldman", "temp": "hot"},
+                {"function": "fick", "d": 1.0, "dc": 1.0, "dx": 0.0}, {"function": "fick", "d": 1e-9, "dc": 5.0,
+                                                                         "dx": 1e-6},
+                {"function": "fick", "d": -1.0, "dc": 5.0, "dx": 1.0}, {"function": "fick", "d": 1e308, "dc": 1e308,
+                                                                          "dx": 1e-308},
+                {"function": "fick", "d": 1.0, "dc": 1.0}, {"function": "osmosis"}, {}):
+        call("membrane", doc)
+    for _ in range(6):
+        call("membrane", {"function": "nernst", "temp": rng.log_uniform(2.0, 3.0), "z": rng.int(-3, 3) or 1,
+                          "c_out": rng.log_uniform(-2.0, 3.0), "c_in": rng.log_uniform(-2.0, 3.0)})
+
+    # alignment
+    for doc in ({"function": "substitution", "residue_a": "W", "residue_b": "W", "matrix": "blosum62"},
+                {"function": "substitution", "residue_a": "W", "residue_b": "C"},
+                {"function": "substitution", "residue_a": "w", "residue_b": "c", "matrix": "pam250"},
+                {"function": "substitution", "residue_a": "WC", "residue_b": "AY"},
+                {"function": "substitution", "residue_a": "B", "residue_b": "A"},
+                {"function": "substitution", "residue_a": "é", "residue_b": "A"},
+                {"function": "substitution", "residue_a": "", "residue_b": "A"},
+                {"function": "substitution", "residue_a": "A"},
+                {"function": "substitution", "residue_a": "A", "residue_b": "A", "matrix": "blosum99"},
+                {"function": "score", "seq_a": "ACDEF", "seq_b": "ACDEF"},
+                {"function": "score", "seq_a": "ACDEF", "seq_b": "acdeg", "matrix": "pam250"},
+                {"function": "score", "seq_a": "ACDEF", "seq_b": "ACDE"},
+                {"function": "score", "seq_a": "ACXEF", "seq_b": "ACDEF"}, {"function": "score", "seq_a": "",
+                                                                             "seq_b": ""},
+                {"function": "score", "seq_a": "ACD"}, {"function": "score", "seq_b": "ACD"},
+                {"function": "needleman_wunsch", "seq_a": "ACDEF", "seq_b": "ACDEF"},
+                {"function": "needleman_wunsch", "seq_a": "HEAGAWGHEE", "seq_b": "PAWHEAE", "gap_penalty": -8},
+                {"function": "needleman_wunsch", "seq_a": "HEAGAWGHEE", "seq_b": "PAWHEAE", "matrix": "pam250",
+                 "gap_penalty": -2},
+                {"function": "needleman_wunsch", "seq_a": "ACD", "seq_b": "ACD", "matrix": "blosum99"},
+                {"function": "needleman_wunsch", "seq_a": "ACD", "seq_b": "ACD", "gap_penalty": -2147483649},
+                {"function": "needleman_wunsch", "seq_a": "ACD", "seq_b": "ACD", "gap_penalty": 2147483647},
+                {"function": "needleman_wunsch", "seq_a": "ACD", "seq_b": "ACD", "gap_penalty": -2147483648},
+                {"function": "needleman_wunsch", "seq_a": "ACD", "seq_b": "ACD", "gap_penalty": -4.0},
+                {"function": "needleman_wunsch", "seq_a": "ACD", "seq_b": "ACD", "gap_penalty": 3},
+                {"function": "needleman_wunsch", "seq_a": "ACD", "seq_b": "AXD"},
+                {"function": "needleman_wunsch", "seq_a": "", "seq_b": "ACD"},
+                {"function": "needleman_wunsch", "seq_a": "A" * 5001, "seq_b": "A" * 5000},
+                {"function": "needleman_wunsch", "seq_a": "A" * 5000, "seq_b": "A" * 5000, "matrix": "x"},
+                {"function": "needleman_wunsch", "seq_a": "ACD"}, {"function": "align", "seq_a": "A"},
+                {"function": "align", "matrix": "x"}, {"matrix": "x"}, {}):
+        call("alignment", doc)
+    for _ in range(6):
+        a = "".join(rng_choice(rng, al["order"]) for _ in range(rng.int(1, 30)))
+        b = "".join(rng_choice(rng, al["order"]) for _ in range(rng.int(1, 30)))
+        call("alignment", {"function": "needleman_wunsch", "seq_a": a, "seq_b": b, "gap_penalty": -rng.int(1, 12)})
+        call("alignment", {"function": "score", "seq_a": a, "seq_b": a[::-1]})
+
+    # ptm and domain
+    for s_ in ("ANST", "NPST", "NASTNGT", "RRASVA", "KRGSY", "CCCC", "MKTAYIAKQRQISFVKSHFSRQ", "", "AXZ", "anst", "é",
+               "Y", "AARGDA", "GKSAAAAGKS", "DEADDEAD", "CAACAAAHAAAAAAAAHAAAH", "LAAAAAALAAAAAALAAAAAALAAAAAAL"):
+        call("ptm", {"sequence": s_})
+        call("domain", {"sequence": s_})
+    for doc in ({}, {"sequence": 5}, {"seq": "ANST"}):
+        call("ptm", doc)
+        call("domain", doc)
+    return m, {f"src/{mod}_data.cyr": mcp_data(defs)}
+
+
+def rng_choice(rng, seq):
+    return seq[rng.int(0, len(seq) - 1)]
+
+
+def mcp_blob(var, text, note):
+    codes = [str(c) for c in text.encode("utf-8")] + ["0"]
+    out = [f"# {note}", f"var {var}: u8[{len(codes)}] = {{"]
+    for k in range(0, len(codes), 20):
+        out.append(f"    {', '.join(codes[k:k + 20])},")
+    return "\n".join(out) + "\n};\n\n"
+
+
+def mcp_data(defs):
+    out = [data_header("mcp data: the eight tools' names, descriptions and input schemas",
+                       [textwrap.fill("Each tool definition of mcp.rs (`*_def()`, in `tools()`'s order) as "
+                                      "NUL-terminated UTF-8: its name, its description and its inputSchema as "
+                                      "serde_json writes the schema Value (keys sorted: `properties` by name, each "
+                                      "property's `description`, `enum`, `type`; then `required` and `type`). "
+                                      "tests/golden/mcp.tsv pins them.", width=118)])]
+    for stem, name, desc, props, required in defs:
+        up_ = stem.upper()
+        schema = sj_dumps({"type": "object", "properties": props, "required": required})
+        out.append(mcp_blob(f"_RY_MCP_{up_}_NAME", name, f"Rust: rasayan::mcp::{stem}_def(): the name."))
+        out.append(mcp_blob(f"_RY_MCP_{up_}_DESCRIPTION", desc, f"Rust: rasayan::mcp::{stem}_def(): the description."))
+        out.append(mcp_blob(f"_RY_MCP_{up_}_SCHEMA", schema,
+                            f"Rust: rasayan::mcp::{stem}_def(): the inputSchema, as serde_json writes it."))
+    return "".join(out).rstrip("\n") + "\n"
+
+
 MODULES = {"receptor": receptor, "nuclear_receptor": nuclear_receptor, "signaling": signaling,
-           "neurotransmitter": neurotransmitter, "hormonal": hormonal}
+           "neurotransmitter": neurotransmitter, "hormonal": hormonal, "mcp": mcp}
 
 
 def outputs(root):

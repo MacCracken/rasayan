@@ -1,0 +1,102 @@
+# rasayan mcp benchmarks (M8 part 1)
+#
+# Rust 1.2.0 has no MCP benchmark, so these are Cyrius-only measurements (docs/benchmarks-rust-v-cyrius.md): a
+# tools/call round trip through bote's codec (parse, schema check, handler, reply) on an arena reset per call, as a
+# server runs it (probe 6's measure), a tools/list, and four handlers called directly on an arena reset per call.
+
+include "lib/bote-core.cyr"
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+include "src/integrate.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
+include "src/protein_data.cyr"
+include "src/alignment_data.cyr"
+include "src/enzyme_data.cyr"
+include "src/enzyme.cyr"
+include "src/membrane_data.cyr"
+include "src/membrane.cyr"
+include "src/signal_data.cyr"
+include "src/signal.cyr"
+include "src/metabolism_data.cyr"
+include "src/metabolism.cyr"
+include "src/protein.cyr"
+include "src/alignment.cyr"
+include "src/ptm.cyr"
+include "src/domain.cyr"
+include "src/mcp_data.cyr"
+include "src/mcp.cyr"
+
+var _bn_sink = 0;
+
+# n calls of bote's codec on `req` with dispatcher `d`, an arena reset per call.
+fn _bn_codec(name, d, req, n): i64 {
+    var ar = arena_allocator_growable(65536);
+    var b = bench_new(name);
+    bench_batch_start(b);
+    var i = 0;
+    while (i < n) {
+        reset_via(ar);
+        var r = codec_process_message_a(ar, req, d, 0);
+        _bn_sink = _bn_sink ^ r;
+        i = i + 1;
+    }
+    bench_batch_stop(b, n);
+    bench_report(b);
+    return 0;
+}
+
+# n calls of handler `which` (1 kinetics, 4 protein, 6 alignment, 7 ptm) on `doc`, an arena reset per call.
+fn _bn_handler(name, which, doc, n): i64 {
+    var ar = arena_allocator_growable(65536);
+    var len = strlen(doc);
+    var b = bench_new(name);
+    bench_batch_start(b);
+    var i = 0;
+    while (i < n) {
+        reset_via(ar);
+        var r = 0;
+        if (which == 1) { r = _ry_mcp_kinetics_a(ar, doc, len); }
+        if (which == 4) { r = _ry_mcp_protein_a(ar, doc, len); }
+        if (which == 6) { r = _ry_mcp_alignment_a(ar, doc, len); }
+        if (which == 7) { r = _ry_mcp_ptm_a(ar, doc, len); }
+        _bn_sink = _bn_sink ^ load8(r);
+        i = i + 1;
+    }
+    bench_batch_stop(b, n);
+    bench_report(b);
+    return 0;
+}
+
+# Runs the mcp benchmarks.
+fn main() {
+    alloc_init();
+    var d = ry_create_dispatcher();
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":");
+    str_builder_add_cstr(sb, "\"rasayan_kinetics\",\"arguments\":{\"function\":\"michaelis_menten\",");
+    str_builder_add_cstr(sb, "\"substrate\":1.0,");
+    str_builder_add_cstr(sb, "\"vmax\":10.0,\"km\":1.0}}}");
+    var call = str_data(str_builder_build(sb));
+    _bn_codec("mcp/tools/call michaelis_menten", d, call, 100000);
+    _bn_codec("mcp/tools/list", d, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}", 20000);
+    _bn_handler("mcp/kinetics michaelis_menten", 1,
+      "{\"function\":\"michaelis_menten\",\"substrate\":1.0,\"vmax\":10.0,\"km\":1.0}", 100000);
+    var pb = str_builder_new();
+    str_builder_add_cstr(pb, "{\"function\":\"isoelectric_point\",\"sequence\":\"");
+    str_builder_add_cstr(pb, "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG\"}");
+    _bn_handler("mcp/protein isoelectric_point (76 residues)", 4, str_data(str_builder_build(pb)), 20000);
+    _bn_handler("mcp/alignment needleman_wunsch (10 x 7)", 6,
+      "{\"function\":\"needleman_wunsch\",\"seq_a\":\"HEAGAWGHEE\",\"seq_b\":\"PAWHEAE\"}", 50000);
+    _bn_handler("mcp/ptm (18 residues)", 7, "{\"sequence\":\"NASTNGTRRASVAKRGSY\"}", 50000);
+    if (_bn_sink == 1) { println(""); }
+    return 0;
+}
+
+var r = main();
+sys_exit_group(r);

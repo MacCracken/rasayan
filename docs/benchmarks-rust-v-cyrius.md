@@ -411,3 +411,19 @@ Cyrius only: the state ticked on (no reset) 208 ns; a 100-s tick (every integrat
 536 ns. Measured at load 0.6, with the reference rows at their quiet values (michaelis_menten 11 ns, glycolysis_tick
 690 ns, mapk_tick 215 ns). A tick is three Michaelis-Menten rates, the two feedback factors and the light factor, and
 six `produce_decay` integrations.
+
+## M8 part 1: mcp
+
+Rust 1.2.0 has no MCP benchmark; these are Cyrius-only (`tests/mcp.bcyr`), each on an arena reset per call, as a
+server runs them.
+
+| Benchmark | Cyrius | Notes |
+|---|---|---|
+| mcp/tools/call michaelis_menten | 12.0 µs | bote's codec: parse, schema check, handler, reply (probe 6 measured 13.5 µs) |
+| mcp/tools/list | 50.3 µs | the eight definitions with their schemas and annotations |
+| mcp/kinetics michaelis_menten | 3.5 µs | the handler alone: the argument tree, the rate, the reply |
+| mcp/protein isoelectric_point (76 residues) | 23.1 µs | the handler alone; the bisection's 14 charge evaluations on correctly rounded pow |
+| mcp/alignment needleman_wunsch (10 × 7) | 3.3 µs | the handler alone |
+| mcp/ptm (18 residues) | 12.2 µs | the handler alone: the scan and nine sites written |
+
+Measured at load 0.2, with michaelis_menten at its quiet 11 ns.

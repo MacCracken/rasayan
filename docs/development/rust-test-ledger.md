@@ -6,7 +6,7 @@
 > milestone hasn't come. The golden corpus (`tests/golden/`) checks every ported function on its grid besides.
 > The 2 doc tests and the example are M9's.
 
-**723 Rust tests:** 688 ported; 35 at M8.
+**723 Rust tests:** 719 ported; 4 at M8.
 
 | Rust file | Tests | Ported | Due, unported | Later (milestone) |
 |---|---:|---:|---:|---|
@@ -25,7 +25,7 @@
 | `src/integrate.rs` | 5 | 5 | 0 | — |
 | `src/jak_stat.rs` | 12 | 12 | 0 | — |
 | `src/mapk.rs` | 17 | 17 | 0 | — |
-| `src/mcp.rs` | 31 | 0 | 0 | 31 (M8) |
+| `src/mcp.rs` | 31 | 31 | 0 | — |
 | `src/membrane.rs` | 19 | 19 | 0 | — |
 | `src/metabolism.rs` | 26 | 26 | 0 | — |
 | `src/neurotransmitter.rs` | 31 | 31 | 0 | — |
@@ -40,7 +40,7 @@
 | `src/tca.rs` | 26 | 26 | 0 | — |
 | `tests/integration.rs` | 70 | 70 | 0 | — |
 | `tests/validation.rs` | 25 | 25 | 0 | — |
-| **Total** | **723** | **688** | **0** | |
+| **Total** | **723** | **719** | **0** | |
 
 ## Where each is ported
 
@@ -351,6 +351,37 @@
 | `src/mapk.rs` `test_small_dt_matches_euler` | `tests/mapk.tcyr` `integration` |
 | `src/mapk.rs` `test_substeps_match_short_ticks` | `tests/mapk.tcyr` `integration` |
 | `src/mapk.rs` `test_validate_rejects_nan_and_zero_km` | `tests/mapk.tcyr` `validation` |
+| `src/mcp.rs` `test_alignment_cell_cap` | `tests/mcp.tcyr` `limits` |
+| `src/mcp.rs` `test_alignment_needleman_wunsch` | `tests/mcp.tcyr` `tools` |
+| `src/mcp.rs` `test_alignment_rejects_unknown_matrix_and_bad_gap` | `tests/mcp.tcyr` `hardening` |
+| `src/mcp.rs` `test_alignment_substitution` | `tests/mcp.tcyr` `tools` |
+| `src/mcp.rs` `test_create_dispatcher` | `tests/mcp.tcyr` `dispatcher` |
+| `src/mcp.rs` `test_dispatch_tools_call_end_to_end` | `tests/mcp.tcyr` `dispatcher` |
+| `src/mcp.rs` `test_domain_scan` | `tests/mcp.tcyr` `tools` |
+| `src/mcp.rs` `test_kinetics_hill` | `tests/mcp.tcyr` `kinetics` |
+| `src/mcp.rs` `test_kinetics_michaelis_menten` | `tests/mcp.tcyr` `kinetics` |
+| `src/mcp.rs` `test_kinetics_missing_params` | `tests/mcp.tcyr` `kinetics` |
+| `src/mcp.rs` `test_kinetics_unknown_function` | `tests/mcp.tcyr` `kinetics` |
+| `src/mcp.rs` `test_membrane_nernst` | `tests/mcp.tcyr` `tools` |
+| `src/mcp.rs` `test_membrane_units` | `tests/mcp.tcyr` `tools` |
+| `src/mcp.rs` `test_metabolism_regenerate_uses_dt_and_oxygen` | `tests/mcp.tcyr` `hardening` |
+| `src/mcp.rs` `test_metabolism_status` | `tests/mcp.tcyr` `kinetics` |
+| `src/mcp.rs` `test_nernst_rejects_truncating_valence` | `tests/mcp.tcyr` `hardening` |
+| `src/mcp.rs` `test_non_finite_results_are_errors` | `tests/mcp.tcyr` `hardening` |
+| `src/mcp.rs` `test_protein_chou_fasman` | `tests/mcp.tcyr` `protein` |
+| `src/mcp.rs` `test_protein_isoelectric_point` | `tests/mcp.tcyr` `protein` |
+| `src/mcp.rs` `test_protein_lookup` | `tests/mcp.tcyr` `protein` |
+| `src/mcp.rs` `test_protein_lookup_requires_single_letter` | `tests/mcp.tcyr` `protein` |
+| `src/mcp.rs` `test_protein_molecular_weight` | `tests/mcp.tcyr` `protein` |
+| `src/mcp.rs` `test_protein_pka_set_selection` | `tests/mcp.tcyr` `protein` |
+| `src/mcp.rs` `test_ptm_scan` | `tests/mcp.tcyr` `tools` |
+| `src/mcp.rs` `test_q10_temp_ref` | `tests/mcp.tcyr` `hardening` |
+| `src/mcp.rs` `test_register_tools_counts_successes` | `tests/mcp.tcyr` `dispatcher` |
+| `src/mcp.rs` `test_sequence_length_cap` | `tests/mcp.tcyr` `limits` |
+| `src/mcp.rs` `test_signal_dose_response` | `tests/mcp.tcyr` `kinetics` |
+| `src/mcp.rs` `test_signal_dose_response_argument_order` | `tests/mcp.tcyr` `kinetics` |
+| `src/mcp.rs` `test_tool_names` | `tests/mcp.tcyr` `dispatcher` |
+| `src/mcp.rs` `test_tools_annotated_read_only` | `tests/mcp.tcyr` `dispatcher` |
 | `src/membrane.rs` `test_fick` | `tests/membrane.tcyr` `fick` |
 | `src/membrane.rs` `test_fick_non_finite_returns_zero` | `tests/membrane.tcyr` `fick` |
 | `src/membrane.rs` `test_fick_units_and_sign` | `tests/membrane.tcyr` `fick` |
