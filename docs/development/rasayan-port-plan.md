@@ -404,11 +404,12 @@ drafted).
 
 ## 9. After 2.0.0
 
-The roadmap's post-port work, demand-gated: the MAPK distributive intermediates and the Li-Rinzel
-IP3R gate as real state (1.2.0 uses quasi-steady-state forms), separate cytosolic and mitochondrial
-NAD pools, glycogen, the 2.0 API items from the Rust roadmap that the Cyrius API can now absorb, and
-the domain-completeness list (alignment, PROSITE engine, ProtParam measures, membrane, metabolism and
-signaling pathways).
+The roadmap ([`roadmap.md`](roadmap.md)) holds the post-port work by release. 2.0.x changes no API: retiring
+`rust-old/`, the consumers' move to 2.0, the upstream drafts, performance and docs. 2.1.x adds API: extensible records,
+position-aware sequence errors, parameter records, the bridge names. 2.2.x brings model fidelity as new state: the
+Li-Rinzel IP3R gate and the MAPK distributive intermediates in place of 1.2.0's quasi-steady-state forms, separate
+cytosolic and mitochondrial NAD pools, glycogen. 2.3.x to 2.6.x work through the domain-completeness list (sequence
+analysis, kinetics and membranes, metabolism, signaling), and the demand-gated feature plan follows.
 
 ---
 

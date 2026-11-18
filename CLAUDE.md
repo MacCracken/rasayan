@@ -235,7 +235,7 @@ Root files (required):
 docs/:
   development/rasayan-port-plan.md — the port plan of record
   development/state.md             — live state
-  development/roadmap.md           — the port milestones, backlog and post-port feature plan
+  development/roadmap.md           — the post-port releases: 2.0.x (no API change), 2.1.x onward
   development/port-parity.md       — measured parity baselines (M0 step 8)
   benchmarks-rust-v-cyrius.md      — Rust vs Cyrius benchmark record
   adr/NNNN-title.md                — architectural decision records (template.md)

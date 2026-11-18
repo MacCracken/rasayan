@@ -298,8 +298,9 @@ Rust crate (crates.io): mastishk 1.1.0, sharira 1.1.0, kiran 1.0.0. No Cyrius co
 
 ## Next
 
-The maintainer's: tag 2.0.0, then delete `rust-old/` (the functional spec, kept until the port is done). After 2.0.0:
-the backlog and the feature plan in `roadmap.md`.
+The maintainer's: tag 2.0.0. Then `roadmap.md`'s 2.0.x items. First comes retiring `rust-old/`: `gen.py`,
+`validate.py`, the surface and ledger gates and the probes read it, so they change before it is deleted. Then the
+consumers' move to 2.0, the upstream drafts, performance and docs; then 2.1.x onward.
 
 Parity bookkeeping: `scripts/surface_parity.py` (every Rust public item of a ported module has its Cyrius name) and
 `scripts/rust_test_ledger.py` (`docs/development/rust-test-ledger.md`: 723 Rust tests, 723 ported, 0 due and
