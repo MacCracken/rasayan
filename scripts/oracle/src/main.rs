@@ -29,6 +29,7 @@ mod cyr;
 mod glibc;
 mod grids;
 mod m_alignment;
+mod m_amino_catabolism;
 mod m_beta_oxidation;
 mod m_constants;
 mod m_domain;
@@ -51,6 +52,7 @@ mod reads;
 mod rustsrc;
 mod t_ai;
 mod t_alignment;
+mod t_amino_catabolism;
 mod t_beta_oxidation;
 mod t_constants;
 mod t_energy;
@@ -65,6 +67,7 @@ mod t_tca;
 mod t_protein;
 mod tsv;
 mod v_glycolysis;
+mod v_amino_catabolism;
 mod v_beta_oxidation;
 mod v_etc;
 mod v_guard;
@@ -106,6 +109,7 @@ fn golden_modules(root: &Path) -> Result<Vec<tsv::Module>, String> {
         t_alignment::golden(&read("alignment")?, &amino_codes())?,
         t_energy::golden(&read("energy")?)?,
         t_beta_oxidation::golden(&read("beta_oxidation")?)?,
+        t_amino_catabolism::golden(&read("amino_catabolism")?)?,
         t_etc::golden(&read("etc")?)?,
         t_enzyme::golden(&read("enzyme")?)?,
         t_glycolysis::golden(&read("glycolysis")?)?,
@@ -144,6 +148,10 @@ fn cyrius_outputs(root: &Path, prov: &str) -> Result<Vec<Output>, String> {
         (
             "src/alignment_data.cyr",
             t_alignment::emit_cyr(&read("alignment")?, &amino_codes(), prov)?,
+        ),
+        (
+            "src/amino_catabolism_data.cyr",
+            t_amino_catabolism::emit_cyr(&read("amino_catabolism")?, prov)?,
         ),
         (
             "src/beta_oxidation_data.cyr",

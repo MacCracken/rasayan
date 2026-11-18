@@ -8,7 +8,7 @@
 //! `_RY_BETA_OX_CONFIG_FIELDS`), and so do `BetaOxFlux`'s (`_RY_BETA_OX_FLUX_FIELDS`: its eight names don't fit a
 //! 120-column literal). The function rows follow (`m_beta_oxidation.rs`).
 
-use crate::cyr::{doc_comment, doc_comment_after, f64_lit, header};
+use crate::cyr::{doc_comment, doc_comment_after, f64_lit, header, name_blob};
 use crate::m_beta_oxidation::{C_NAMES, FLUX_NAMES, S_NAMES, cfg_vals};
 use crate::rustsrc::{Source, default_literal};
 use crate::tsv::{Class, Module, Tok, f, i};
@@ -46,18 +46,6 @@ fn check(src: &Source) -> Result<(), String> {
     Ok(())
 }
 
-/// The `_RY_<infix>_FIELDS` blob: the names NUL-separated, one line per name.
-fn blob(out: &mut String, ty: &str, infix: &str, names: &[&str]) {
-    let bytes: usize = names.iter().map(|n| n.len() + 1).sum();
-    let _ = writeln!(out, "# {ty}'s field names, NUL-separated, in declaration order.");
-    let _ = writeln!(out, "var _RY_{infix}_FIELDS: u8[{bytes}] = {{");
-    for n in names {
-        let codes: Vec<String> = n.bytes().chain([0]).map(|b| b.to_string()).collect();
-        let _ = writeln!(out, "    {},  # {n}", codes.join(", "));
-    }
-    out.push_str("};\n\n");
-}
-
 pub fn emit_cyr(src: &Source, provenance: &str) -> Result<String, String> {
     check(src)?;
     let text = &src.text;
@@ -84,10 +72,10 @@ pub fn emit_cyr(src: &Source, provenance: &str) -> Result<String, String> {
             };
             let _ = writeln!(out, "const RY_BETA_OXIDATION_{infix}_DEFAULT_{} = {lit};\n", n.to_uppercase());
         }
-        blob(&mut out, ty, infix, names);
+        out.push_str(&name_blob(ty, infix, names));
     }
     out.push_str(&doc_comment(text, "pub struct BetaOxFlux {")?);
-    blob(&mut out, "BetaOxFlux", "BETA_OX_FLUX", FLUX_NAMES);
+    out.push_str(&name_blob("BetaOxFlux", "BETA_OX_FLUX", FLUX_NAMES));
     Ok(out.trim_end().to_string() + "\n")
 }
 

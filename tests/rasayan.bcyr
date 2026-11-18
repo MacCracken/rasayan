@@ -52,6 +52,8 @@ include "src/etc_data.cyr"
 include "src/etc.cyr"
 include "src/beta_oxidation_data.cyr"
 include "src/beta_oxidation.cyr"
+include "src/amino_catabolism_data.cyr"
+include "src/amino_catabolism.cyr"
 
 # Keeps the loops' results observable.
 var _bn_sink = 0;
@@ -914,6 +916,54 @@ fn _bn_beta_ox(name, kind, n): i64 {
     return 0;
 }
 
+# n calls of amino-acid catabolism benchmark `kind`: 0 amino_catab_tick (Rust's body: a default state, one tick of
+# 0.01 s at α-KG 0.3 and NAD+/NADH 700), 1 the same state ticked on (no reset), 2 one step of Rust's
+# amino-acid-to-TCA coupling (the skeletons added to TCA's pools, a TCA tick on the pyruvate); the flux kept.
+fn _bn_amino(name, kind, n): i64 {
+    var s: RyAminoCatabState;
+    var c: RyAminoCatabConfig;
+    var f: RyAminoCatabFlux;
+    var t: RyTcaState;
+    var tc: RyTcaConfig;
+    var tf: RyTcaFlux;
+    ry_amino_catab_state_default(&s);
+    ry_amino_catab_config_default(&c);
+    ry_tca_state_default(&t);
+    ry_tca_config_default(&tc);
+    var acc: f64 = 0.0;
+    var b = bench_new(name);
+    bench_batch_start(b);
+    var i = 0;
+    while (i < n) {
+        if (kind == 0) {
+            ry_amino_catab_state_default(&s);
+            ry_amino_catab_state_tick(&s, &c, 0.3, 700.0, 0.01, &f);
+        } elif (kind == 1) {
+            ry_amino_catab_state_tick(&s, &c, 0.3, 700.0, 0.01, &f);
+        } else {
+            ry_amino_catab_state_tick(&s, &c, t.alpha_kg, 700.0, 0.01, &f);
+            var accoa: f64 = t.acetyl_coa + f.to_acetyl_coa;
+            var oaa: f64 = t.oxaloacetate + f.to_oxaloacetate;
+            var akg: f64 = t.alpha_kg + f.to_alpha_kg;
+            var suc: f64 = t.succinyl_coa + f.to_succinyl_coa;
+            var fum: f64 = t.fumarate + f.to_fumarate;
+            t.acetyl_coa = accoa;
+            t.oxaloacetate = oaa;
+            t.alpha_kg = akg;
+            t.succinyl_coa = suc;
+            t.fumarate = fum;
+            ry_tca_state_tick(&t, &tc, f.to_pyruvate, 6.0, 0.5, 700.0, 0.01, &tf);
+        }
+        var used: f64 = f.amino_acids_consumed;
+        acc = acc + used;
+        i = i + 1;
+    }
+    bench_batch_stop(b, n);
+    bench_report(b);
+    _bn_keep(acc);
+    return 0;
+}
+
 # Runs the benchmark suite (Rust twins arrive with each milestone).
 fn main(): i64 {
     alloc_init();
@@ -998,6 +1048,9 @@ fn main(): i64 {
     _bn_beta_ox("beta_ox_tick", 0, 1000000);
     _bn_beta_ox("beta_ox/tick, no reset", 1, 1000000);
     _bn_beta_ox("beta_ox/feeding tca, one step", 2, 1000000);
+    _bn_amino("amino_catab_tick", 0, 1000000);
+    _bn_amino("amino_catab/tick, no reset", 1, 1000000);
+    _bn_amino("amino_catab/feeding tca, one step", 2, 1000000);
     var br = bench_new("json/read MembranePermeability (3 f64)");
     bench_batch_start(br);
     _bn_read("{\"p_na\":0.04,\"p_k\":1.0,\"p_cl\":0.45}", 3, "p_na\0p_k\0p_cl\0", 100000);

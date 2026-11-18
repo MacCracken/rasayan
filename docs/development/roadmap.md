@@ -11,7 +11,10 @@
 - [x] M0 parts 2–3 — math check, oracle generator, table generator, parity harness, correctly rounded primitives,
   three-target baselines and `scripts/gates.sh`, probes 1–4, 6–8, 10–12 (bote-core, hoosh 2.12.3, the profiles,
   JSON), upstream drafts (`docs/development/issues/`)
-- [ ] M1–M8 — module milestones (plan §6)
+- [x] M1–M4 — the foundation (error, guard, integrate, logging, JSON), kinetics and cell physiology, sequence
+  analysis, the metabolic pathways (glycolysis, TCA, the ETC, β-oxidation, amino-acid catabolism)
+- [ ] M5–M8 — the metabolic network, the signaling cascades, the neuroendocrine modules, MCP and the AI client
+  (plan §6)
 - [ ] M9 — release 2.0.0
 
 ## Backlog

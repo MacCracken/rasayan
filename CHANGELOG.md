@@ -16,10 +16,38 @@ and integrators), part 2 (logging, the failure events, the surface-parity and Ru
 JSON writers and readers) follow: M1 is complete. M2 part 1 (enzyme), part 2 (membrane), part 3 (signal), part 4
 (metabolism) and part 5 (energy) follow: M2 is complete. M3 part 1 (protein), part 2 (alignment), part 3
 (ptm) and part 4 (domain) follow: M3 is complete. M4a part 1 (glycolysis) and part 2 (TCA) follow: M4a is
-complete. M4b part 1 (the electron transport chain) and part 2 (β-oxidation) follow.
+complete. M4b part 1 (the electron transport chain), part 2 (β-oxidation) and part 3 (amino-acid catabolism)
+follow: M4b is complete, and with it M4.
 
 ### Added
 
+- **src/amino_catabolism.cyr**, **src/amino_catabolism_data.cyr** (M4b part 3) — `amino_catabolism.rs` transcribed:
+  `RyCarbonSkeletonOutput`, `RyAminoCatabState`, `RyAminoCatabConfig` (its routing a nested struct, in place) and
+  `RyAminoCatabFlux`. The defaults come from the generated consts, with the four types' generated field-name blobs.
+  The routing's `total` and all three validators (each fraction finite and non-negative, then the sum within 0.01 of
+  1; the config's own fields before its routing). `ry_amino_catab_state_tick`: transamination (ping-pong, capped at
+  both the pool and the α-KG passed in), GDH scaled by the NAD+ factor, the NH4+ sink, each transfer capped at its
+  pool, the skeletons by the routing. The serde codecs of all four (the config's routing a nested object or array),
+  and the crate-private `accumulate` for M5. Rust's `amino_catabolism_tick` trace event is a level-gated sakshi event
+  under `rasayan::amino_catabolism`
+- **tests/golden/amino_catabolism.tsv** (M4b part 3, 1,380 rows, a new module, no transcendental: classes A, B and
+  T) — the defaults. The routing's `total` and validator over 127 routings each (every fraction over its edges, sums
+  just inside and outside the 0.01 band). The state's validator (129 rows) and the config's (153: every field over its
+  edges, then its routing). 721 single `tick` rows: each pool and parameter over its edges, α-KG and NAD+/NADH pairs
+  (the NAD+ factor's cap, no α-KG, bad inputs), time steps, and seeded states and configs. 57 `accumulate` rows, 19
+  trajectories (Rust's runs, its large-dt conservation test at dt 1 and 5, no clearance, a protein meal refilling the
+  pool, α-KG scarce then plentiful, a low NAD+ ratio, a ketogenic routing, a degenerate start), 7 rows of Rust's
+  amino-acid-to-TCA coupling, and the serde documents. Every row
+  matches on the first run; `validate.py` re-derives every row (117,827 independent checks), and catches each of 35
+  flipped golden values
+- **tests/amino_catabolism.tcyr** (M4b part 3, 41 checks) — the 23 `amino_catabolism.rs` unit tests and the 4
+  integration tests that now come due (`test_amino_catab_flux_serde_roundtrip`,
+  `test_carbon_skeleton_output_serde_roundtrip`, `test_amino_catab_feeds_tca`, `test_amino_catab_validation`), as
+  they are written, and `accumulate`, the trace event and the config's nested routing in JSON: the Rust-test ledger at
+  480 of 723, 0 due and unported. The fuzz harness reads every input as the four documents (1,503 read and written
+  back bit for bit), and steps every accepted valid state, and the default state on every accepted valid config: the
+  pools stay valid, the flux finite, and nitrogen is conserved to 1e-12
+- **benchmarks** (M4b part 3) — amino_catab_tick, Rust → Cyrius: 20 → 105 ns
 - **src/beta_oxidation.cyr**, **src/beta_oxidation_data.cyr** (M4b part 2) — `beta_oxidation.rs` transcribed:
   `RyBetaOxState`, `RyBetaOxConfig` (its `chain_length: u32` an integer word) and `RyBetaOxFlux`; the defaults from
   the generated consts (the chain length an integer const) and the three types' generated field-name blobs; both

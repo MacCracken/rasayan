@@ -349,3 +349,28 @@ pub fn header(title: &str, provenance: &str, notes: &[&str]) -> String {
     out.push('\n');
     out
 }
+
+/// A generated type's field-name blob, `var _RY_<infix>_FIELDS: u8[n] = { … };`: the names NUL-separated in
+/// declaration order, one line per name labelled with it, a name too long for 120 columns 16 bytes a line with the
+/// first labelled (M4: a config's names don't fit one string literal, and Cyrius has no literal concatenation).
+pub fn name_blob(ty: &str, infix: &str, names: &[&str]) -> String {
+    let mut out = String::new();
+    let bytes: usize = names.iter().map(|n| n.len() + 1).sum();
+    let _ = writeln!(out, "# {ty}'s field names, NUL-separated, in declaration order.");
+    let _ = writeln!(out, "var _RY_{infix}_FIELDS: u8[{bytes}] = {{");
+    for n in names {
+        let codes: Vec<String> = n.bytes().chain([0]).map(|b| b.to_string()).collect();
+        let line = format!("    {},  # {n}", codes.join(", "));
+        if line.len() <= 120 {
+            let _ = writeln!(out, "{line}");
+            continue;
+        }
+        for (k, chunk) in codes.chunks(16).enumerate() {
+            let label = if k == 0 { format!("  # {n}") } else { String::new() };
+            let _ = writeln!(out, "    {},{label}", chunk.join(", "));
+        }
+    }
+    out.push_str("};\n\n");
+    out
+}
+

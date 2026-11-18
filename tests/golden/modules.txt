@@ -1,6 +1,7 @@
 # rasayan golden corpus: one module per line; tests/parity.tcyr replays each
 ai
 alignment
+amino_catabolism
 beta_oxidation
 constants
 constants_private

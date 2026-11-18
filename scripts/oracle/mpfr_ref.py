@@ -1128,10 +1128,86 @@ BETA_OXIDATION = {
     "beta_oxidation::feeds_tca": _b_feeds_tca,
 }
 
+# ── amino_catabolism (M4b part 3) ──
+# AminoCatabState::tick in Rust's order. No primitive is called: the model is here for the class-T rows (the
+# trajectories and Rust's amino-acid-to-TCA coupling, which runs TCA's model too).
+
+A_DEFAULT = [0.05, 1.0, 0.08, 0.5, 0.30, 0.15, 0.25, 0.10, 0.10, 0.10, 0.3, 0.1, 0.1]  # AminoCatabConfig, flattened
+
+
+def _ping_pong(a, b, vmax, kma, kmb):
+    a, b = _conc(a), _conc(b)
+    d = kma * b + kmb * a + a * b
+    return vmax * a * b / d if d > 0.0 else 0.0
+
+
+def _a_tick(st, c, alpha_kg, nad, dt):
+    """One AminoCatabState::tick on [amino_acid_pool, glutamate, ammonium]: (state after, the 12 flux values)."""
+    if not (math.isfinite(dt) and dt > 0.0):
+        return list(st), [0.0] * 12
+    alpha_kg, nad = _conc(alpha_kg), _conc(nad)
+    nf = _rust_min(nad / RESTING_NAD_RATIO, MAX_NAD_FACTOR)
+    aa, glu, nh4 = st
+    v_t = _ping_pong(aa, alpha_kg, c[0], c[1], c[10])
+    v_g = _mm(glu, c[2] * nf, c[3])
+    v_c = _mm(nh4, c[11], c[12])
+    tr = _take(v_t * dt, _rust_min(aa, alpha_kg))
+    aa, glu = aa - tr, glu + tr
+    de = _take(v_g * dt, glu)
+    glu, nh4 = glu - de, nh4 + de
+    cl = _take(v_c * dt, nh4)
+    nh4 -= cl
+    return [aa, glu, nh4], [tr, de, de, cl] + [tr * c[4 + j] for j in range(6)] + [tr / dt, de / dt]
+
+
+def _a_trajectory(a, P):
+    """A class-T script: the state, the config, then `1 alpha_kg nad dt k`, `3 field x`."""
+    st = list(a[:3])
+    c = list(A_DEFAULT)
+    for j in range(a[3]):
+        c[a[4 + 2 * j]] = a[5 + 2 * j]
+    k = 4 + 2 * a[3]
+    flux = [0.0] * 12
+    while k < len(a):
+        op = a[k]
+        if op == 1:
+            akg, n, dt, reps = a[k + 1:k + 5]
+            for _ in range(reps):
+                st, flux = _a_tick(st, c, akg, n, dt)
+            k += 5
+        elif op == 3:
+            st[a[k + 1]] = a[k + 2]
+            k += 3
+        else:
+            raise ValueError(f"no operation {op}")
+    return st + flux
+
+
+def _a_feeds_tca(a, P):
+    """Rust's test_amino_catab_feeds_tca loop: both states, then `nad atp adp dt k`."""
+    aa, t = list(a[:3]), list(a[3:3 + T_STATE])
+    nad, atp, adp, dt, reps = a[3 + T_STATE:]
+    for _ in range(reps):
+        aa, af = _a_tick(aa, list(A_DEFAULT), t[3], nad, dt)
+        t[0] += af[5]
+        t[8] += af[9]
+        t[3] += af[6]
+        t[4] += af[7]
+        t[6] += af[8]
+        t, _tf = _t_tick(t, list(T_DEFAULT), af[4], atp, adp, nad, dt, P)
+    return aa + t
+
+
+AMINO_CATABOLISM = {
+    "amino_catabolism::AminoCatabState::trajectory": _a_trajectory,
+    "amino_catabolism::feeds_tca": _a_feeds_tca,
+}
+
 # The modules with class-C (and class-T) rows beyond math, and their models.
 MODELS = {"integrate": INTEGRATE, "enzyme": ENZYME, "membrane": MEMBRANE, "signal": SIGNAL, "metabolism": METABOLISM,
           "energy": ENERGY, "protein": PROTEIN, "glycolysis": GLYCOLYSIS, "tca": TCA,
-          "etc": ETC, "beta_oxidation": BETA_OXIDATION}
+          "etc": ETC, "beta_oxidation": BETA_OXIDATION,
+          "amino_catabolism": AMINO_CATABOLISM}
 
 
 def _arg(tok):

@@ -1,0 +1,475 @@
+# rasayan — src/amino_catabolism.cyr: Rust 1.2.0's amino-acid catabolism tests, ported
+# Stdlib auto-included via cyrius.cyml
+#
+# The 23 unit tests of `amino_catabolism.rs` and the 4 integration tests (tests/integration.rs) that call only
+# amino-acid catabolism and TCA, as they are written; tests/golden/amino_catabolism.tsv checks every method, single
+# step, trajectory and Rust's amino-acid-to-TCA coupling besides. Beyond them: the trace event, accumulate, and the
+# config's nested routing in JSON.
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+include "src/integrate.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
+include "src/enzyme_data.cyr"
+include "src/enzyme.cyr"
+include "src/tca_data.cyr"
+include "src/tca.cyr"
+include "src/amino_catabolism_data.cyr"
+include "src/amino_catabolism.cyr"
+
+# 1 when |a − b| < tol.
+fn near(a: f64, b: f64, tol: f64) {
+    var d: f64 = f64_abs(a - b);
+    return d < tol;
+}
+
+# NaN (k 0), +inf (1), -inf (2): the non-finite values of Rust's hardening tests.
+fn nonfinite(k): f64 {
+    if (k == 0) { return _ry_nan(); }
+    var inf: f64 = _RY_INF;
+    if (k == 1) { return inf; }
+    return -inf;
+}
+
+# 1 when the state validates.
+fn as_ok(p: *RyAminoCatabState) {
+    var t, v = ry_amino_catab_state_validate(p);
+    return is_ok(t);
+}
+
+# 1 when the config validates.
+fn ac_ok(c: *RyAminoCatabConfig) {
+    var t, v = ry_amino_catab_config_validate(c);
+    return is_ok(t);
+}
+
+# 1 when the routing validates.
+fn ar_ok(r: *RyCarbonSkeletonOutput) {
+    var t, v = ry_carbon_skeleton_output_validate(r);
+    return is_ok(t);
+}
+
+# The six carbon skeletons of flux *f, summed in Rust's order.
+fn skeletons(f: *RyAminoCatabFlux): f64 {
+    var s: f64 = f.to_pyruvate + f.to_acetyl_coa + f.to_alpha_kg + f.to_succinyl_coa + f.to_fumarate
+    + f.to_oxaloacetate;
+    return s;
+}
+
+# Rust's run_amino_catab: `steps` ticks of `dt` at α-KG 0.3 and NAD+/NADH 700 from the default state into *s, on the
+# default config; *total sums the ten amounts and keeps the last tick's two rates.
+fn run_amino_catab(steps, dt: f64, s: *RyAminoCatabState, total: *RyAminoCatabFlux) {
+    var c: RyAminoCatabConfig;
+    var f: RyAminoCatabFlux;
+    ry_amino_catab_config_default(&c);
+    ry_amino_catab_state_default(s);
+    ry_amino_catab_flux_default(total);
+    var k = 0;
+    while (k < steps) {
+        ry_amino_catab_state_tick(s, &c, 0.3, 700.0, dt, &f);
+        var w = total;
+        var o = &f;
+        var j = 0;
+        while (j < 10) {
+            var x: f64 = load64(w + 8 * j);
+            var y: f64 = load64(o + 8 * j);
+            var sum: f64 = x + y;
+            store64(w + 8 * j, load64(&sum));
+            j = j + 1;
+        }
+        var tr: f64 = f.transamination_rate;
+        var de: f64 = f.deamination_rate;
+        total.transamination_rate = tr;
+        total.deamination_rate = de;
+        k = k + 1;
+    }
+    return 0;
+}
+
+# ── the captured events ──
+var _ev_buf[1024];
+var _ev_len = 0;
+
+# sakshi's subscriber: keeps the last event's message.
+fn _ev_hook(ts, level, category, msg, msg_len, extra) {
+    var n = msg_len;
+    if (n > 1024) { n = 1024; }
+    memcpy(&_ev_buf, msg, n);
+    _ev_len = msg_len;
+    return 0;
+}
+
+# 1 if the last captured event is the C string `want`.
+fn _ev_is(want) {
+    var n = strlen(want);
+    if (_ev_len != n) { return 0; }
+    return memeq(&_ev_buf, want, n);
+}
+
+# rust src/amino_catabolism.rs: test_default_state_valid, test_default_config_valid, test_carbon_routing_sums_to_one
+# rust src/amino_catabolism.rs: test_bad_carbon_routing_fails_validation, test_validate_state_rejects_nan
+# rust src/amino_catabolism.rs: test_validate_config_rejects_bad_values, test_carbon_routing_validation
+# rust tests/integration.rs: test_amino_catab_validation
+fn validation() {
+    test_group("amino_catabolism: defaults and validation");
+    var s: RyAminoCatabState;
+    var c: RyAminoCatabConfig;
+    var r: RyCarbonSkeletonOutput;
+    ry_amino_catab_state_default(&s);
+    ry_amino_catab_config_default(&c);
+    ry_carbon_skeleton_output_default(&r);
+    assert(as_ok(&s) == 1 && ac_ok(&c) == 1 && ar_ok(&r) == 1, "the defaults validate");
+    var sum: f64 = r.pyruvate + r.acetyl_coa + r.alpha_kg + r.succinyl_coa + r.fumarate + r.oxaloacetate;
+    var total: f64 = ry_carbon_skeleton_output_total(&r);
+    assert(near(sum, 1.0, 0.01) && total == sum, "the default routing sums to 1");
+    c.carbon_routing.pyruvate = 0.5;
+    c.carbon_routing.acetyl_coa = 0.5;
+    c.carbon_routing.alpha_kg = 0.5;
+    var t1, v1 = ry_amino_catab_config_validate(&c);
+    assert_eq(v1, RY_ERR_INVALID_PARAMETER, "a routing summing to 1.6 is refused");
+    s.ammonium = _ry_nan();
+    var t2, v2 = ry_amino_catab_state_validate(&s);
+    assert_eq(v2, RY_ERR_NON_FINITE, "a NaN ammonium is refused");
+    # Rust's five cases: transaminase_vmax NaN, transaminase_km 0, transaminase_km_alpha_kg 0, gdh_km_glutamate 0,
+    # nh4_clearance_km inf.
+    var inf: f64 = _RY_INF;
+    var k = 0;
+    var refused = 0;
+    while (k < 5) {
+        ry_amino_catab_config_default(&c);
+        if (k == 0) { c.transaminase_vmax = _ry_nan(); }
+        if (k == 1) { c.transaminase_km = 0.0; }
+        if (k == 2) { c.transaminase_km_alpha_kg = 0.0; }
+        if (k == 3) { c.gdh_km_glutamate = 0.0; }
+        if (k == 4) { c.nh4_clearance_km = inf; }
+        if (ac_ok(&c) == 0) { refused = refused + 1; }
+        k = k + 1;
+    }
+    assert_eq(refused, 5, "each of Rust's five bad configs is refused");
+    # The routing: a NaN fraction (and so a NaN sum), a negative one with the sum still 1, an infinite one.
+    var d: RyCarbonSkeletonOutput;
+    ry_carbon_skeleton_output_default(&d);
+    r = d;
+    r.fumarate = _ry_nan();
+    assert_eq(ar_ok(&r), 0, "a NaN fraction is refused");
+    ry_amino_catab_config_default(&c);
+    c.carbon_routing = r;
+    assert_eq(ac_ok(&c), 0, "and so is a config holding it");
+    r = d;
+    r.pyruvate = -0.1;
+    r.acetyl_coa = 0.55;
+    var neg: f64 = ry_carbon_skeleton_output_total(&r);
+    var t3, v3 = ry_carbon_skeleton_output_validate(&r);
+    assert(near(neg, 1.0, 0.000000000001) && v3 == RY_ERR_NEGATIVE_CONCENTRATION,
+      "a negative fraction is refused though the sum is 1");
+    r = d;
+    r.alpha_kg = inf;
+    var t4, v4 = ry_carbon_skeleton_output_validate(&r);
+    assert_eq(v4, RY_ERR_NON_FINITE, "an infinite fraction is refused");
+    return 0;
+}
+
+# rust src/amino_catabolism.rs: test_amino_acids_consumed, test_nadh_produced, test_nh4_produced_and_cleared
+# rust src/amino_catabolism.rs: test_carbon_skeletons_distributed, test_carbon_skeleton_conservation
+# rust src/amino_catabolism.rs: test_aa_pool_depletes, test_concentrations_non_negative
+fn ticking() {
+    test_group("amino_catabolism: ticking");
+    var s: RyAminoCatabState;
+    var total: RyAminoCatabFlux;
+    run_amino_catab(100, 0.1, &s, &total);
+    var used: f64 = total.amino_acids_consumed;
+    var nadh: f64 = total.nadh_produced;
+    var made: f64 = total.nh4_produced;
+    var cleared: f64 = total.nh4_cleared;
+    assert(used > 0.0 && nadh > 0.0, "amino acids are consumed, GDH makes NADH");
+    assert(made > 0.0 && cleared > 0.0, "deamination makes NH4+, the sink clears it");
+    var pyr: f64 = total.to_pyruvate;
+    var acc: f64 = total.to_acetyl_coa;
+    var akg: f64 = total.to_alpha_kg;
+    var suc: f64 = total.to_succinyl_coa;
+    var fum: f64 = total.to_fumarate;
+    var oaa: f64 = total.to_oxaloacetate;
+    assert(pyr > 0.0 && acc > 0.0 && akg > 0.0 && suc > 0.0 && fum > 0.0 && oaa > 0.0,
+      "every carbon skeleton is made");
+    var carbon: f64 = skeletons(&total);
+    assert(near(carbon, used, 0.0000000001), "the skeletons add up to the amino acids consumed");
+    run_amino_catab(200, 0.1, &s, &total);
+    var pool: f64 = s.amino_acid_pool;
+    assert(pool < RY_AMINO_CATABOLISM_AMINO_CATAB_STATE_DEFAULT_AMINO_ACID_POOL, "the amino acid pool depletes");
+    run_amino_catab(1000, 0.01, &s, &total);
+    assert_eq(as_ok(&s), 1, "the pools stay >= 0 over 1000 steps of 0.01 s");
+    return 0;
+}
+
+# rust src/amino_catabolism.rs: test_no_amino_acids_no_flux, test_no_alpha_kg_no_transamination
+# rust src/amino_catabolism.rs: test_nh4_accumulates_without_clearance
+fn regulation() {
+    test_group("amino_catabolism: substrates and the sink");
+    var s: RyAminoCatabState;
+    var c: RyAminoCatabConfig;
+    var f: RyAminoCatabFlux;
+    ry_amino_catab_config_default(&c);
+    ry_amino_catab_state_default(&s);
+    s.amino_acid_pool = 0.0;
+    ry_amino_catab_state_tick(&s, &c, 0.3, 700.0, 0.1, &f);
+    var none: f64 = f.transamination_rate;
+    assert(none < 0.0000000001, "no amino acids, no transamination");
+    ry_amino_catab_state_default(&s);
+    ry_amino_catab_state_tick(&s, &c, 0.0, 700.0, 0.1, &f);
+    var no_akg: f64 = f.transamination_rate;
+    assert(no_akg < 0.0000000001, "no α-KG, no transamination");
+    c.nh4_clearance_rate = 0.0;
+    ry_amino_catab_state_default(&s);
+    var k = 0;
+    while (k < 100) {
+        ry_amino_catab_state_tick(&s, &c, 0.3, 700.0, 0.1, &f);
+        k = k + 1;
+    }
+    var nh4: f64 = s.ammonium;
+    assert(nh4 > RY_AMINO_CATABOLISM_AMINO_CATAB_STATE_DEFAULT_AMMONIUM, "NH4+ accumulates without the sink");
+    return 0;
+}
+
+# rust src/amino_catabolism.rs: test_invalid_dt_is_noop, test_nan_inputs_sanitized
+# rust src/amino_catabolism.rs: test_transamination_capped_at_alpha_kg_and_pool
+fn hardening() {
+    test_group("amino_catabolism: hardening");
+    var s: RyAminoCatabState;
+    var d: RyAminoCatabState;
+    var c: RyAminoCatabConfig;
+    var f: RyAminoCatabFlux;
+    var zero: RyAminoCatabFlux;
+    ry_amino_catab_config_default(&c);
+    ry_amino_catab_state_default(&d);
+    ry_amino_catab_flux_default(&zero);
+    var k = 0;
+    while (k < 5) {
+        var dt: f64 = 0.0;
+        if (k == 1) { dt = -0.1; }
+        if (k > 1) { dt = nonfinite(k - 2); }
+        ry_amino_catab_state_default(&s);
+        memset(&f, 255, 96);
+        ry_amino_catab_state_tick(&s, &c, 0.3, 700.0, dt, &f);
+        assert(memeq(&s, &d, 24) == 1 && memeq(&f, &zero, 96) == 1, "an invalid dt changes nothing, a zero flux");
+        k = k + 1;
+    }
+    # (NaN, 700), (0.3, NaN), (inf, -inf), (-1, -1)
+    var j = 0;
+    while (j < 4) {
+        var akg: f64 = 0.3;
+        var nad: f64 = 700.0;
+        if (j == 0) { akg = _ry_nan(); }
+        if (j == 1) { nad = _ry_nan(); }
+        if (j == 2) {
+            akg = nonfinite(1);
+            nad = nonfinite(2);
+        }
+        if (j == 3) {
+            akg = -1.0;
+            nad = -1.0;
+        }
+        ry_amino_catab_state_default(&s);
+        ry_amino_catab_state_tick(&s, &c, akg, nad, 0.1, &f);
+        var used: f64 = f.amino_acids_consumed;
+        var nadh: f64 = f.nadh_produced;
+        assert(as_ok(&s) == 1 && _ry_is_finite(used) == 1 && _ry_is_finite(nadh) == 1,
+          "bad inputs keep the state valid, the flux finite");
+        j = j + 1;
+    }
+    ry_amino_catab_state_default(&s);
+    ry_amino_catab_state_tick(&s, &c, 0.0001, 700.0, 1000.0, &f);
+    var capped: f64 = f.amino_acids_consumed;
+    assert(capped <= 0.0001, "transamination takes at most the α-KG passed in");
+    ry_amino_catab_state_default(&s);
+    s.amino_acid_pool = 0.00001;
+    ry_amino_catab_state_tick(&s, &c, 10.0, 700.0, 1000.0, &f);
+    var all: f64 = f.amino_acids_consumed;
+    var left: f64 = s.amino_acid_pool;
+    assert(near(all, 0.00001, 0.000000000000000001) && left == 0.0, "and at most the amino acid pool");
+    return 0;
+}
+
+# rust src/amino_catabolism.rs: test_large_dt_conserves_nitrogen_and_carbon
+fn conservation() {
+    test_group("amino_catabolism: nitrogen and carbon");
+    var s: RyAminoCatabState;
+    var c: RyAminoCatabConfig;
+    var f: RyAminoCatabFlux;
+    ry_amino_catab_config_default(&c);
+    var dt: f64 = 1.0;
+    var r = 0;
+    while (r < 2) {
+        ry_amino_catab_state_default(&s);
+        var n0: f64 = s.amino_acid_pool + s.glutamate + s.ammonium;
+        var cleared: f64 = 0.0;
+        var consumed: f64 = 0.0;
+        var made: f64 = 0.0;
+        var ok = 1;
+        var k = 0;
+        while (k < 200) {
+            ry_amino_catab_state_tick(&s, &c, 0.3, 700.0, dt, &f);
+            if (as_ok(&s) == 0) { ok = 0; }
+            cleared = cleared + f.nh4_cleared;
+            consumed = consumed + f.amino_acids_consumed;
+            var sk: f64 = skeletons(&f);
+            made = made + sk;
+            k = k + 1;
+        }
+        var n: f64 = s.amino_acid_pool + s.glutamate + s.ammonium + cleared;
+        assert(ok == 1 && near(n, n0, 0.000000001) && near(made, consumed, 0.000000001),
+          "a large dt: no negative pool, nitrogen and carbon conserved");
+        dt = 5.0;
+        r = r + 1;
+    }
+    return 0;
+}
+
+# rust tests/integration.rs: test_amino_catab_feeds_tca
+fn coupling() {
+    test_group("amino_catabolism: feeding TCA");
+    var ac: RyAminoCatabConfig;
+    var tc: RyTcaConfig;
+    var a: RyAminoCatabState;
+    var t: RyTcaState;
+    var af: RyAminoCatabFlux;
+    var tf: RyTcaFlux;
+    ry_amino_catab_config_default(&ac);
+    ry_tca_config_default(&tc);
+    ry_amino_catab_state_default(&a);
+    ry_tca_state_default(&t);
+    var k = 0;
+    while (k < 200) {
+        ry_amino_catab_state_tick(&a, &ac, t.alpha_kg, 700.0, 0.1, &af);
+        var accoa: f64 = t.acetyl_coa + af.to_acetyl_coa;
+        var oaa: f64 = t.oxaloacetate + af.to_oxaloacetate;
+        var akg: f64 = t.alpha_kg + af.to_alpha_kg;
+        var suc: f64 = t.succinyl_coa + af.to_succinyl_coa;
+        var fum: f64 = t.fumarate + af.to_fumarate;
+        t.acetyl_coa = accoa;
+        t.oxaloacetate = oaa;
+        t.alpha_kg = akg;
+        t.succinyl_coa = suc;
+        t.fumarate = fum;
+        ry_tca_state_tick(&t, &tc, af.to_pyruvate, 6.0, 0.5, 700.0, 0.1, &tf);
+        k = k + 1;
+    }
+    var pool: f64 = a.amino_acid_pool;
+    assert(pool < RY_AMINO_CATABOLISM_AMINO_CATAB_STATE_DEFAULT_AMINO_ACID_POOL,
+      "the amino acid pool depletes as catabolism feeds TCA");
+    return 0;
+}
+
+# The crate-private accumulate the metabolic network calls (M5).
+fn network() {
+    test_group("amino_catabolism: the network's accumulate");
+    var s: RyAminoCatabState;
+    var c: RyAminoCatabConfig;
+    var f: RyAminoCatabFlux;
+    var total: RyAminoCatabFlux;
+    ry_amino_catab_state_default(&s);
+    ry_amino_catab_config_default(&c);
+    ry_amino_catab_state_tick(&s, &c, 0.3, 700.0, 0.1, &f);
+    ry_amino_catab_flux_default(&total);
+    _ry_amino_catab_flux_accumulate(&total, &f, 0.5);
+    _ry_amino_catab_flux_accumulate(&total, &f, 0.5);
+    var oaa: f64 = total.to_oxaloacetate;
+    var once: f64 = f.to_oxaloacetate;
+    var de2: f64 = total.deamination_rate;
+    var de1: f64 = f.deamination_rate;
+    assert(oaa == once + once && de2 == de1 * 0.5 + de1 * 0.5, "amounts summed, rates weighted");
+    return 0;
+}
+
+# Rust's trace event, under the target `rasayan::amino_catabolism`, its fields in Rust's order.
+fn events() {
+    test_group("amino_catabolism: trace event");
+    sakshi_set_emit_hook(&_ev_hook);
+    sakshi_set_level(SK_TRACE);
+    var s: RyAminoCatabState;
+    var c: RyAminoCatabConfig;
+    var f: RyAminoCatabFlux;
+    ry_amino_catab_state_default(&s);
+    ry_amino_catab_config_default(&c);
+    ry_amino_catab_state_tick(&s, &c, 0.3, 700.0, 0.01, &f);
+    assert_eq(_ev_is("rasayan::amino_catabolism: amino_catabolism_tick dt=0.01 aa_pool=2 glutamate=0.5"), 1,
+      "amino_catabolism_tick");
+    _ev_len = 0;
+    ry_amino_catab_state_tick(&s, &c, 0.3, 700.0, 0.0, &f);
+    assert_eq(_ev_len, 0, "no event for an invalid dt");
+    sakshi_set_level(SK_INFO);
+    ry_amino_catab_state_tick(&s, &c, 0.3, 700.0, 0.01, &f);
+    assert_eq(_ev_len, 0, "below TRACE, nothing");
+    sakshi_clear_emit_hook();
+    return 0;
+}
+
+# rust src/amino_catabolism.rs: test_serde_roundtrip_state, test_serde_roundtrip_config
+# rust tests/integration.rs: test_amino_catab_flux_serde_roundtrip, test_carbon_skeleton_output_serde_roundtrip
+fn serde() {
+    test_group("amino_catabolism: serde round trips");
+    var sb = str_builder_new();
+    var s: RyAminoCatabState;
+    var back: RyAminoCatabState;
+    ry_amino_catab_state_default(&s);
+    var t1, v1 = ry_amino_catab_state_to_json(sb, &s);
+    var t2, v2 = ry_amino_catab_state_from_json(load64(sb), load64(sb + 8), &back);
+    assert(is_ok(t2) == 1 && memeq(&back, &s, 24) == 1, "the state reads back");
+    var c: RyAminoCatabConfig;
+    var cb: RyAminoCatabConfig;
+    ry_amino_catab_config_default(&c);
+    store64(sb + 8, 0);
+    var t3, v3 = ry_amino_catab_config_to_json(sb, &c);
+    var want = "{\"transaminase_vmax\":0.05,\"transaminase_km\":1.0,\"gdh_vmax\":0.08,\"gdh_km_glutamate\":0.5,";
+    var routing = "\"carbon_routing\":{\"pyruvate\":0.3,\"acetyl_coa\":0.15,\"alpha_kg\":0.25,";
+    var n = strlen(want);
+    assert(memeq(load64(sb), want, n) == 1 && memeq(load64(sb) + n, routing, strlen(routing)) == 1,
+      "the routing is written as a nested object, in declaration order");
+    var t4, v4 = ry_amino_catab_config_from_json(load64(sb), load64(sb + 8), &cb);
+    assert(is_ok(t4) == 1 && memeq(&cb, &c, 104) == 1, "the config reads back");
+    var r: RyCarbonSkeletonOutput;
+    var rb: RyCarbonSkeletonOutput;
+    r.pyruvate = 0.1;
+    r.acetyl_coa = 0.2;
+    r.alpha_kg = 0.1;
+    r.succinyl_coa = 0.05;
+    r.fumarate = 0.03;
+    r.oxaloacetate = 0.02;
+    store64(sb + 8, 0);
+    var t5, v5 = ry_carbon_skeleton_output_to_json(sb, &r);
+    var t6, v6 = ry_carbon_skeleton_output_from_json(load64(sb), load64(sb + 8), &rb);
+    assert(is_ok(t6) == 1 && memeq(&rb, &r, 48) == 1, "a routing summing to 0.5 reads back: serde does not validate");
+    var f: RyAminoCatabFlux;
+    var fb: RyAminoCatabFlux;
+    ry_amino_catab_state_tick(&s, &c, 0.3, 700.0, 0.01, &f);
+    store64(sb + 8, 0);
+    var t7, v7 = ry_amino_catab_flux_to_json(sb, &f);
+    var t8, v8 = ry_amino_catab_flux_from_json(load64(sb), load64(sb + 8), &fb);
+    assert(is_ok(t8) == 1 && memeq(&fb, &f, 96) == 1, "a step's flux reads back, bit for bit");
+    return 0;
+}
+
+# Runs the amino-acid catabolism suite.
+fn main() {
+    alloc_init();
+    validation();
+    ticking();
+    regulation();
+    hardening();
+    conservation();
+    coupling();
+    network();
+    events();
+    serde();
+    return assert_summary();
+}
+
+var exit_code = main();
+# assert_summary() returns the failure count; a wait status is 8 bits, so any failure exits 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

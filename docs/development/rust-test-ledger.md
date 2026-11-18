@@ -6,13 +6,13 @@
 > milestone hasn't come. The golden corpus (`tests/golden/`) checks every ported function on its grid besides.
 > The 2 doc tests and the example are M9's.
 
-**723 Rust tests:** 453 ported; 27 at M4b, 38 at M5, 108 at M6, 62 at M7, 35 at M8.
+**723 Rust tests:** 480 ported; 38 at M5, 108 at M6, 62 at M7, 35 at M8.
 
 | Rust file | Tests | Ported | Due, unported | Later (milestone) |
 |---|---:|---:|---:|---|
 | `src/ai.rs` | 4 | 0 | 0 | 4 (M8) |
 | `src/alignment.rs` | 19 | 19 | 0 | — |
-| `src/amino_catabolism.rs` | 23 | 0 | 0 | 23 (M4b) |
+| `src/amino_catabolism.rs` | 23 | 23 | 0 | — |
 | `src/beta_oxidation.rs` | 23 | 23 | 0 | — |
 | `src/calcium.rs` | 17 | 0 | 0 | 17 (M6) |
 | `src/domain.rs` | 24 | 24 | 0 | — |
@@ -38,9 +38,9 @@
 | `src/signal.rs` | 21 | 21 | 0 | — |
 | `src/signaling.rs` | 13 | 0 | 0 | 13 (M6) |
 | `src/tca.rs` | 26 | 26 | 0 | — |
-| `tests/integration.rs` | 70 | 41 | 0 | 4 (M4b), 4 (M5), 15 (M6), 6 (M7) |
+| `tests/integration.rs` | 70 | 45 | 0 | 4 (M5), 15 (M6), 6 (M7) |
 | `tests/validation.rs` | 25 | 25 | 0 | — |
-| **Total** | **723** | **453** | **0** | |
+| **Total** | **723** | **480** | **0** | |
 
 ## Where each is ported
 
@@ -65,6 +65,29 @@
 | `src/alignment.rs` `test_score_alignment_saturates` | `tests/alignment.tcyr` `scoring` |
 | `src/alignment.rs` `test_score_alignment_unknown` | `tests/alignment.tcyr` `scoring` |
 | `src/alignment.rs` `test_unknown_residue` | `tests/alignment.tcyr` `matrices` |
+| `src/amino_catabolism.rs` `test_aa_pool_depletes` | `tests/amino_catabolism.tcyr` `ticking` |
+| `src/amino_catabolism.rs` `test_amino_acids_consumed` | `tests/amino_catabolism.tcyr` `ticking` |
+| `src/amino_catabolism.rs` `test_bad_carbon_routing_fails_validation` | `tests/amino_catabolism.tcyr` `validation` |
+| `src/amino_catabolism.rs` `test_carbon_routing_sums_to_one` | `tests/amino_catabolism.tcyr` `validation` |
+| `src/amino_catabolism.rs` `test_carbon_routing_validation` | `tests/amino_catabolism.tcyr` `validation` |
+| `src/amino_catabolism.rs` `test_carbon_skeleton_conservation` | `tests/amino_catabolism.tcyr` `ticking` |
+| `src/amino_catabolism.rs` `test_carbon_skeletons_distributed` | `tests/amino_catabolism.tcyr` `ticking` |
+| `src/amino_catabolism.rs` `test_concentrations_non_negative` | `tests/amino_catabolism.tcyr` `ticking` |
+| `src/amino_catabolism.rs` `test_default_config_valid` | `tests/amino_catabolism.tcyr` `validation` |
+| `src/amino_catabolism.rs` `test_default_state_valid` | `tests/amino_catabolism.tcyr` `validation` |
+| `src/amino_catabolism.rs` `test_invalid_dt_is_noop` | `tests/amino_catabolism.tcyr` `hardening` |
+| `src/amino_catabolism.rs` `test_large_dt_conserves_nitrogen_and_carbon` | `tests/amino_catabolism.tcyr` `conservation` |
+| `src/amino_catabolism.rs` `test_nadh_produced` | `tests/amino_catabolism.tcyr` `ticking` |
+| `src/amino_catabolism.rs` `test_nan_inputs_sanitized` | `tests/amino_catabolism.tcyr` `hardening` |
+| `src/amino_catabolism.rs` `test_nh4_accumulates_without_clearance` | `tests/amino_catabolism.tcyr` `regulation` |
+| `src/amino_catabolism.rs` `test_nh4_produced_and_cleared` | `tests/amino_catabolism.tcyr` `ticking` |
+| `src/amino_catabolism.rs` `test_no_alpha_kg_no_transamination` | `tests/amino_catabolism.tcyr` `regulation` |
+| `src/amino_catabolism.rs` `test_no_amino_acids_no_flux` | `tests/amino_catabolism.tcyr` `regulation` |
+| `src/amino_catabolism.rs` `test_serde_roundtrip_config` | `tests/amino_catabolism.tcyr` `serde` |
+| `src/amino_catabolism.rs` `test_serde_roundtrip_state` | `tests/amino_catabolism.tcyr` `serde` |
+| `src/amino_catabolism.rs` `test_transamination_capped_at_alpha_kg_and_pool` | `tests/amino_catabolism.tcyr` `hardening` |
+| `src/amino_catabolism.rs` `test_validate_config_rejects_bad_values` | `tests/amino_catabolism.tcyr` `validation` |
+| `src/amino_catabolism.rs` `test_validate_state_rejects_nan` | `tests/amino_catabolism.tcyr` `validation` |
 | `src/beta_oxidation.rs` `test_acetyl_coa_produced` | `tests/beta_oxidation.tcyr` `ticking` |
 | `src/beta_oxidation.rs` `test_activation_costs_atp` | `tests/beta_oxidation.tcyr` `ticking` |
 | `src/beta_oxidation.rs` `test_concentrations_non_negative` | `tests/beta_oxidation.tcyr` `ticking` |
@@ -436,12 +459,16 @@
 | `tests/integration.rs` `test_alignment_score_serialize` | `tests/alignment.tcyr` `serde` |
 | `tests/integration.rs` `test_all_defaults_validate` | `tests/energy.tcyr` `hardening` |
 | `tests/integration.rs` `test_amino_acid_serialize` | `tests/protein.tcyr` `serde` |
+| `tests/integration.rs` `test_amino_catab_feeds_tca` | `tests/amino_catabolism.tcyr` `coupling` |
+| `tests/integration.rs` `test_amino_catab_flux_serde_roundtrip` | `tests/amino_catabolism.tcyr` `serde` |
+| `tests/integration.rs` `test_amino_catab_validation` | `tests/amino_catabolism.tcyr` `validation` |
 | `tests/integration.rs` `test_arrhenius_temperature_sensitivity` | `tests/enzyme.tcyr` `temperature` |
 | `tests/integration.rs` `test_beta_ox_feeds_tca` | `tests/beta_oxidation.tcyr` `coupling` |
 | `tests/integration.rs` `test_beta_ox_flux_serde_roundtrip` | `tests/beta_oxidation.tcyr` `serde` |
 | `tests/integration.rs` `test_beta_ox_validation` | `tests/beta_oxidation.tcyr` `validation` |
 | `tests/integration.rs` `test_bioenergy_and_metabolism_alignment` | `tests/energy.tcyr` `basics` |
 | `tests/integration.rs` `test_bioenergy_state_serde_roundtrip` | `tests/energy.tcyr` `serde` |
+| `tests/integration.rs` `test_carbon_skeleton_output_serde_roundtrip` | `tests/amino_catabolism.tcyr` `serde` |
 | `tests/integration.rs` `test_dose_response_at_ec50` | `tests/signal.tcyr` `binding` |
 | `tests/integration.rs` `test_dose_response_steep_hill` | `tests/signal.tcyr` `binding` |
 | `tests/integration.rs` `test_enzyme_db_params_produce_valid_rates` | `tests/enzyme.tcyr` `database` |

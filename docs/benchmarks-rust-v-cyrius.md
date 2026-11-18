@@ -233,3 +233,20 @@ Measured at load 4.4–4.9 (another project's jobs), with the reference rows wit
 (michaelis_menten 12 ns, nernst 82 ns). The tick is two Michaelis-Menten calls, three guards, two transfers and the
 chain's counts.
 
+## M4b part 3: amino-acid catabolism
+
+| Benchmark | Rust 1.2.0 (ns) | Cyrius (ns) | Notes |
+|---|---|---|---|
+| amino_catab_tick | 19.66 | 105 | Rust's loop body: a default state, one tick of 0.01 s at α-KG 0.3 and NAD+/NADH 700; no transcendental |
+
+Cyrius only:
+
+| Benchmark | Cyrius (ns) | Notes |
+|---|---|---|
+| tick, the state stepped on (no reset) | 101 | |
+| feeding TCA, one step | 600–604 | Rust's integration loop body: a catabolism tick on TCA's α-KG, the five skeletons added to TCA's pools, a TCA tick on the pyruvate |
+
+Measured at load 1.4–1.8, with the reference rows at their quiet values (michaelis_menten 11 ns, ping_pong 23 ns,
+nernst 79 ns), the same in two runs. The tick is a ping-pong rate, two Michaelis-Menten calls, two concentration
+guards, the NAD+ factor's `min`, three capped transfers and the six routed skeletons; Rust inlines all of them.
+

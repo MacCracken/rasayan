@@ -1488,3 +1488,59 @@ eight among them (they exceed a 120-column literal).
 
 **Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): beta_ox_tick 19.7 → 88 ns.
 
+### 7f. M4b part 3: amino-acid catabolism (2026-11-17)
+
+**What is compared.** `tests/golden/amino_catabolism.tsv` (new, 1,380 rows), through the oracle's public API and, for
+the crate-private `AminoCatabFlux::accumulate`, its verbatim copy (`scripts/oracle/src/v_amino_catabolism.rs`, on a
+mirror type). The config nests a `CarbonSkeletonOutput`; its rows flatten it to 13 values in declaration order, the
+routing's six fractions at indices 4–9, and its default literal's `carbon_routing` must be exactly
+`CarbonSkeletonOutput::default()`. The rows cover:
+- the three defaults, and the routing's `total` and validator over 127 routings each: every fraction over its edges,
+  sums just inside and just outside the ±0.01 band both ways, Rust's negative fraction with a sum of 1;
+- the state's validator (129 rows) and the config's (153: each field over its edges, two bad fields where Rust's order
+  picks the error — the non-negative loop, the divisors, then the routing — and Rust's cases);
+- 721 single `tick` rows: each pool and each of the 13 parameters over its edges, the α-KG and NAD+/NADH pairs (the
+  resting cell, no α-KG, a 0.1 µM α-KG cap, Rust's NaN and non-finite cases, the NAD+ factor from 0 to its cap),
+  time steps, Rust's two cap tests (0.1 µM of α-KG, and 10 nM of amino acids under 10 mM of it, each over 1000 s),
+  its no-clearance config, and seeded states and configs (the routing seeded too);
+- 57 `accumulate` rows and the serde documents (the routing a nested object or array);
+- 19 trajectory frames: Rust's runs, its large-dt conservation test at 1 and 5 s, its no-clearance test, a protein
+  meal refilling the pool every 50 steps, α-KG scarce then plentiful, a low NAD+ ratio, a purely ketogenic routing, a
+  degenerate start;
+- 7 rows of Rust's `test_amino_catab_feeds_tca` loop (`amino_catabolism::feeds_tca`): each step ticks catabolism on
+  TCA's α-KG, adds the five skeletons to TCA's pools and ticks TCA on the pyruvate.
+
+Amino-acid catabolism calls no transcendental: B for the arithmetic (905), T for the scripts and the coupling (26), A
+for the validators, the defaults and the documents (449). The coupling's TCA steps reach IDH's `pow`; their rows take
+the corrected oracle's rule in both models, and `amino_catabolism.cr.tsv` stays empty.
+
+| Check | Result |
+|---|---|
+| every row | identical on the first run (class B at 0 ulp, the trajectories and coupling runs bit for bit) |
+| corrected oracle | `mpfr_ref.py` models the 26 class-T rows (the coupling with TCA's model) and reproduces them with glibc's `pow`; the correctly rounded `pow` changes none |
+| `validate.py` | every row re-derived from its own transcription of `amino_catabolism.rs` (pinned lines, the defaults and constants read from the sources, the nested default checked), the coupling with its TCA model, MPFR's `pow` there and glibc's on the recorded platform; 117,827 checks in all. 35 flipped golden values (two per function: an f64's last bit, an Ok made an error and back, a document's byte) are each reported |
+| Rust tests | 23 unit and 4 integration tests ported (`tests/amino_catabolism.tcyr`, 41 checks); the ledger at 480 of 723, 0 due and unported |
+| fuzz | every input also read as the four documents (1,503 accepted, each written and read back bit for bit); an accepted valid state stepped 0.5 s and 50 s, and the default state on an accepted valid config, stay valid, keep their flux finite, and conserve nitrogen (the pools plus what the sink cleared) to 1e-12 |
+| four targets (`scripts/gates.sh`, 300 s, every step green) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 113,186 ok, 234 accepted, 0 failed; coverage 248 of 248 public fns executed |
+
+**The Cyrius forms** (ADR 0002 rows 7, 10): the routing is a struct field held by value, in place; a field of it is
+`c.carbon_routing.pyruvate`, its address `&c + 32` (the compiler takes no `&c.carbon_routing`). The config's codecs
+write the routing as the nested object serde_json writes and read it as an object or an array. The four types' field
+names are generated.
+
+**Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): amino_catab_tick 19.7 → 105 ns.
+
+### 7g. M4b and M4 complete
+
+M4b: three modules, 3,966 golden rows of their own (the ETC 1,572, β-oxidation 1,014, amino-acid catabolism 1,380),
+none reaching a transcendental of its own, every one matching on the first run; 80 Rust tests ported with them. M4:
+five modules, 9,526 golden rows (M4a's 5,560 and M4b's), every one matching the oracle with no row accepted and every
+corrected-oracle file empty (glibc's `pow` was correctly rounded on every class-C row and on every TCA step the
+couplings reach); 133 Rust tests ported. The shared forms M4 settled: a tick updates its state in place and fills the
+caller's flux record; a config row is the default with overrides (an integer field as `i:`, a nested struct
+flattened in place); a fixed-size array field is consecutive fields with an address view (ADR 0002 row 14); field
+names are generated; the crate-private entry points the metabolic network calls (`tick_regulated`,
+`gapdh_nad_factor`, the ETC's `EtcDrive` and `step`, `complex_i_capacity`, every `accumulate`) are ported and pinned
+through verbatim copies, so M5 starts on tested code; Rust's coupling loops (glycolysis to TCA, the full respiration
+pipeline, β-oxidation and amino-acid catabolism into TCA) are golden rows of class T.
+

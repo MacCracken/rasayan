@@ -13,7 +13,7 @@
 //! messages and JSON keys), one line per name. The config's 32 names don't fit a 120-column string literal, and
 //! Cyrius has no literal concatenation; they are the struct's own names, so they are generated like its values.
 
-use crate::cyr::{doc_comment, doc_comment_after, f64_lit, header};
+use crate::cyr::{doc_comment, doc_comment_after, f64_lit, header, name_blob};
 use crate::m_tca::{tc, ts};
 use crate::rustsrc::{Source, default_literal};
 use crate::tsv::{Class, Module, f};
@@ -68,23 +68,7 @@ pub fn emit_cyr(src: &Source, provenance: &str) -> Result<String, String> {
                 f64_lit(*x)?
             );
         }
-        let bytes: usize = names.iter().map(|n| n.len() + 1).sum();
-        let _ = writeln!(out, "# {ty}'s field names, NUL-separated, in declaration order.");
-        let _ = writeln!(out, "var _RY_{infix}_FIELDS: u8[{bytes}] = {{");
-        for n in names {
-            let codes: Vec<String> = n.bytes().chain([0]).map(|b| b.to_string()).collect();
-            let line = format!("    {},  # {n}", codes.join(", "));
-            if line.len() <= 120 {
-                let _ = writeln!(out, "{line}");
-                continue;
-            }
-            // A long name: 16 bytes a line, the first labelled.
-            for (k, chunk) in codes.chunks(16).enumerate() {
-                let label = if k == 0 { format!("  # {n}") } else { String::new() };
-                let _ = writeln!(out, "    {},{label}", chunk.join(", "));
-            }
-        }
-        out.push_str("};\n\n");
+        out.push_str(&name_blob(ty, infix, names));
     }
     Ok(out.trim_end().to_string() + "\n")
 }

@@ -8,7 +8,7 @@
 # MembranePermeability's; part 3, SecondMessenger's; part 4, MetabolicState's; part 5, BioenergyState's. M3 part 1:
 # every protein function on the input as a sequence; part 2, alignment on its two halves; parts 3 and 4, the PTM and
 # domain scans. M4a: the glycolysis and TCA codecs, and steps of every state the readers accept; M4b, the
-# ETC's and β-oxidation's.
+# ETC's, β-oxidation's and amino-acid catabolism's.
 
 include "src/constants.cyr"
 include "src/constants_private.cyr"
@@ -44,6 +44,8 @@ include "src/etc_data.cyr"
 include "src/etc.cyr"
 include "src/beta_oxidation_data.cyr"
 include "src/beta_oxidation.cyr"
+include "src/amino_catabolism_data.cyr"
+include "src/amino_catabolism.cyr"
 
 var _fz_state = 0x2545F4914F6CDD1D;
 var _fz_bad = 0;
@@ -61,6 +63,7 @@ var _fz_glycolysis = 0;
 var _fz_tca = 0;
 var _fz_etc = 0;
 var _fz_beta_ox = 0;
+var _fz_amino = 0;
 
 # xorshift64*: the next pseudo-random word.
 fn fz_next(): i64 {
@@ -586,6 +589,96 @@ fn fuzz_beta_ox(data, len) {
     return 0;
 }
 
+# Steps amino-acid catabolism state *s on config *c 0.5 s, then 50 s, at α-KG 0.3 and NAD+/NADH 700: a failure when
+# the state stops validating, a flux is not finite, or the nitrogen (the three pools plus what the sink cleared) moves
+# more than 1e-12 of the start.
+fn fz_amino_step(s: *RyAminoCatabState, c: *RyAminoCatabConfig) {
+    var f: RyAminoCatabFlux;
+    var before: f64 = s.amino_acid_pool + s.glutamate + s.ammonium;
+    ry_amino_catab_state_tick(s, c, 0.3, 700.0, 0.5, &f);
+    var cleared: f64 = f.nh4_cleared;
+    var ok = fz_all_finite(&f, 12);
+    ry_amino_catab_state_tick(s, c, 0.3, 700.0, 50.0, &f);
+    cleared = cleared + f.nh4_cleared;
+    if (fz_all_finite(&f, 12) == 0) { ok = 0; }
+    var after: f64 = s.amino_acid_pool + s.glutamate + s.ammonium + cleared;
+    var drift: f64 = f64_abs(after - before);
+    var bound: f64 = 0.000000000001 * before;
+    var tv, vv = ry_amino_catab_state_validate(s);
+    if (is_ok(tv) == 0 || ok == 0 || drift > bound) { _fz_bad = _fz_bad + 1; }
+    return 0;
+}
+
+# amino_catabolism: the four codecs on one input (an accepted value holds only finite f64s and reads back bit for bit
+# from what it writes); a valid state with pools under 1e300, and the default state on an accepted config that
+# validates, each stepped by fz_amino_step.
+fn fuzz_amino(data, len) {
+    reset_via(_fz_arena);
+    var r: RyCarbonSkeletonOutput;
+    var rb: RyCarbonSkeletonOutput;
+    var t1, v1 = ry_carbon_skeleton_output_from_json_a(_fz_arena, data, len, &r);
+    if (is_ok(t1) == 1) {
+        _fz_amino = _fz_amino + 1;
+        store64(_fz_sb + 8, 0);
+        var t2, v2 = ry_carbon_skeleton_output_to_json(_fz_sb, &r);
+        var t3, v3 = ry_carbon_skeleton_output_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &rb);
+        if (fz_all_finite(&r, 6) == 0 || is_ok(t2) == 0 || is_ok(t3) == 0 || memeq(&rb, &r, 48) == 0) {
+            _fz_bad = _fz_bad + 1;
+        }
+    }
+    var dc: RyAminoCatabConfig;
+    ry_amino_catab_config_default(&dc);
+    var s: RyAminoCatabState;
+    var sb2: RyAminoCatabState;
+    var t4, v4 = ry_amino_catab_state_from_json_a(_fz_arena, data, len, &s);
+    if (is_ok(t4) == 1) {
+        _fz_amino = _fz_amino + 1;
+        store64(_fz_sb + 8, 0);
+        var t5, v5 = ry_amino_catab_state_to_json(_fz_sb, &s);
+        var t6, v6 = ry_amino_catab_state_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &sb2);
+        if (fz_all_finite(&s, 3) == 0 || is_ok(t5) == 0 || is_ok(t6) == 0 || memeq(&sb2, &s, 24) == 0) {
+            _fz_bad = _fz_bad + 1;
+        }
+        var tv, vv = ry_amino_catab_state_validate(&s);
+        var huge: f64 = 0x7E37E43C8800759C;     # 1e300
+        var aa: f64 = s.amino_acid_pool;
+        var glu: f64 = s.glutamate;
+        var nh4: f64 = s.ammonium;
+        if (is_ok(tv) == 1 && aa < huge && glu < huge && nh4 < huge) { fz_amino_step(&s, &dc); }
+    }
+    var c2: RyAminoCatabConfig;
+    var cb: RyAminoCatabConfig;
+    var t7, v7 = ry_amino_catab_config_from_json_a(_fz_arena, data, len, &c2);
+    if (is_ok(t7) == 1) {
+        _fz_amino = _fz_amino + 1;
+        store64(_fz_sb + 8, 0);
+        var t8, v8 = ry_amino_catab_config_to_json(_fz_sb, &c2);
+        var t9, v9 = ry_amino_catab_config_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &cb);
+        if (fz_all_finite(&c2, 13) == 0 || is_ok(t8) == 0 || is_ok(t9) == 0 || memeq(&cb, &c2, 104) == 0) {
+            _fz_bad = _fz_bad + 1;
+        }
+        var tc, vc = ry_amino_catab_config_validate(&c2);
+        if (is_ok(tc) == 1) {
+            var d: RyAminoCatabState;
+            ry_amino_catab_state_default(&d);
+            fz_amino_step(&d, &c2);
+        }
+    }
+    var fx: RyAminoCatabFlux;
+    var fb: RyAminoCatabFlux;
+    var ta, va = ry_amino_catab_flux_from_json_a(_fz_arena, data, len, &fx);
+    if (is_ok(ta) == 1) {
+        _fz_amino = _fz_amino + 1;
+        store64(_fz_sb + 8, 0);
+        var tb, vb = ry_amino_catab_flux_to_json(_fz_sb, &fx);
+        var tf, vf = ry_amino_catab_flux_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &fb);
+        if (fz_all_finite(&fx, 12) == 0 || is_ok(tb) == 0 || is_ok(tf) == 0 || memeq(&fb, &fx, 96) == 0) {
+            _fz_bad = _fz_bad + 1;
+        }
+    }
+    return 0;
+}
+
 # A NUL-terminated copy of the document builder `sb` holds (a seed).
 fn fz_seed_of(sb): i64 {
     var n = load64(sb + 8);
@@ -736,7 +829,7 @@ fn main() {
     var buf = alloc(cap + 1);
     _fz_arena = arena_allocator_growable(65536);
     _fz_sb = str_builder_new();
-    var seeds = alloc(8 * 51);
+    var seeds = alloc(8 * 55);
     store64(seeds, "trace");
     store64(seeds + 8, "DEBUG");
     store64(seeds + 16, "info,warn");
@@ -831,6 +924,26 @@ fn main() {
     store64(_fz_sb + 8, 0);
     var tb1, vb1 = ry_beta_ox_flux_to_json(_fz_sb, &bxf);
     store64(seeds + 400, fz_seed_of(_fz_sb));
+    # The amino-acid catabolism documents: the default routing, the default state in the sequence form, the default
+    # config (its routing a nested object) and a step's flux as written.
+    store64(seeds + 416, "[2,0.5,0.05]");
+    var amc: RyAminoCatabConfig;
+    var ams: RyAminoCatabState;
+    var amf: RyAminoCatabFlux;
+    ry_amino_catab_config_default(&amc);
+    ry_amino_catab_state_default(&ams);
+    ry_amino_catab_state_tick(&ams, &amc, 0.3, 700.0, 0.1, &amf);
+    var amr: RyCarbonSkeletonOutput;
+    ry_carbon_skeleton_output_default(&amr);
+    store64(_fz_sb + 8, 0);
+    var ta0, va0 = ry_carbon_skeleton_output_to_json(_fz_sb, &amr);
+    store64(seeds + 408, fz_seed_of(_fz_sb));
+    store64(_fz_sb + 8, 0);
+    var ta1, va1 = ry_amino_catab_config_to_json(_fz_sb, &amc);
+    store64(seeds + 424, fz_seed_of(_fz_sb));
+    store64(_fz_sb + 8, 0);
+    var ta2, va2 = ry_amino_catab_flux_to_json(_fz_sb, &amf);
+    store64(seeds + 432, fz_seed_of(_fz_sb));
     var i = 0;
     while (i < 50000) {
         var n = 0;
@@ -839,7 +952,7 @@ fn main() {
             var k = 0;
             while (k < n) { store8(buf + k, fz_below(256)); k = k + 1; }
         } else {
-            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(51)));
+            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(55)));
         }
         fuzz_main(buf, n);
         fuzz_json(buf, n);
@@ -852,6 +965,7 @@ fn main() {
         fuzz_tca(buf, n);
         fuzz_etc(buf, n);
         fuzz_beta_ox(buf, n);
+        fuzz_amino(buf, n);
         i = i + 1;
     }
     if (_fz_bad != 0) {
@@ -881,6 +995,8 @@ fn main() {
     fmt_int(_fz_etc);
     print(", beta-oxidation documents read: ", 33);
     fmt_int(_fz_beta_ox);
+    print(", amino-acid catabolism documents read: ", 40);
+    fmt_int(_fz_amino);
     println(")");
     return 0;
 }
