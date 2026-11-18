@@ -17,7 +17,7 @@
   receptor, the signaling network). The reference moved to accuracy and the Rust tooling left (ADR 0005)
 - [x] M7 — the neuroendocrine modules: neurotransmitter, hormonal
 - [x] M8 — MCP and the AI client (plan §6)
-- [ ] M9 — release 2.0.0
+- [x] M9 — release 2.0.0 (the maintainer tags it)
 
 ## Backlog
 

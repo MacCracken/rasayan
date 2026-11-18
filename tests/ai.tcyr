@@ -160,6 +160,18 @@ fn events() {
     return 0;
 }
 
+# The module doc's example (rust-old/src/ai.rs, `//! # Example`, `no_run`: one of Rust's two doc tests, M9). As in
+# Rust it is compiled and never run: it needs a hoosh server at localhost:8088.
+fn doc_example(): i64 {
+    var client: RyBiochemClient;
+    ry_biochem_client_new(&client, "http://localhost:8088", "llama3");
+    var answer: RyInferenceResponse;
+    var t, v = ry_biochem_client_query(&client, "What is the Km of hexokinase for glucose?", &answer);
+    if (is_err_result(t) == 1) { return v; }
+    println(answer.text);
+    return 0;
+}
+
 # Runs the ai suite.
 fn main() {
     alloc_init();

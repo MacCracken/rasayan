@@ -1,0 +1,39 @@
+=== Enzyme Kinetics ===
+Catalytic efficiency: 100 M^-1 s^-1
+
+[S] (M)    Rate (M/s)   % Vmax
+-------    ----------   ------
+  0.10       0.9091       9.1%
+  0.25       2.0000      20.0%
+  0.50       3.3333      33.3%
+  1.00       5.0000      50.0%
+  2.00       6.6667      66.7%
+  5.00       8.3333      83.3%
+ 10.00       9.0909      90.9%
+ 50.00       9.8039      98.0%
+
+=== Cooperative Binding (Hill) ===
+n=1 (no coop)  vs  n=4 (strong coop) at [S]=Km:
+  n=1: 5.00 M/s
+  n=4: 5.00 M/s
+
+=== Membrane Potential ===
+Resting membrane potential: -77.3 mV
+Nernst K+:  -97.7 mV
+Nernst Na+: 66.6 mV
+
+=== Metabolic State ===
+Energy charge: 0.960
+Aerobic ATP yield: 30
+After consuming 3 ATP: ATP=3.0, ADP=3.5
+
+=== Dose-Response Curve ===
+[L]/EC50    Response
+--------    --------
+    0.01      0.0099
+    0.10      0.0909
+    0.50      0.3333
+    1.00      0.5000
+    2.00      0.6667
+   10.00      0.9091
+  100.00      0.9901

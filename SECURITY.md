@@ -2,7 +2,7 @@
 
 ## Scope
 
-Rasayan is a pure biochemistry computation library providing enzyme kinetics, metabolic modeling, signal transduction, protein analysis, and membrane transport — Rust 1.2.0 (frozen) and its Cyrius 2.0.0 port in progress. The attack-surface table below describes the Rust crate; the port carries the same mitigations (input limits, NaN/±inf guards, dt-safe ticks). The core library performs no I/O, and `unsafe` code is forbidden crate-wide (`#![forbid(unsafe_code)]`).
+Rasayan is a pure biochemistry computation library providing enzyme kinetics, metabolic modeling, signal transduction, protein analysis, and membrane transport — the Cyrius 2.0.0 library, the port of the frozen Rust 1.2.0 crate. The attack-surface table below names the Rust crate's mitigations; 2.0.0 carries every one (input limits, NaN/±inf guards, dt-safe ticks), and its I/O is the optional hoosh client's (`[lib.ai]`, on sandhi). The core library performs no I/O, and `unsafe` code is forbidden crate-wide (`#![forbid(unsafe_code)]`).
 
 ## Attack Surface
 
@@ -20,7 +20,7 @@ Rasayan is a pure biochemistry computation library providing enzyme kinetics, me
 
 | Version | Supported |
 |---------|-----------|
-| 2.0.x (Cyrius) | In development — the port; fixes land here |
+| 2.0.x (Cyrius) | Yes — the current release; fixes land here |
 | 1.2.x (Rust) | Final release, frozen as the port's functional spec; no further Rust releases |
 | < 1.2 | No |
 

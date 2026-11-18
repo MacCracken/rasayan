@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-11-18
+
+rasayan 2.0.0 is the Cyrius port of the Rust crate 1.2.0 ([port plan](docs/development/rasayan-port-plan.md)). Every
+Rust module, public item, test (723 of 723), benchmark (48 of 48) and example has a Cyrius counterpart. The 125,051
+golden rows hold each function's accurate value (binary64 with correctly rounded primitives, MPFR; [ADR
+0005](docs/adr/0005-accuracy-is-the-reference.md)), and the port matches them on x86_64 ELF, PE and aarch64. The Rust
+crate stays on crates.io at 1.2.0, frozen in `rust-old/` as the functional spec.
+
+### Breaking
+
+- **The library is Cyrius.** Rust consumers stay on 1.2.0. Cyrius consumers declare rasayan and include a profile's
+  bundle (`dist/rasayan.cyr`, `-mcp`, `-ai`, `-full`). The names carry `ry_` (ADR 0001); errors are `RY_ERR_*` codes in
+  a value-form `Result`, wide results fill the caller's record, and `Vec` results fill a caller buffer. [ADR
+  0002](docs/adr/0002-port-api-divergences.md) lists every difference, and the [migration
+  guide](docs/guides/migration-2.0.md) maps the API.
+- **Transcendentals are correctly rounded** (ADR 0003): results can differ from 1.2.0's in the last bit wherever
+  glibc misrounds, and are the same on every target.
+
 Cyrius port, M0 part 1 ([port plan](docs/development/rasayan-port-plan.md) §4 steps 0–2),
 part 2a (steps 4–5, first part), part 2b (step 6), part 2c-1 (step 7 and the corrected oracle),
 part 2c-2 (the correctly rounded primitives), part 2c-3 (their dense MPFR sweep), part 3a (step 8's
@@ -21,10 +39,23 @@ follow: M4b is complete, and with it M4. M5 part 1 (the metabolic network's type
 codecs), part 2 (its step) and part 3 (the steady-state run, the long runs, the soak) follow: M5 is complete.
 M6 part 1 (the MAPK cascade), part 2 (PI3K/Akt/mTOR), part 3 (JAK-STAT) and part 4 (calcium) follow; then the
 reference moves to accuracy with no Rust in the tooling ([ADR 0005](docs/adr/0005-accuracy-is-the-reference.md)), and
-part 5 (receptor) is the first module its Python generator writes.
+part 5 (receptor) is the first module its Python generator writes. Part 6 (nuclear_receptor) and part 7 (the signaling
+network) complete M6; M7 part 1 (neurotransmitter) and part 2 (hormonal) complete M7; M8 part 1 (the MCP tools) and
+part 2 (the hoosh client) complete M8; M9 is the release.
 
 ### Added
 
+- **docs/examples/basic.cyr** (M9) — `examples/basic.rs` on `dist/rasayan.cyr`, with Rust's `{:w.p}` formatting done
+  exactly (the double's value rounded half to even, on fmtf's bignum). Its output is `docs/examples/basic.expected`,
+  written by `gen.py` from the same calls (MPFR's ln and pow); `scripts/gates.sh` builds it, with no warning line,
+  and compares the two byte for byte
+- **The doc tests** (M9) — glycolysis.rs's usage example (`tests/glycolysis.tcyr`, `doc_usage`) and ai.rs's `no_run`
+  example (`tests/ai.tcyr`, `doc_example`, compiled and not run, as in Rust)
+- **The last four benchmark twins** (M9) — competitive_inhibition 3.46 → 29 ns, substrate_inhibition 2.40 → 24,
+  sequential_bisubstrate 2.81 → 26, eadie_hofstee_fit 85.9 → 339: all 48 Rust benchmarks have theirs, and
+  `docs/benchmarks-rust-v-cyrius.md` opens with the summary table (median 6.2×)
+- **docs/guides/migration-2.0.md** (M9) — the Rust 1.2.0 API mapped onto the Cyrius one; the README and the getting
+  started guide for 2.0.0
 - **src/ai.cyr**, **src/ai_http.cyr**, **src/ai_client_data.cyr** (M8 part 2, `[lib.ai]`) — `ai.rs`'s `BiochemClient`
   as a synchronous hoosh client on sandhi: `RyBiochemClient` (the base URL with its trailing slashes trimmed, the
   model, the system prompt), `ry_biochem_client_new`, `_with_system_prompt`, and the Cyrius-only `_with_token` and

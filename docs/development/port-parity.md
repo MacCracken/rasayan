@@ -2005,3 +2005,14 @@ harness checks `src/ai.cyr`, which calls no sandhi, so its build stays clean; `t
 
 **Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`, Cyrius only): a query body 7.3 µs, a chat answer read 7.9 µs, a
 model list read 3.4 µs.
+
+## 12. M9: the 2.0.0 release (2026-11-18)
+
+| Check | Result |
+|---|---|
+| the example | `docs/examples/basic.cyr` on `dist/rasayan.cyr` builds with no warning line; its 39 lines byte-identical to `docs/examples/basic.expected`, which `gen.py` writes from basic.rs's calls on MPFR's ln and pow, formatted as Rust's `{:w.p}` (the exact value rounded half to even) |
+| the doc tests | glycolysis.rs's usage example run (`tests/glycolysis.tcyr`); ai.rs's `no_run` example compiled (`tests/ai.tcyr`) |
+| Rust tests | 723 of 723 ported (`docs/development/rust-test-ledger.md`), and the 2 doc tests |
+| benchmarks | 48 of 48 Rust benchmarks with their Cyrius twins; the summary in `docs/benchmarks-rust-v-cyrius.md` |
+| surface parity | 0 missing over every module |
+| four targets (`scripts/gates.sh`, 538 s) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 124,970 ok, 81 accepted (ADR 3: 0), 0 failed; coverage 492 of 492 public fns executed; the four bundles current |

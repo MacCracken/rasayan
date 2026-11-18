@@ -75,6 +75,17 @@ echo "rasayan warning lines (build): $bw"
 # Every bundle: [lib], [lib.mcp] (the MCP tools), [lib.ai] (the hoosh client) and [lib.full] (both; M8). --check is
 # read-only (dist/ is committed and must be current).
 PAT='current|stale|differ|error|checked' TAILN=6 run cyrius distlib --check
+# The example (M9): docs/examples/basic.cyr (rust-old/examples/basic.rs) on dist/rasayan.cyr, built with no warning
+# line, its output byte-identical to docs/examples/basic.expected (written by gen.py from the same calls).
+mkdir -p build/examples
+example() {
+    cyrius build docs/examples/basic.cyr build/examples/basic || return 1
+    ./build/examples/basic > build/examples/basic.out || return 1
+    cmp build/examples/basic.out docs/examples/basic.expected && echo "basic.expected: identical"
+}
+PAT='OK|warn|error|identical|differ' run example
+ew=$(grep -i warning "$OUT/step.out" | grep -viE "$KNOWN" | wc -l)
+[ "$ew" -eq 0 ] || FAILED+=("docs/examples/basic.cyr ($ew warning lines)")
 
 # ── 3. The parity corpus on every target, one at a time: ELF, ELF --bounds, PE (wine), aarch64 (qemu) ─────────────
 for t in '' --bounds --win --aarch64; do

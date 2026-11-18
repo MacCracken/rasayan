@@ -1,7 +1,7 @@
 # Benchmarks: Rust 1.2.0 against the Cyrius port
 
-Speed is measured, not gated (CLAUDE.md). Each module's benchmarks join this record at its milestone; every Rust
-benchmark (48, `rust-old/benches/benchmarks.rs`) gets its Cyrius twin with the same inputs.
+Speed is measured, not gated (CLAUDE.md). Each module's benchmarks joined this record at its milestone, and every
+Rust benchmark (48, `rust-old/benches/benchmarks.rs`) has its Cyrius twin with the same inputs.
 
 - **Rust:** criterion on the frozen crate at tag `1.2.0` (`rust-old/bench-history.csv`, commit `adadf54`, run
   2026-11-17T01:47Z), rustc 1.100.0.
@@ -9,6 +9,86 @@ benchmark (48, `rust-old/benches/benchmarks.rs`) gets its Cyrius twin with the s
   (fewer where noted) inside a plain loop whose result is kept, so every Cyrius number includes the loop and a call
   that criterion's inlined, black-boxed loop doesn't have (the `noop` row, 3 ns).
 - **Machine:** AMD Ryzen 7 5800H, Linux 7.2, both columns.
+
+## Summary (2.0.0)
+
+Every one of the 48 Rust benchmarks has its Cyrius twin with the same inputs. M9 added the last four:
+competitive_inhibition, substrate_inhibition, sequential_bisubstrate and eadie_hofstee_fit. The Cyrius column below is
+one `cyrius bench` run at M9 (load 0.7); the Rust column is the frozen 1.2.0 run. The sections after it hold each
+part's own measurements and the reasons behind them.
+
+| Benchmark | Rust 1.2.0 | Cyrius 2.0.0 | Cyrius / Rust |
+|---|---|---|---|
+| michaelis_menten | 1.45 ns | 11 ns | 7.6× |
+| hill_equation | 17.8 ns | 155 ns | 8.7× |
+| mixed_inhibition | 4.28 ns | 33 ns | 7.7× |
+| ping_pong | 2.75 ns | 21 ns | 7.6× |
+| arrhenius | 5.91 ns | 50 ns | 8.5× |
+| lineweaver_burk_fit | 99.3 ns | 347 ns | 3.5× |
+| nernst | 9.61 ns | 73 ns | 7.6× |
+| goldman | 11 ns | 92 ns | 8.4× |
+| dose_response | 20.3 ns | 154 ns | 7.6× |
+| metabolic_tick | 17.6 ns | 107 ns | 6.1× |
+| protein_lookup | 3.38 ns | 6 ns | 1.8× |
+| molecular_weight | 23.1 ns | 152 ns | 6.6× |
+| bioenergy_tick | 27.2 ns | 128 ns | 4.7× |
+| enzyme_lookup | 4.43 ns | 82 ns | 18.5× |
+| glycolysis_tick | 113 ns | 690 ns | 6.1× |
+| tca_tick | 75.4 ns | 468 ns | 6.2× |
+| etc_tick | 43.2 ns | 173 ns | 4.0× |
+| beta_ox_tick | 19.7 ns | 82 ns | 4.2× |
+| amino_catab_tick | 19.7 ns | 99 ns | 5.0× |
+| network_tick | 1.02 µs | 4.46 µs | 4.4× |
+| network_tick_1s | 55.76 µs | 236.58 µs | 4.2× |
+| mapk_tick | 48.8 ns | 213 ns | 4.4× |
+| signaling_tick | 154 ns | 700 ns | 4.5× |
+| isoelectric_point | 1.81 µs | 18.24 µs | 10.1× |
+| isoelectric_point_bjellqvist | 1.81 µs | 18.29 µs | 10.1× |
+| extinction_coefficient | 30.5 ns | 165 ns | 5.4× |
+| chou_fasman | 298 ns | 1.74 µs | 5.8× |
+| substitution_score | 2.29 ns | 15 ns | 6.6× |
+| needleman_wunsch_10 | 441 ns | 972 ns | 2.2× |
+| needleman_wunsch_300 | 173.87 µs | 526.35 µs | 3.0× |
+| ptm_scan_20 | 190 ns | 339 ns | 1.8× |
+| domain_scan_20 | 141 ns | 362 ns | 2.6× |
+| competitive_inhibition | 3.46 ns | 29 ns | 8.4× |
+| substrate_inhibition | 2.4 ns | 24 ns | 10.0× |
+| sequential_bisubstrate | 2.81 ns | 26 ns | 9.3× |
+| eadie_hofstee_fit | 85.9 ns | 339 ns | 3.9× |
+| receptor_occupancy | 1.61 ns | 13 ns | 8.1× |
+| fick_flux | 2.51 ns | 20 ns | 8.0× |
+| net_charge | 143 ns | 1.62 µs | 11.3× |
+| composition | 292 ns | 485 ns | 1.7× |
+| score_alignment | 62.1 ns | 180 ns | 2.9× |
+| calcium_tick | 40.2 ns | 145 ns | 3.6× |
+| jak_stat_tick | 46.9 ns | 152 ns | 3.2× |
+| pi3k_tick | 39.6 ns | 141 ns | 3.6× |
+| receptor_tick | 10.2 ns | 74 ns | 7.2× |
+| nuclear_receptor_tick | 9.16 ns | 76 ns | 8.3× |
+| neurotransmitter_tick | 48 ns | 344 ns | 7.2× |
+| hormonal_tick | 33.4 ns | 209 ns | 6.3× |
+
+The median ratio is 6.2× (1.7× to 18.5×). Three costs account for most of it:
+
+- **The correctly rounded transcendentals** (ADR 0003): `pow` is about 140 ns, against glibc's 12. They give the
+  same bits on every target.
+- **The harness loop and a real call** per operation (the `noop` row, 3 ns). Criterion inlines the call into a
+  black-boxed loop.
+- **No inlining across modules or vectorization** at the pinned toolchain.
+
+The largest ratios fall into three groups:
+
+- **enzyme_lookup, 18.5×**: a case-folded name search over the table. rustc folds it to compares, where the port
+  runs a byte loop per entry.
+- **net_charge and isoelectric_point, 10–11×**: each evaluation is many correctly rounded `pow` calls, 14 bisection
+  steps of them for the pI.
+- **The one-line rate laws** (substrate_inhibition, sequential_bisubstrate, competitive_inhibition, 8–10×): the call
+  and the loop are most of a 2–3 ns Rust body.
+
+The smallest ratios, 1.7× to 3×, are the sequence functions: composition, the PTM and domain scans,
+Needleman-Wunsch and score_alignment. They are integer byte loops with no transcendental, where the two compilers
+are closest. The MCP tools and the ai client have no Rust benchmark: their Cyrius-only measurements are in the M8
+sections.
 
 ## M1 (Cyrius only: the layers are crate-private in Rust, inlined into every tick)
 

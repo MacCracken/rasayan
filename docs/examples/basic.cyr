@@ -1,0 +1,224 @@
+# Basic usage of rasayan — enzyme kinetics and membrane potential (rust-old/examples/basic.rs, as Cyrius).
+#
+#   cyrius build docs/examples/basic.cyr build/examples/basic && ./build/examples/basic
+#
+# The output is docs/examples/basic.expected (written by scripts/oracle/gen.py from the same calls, MPFR's ln and
+# pow), which scripts/gates.sh compares byte for byte. The program uses the [lib] bundle, dist/rasayan.cyr, as a
+# consumer would. Rust's `{:w.p}` (the value rounded half to even at p decimals, right-aligned in w columns) is
+# `fixed` below: the decimal is exact, from the double's integer significand and exponent on fmtf's bignum.
+
+include "dist/rasayan.cyr"
+
+# ── Rust's `{:w.p}` ──
+
+# 1 when x · 10^p (x = m · 2^e, the double's exact value) is at most c + h / 2 for h = +1, at least c - h / 2 for
+# h = -1 (h ±1): the exact comparison 2 · m · 10^p · 2^e against (2c + h), in bignums.
+fn _ex_side(m, e, p, c, h): i64 {
+    var lhs[328];
+    var rhs[328];
+    _ry_bn_set(&lhs, m);
+    _ry_bn_mul_small(&lhs, 2);
+    _ry_bn_mul_pow10(&lhs, p);
+    _ry_bn_set(&rhs, 2 * c + h);
+    if (e >= 0) {
+        _ry_bn_shl(&lhs, e);
+    } else {
+        _ry_bn_shl(&rhs, 0 - e);
+    }
+    return _ry_bn_cmp(&lhs, &rhs);
+}
+
+# |x| · 10^p rounded half to even, as an integer (|x| · 10^p below 2^52).
+fn _ex_scaled(x: f64, p): i64 {
+    var ax: f64 = f64_abs(x);
+    var bits = _ry_bits(ax);
+    var m = bits & 0x000FFFFFFFFFFFFF;
+    var be = (bits >> 52) & 0x7FF;
+    var e = 0 - 1074;
+    if (be != 0) {
+        m = m | 0x0010000000000000;
+        e = be - 1075;
+    }
+    if (m == 0) { return 0; }
+    var scale: f64 = 1.0;
+    var k = 0;
+    while (k < p) {
+        scale = scale * 10.0;
+        k = k + 1;
+    }
+    var guess: f64 = ax * scale;
+    var c = f64_to(f64_floor(guess)) - 1;
+    if (c < 0) { c = 0; }
+    # The first c whose upper half-point is at or above x · 10^p; on an exact tie, the even one.
+    while (_ex_side(m, e, p, c, 1) > 0) { c = c + 1; }
+    if (_ex_side(m, e, p, c, 1) == 0 && (c & 1) == 1) { c = c + 1; }
+    if (c > 0 && _ex_side(m, e, p, c, 0 - 1) == 0 && (c & 1) == 1) { c = c - 1; }
+    return c;
+}
+
+# Prints x as Rust's `{:w.p}`: rounded half to even at p decimals, a `-` for a negative x, right-aligned in w columns.
+fn fixed(x: f64, w, p): i64 {
+    var n = _ex_scaled(x, p);
+    var unit = 1;
+    var k = 0;
+    while (k < p) {
+        unit = unit * 10;
+        k = k + 1;
+    }
+    var buf[64];
+    var at = 63;
+    var frac = n % unit;
+    k = 0;
+    while (k < p) {
+        at = at - 1;
+        store8(&buf + at, 48 + frac % 10);
+        frac = frac / 10;
+        k = k + 1;
+    }
+    if (p > 0) {
+        at = at - 1;
+        store8(&buf + at, 46);
+    }
+    var whole = n / unit;
+    at = at - 1;
+    store8(&buf + at, 48 + whole % 10);
+    whole = whole / 10;
+    while (whole > 0) {
+        at = at - 1;
+        store8(&buf + at, 48 + whole % 10);
+        whole = whole / 10;
+    }
+    if ((_ry_bits(x) >> 63) & 1 == 1) {
+        at = at - 1;
+        store8(&buf + at, 45);
+    }
+    var len = 63 - at;
+    while (len < w) {
+        print(" ", 1);
+        len = len + 1;
+    }
+    print(&buf + at, 63 - at);
+    return 0;
+}
+
+# Prints the C string s.
+fn say(s): i64 {
+    print(s, strlen(s));
+    return 0;
+}
+
+# The program: basic.rs's five sections, in its order.
+fn main(): i64 {
+    alloc_init();
+    # --- Enzyme kinetics: Michaelis-Menten rate curve ---
+    var params: RyEnzymeParams;
+    params.vmax = 10.0;                          # M/s
+    params.km = 1.0;                             # M (Michaelis constant)
+    params.hill_n = 1.0;                         # standard (no cooperativity)
+    params.kcat = 100.0;
+    println("=== Enzyme Kinetics ===");
+    say("Catalytic efficiency: ");
+    var eff: f64 = ry_enzyme_params_catalytic_efficiency(&params);
+    fixed(eff, 0, 0);
+    println(" M^-1 s^-1");
+    println("");
+    println("[S] (M)    Rate (M/s)   % Vmax");
+    println("-------    ----------   ------");
+    var conc[64];
+    store64(&conc, 0.1);
+    store64(&conc + 8, 0.25);
+    store64(&conc + 16, 0.5);
+    store64(&conc + 24, 1.0);
+    store64(&conc + 32, 2.0);
+    store64(&conc + 40, 5.0);
+    store64(&conc + 48, 10.0);
+    store64(&conc + 56, 50.0);
+    var i = 0;
+    while (i < 8) {
+        var s: f64 = load64(&conc + 8 * i);
+        var rate: f64 = ry_enzyme_params_rate(&params, s);
+        var pct: f64 = rate / params.vmax * 100.0;
+        fixed(s, 6, 2);
+        say("     ");
+        fixed(rate, 8, 4);
+        say("     ");
+        fixed(pct, 5, 1);
+        println("%");
+        i = i + 1;
+    }
+    println("");
+    # --- Hill equation: cooperative binding ---
+    println("=== Cooperative Binding (Hill) ===");
+    println("n=1 (no coop)  vs  n=4 (strong coop) at [S]=Km:");
+    var r1: f64 = ry_hill_equation(1.0, 10.0, 1.0, 1.0);
+    var r4: f64 = ry_hill_equation(1.0, 10.0, 1.0, 4.0);
+    say("  n=1: ");
+    fixed(r1, 0, 2);
+    println(" M/s");
+    say("  n=4: ");
+    fixed(r4, 0, 2);
+    println(" M/s");
+    println("");
+    # --- Membrane potential ---
+    println("=== Membrane Potential ===");
+    var ions: RyIonicState;
+    ry_ionic_state_default(&ions);
+    var vm: f64 = ry_ionic_state_resting_potential(&ions);
+    say("Resting membrane potential: ");
+    fixed(vm, 0, 1);
+    println(" mV");
+    var e_k: f64 = ry_nernst(310.0, 1, ions.k_out, ions.k_in);
+    var e_na: f64 = ry_nernst(310.0, 1, ions.na_out, ions.na_in);
+    say("Nernst K+:  ");
+    fixed(e_k, 0, 1);
+    println(" mV");
+    say("Nernst Na+: ");
+    fixed(e_na, 0, 1);
+    println(" mV");
+    println("");
+    # --- Metabolic state ---
+    println("=== Metabolic State ===");
+    var met: RyMetabolicState;
+    ry_metabolic_state_default(&met);
+    say("Energy charge: ");
+    var ec: f64 = ry_metabolic_state_energy_charge(&met);
+    fixed(ec, 0, 3);
+    println("");
+    say("Aerobic ATP yield: ");
+    var y: f64 = ry_metabolic_state_aerobic_atp_yield(&met);
+    fixed(y, 0, 0);
+    println("");
+    var used: f64 = ry_metabolic_state_consume_atp(&met, 3.0);
+    say("After consuming 3 ATP: ATP=");
+    fixed(met.atp, 0, 1);
+    say(", ADP=");
+    fixed(met.adp, 0, 1);
+    println("");
+    println("");
+    # --- Dose-response ---
+    println("=== Dose-Response Curve ===");
+    println("[L]/EC50    Response");
+    println("--------    --------");
+    var ratios[56];
+    store64(&ratios, 0.01);
+    store64(&ratios + 8, 0.1);
+    store64(&ratios + 16, 0.5);
+    store64(&ratios + 24, 1.0);
+    store64(&ratios + 32, 2.0);
+    store64(&ratios + 40, 10.0);
+    store64(&ratios + 48, 100.0);
+    i = 0;
+    while (i < 7) {
+        var ratio: f64 = load64(&ratios + 8 * i);
+        var r: f64 = ry_dose_response(ratio, 1.0, 1.0, 1.0);
+        fixed(ratio, 8, 2);
+        say("    ");
+        fixed(r, 8, 4);
+        println("");
+        i = i + 1;
+    }
+    return 0;
+}
+
+var rc = main();
+sys_exit_group(rc);

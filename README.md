@@ -2,10 +2,11 @@
 
 > **Rasayan** (Sanskrit: रसायन — alchemy, chemistry of life) — biochemistry engine for AGNOS
 
-> 🟡 **Porting to Cyrius.** This repository is mid-port: the Cyrius library (2.0.0) is being built
-> in `src/` against the frozen Rust **1.2.0** crate in [`rust-old/`](rust-old/), which stays on
-> [crates.io](https://crates.io/crates/rasayan) for Rust consumers. Progress:
-> [state](docs/development/state.md) · [port plan](docs/development/rasayan-port-plan.md).
+> **Cyrius 2.0.0.** The Cyrius library in `src/` is the port of the Rust crate **1.2.0**, frozen in
+> [`rust-old/`](rust-old/) as its functional spec and kept on [crates.io](https://crates.io/crates/rasayan) for Rust
+> consumers. Every Rust module, test, benchmark and example has a Cyrius counterpart: the
+> [migration guide](docs/guides/migration-2.0.md) maps the API, and the [state](docs/development/state.md) and
+> [port plan](docs/development/rasayan-port-plan.md) record how it was verified.
 
 Computational models of biochemistry: enzyme kinetics, metabolic pathways, signal transduction, protein structure, membrane transport, and bioenergetics.
 
@@ -33,42 +34,43 @@ Used by [mastishk](https://github.com/MacCracken/mastishk) (neuroscience), [kimi
 | `alignment` | BLOSUM62 / PAM250, pairwise scoring, Needleman-Wunsch (linear memory) |
 | `ptm`, `domain` | PROSITE-style PTM sites (N-glycosylation, phosphorylation, PKA, CK2, myristoylation, disulfides) and domain motifs (C2H2 zinc finger, leucine zipper, EF-hand, Walker A, RGD, DEAD-box, NLS, KDEL) |
 
-All state types validate with `validate()` (NaN/±inf rejected), and every `tick()` ignores a non-finite or non-positive `dt`, so a bad frame time can't corrupt a simulation.
+Every state type validates (`ry_<t>_validate`: NaN and ±inf refused), and every tick ignores a non-finite or non-positive `dt`, so a bad frame time can't corrupt a simulation.
 
-## Features
+## Profiles
 
-| Feature | Default | Description |
-|---------|---------|-------------|
-| `std` | yes | Standard library support for serde / thiserror |
-| `logging` | no | Structured logging via the `RASAYAN_LOG` env var (`tracing-subscriber`) |
-| `mcp` | no | 8 MCP tools via [bote](https://crates.io/crates/bote) (`rasayan::mcp`), with input size limits for untrusted callers |
-| `ai` | no | `BiochemClient` for LLM-backed queries via [hoosh](https://crates.io/crates/hoosh) |
-| `full` | -- | All of the above |
+| Profile | Bundle | Holds | Rust 1.2.0 feature |
+|---------|--------|-------|--------------------|
+| `[lib]` | `dist/rasayan.cyr` | every module above, and structured logging through `RASAYAN_LOG` (sakshi) | default, `logging` |
+| `[lib.mcp]` | `dist/rasayan-mcp.cyr` | `[lib]` and 8 MCP tools on [bote](https://github.com/MacCracken/bote), with input limits for untrusted callers | `mcp` |
+| `[lib.ai]` | `dist/rasayan-ai.cyr` | `[lib]` and `RyBiochemClient`, LLM-backed queries through a hoosh gateway on sandhi | `ai` |
+| `[lib.full]` | `dist/rasayan-full.cyr` | all of the above | `full` |
 
-The module and feature tables describe the Rust 1.2.0 API; the Cyrius 2.0.0 API mirrors it
-with `ry_`-prefixed names (ADR 0001), and ADR 0002 lists every deliberate difference.
+Names carry the `ry_` prefix (`enzyme::michaelis_menten` → `ry_michaelis_menten`, `MetabolicState` →
+`RyMetabolicState`; ADR 0001), and [ADR 0002](docs/adr/0002-port-api-divergences.md) lists every deliberate difference
+from the Rust API. Transcendentals are correctly rounded, with the same bits on every target (ADRs 0003, 0005).
 
-Rust MSRV (1.2.0): 1.100.
+## Quick Start
 
-## Quick Start (Rust 1.2.0)
+```cyrius
+include "dist/rasayan.cyr"
 
-```toml
-[dependencies]
-rasayan = "1"
+fn main(): i64 {
+    alloc_init();
+    # Michaelis-Menten kinetics: the rate at [S] = Km is Vmax/2
+    var rate: f64 = ry_michaelis_menten(1.0, 10.0, 1.0);
+    # Resting membrane potential (Goldman, the default neuron's ion concentrations), about -77 mV
+    var ions: RyIonicState;
+    ry_ionic_state_default(&ions);
+    var vm: f64 = ry_ionic_state_resting_potential(&ions);
+    return 0;
+}
+
+var r = main();
+sys_exit_group(r);
 ```
 
-```rust
-use rasayan::enzyme;
-
-// Michaelis-Menten kinetics: rate at [S] = Km is Vmax/2
-let rate = enzyme::michaelis_menten(1.0, 10.0, 1.0);
-assert!((rate - 5.0).abs() < 0.01);
-
-// Resting membrane potential (Goldman, default neuron ion concentrations)
-let ions = rasayan::membrane::IonicState::default();
-let vm = ions.resting_potential();
-println!("Resting Vm: {vm:.1} mV"); // about -70 mV
-```
+[`docs/examples/basic.cyr`](docs/examples/basic.cyr) is the Rust crate's `examples/basic.rs`, with its output in
+`basic.expected`. Rust 1.2.0: `rasayan = "1"` in `Cargo.toml` (see [`rust-old/README.md`](rust-old/README.md)).
 
 ## Architecture
 
@@ -90,14 +92,17 @@ Also feeds:
 ## Development
 
 ```bash
-cyrius deps                                   # resolve dependencies (vendors lib/)
-cyrius build src/main.cyr build/rasayan       # compile the Cyrius port
-cyrius test                                   # tests (golden parity corpus from M0)
-cyrius bench                                  # benchmarks
-cyrius audit                                  # fmt, lint, docs, tests, bench
+cyrius deps --features mcp                    # resolve dependencies (vendors lib/; mcp: the optional bote)
+cyrius build src/main.cyr build/rasayan       # compile
+cyrius test                                   # tests/*.tcyr, the golden parity corpus among them
+cyrius bench                                  # benchmarks (docs/benchmarks-rust-v-cyrius.md)
+cyrius distlib --all                          # the four bundles in dist/
+bash scripts/gates.sh                         # every gate, on x86_64 ELF, PE and aarch64
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full cleanliness check.
+The golden corpus (`tests/golden/`, about 125,000 rows) holds each function's accurate value, written by the Python
+models in `scripts/oracle/` on MPFR; no Rust runs anywhere (ADR 0005). See [CONTRIBUTING.md](CONTRIBUTING.md) for the
+cleanliness check.
 
 ## License
 

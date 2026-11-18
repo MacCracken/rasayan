@@ -361,7 +361,9 @@ fn _bn_read(text, nf, names, n): i64 {
 
 # n calls of enzyme benchmark `kind`, its result kept: 0 michaelis_menten(1, 10, 1), 1 hill_equation(0.5, 10, 1, 4),
 # 2 mixed_inhibition(1, 0.5, 10, 1, 2, 3), 3 ping_pong(1, 2, 10, 0.5, 1), 4 arrhenius(1e10, 50000, 310),
-# 5 lineweaver_burk_fit of seven MM(10, 1) points, 6 lookup_enzyme("Catalase").
+# 5 lineweaver_burk_fit of seven MM(10, 1) points, 6 lookup_enzyme("Catalase"), 7 competitive_inhibition(1, 0.5,
+# 10, 1, 2), 8 substrate_inhibition(1, 10, 1, 50), 9 sequential_bisubstrate(1, 2, 10, 0.5, 1, 0.5), 10
+# eadie_hofstee_fit of the same seven points.
 fn _bn_enzyme(kind, n): i64 {
     var data[112];
     var ss[56];
@@ -402,8 +404,19 @@ fn _bn_enzyme(kind, n): i64 {
             s = s + r4;
         } elif (kind == 5) {
             hits = hits + ry_lineweaver_burk_fit(&data, 7, &fit);
-        } else {
+        } elif (kind == 6) {
             hits = hits + ry_lookup_enzyme("Catalase", 8);
+        } elif (kind == 7) {
+            var r7: f64 = ry_competitive_inhibition(1.0, 0.5, 10.0, 1.0, 2.0);
+            s = s + r7;
+        } elif (kind == 8) {
+            var r8: f64 = ry_substrate_inhibition(1.0, 10.0, 1.0, 50.0);
+            s = s + r8;
+        } elif (kind == 9) {
+            var r9: f64 = ry_sequential_bisubstrate(1.0, 2.0, 10.0, 0.5, 1.0, 0.5);
+            s = s + r9;
+        } else {
+            hits = hits + ry_eadie_hofstee_fit(&data, 7, &fit);
         }
         i = i + 1;
     }
@@ -1366,6 +1379,10 @@ fn main(): i64 {
     _bn_enz("arrhenius", 4, 1000000);
     _bn_enz("lineweaver_burk_fit", 5, 200000);
     _bn_enz("enzyme_lookup", 6, 1000000);
+    _bn_enz("competitive_inhibition", 7, 1000000);
+    _bn_enz("substrate_inhibition", 8, 1000000);
+    _bn_enz("sequential_bisubstrate", 9, 1000000);
+    _bn_enz("eadie_hofstee_fit", 10, 200000);
     _bn_mem("nernst", 0, 1000000);
     _bn_mem("goldman", 1, 1000000);
     _bn_mem("fick_flux", 2, 1000000);

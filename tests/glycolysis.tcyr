@@ -462,6 +462,27 @@ fn serde() {
     return 0;
 }
 
+# The module doc's usage example (rust-old/src/glycolysis.rs, `//! # Usage`; one of Rust's two doc tests, M9): ten
+# seconds at resting ATP/ADP/NAD+, after which pyruvate has risen above its resting level.
+fn doc_usage() {
+    test_group("glycolysis: the module doc's usage example");
+    var state: RyGlycolysisState;
+    var config: RyGlycolysisConfig;
+    var flux: RyGlycolysisFlux;
+    ry_glycolysis_state_default(&state);
+    ry_glycolysis_config_default(&config);
+    var total_atp: f64 = 0.0;
+    var k = 0;
+    while (k < 100) {
+        ry_glycolysis_state_tick(&state, &config, 6.0, 0.5, 700.0, 0.1, &flux);
+        total_atp = total_atp + flux.net_atp;
+        k = k + 1;
+    }
+    var pyr: f64 = state.pyruvate;
+    assert(pyr > 0.051, "pyruvate accumulates above its resting level");
+    return 0;
+}
+
 # Runs the glycolysis suite.
 fn main() {
     alloc_init();
@@ -474,6 +495,7 @@ fn main() {
     network();
     events();
     serde();
+    doc_usage();
     return assert_summary();
 }
 

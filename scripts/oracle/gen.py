@@ -2649,8 +2649,67 @@ def ai_client_data(templates, places):
     return "".join(out).rstrip("\n") + "\n"
 
 
+# ── the example (M9): rust-old/examples/basic.rs's output ──
+#
+# The program's calls on the models above (MPFR's ln and pow), each value formatted as Rust's `{:w.p}`: the double's
+# exact value rounded half to even at p decimals (Python's `f` format rounds the same way), right-aligned in w.
 
-EXTRAS = []
+BASIC_TEXT = (
+    'println!("Catalytic efficiency: {:.0} M^-1 s^-1", params.catalytic_efficiency());',
+    'for &s in &[0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 50.0] {',
+    '"{s:6.2}     {rate:8.4}     {pct:5.1}%",',
+    'let r1 = enzyme::hill_equation(1.0, 10.0, 1.0, 1.0);',
+    'let r4 = enzyme::hill_equation(1.0, 10.0, 1.0, 4.0);',
+    'let e_k = membrane::nernst(310.0, 1, ions.k_out, ions.k_in);',
+    'let e_na = membrane::nernst(310.0, 1, ions.na_out, ions.na_in);',
+    'met.consume_atp(3.0);',
+    'for &ratio in &[0.01, 0.1, 0.5, 1.0, 2.0, 10.0, 100.0] {',
+    'let r = signal::dose_response(ratio, 1.0, 1.0, 1.0);',
+)
+
+
+def example_basic():
+    text = (ROOT / "rust-old/examples/basic.rs").read_text()
+    squashed = "".join(text.split())
+    for line in BASIC_TEXT:
+        if "".join(line.split()) not in squashed:
+            raise SystemExit(f"gen: examples/basic.rs no longer holds the modelled line {line!r}")
+    cenv = validate.module_env(validate.scan_items("constants", rust_src("constants")))
+    body_k = float(cenv("BODY_TEMP_K"))
+    mb = validate.membrane_rows(ROOT, validate.scan_items("membrane", rust_src("membrane")))[2]
+    ionic = dict((k, float(x)) for k, x in mb["ionic"])
+    perm = [float(x) for _, x in mb["fields"]]
+    ions = [ionic[k] for k in ("na_in", "na_out", "k_in", "k_out", "cl_in", "cl_out")]
+    menv = validate.module_env(validate.scan_items("metabolism", rust_src("metabolism")))
+    keq = float(menv("ADENYLATE_KINASE_KEQ"))
+    met = [x for _, x in defaults("metabolism", "MetabolicState")]
+    out = ["=== Enzyme Kinetics ===", f"Catalytic efficiency: {100.0 / 1.0:.0f} M^-1 s^-1", "",
+           "[S] (M)    Rate (M/s)   % Vmax", "-------    ----------   ------"]
+    for s_ in (0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 50.0):
+        rate = validate.e_mm(s_, 10.0, 1.0)
+        out.append(f"{s_:6.2f}     {rate:8.4f}     {rate / 10.0 * 100.0:5.1f}%")
+    r1 = validate.e_hill(1.0, 10.0, 1.0, 1.0, mpfr_ref.pow)
+    r4 = validate.e_hill(1.0, 10.0, 1.0, 4.0, mpfr_ref.pow)
+    out += ["", "=== Cooperative Binding (Hill) ===", "n=1 (no coop)  vs  n=4 (strong coop) at [S]=Km:",
+            f"  n=1: {r1:.2f} M/s", f"  n=4: {r4:.2f} M/s", ""]
+    vm = validate.m_goldman(body_k, ions, perm, mpfr_ref.log)
+    e_k = validate.m_nernst(310.0, 1, ionic["k_out"], ionic["k_in"], mpfr_ref.log)
+    e_na = validate.m_nernst(310.0, 1, ionic["na_out"], ionic["na_in"], mpfr_ref.log)
+    out += ["=== Membrane Potential ===", f"Resting membrane potential: {vm:.1f} mV", f"Nernst K+:  {e_k:.1f} mV",
+            f"Nernst Na+: {e_na:.1f} mV", ""]
+    _scale, t_, l_, amp = validate.mt_scaled(met[0], met[1], keq)
+    ec = (t_ + 0.5 * (l_ - amp)) / (t_ + l_)
+    after = validate.mt_consume(met, 3.0)[1]
+    out += ["=== Metabolic State ===", f"Energy charge: {ec:.3f}", f"Aerobic ATP yield: {2.0 + 28.0 * unit(met[4]):.0f}",
+            f"After consuming 3 ATP: ATP={after[0]:.1f}, ADP={after[1]:.1f}", "",
+            "=== Dose-Response Curve ===", "[L]/EC50    Response", "--------    --------"]
+    for ratio in (0.01, 0.1, 0.5, 1.0, 2.0, 10.0, 100.0):
+        r = validate.e_hill(ratio, 1.0, 1.0, 1.0, mpfr_ref.pow)
+        out.append(f"{ratio:8.2f}    {r:8.4f}")
+    return {"docs/examples/basic.expected": "\n".join(out) + "\n"}
+
+
+EXTRAS = [example_basic]
 
 
 MODULES = {"receptor": receptor, "nuclear_receptor": nuclear_receptor, "signaling": signaling,

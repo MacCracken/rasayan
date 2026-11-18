@@ -4,7 +4,9 @@
 > of the frozen Rust oracle (`rust-old/`, rasayan 1.2.0) ports to a Cyrius test whose doc comment names it
 > (`# rust <file>: <test>`), at its module's milestone. Nothing is deferred: a test not ported yet is one whose
 > milestone hasn't come. The golden corpus (`tests/golden/`) checks every ported function on its grid besides.
-> The 2 doc tests and the example are M9's.
+> The 2 doc tests and the example are ported at M9: glycolysis.rs's usage example in `tests/glycolysis.tcyr`
+> (`doc_usage`), ai.rs's `no_run` example in `tests/ai.tcyr` (`doc_example`, compiled and not run, as in Rust),
+> and `examples/basic.rs` as `docs/examples/basic.cyr`, its output gated against `basic.expected`.
 
 **723 Rust tests:** 723 ported; none left.
 

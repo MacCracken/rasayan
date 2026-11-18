@@ -14,7 +14,9 @@ and a Rust test whose assertions are spread over several groups is named by each
 milestone has come (PORTED); a test of rust-old/tests/ when every module it calls is PORTED, the modules read from its
 body: a `module::` path, or a name the file imports from a module (`use rasayan::glycolysis::{GlycolysisState, ..}`).
 A due test with no port is an error, as is a marker naming no Rust test. Tests not yet due are counted under their
-milestone. The 2 doc tests and the example (`examples/basic.rs`) are M9's (port plan §6), outside this ledger.
+milestone. The 2 doc tests and the example (`examples/basic.rs`), outside this ledger, are ported at M9: the doc
+tests in tests/glycolysis.tcyr (`doc_usage`) and tests/ai.tcyr (`doc_example`, compiled as Rust's `no_run`), the
+example as docs/examples/basic.cyr with its output in basic.expected.
 """
 import re
 import sys
@@ -144,7 +146,9 @@ md = [
     "> of the frozen Rust oracle (`rust-old/`, rasayan 1.2.0) ports to a Cyrius test whose doc comment names it",
     "> (`# rust <file>: <test>`), at its module's milestone. Nothing is deferred: a test not ported yet is one whose",
     "> milestone hasn't come. The golden corpus (`tests/golden/`) checks every ported function on its grid besides.",
-    "> The 2 doc tests and the example are M9's.",
+    "> The 2 doc tests and the example are ported at M9: glycolysis.rs's usage example in `tests/glycolysis.tcyr`",
+    "> (`doc_usage`), ai.rs's `no_run` example in `tests/ai.tcyr` (`doc_example`, compiled and not run, as in Rust),",
+    "> and `examples/basic.rs` as `docs/examples/basic.cyr`, its output gated against `basic.expected`.",
     "",
     f"**{total} Rust tests:** {n_ported} ported; "
     + (", ".join(f"{k} at {ms}" for ms, k in sorted(later.items())) or "none left") + ".",

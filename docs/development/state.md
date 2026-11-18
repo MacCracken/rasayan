@@ -5,8 +5,8 @@
 
 ## Version
 
-**1.2.0** — the frozen Rust oracle's version; `VERSION` stays 1.2.0 until the port's release
-milestone (M9) sets 2.0.0.
+**2.0.0** — the Cyrius port, released at M9 (`VERSION`; the maintainer tags it). The Rust crate stays at **1.2.0**, frozen
+in `rust-old/` as the functional spec.
 
 ## Port progress
 
@@ -71,6 +71,8 @@ milestone (M9) sets 2.0.0.
 | M8 part 1 — mcp | ✅ `src/mcp.cyr` (`[lib.mcp]`, on bote 3.8.15's core): the eight tools' handlers (serde_json's argument accessors, Rust's `json!` replies written with sorted keys, every error record, the input limits) on the request's allocator, `ry_register_tools` (read-only annotations, Rust's events), `ry_create_dispatcher`, `ry_tool_names`; `src/mcp_data.cyr` (the definitions) by `gen.py`. Golden `mcp.tsv` 1,113 rows (A), all matching on the first run. `tests/mcp.tcyr` 21 checks: Rust's 31 tests; ledger 719 of 723; surface parity 5 of 5; `tests/mcp.fcyr` (160,000 fuzzed replies) and `tests/mcp.bcyr`. `scripts/gates.sh` green (515 s; the same summary on ELF, `--bounds`, PE and aarch64: 124,712 ok, 0 failed); coverage 473 of 473 |
 | M8 part 2 — ai | ✅ `src/ai.cyr` (the client, the request bodies, the answers' reading by serde's rules on hoosh 1.3's structs; no sandhi) and `src/ai_http.cyr` (the requests, on sandhi), `[lib.ai]`; `src/ai_client_data.cyr` (the query prompts) by `gen.py`; `RY_ERR_PROVIDER`, `RY_ERR_HTTP`; `[lib.full]`. Golden `ai_client.tsv` 258 rows (A), all matching on the first run. `tests/ai.tcyr` 13 checks: Rust's 4 tests; **ledger 723 of 723**; surface parity 10 of 10; probe 7 on the client itself (6 of 6 bodies, 8 of 8 outcomes). `scripts/gates.sh` green (537 s; the same summary on ELF, `--bounds`, PE and aarch64: 124,970 ok, 0 failed); coverage 492 of 492 |
 | **M8 — the integrations** | ✅ complete: the MCP tools (`[lib.mcp]`) and the hoosh client (`[lib.ai]`), `[lib.full]` with both. 1,371 golden rows of their own; every Rust test ported |
+| M9 — release 2.0.0 | ✅ `VERSION` 2.0.0 (`cyrius.cyml` reads it); `docs/examples/basic.cyr` (`examples/basic.rs`) with `basic.expected` written by `gen.py` and gated byte for byte; the two doc tests ported (`tests/glycolysis.tcyr` `doc_usage`, `tests/ai.tcyr` `doc_example`); the last four benchmark twins (48 of 48) and the summary table; `docs/guides/migration-2.0.md`, the README and the getting-started guide; the CHANGELOG's 2.0.0 section. `scripts/gates.sh` green (538 s). Tagging is the maintainer's |
+| **The port** | ✅ complete: every Rust module, public item (surface parity 0 missing), test (723 of 723), benchmark (48 of 48) and example ported; 125,051 golden rows, every one matching on x86_64 ELF, PE and aarch64 (81 accepted under ADRs 2 and 4) |
 
 ## Golden corpus
 
@@ -100,6 +102,7 @@ milestone (M9) sets 2.0.0.
 | `tests/golden/hormonal.tsv` | 1,121 (M7 part 2, `gen.py`: the three defaults, both validators, the two bridges, 510 ticks and 144 at an explicit pituitary Ki, 26 trajectories, the serde documents) | A 291 · B 569 · C 235 · T 26 |
 | `tests/golden/mcp.tsv` | 1,113 (M8 part 1, `gen.py`: `tool_names`, the eight definitions, `register_tools`, 1,103 handler replies) | A |
 | `tests/golden/ai_client.tsv` | 258 (M8 part 2, `gen.py`: the client, 93 request bodies, 104 chat answers, 21 model lists, 13 health statuses) | A |
+| `docs/examples/basic.expected` | the example's 39 output lines (M9, `gen.py`: basic.rs's calls on MPFR, Rust's `{:w.p}`) | text |
 | `tests/golden/enzyme.tsv` | 7,219 (60 table cells and `lookup_enzyme`; 7,159 function rows from M2 part 1) | A 309 · B 4,870 · C 2,040 |
 | `tests/golden/membrane.tsv` | 1,739 (`DEFAULT_PERMEABILITY`; `IonicState::default` and 1,737 function rows from M2 part 2) | A 263 · B 450 · C 1,026 |
 | `tests/golden/energy.tsv` | 4,509 (`BioenergyState::default`, the bridges, every method, single steps, sharira's call shape, 35 trajectories; M2 part 5) | A 501 · B 3,096 · C 877 · T 35 |
@@ -295,9 +298,8 @@ Rust crate (crates.io): mastishk 1.1.0, sharira 1.1.0, kiran 1.0.0. No Cyrius co
 
 ## Next
 
-M9: the 2.0.0 release (port plan §6): the examples (`docs/examples/`, the Rust crate's `examples/basic.rs` as Cyrius),
-the benchmark record's summary, the README and the guides for the Cyrius API, `VERSION` 2.0.0 with `cyrius.cyml` in
-sync, the CHANGELOG's 2.0.0 section, and a last P(-1) review sweep before the maintainer tags it.
+The maintainer's: tag 2.0.0, then delete `rust-old/` (the functional spec, kept until the port is done). After 2.0.0:
+the backlog and the feature plan in `roadmap.md`.
 
 Parity bookkeeping: `scripts/surface_parity.py` (every Rust public item of a ported module has its Cyrius name) and
 `scripts/rust_test_ledger.py` (`docs/development/rust-test-ledger.md`: 723 Rust tests, 723 ported, 0 due and
