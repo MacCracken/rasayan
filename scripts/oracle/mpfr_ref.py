@@ -1,8 +1,7 @@
-"""Correctly rounded binary64 results from the system MPFR library, and rasayan's corrected oracle (ADR 0003).
+"""Correctly rounded binary64 results from the system MPFR library, and the accuracy check of the golden corpus.
 
     python3 -I -B scripts/oracle/mpfr_ref.py               # the self-checks
-    python3 -I -B scripts/oracle/mpfr_ref.py --write .     # (re)write tests/golden/{math,integrate,enzyme}.cr.tsv
-    python3 -I -B scripts/oracle/mpfr_ref.py --check .     # regenerate it in memory and compare byte for byte
+    python3 -I -B scripts/oracle/mpfr_ref.py --check .     # every class-C and -T golden row against its MPFR model
 
 Each primitive returns the IEEE-754 binary64 round-to-nearest-even value of the exact mathematical result: MPFR at
 53 bits of precision with binary64's exponent range (emin = -1073, emax = 1024) and `mpfr_subnormalize`, so subnormal
@@ -15,26 +14,14 @@ The core is ushma's scripts/oracle/mpfr_ref.py (kimiya's originally), cut to the
 through Rust std: exp, expm1, log and pow (port plan §7.1). No Python package is needed: MPFR (libmpfr.so.6, MPFR 4.x)
 is called through ctypes.
 
-The corrected oracle. For every class-C row of tests/golden/math.tsv it evaluates Rust's operation sequence with every
-primitive correctly rounded. A math row is one call (`f64::powf` is `pow`, since rasayan's four `10_f64.powf(x)` sites
-call glibc's pow, not exp10: scripts/oracle/README.md, "Where the math rows come from"; `f64::exp` is `exp`, `f64::ln`
-`log`, `f64::exp_m1` `expm1`), so the sequence is that call. Where the correctly rounded result differs from the
-oracle's (glibc 2.44's), the row goes to tests/golden/math.cr.tsv with the correctly rounded outputs; the parity
-harness compares the port against those (ADR 0003 item 2). scripts/oracle/validate.py re-derives the whole set with
-its own MPFR binding and checks the file.
-
-integrate (M1 part 1): every class-C row of tests/golden/integrate.tsv takes `step_factors`' exp_m1 branch, so its
-sequence is one `expm1(-y)` (y = k·dt, computed in binary64 as Rust does) followed by + − × ÷ in Rust's order, and
-`activate`'s `min(.., 1.0)` with Rust's NaN rule. Python floats are binary64 with round-to-nearest, so the arithmetic
-around the primitive is Rust's. Before it corrects anything, the same model with glibc's expm1 (Python's math.expm1
-calls this machine's glibc) must reproduce every class-C golden row bit for bit, which proves the model is the oracle's
-sequence; the rows whose outputs change with the correctly rounded expm1 go to tests/golden/integrate.cr.tsv.
-
-enzyme (M2 part 1): the class-C rows are Hill (`powf`), Q10 (`powf`), Arrhenius (`exp`) and EnzymeParams::rate on its
-Hill path, each one primitive call inside + − × ÷ in Rust's order. The same check runs first (the model with glibc's
-pow / exp must reproduce every row), then the corrected rows go to tests/golden/enzyme.cr.tsv. The models share one
-machinery (`Prims`, `model_corrections`): a model calls its primitives through `P`, glibc's or MPFR's, and a corrected
-row's note lists each call glibc misrounded.
+The accuracy check (ADR 0005). The golden values are the accurate ones: each row's function evaluated in binary64
+with every primitive correctly rounded. For every class-C and class-T row this evaluates the operation sequence with
+MPFR's primitives, independently of validate.py's models and its own MPFR binding, and the golden outputs must be
+exactly those. A math row is one call (`f64::powf` is `pow`, since rasayan's four `10_f64.powf(x)` sites are pow, not
+exp10: scripts/oracle/README.md, "Where the math rows come from"; `f64::exp` is `exp`, `f64::ln` `log`, `f64::exp_m1`
+`expm1`). The module models (integrate, enzyme, …, calcium) are each module's operations in its source's order, every
+primitive through `P` (`Prims(True)`: MPFR's), Python's binary64 arithmetic around them. mathx_tables.py uses the same
+binding for src/mathx_data.cyr's tables.
 """
 import ctypes
 import ctypes.util
@@ -156,10 +143,6 @@ CR_FN = {  # the golden fn of a class-C math row -> the primitive its one call m
     "f64::ln": "log",
     "f64::exp_m1": "expm1",
 }
-COLUMNS = ("# columns: fn<TAB>inputs<TAB>outputs<TAB>note (fn, inputs: the golden row's, byte for byte; outputs: "
-           "the oracle's operations with every primitive result correctly rounded; note: the oracle's outputs, then "
-           "each call glibc misrounded)")
-REGENERATE = "# regenerate: python3 -I -B scripts/oracle/mpfr_ref.py --write ."
 
 
 def _f(tok):
@@ -198,39 +181,26 @@ def _rust_min(a, b):
     return a if a < b else b
 
 
-def _libm(fn, *args):
-    """This machine's glibc through Python's math, with C's results where Python raises."""
-    try:
-        return fn(*args)
-    except OverflowError:
-        return math.inf
-    except ValueError:
-        return math.nan
-
-
 class Prims:
-    """The primitives a model calls: glibc's (Python's math calls this machine's libm) or the correctly rounded ones
-    (MPFR). Every call is logged, for the note of a corrected row."""
+    """The primitives a model calls, each correctly rounded (MPFR). `correct` is kept for the models' signature; only
+    True is meaningful: the reference is accurate (ADR 0005)."""
 
-    def __init__(self, correct):
-        self.correct = correct
-        self.calls = []
-
-    def _call(self, name, args, g, c):
-        self.calls.append((name, args, g, c))
-        return c if self.correct else g
+    def __init__(self, correct=True):
+        if not correct:
+            raise ValueError("the reference is accurate: no libm primitives (ADR 0005)")
+        self.correct = True
 
     def exp(self, x):
-        return self._call("exp", (x,), _libm(math.exp, x), exp(x))
+        return exp(x)
 
     def expm1(self, x):
-        return self._call("expm1", (x,), _libm(math.expm1, x), expm1(x))
+        return expm1(x)
 
     def pow(self, x, y):
-        return self._call("pow", (x, y), _libm(math.pow, x, y), pow(x, y))
+        return pow(x, y)
 
     def log(self, x):
-        return self._call("log", (x,), _libm(math.log, x), log(x))
+        return log(x)
 
 
 # ── integrate (M1 part 1) ──
@@ -1853,12 +1823,11 @@ def _arg(tok):
     return _f(tok)
 
 
-def model_corrections(module, golden_text):
-    """The class-C and class-T rows of <module>.tsv whose outputs differ when every primitive is correctly rounded,
-    as (fn, inputs, outputs, note) in file order; and the number of those rows evaluated. Raises if the model with
-    glibc's primitives does not reproduce a golden row (the model is then not the oracle's sequence)."""
+def model_mismatches(module, golden_text):
+    """The class-C and class-T rows of <module>.tsv whose outputs are not the model's with every primitive correctly
+    rounded, as (line, fn, golden outputs, model outputs); and the number of rows evaluated."""
     models = MODELS[module]
-    rows = []
+    bad = []
     evaluated = 0
     for n, line in enumerate(golden_text.split("\n"), 1):
         if not line or line.startswith("#"):
@@ -1873,27 +1842,17 @@ def model_corrections(module, golden_text):
             raise ValueError(f"{module}.tsv:{n}: class-{cls} {fn} has no operation model here")
         args = [_arg(t) for t in ins.split(" ")]
         want = outs.split(" ")
-        glibc = [_tok(v) for v in models[fn](args, Prims(False))]
-        if not all(_same_tok(a, b) for a, b in zip(glibc, want, strict=True)):
-            raise ValueError(f"{module}.tsv:{n}: the model with glibc's primitives gives {glibc}, the oracle {want}")
-        pc = Prims(True)
-        c = [_tok(v) for v in models[fn](args, pc)]
+        c = [_tok(v) for v in models[fn](args, Prims(True))]
         evaluated += 1
-        if all(_same_tok(a, b) for a, b in zip(c, want, strict=True)):
-            continue
-        calls = [
-            f"{name}({', '.join(_ftok(x) for x in cargs)}) glibc {_ftok(g)} correctly rounded {_ftok(cv)}"
-            for name, cargs, g, cv in pc.calls
-            if not _same(g, cv)
-        ]
-        rows.append((fn, ins, " ".join(c), f"oracle {outs}; " + "; ".join(calls)))
-    return rows, evaluated
+        if not all(_same_tok(a, b) for a, b in zip(c, want, strict=True)):
+            bad.append((n, fn, want, c))
+    return bad, evaluated
 
 
-def corrections(golden_text):
-    """The class-C rows of math.tsv whose correctly rounded outputs differ from the oracle's, as
-    (fn, inputs, outputs, note) in file order; and the number of class-C rows evaluated."""
-    rows = []
+def math_mismatches(golden_text):
+    """The class-C rows of math.tsv whose output is not the correctly rounded value, as (line, fn, golden, correct);
+    and the number of class-C rows evaluated."""
+    bad = []
     evaluated = 0
     for n, line in enumerate(golden_text.split("\n"), 1):
         if not line or line.startswith("#"):
@@ -1911,27 +1870,11 @@ def corrections(golden_text):
         want = outs.split(" ")
         if len(want) != 1 or len(args) != (1 if name in _UNARY else 2):
             raise ValueError(f"math.tsv:{n}: {fn} takes {len(args)} inputs and gives {len(want)} outputs")
-        g = _f(want[0])
         c = cr(name, args[0]) if name in _UNARY else cr2(name, args[0], args[1])
         evaluated += 1
-        if _same(c, g):
-            continue
-        call = f"{name}({', '.join(_ftok(a) for a in args)}) glibc {_ftok(g)} correctly rounded {_ftok(c)}"
-        rows.append((fn, ins, _ftok(c), f"oracle {outs}; {call}"))
-    return rows, evaluated
-
-
-def cr_text(module, golden_text, rows):
-    """tests/golden/<module>.cr.tsv: the golden file's provenance, the MPFR version, then the rows."""
-    prov = golden_text.split("\n", 2)[1].split(". Generated by", 1)[0]
-    head = [
-        f"# rasayan corrected oracle (ADR 0003), format 1: {module}",
-        f"{prov}. Correctly rounded: MPFR {VERSION}. Generated by scripts/oracle/mpfr_ref.py; do not edit.",
-        REGENERATE,
-        COLUMNS,
-        f"# rows: {len(rows)}",
-    ]
-    return "\n".join(head + ["\t".join(r) for r in rows]) + "\n"
+        if not _same(c, _f(want[0])):
+            bad.append((n, fn, want, [_ftok(c)]))
+    return bad, evaluated
 
 
 def main(argv):
@@ -1939,31 +1882,22 @@ def main(argv):
     print(f"mpfr_ref: MPFR {VERSION}: self-checks pass")
     if not argv:
         return 0
-    if len(argv) != 2 or argv[0] not in ("--write", "--check"):
-        print("usage: mpfr_ref.py [--write <root> | --check <root>]")
+    if len(argv) != 2 or argv[0] != "--check":
+        print("usage: mpfr_ref.py [--check <root>]")
         return 2
     gold = pathlib.Path(argv[1]).resolve() / "tests/golden"
     status = 0
-    makers = [("math", corrections)] + [(m, lambda t, m=m: model_corrections(m, t)) for m in MODELS]
+    makers = [("math", math_mismatches)] + [(m, lambda t, m=m: model_mismatches(m, t)) for m in MODELS]
     for module, make in makers:
-        golden_text = (gold / f"{module}.tsv").read_text()
-        rows, evaluated = make(golden_text)
-        text = cr_text(module, golden_text, rows)
-        path = gold / f"{module}.cr.tsv"
-        per = {}
-        for fn, *_ in rows:
-            per[fn] = per.get(fn, 0) + 1
-        summary = f"{len(rows)} of {evaluated} class-C or -T rows changed by a correctly rounded primitive " \
-                  f"{dict(sorted(per.items()))}"
-        if argv[0] == "--write":
-            path.write_text(text)
-            print(f"wrote tests/golden/{module}.cr.tsv: {summary}")
-            continue
-        if not path.exists() or path.read_text() != text:
-            print(f"DIFFERS  tests/golden/{module}.cr.tsv (regenerate with --write): {summary}")
+        bad, evaluated = make((gold / f"{module}.tsv").read_text())
+        if bad:
             status = 1
+            print(f"DIFFERS  tests/golden/{module}.tsv: {len(bad)} of {evaluated} class-C or -T rows are not their "
+                  f"correctly rounded model's")
+            for n, fn, want, got in bad[:5]:
+                print(f"  {module}.tsv:{n} {fn}: golden {' '.join(want)[:80]}, model {' '.join(got)[:80]}")
             continue
-        print(f"ok       tests/golden/{module}.cr.tsv: {summary}")
+        print(f"ok       tests/golden/{module}.tsv: {evaluated} class-C or -T rows, each its correctly rounded model's")
     return status
 
 
