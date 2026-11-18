@@ -31,6 +31,7 @@ mod grids;
 mod m_alignment;
 mod m_amino_catabolism;
 mod m_beta_oxidation;
+mod m_calcium;
 mod m_constants;
 mod m_domain;
 mod m_energy;
@@ -58,6 +59,7 @@ mod t_ai;
 mod t_alignment;
 mod t_amino_catabolism;
 mod t_beta_oxidation;
+mod t_calcium;
 mod t_constants;
 mod t_energy;
 mod t_mapk;
@@ -77,6 +79,7 @@ mod tsv;
 mod v_glycolysis;
 mod v_amino_catabolism;
 mod v_beta_oxidation;
+mod v_calcium;
 mod v_etc;
 mod v_guard;
 mod v_integrate;
@@ -121,6 +124,7 @@ fn golden_modules(root: &Path) -> Result<Vec<tsv::Module>, String> {
         t_alignment::golden(&read("alignment")?, &amino_codes())?,
         t_energy::golden(&read("energy")?)?,
         t_beta_oxidation::golden(&read("beta_oxidation")?)?,
+        t_calcium::golden(&read("calcium")?)?,
         t_amino_catabolism::golden(&read("amino_catabolism")?)?,
         t_etc::golden(&read("etc")?)?,
         t_enzyme::golden(&read("enzyme")?)?,
@@ -176,6 +180,10 @@ fn cyrius_outputs(root: &Path, prov: &str) -> Result<Vec<Output>, String> {
         (
             "src/energy_data.cyr",
             t_energy::emit_cyr(&read("energy")?, prov)?,
+        ),
+        (
+            "src/calcium_data.cyr",
+            t_calcium::emit_cyr(&read("calcium")?, prov)?,
         ),
         (
             "src/enzyme_data.cyr",

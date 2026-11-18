@@ -6,7 +6,7 @@
 > milestone hasn't come. The golden corpus (`tests/golden/`) checks every ported function on its grid besides.
 > The 2 doc tests and the example are M9's.
 
-**723 Rust tests:** 564 ported; 62 at M6, 62 at M7, 35 at M8.
+**723 Rust tests:** 583 ported; 43 at M6, 62 at M7, 35 at M8.
 
 | Rust file | Tests | Ported | Due, unported | Later (milestone) |
 |---|---:|---:|---:|---|
@@ -14,7 +14,7 @@
 | `src/alignment.rs` | 19 | 19 | 0 | — |
 | `src/amino_catabolism.rs` | 23 | 23 | 0 | — |
 | `src/beta_oxidation.rs` | 23 | 23 | 0 | — |
-| `src/calcium.rs` | 17 | 0 | 0 | 17 (M6) |
+| `src/calcium.rs` | 17 | 17 | 0 | — |
 | `src/domain.rs` | 24 | 24 | 0 | — |
 | `src/energy.rs` | 29 | 29 | 0 | — |
 | `src/enzyme.rs` | 58 | 58 | 0 | — |
@@ -38,9 +38,9 @@
 | `src/signal.rs` | 21 | 21 | 0 | — |
 | `src/signaling.rs` | 13 | 0 | 0 | 13 (M6) |
 | `src/tca.rs` | 26 | 26 | 0 | — |
-| `tests/integration.rs` | 70 | 55 | 0 | 9 (M6), 6 (M7) |
+| `tests/integration.rs` | 70 | 57 | 0 | 7 (M6), 6 (M7) |
 | `tests/validation.rs` | 25 | 25 | 0 | — |
-| **Total** | **723** | **564** | **0** | |
+| **Total** | **723** | **583** | **0** | |
 
 ## Where each is ported
 
@@ -111,6 +111,23 @@
 | `src/beta_oxidation.rs` `test_serde_roundtrip_state` | `tests/beta_oxidation.tcyr` `serde` |
 | `src/beta_oxidation.rs` `test_validate_config_rejects_bad_values` | `tests/beta_oxidation.tcyr` `validation` |
 | `src/beta_oxidation.rs` `test_validate_state_rejects_nan` | `tests/beta_oxidation.tcyr` `validation` |
+| `src/calcium.rs` `test_amount_changes_only_through_plasma_membrane` | `tests/calcium.tcyr` `bookkeeping` |
+| `src/calcium.rs` `test_bounded` | `tests/calcium.tcyr` `dynamics` |
+| `src/calcium.rs` `test_default_state_is_steady_at_rest_for_two_hours` | `tests/calcium.tcyr` `rest_and_stores` |
+| `src/calcium.rs` `test_default_valid` | `tests/calcium.tcyr` `validation` |
+| `src/calcium.rs` `test_er_change_uses_volume_ratio` | `tests/calcium.tcyr` `bookkeeping` |
+| `src/calcium.rs` `test_flux_is_mean_rate` | `tests/calcium.tcyr` `bookkeeping` |
+| `src/calcium.rs` `test_invalid_dt_is_noop` | `tests/calcium.tcyr` `hardening` |
+| `src/calcium.rs` `test_ip3_raises_calcium` | `tests/calcium.tcyr` `dynamics` |
+| `src/calcium.rs` `test_large_dt_stable_and_non_negative` | `tests/calcium.tcyr` `substeps` |
+| `src/calcium.rs` `test_negative_ip3_is_zero` | `tests/calcium.tcyr` `dynamics` |
+| `src/calcium.rs` `test_no_ip3_low_calcium` | `tests/calcium.tcyr` `dynamics` |
+| `src/calcium.rs` `test_plasma_membrane_influx_shape` | `tests/calcium.tcyr` `influx` |
+| `src/calcium.rs` `test_serca_returns_ca_to_er` | `tests/calcium.tcyr` `dynamics` |
+| `src/calcium.rs` `test_serde_roundtrip` | `tests/calcium.tcyr` `serde` |
+| `src/calcium.rs` `test_store_depletion_and_refill` | `tests/calcium.tcyr` `rest_and_stores` |
+| `src/calcium.rs` `test_substepping_matches_fine_steps` | `tests/calcium.tcyr` `substeps` |
+| `src/calcium.rs` `test_validate_rejects_nan_and_zero_divisors` | `tests/calcium.tcyr` `validation` |
 | `src/domain.rs` `test_catalytic_triad_not_produced` | `tests/domain.tcyr` `edges` |
 | `src/domain.rs` `test_dead_box` | `tests/domain.tcyr` `short_motifs` |
 | `src/domain.rs` `test_ef_hand` | `tests/domain.tcyr` `ef_hand` |
@@ -542,6 +559,8 @@
 | `tests/integration.rs` `test_beta_ox_validation` | `tests/beta_oxidation.tcyr` `validation` |
 | `tests/integration.rs` `test_bioenergy_and_metabolism_alignment` | `tests/energy.tcyr` `basics` |
 | `tests/integration.rs` `test_bioenergy_state_serde_roundtrip` | `tests/energy.tcyr` `serde` |
+| `tests/integration.rs` `test_calcium_config_serde_roundtrip` | `tests/calcium.tcyr` `serde` |
+| `tests/integration.rs` `test_calcium_flux_serde_roundtrip` | `tests/calcium.tcyr` `serde` |
 | `tests/integration.rs` `test_carbon_skeleton_output_serde_roundtrip` | `tests/amino_catabolism.tcyr` `serde` |
 | `tests/integration.rs` `test_dose_response_at_ec50` | `tests/signal.tcyr` `binding` |
 | `tests/integration.rs` `test_dose_response_steep_hill` | `tests/signal.tcyr` `binding` |

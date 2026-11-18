@@ -1773,3 +1773,41 @@ Classes: A 231, B 240, C 183 (an `exp_m1` step), T 23.
 | four targets (`scripts/gates.sh`, 471 s, every step green) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 118,101 ok, 299 accepted (ADR 3: 218), 0 failed; coverage 339 of 339 public fns executed |
 
 **Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): jak_stat_tick 46.9 → 160 ns.
+
+### 9d. Part 4: calcium (2026-11-17)
+
+**What is compared.** `tests/golden/calcium.tsv` (new, 856 rows), through the oracle's public API and a verbatim copy
+(`scripts/oracle/src/v_calcium.rs`) of `CalciumState::tick` (on a mirror of the state), the private `cap_pair` and the
+private `CYTOSOL_ER_VOLUME_RATIO`, which must agree on every tick. The copy's `integrate` is `v_integrate::noted`:
+PMCA's `produce_decay` notes the `exp_m1` branch, which a sub-step reaches at 0.5 · h >= 0.0625, so past 125 s with the
+default rate (the sub-step is dt / 1000 from 10 s), or at a short step with a fast PMCA. The module's seven public
+constants and three private ones were generated at M0 (`src/constants.cyr`, `src/constants_private.cyr`; `PM_CA_LEAK`
+by its const expression). The rows cover:
+- the two defaults (named constants and `1.0 / 150.0` in the literal, evaluated), both validators over every field's
+  edges, pairs where the order picks the error, Rust's refusals, seeded values;
+- `plasma_membrane_influx` (142: the edges, Rust's 0–1000 uM sweep, around SOCE's K), `total_amount` (39), `cap_pair`
+  (40: under and over the pool, sums of zero, a non-positive, NaN and infinite pool, overflowing sums);
+- 390 single ticks: the default at 29 step lengths (one sub-step to 0.01 s, then ceil(dt / 0.01); the budget's end at
+  10 s; 124 and 126 s either side of the `exp_m1` branch); each state field over its edges at 0.01 s and 2 s; IP3's
+  edges at three step lengths; each config field over its edges; Rust's cases (SERCA on a high cytosol, the SERCA-only
+  volume ratio, IP3 −0.4, the closed IP3R at rest, the mean-rate flux over 2 s); the release capped at a near-empty
+  store, SERCA at the cytosol, PMCA on `exp_m1` at 0.01 s, the gate weight capped at 1; 120 seeded runs;
+- 37 trajectories: Rust's runs (IP3 raising Ca2+, rest, the bounded run, ten minutes of the closed-IP3R rest and of the
+  default's return to it at 1 s, the store's depletion over 6 min at IP3 0.5 and its refill over 5 min, the amount's
+  bookkeeping through four IP3 levels, coarse against fine sub-stepping, the large steps at seven step lengths to 10⁶ s
+  for both IP3 levels, six minutes of rest at 10 s), a six-point dose-response sweep at 0.05 s, IP3 on then off, NaN
+  recovery from a cytosol and an ER, four seeded;
+- the serde documents.
+
+Classes: A 208, B 595, C 16 (a sub-step on `exp_m1`), T 37.
+
+| Check | Result |
+|---|---|
+| every row | 856 identical on the first run |
+| corrected oracle | `mpfr_ref.py`'s calcium model reproduces all 53 class-C and -T rows with glibc's `exp_m1`; MPFR's changes none (`calcium.cr.tsv` has no rows) |
+| `validate.py` | every row re-derived from its own transcription of `calcium.rs` (seven spans pinned; the constants and defaults evaluated from the source, `PM_CA_LEAK` by its expression model), with MPFR's `exp_m1` and the recorded libm; 125,056 checks in all; one flipped value per function (an f64's last bit, an Ok made an error, a document byte) is reported, 15 of 15 |
+| Rust tests | the 17 `calcium.rs` tests and its 2 integration tests ported at their full lengths (`tests/calcium.tcyr`, 36 checks, 0.8 s); the ledger at 583 of 723; surface parity 23 of 23 |
+| fuzz | every input also read as the three documents (2,014 accepted, each written and read back bit for bit); a valid state within 10⁶ uM, and the default state on a valid config, ticked 0.1 s and 100 s stay valid with finite fluxes (near f64::MAX, CICR's product overflows and Rust's gate goes NaN, so such states are not stepped) |
+| four targets (`scripts/gates.sh`, 539 s, every step green) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 118,957 ok, 299 accepted (ADR 3: 218), 0 failed; coverage 359 of 359 public fns executed |
+
+**Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): calcium_tick 40.2 → 153 ns.

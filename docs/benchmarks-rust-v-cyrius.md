@@ -335,3 +335,21 @@ Measured on a quiet machine (load 0.97–1.04, two runs), with the reference row
 11 ns, glycolysis_tick 693–724 ns, mapk_tick 226 ns, pi3k_tick 148–150 ns). A tick is two Michaelis-Menten rates, SOCS's
 inhibition, the three integrators and the Patankar dimer step's division.
 
+## M6 part 4: calcium
+
+| Benchmark | Rust 1.2.0 (ns) | Cyrius (ns) | Notes |
+|---|---|---|---|
+| calcium_tick | 40.23 | 152–154 | Rust's loop body: a default state, one tick of 0.01 s at IP3 0.5 (one sub-step, the series branch) |
+
+Cyrius only:
+
+| Benchmark | Cyrius | Notes |
+|---|---|---|
+| tick, the state ticked on (no reset) | 149–150 ns | |
+| tick of 1 s | 10.6–10.7 µs | 100 sub-steps, about 106 ns each |
+| tick of 1000 s | 168 µs | 1000 sub-steps of 1 s, PMCA's `produce_decay` on the `exp_m1` branch |
+
+Measured on a quiet machine (load 1.4–1.6, two runs), with the reference rows at their quiet values (michaelis_menten
+11–12 ns, glycolysis_tick 724–729 ns, mapk_tick 227 ns, pi3k_tick 149 ns, jak_stat_tick 162 ns). A sub-step is three
+saturating rates, the gate's clamp, the pair cap, `take`, the influx's fourth power and `produce_decay`.
+

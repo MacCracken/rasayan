@@ -1729,12 +1729,116 @@ JAK_STAT = {
     "jak_stat::JakStatState::trajectory": _js_trajectory,
 }
 
+# ── calcium (M6 part 4) ──
+# CalciumState::tick in Rust's order: ceil(dt / 0.01) sub-steps clamped to [1, 1000]; in each the IP3R gate, the
+# capped ER ↔ cytosol exchange (arithmetic), then influx against PMCA by `produce_decay` (its exp_m1 past the series
+# cutoff); the mean fluxes over dt.
+
+CA_DEFAULT = [2.0, 0.3, 3.0, 0.5, 1.0, 1.0, 50.0, 10.0, 0.2, 0.5, 1.0 / 150.0]  # CalciumConfig::default()
+CA_REF, CA_RATIO = 500.0, 0.185                    # ER_CA_REFERENCE, ER_CYTOSOL_VOLUME_RATIO
+CA_INV_RATIO = 1.0 / CA_RATIO                      # the private CYTOSOL_ER_VOLUME_RATIO
+CA_SOCE_MAX, CA_SOCE_K = 0.5, 180.0
+
+
+def _ca_soce(er):
+    u = er / CA_SOCE_K
+    u2 = u * u
+    return 1.0 / (1.0 + u2 * u2)
+
+
+CA_PM_LEAK = 0.1 * 0.5 - CA_SOCE_MAX * _ca_soce(CA_REF)   # RESTING_CA * DEFAULT_PMCA_RATE - SOCE_MAX * soce(REF)
+
+
+def _ca_influx(er_ca):
+    er = er_ca if er_ca > 0.0 else 0.0
+    return CA_PM_LEAK + CA_SOCE_MAX * _ca_soce(er)
+
+
+def _ca_cap_pair(a, b, pool):
+    s_ = a + b
+    if s_ > pool and s_ > 0.0:
+        k = _fdiv(_rust_max(pool, 0.0), s_)
+        return a * k, b * k
+    return a, b
+
+
+def _ca_tick(st, c, ip3, dt, P):
+    if not (math.isfinite(dt) and dt > 0.0):
+        return list(st), [0.0] * 3
+    ip3 = _conc(ip3)
+    q = dt / 0.01
+    up = q if math.isinf(q) else float(math.ceil(q))
+    n = int(min(max(up, 1.0), 1000.0))
+    h = dt / float(n)
+    act = _fdiv(ip3, c[1] + ip3)
+    gate_w = _rust_min(c[0] * h, 1.0)
+    ca, er, op = st
+    released = pumped = extruded = 0.0
+    for _ in range(n):
+        cicr = _fdiv(c[2] * ca, c[3] + ca)
+        x = _fdiv(ca, c[5])
+        inact = _fdiv(1.0, 1.0 + x * x)
+        target = _rust_clamp(act * (1.0 + cicr) * inact, 0.0, 1.0)
+        op = op + (target - op) * gate_w
+        release, leak = _ca_cap_pair(c[6] * op * (er / CA_REF) * h, c[10] * er * h, er * CA_RATIO)
+        serca = _take(_fdiv(c[7] * ca, c[8] + ca) * h, ca)
+        to_cyt = release + leak
+        er_out = _rust_min(to_cyt * CA_INV_RATIO, er)
+        er_new = (er - er_out) + serca * CA_INV_RATIO
+        exchanged = (ca - serca) + to_cyt
+        j_in = _ca_influx(er)
+        after = _produce_decay_any(exchanged, j_in, c[9], h, P)
+        pmca = _rust_max(exchanged + j_in * h - after, 0.0)
+        ca, er = after, er_new
+        released += release
+        pumped += serca
+        extruded += pmca
+    return [ca, er, op], [released / dt, pumped / dt, extruded / dt]
+
+
+def _ca_config(a, at):
+    c = list(CA_DEFAULT)
+    n = a[at]
+    for j in range(n):
+        c[a[at + 1 + 2 * j]] = a[at + 2 + 2 * j]
+    return c, at + 1 + 2 * n
+
+
+def _ca_tick_row(a, P):
+    c, k = _ca_config(a, 3)
+    st, flux = _ca_tick(a[:3], c, a[k], a[k + 1], P)
+    return st + flux
+
+
+def _ca_trajectory(a, P):
+    st = list(a[:3])
+    c, k = _ca_config(a, 3)
+    flux = [0.0] * 3
+    while k < len(a):
+        op = a[k]
+        if op == 1:
+            for _ in range(a[k + 3]):
+                st, flux = _ca_tick(st, c, a[k + 1], a[k + 2], P)
+            k += 4
+        elif op == 3:
+            st[a[k + 1]] = a[k + 2]
+            k += 3
+        else:
+            raise ValueError(f"no operation {op}")
+    return st + flux
+
+
+CALCIUM = {
+    "calcium::CalciumState::tick": _ca_tick_row,
+    "calcium::CalciumState::trajectory": _ca_trajectory,
+}
+
 # The modules with class-C (and class-T) rows beyond math, and their models.
 MODELS = {"integrate": INTEGRATE, "enzyme": ENZYME, "membrane": MEMBRANE, "signal": SIGNAL, "metabolism": METABOLISM,
           "energy": ENERGY, "protein": PROTEIN, "glycolysis": GLYCOLYSIS, "tca": TCA,
           "etc": ETC, "beta_oxidation": BETA_OXIDATION,
           "amino_catabolism": AMINO_CATABOLISM, "pathway": PATHWAY, "mapk": MAPK,
-          "pi3k": PI3K, "jak_stat": JAK_STAT}
+          "pi3k": PI3K, "jak_stat": JAK_STAT, "calcium": CALCIUM}
 
 
 def _arg(tok):

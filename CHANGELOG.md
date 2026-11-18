@@ -19,10 +19,38 @@ JSON writers and readers) follow: M1 is complete. M2 part 1 (enzyme), part 2 (me
 complete. M4b part 1 (the electron transport chain), part 2 (β-oxidation) and part 3 (amino-acid catabolism)
 follow: M4b is complete, and with it M4. M5 part 1 (the metabolic network's types, validators, solve layer and
 codecs), part 2 (its step) and part 3 (the steady-state run, the long runs, the soak) follow: M5 is complete.
-M6 part 1 (the MAPK cascade), part 2 (PI3K/Akt/mTOR) and part 3 (JAK-STAT) follow.
+M6 part 1 (the MAPK cascade), part 2 (PI3K/Akt/mTOR), part 3 (JAK-STAT) and part 4 (calcium) follow.
 
 ### Added
 
+- **src/calcium.cyr**, **src/calcium_data.cyr** (M6 part 4) — `calcium.rs` transcribed: `RyCalciumState`,
+  `RyCalciumConfig`, `RyCalciumFlux`; the defaults from the generated consts (the module's constants were generated at
+  M0 into `src/constants.cyr` and `src/constants_private.cyr`) and the three types' field-name blobs; both validators;
+  `ry_plasma_membrane_influx` (the constitutive leak plus SOCE) and `ry_calcium_state_total_amount`;
+  `ry_calcium_state_tick`: ceil(dt / 0.01) sub-steps clamped to [1, 1000], each the IP3R gate (IP3, CICR,
+  inactivation), the ER ↔ cytosol exchange capped at its pools (the private `cap_pair`, `take`), then influx against
+  PMCA by `produce_decay`; the mean fluxes over dt. The serde codecs of all three, with node readers for the signaling
+  network. Rust's `calcium_tick` trace event is a level-gated sakshi event under `rasayan::calcium`
+- **tests/golden/calcium.tsv** (M6 part 4, 856 rows, a new module: A 208, B 595, C 16, T 37) — the defaults, both
+  validators over every field's edges (pairs where the order picks the error, Rust's refusals),
+  `plasma_membrane_influx` (142: the edges, Rust's 0–1000 uM sweep, the SOCE constant's neighbourhood),
+  `total_amount` (39), the private `cap_pair` (40: under and over the pool, a non-positive and a NaN pool), 390 single
+  ticks (the default at 29 step lengths across the sub-step boundary, the budget's end at 10 s and the `exp_m1`
+  branch's start at 125 s; each state field over its edges; IP3's edges; each config field over its edges; Rust's
+  cases; the release capped at a near-empty store, SERCA at the cytosol, PMCA on `exp_m1` at a short step, the gate
+  weight capped; seeded), 37 trajectories (Rust's runs, among them ten minutes of rest at 1 s, the store's depletion and
+  refill, the amount's bookkeeping, coarse against fine sub-stepping and the large steps to 10⁶ s; a dose-response
+  sweep, IP3 on and off, NaN recovery, seeded runs) and the serde documents. Every tick runs through the oracle's API
+  and a verbatim copy (`v_calcium.rs`, with `cap_pair` and the private volume ratio) that must agree; it is class C
+  where a sub-step's `produce_decay` takes the `exp_m1` branch. MPFR's `exp_m1` changes none of the 53 class-C and -T
+  rows (`calcium.cr.tsv` is empty). `validate.py` re-derives every row (125,056 independent checks) and catches each
+  flipped value
+- **tests/calcium.tcyr** (M6 part 4, 36 checks) — the 17 `calcium.rs` unit tests (the two-hour rest, the store's
+  depletion and its hour-long refill, the amount's bookkeeping, sub-stepping, the large steps) and the 2 calcium
+  integration tests, as they are written, and the trace event: the Rust-test ledger at 583 of 723. The fuzz harness
+  reads every input as the three documents (2,014 read and written back bit for bit) and ticks every valid state
+  within 10⁶ uM and every valid config, which stay valid with finite fluxes
+- **benchmarks** (M6 part 4) — calcium_tick, Rust → Cyrius: 40.2 → 153 ns
 - **src/jak_stat.cyr**, **src/jak_stat_data.cyr** (M6 part 3) — `jak_stat.rs` transcribed: `RyJakStatState`,
   `RyJakStatConfig`, `RyJakStatFlux`; the defaults from the generated consts and the three types' field-name blobs;
   both validators (SOCS non-negative, the three pools fractions); `ry_jak_stat_state_tick` (JAK by `activate` under

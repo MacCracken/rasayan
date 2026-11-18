@@ -1,0 +1,391 @@
+# rasayan — src/calcium.cyr: IP3R-mediated calcium oscillations (rust-old/src/calcium.rs)
+#
+# IP3 receptor channels on the ER release Ca2+ into the cytosol, amplified by calcium-induced calcium release (CICR)
+# and inactivated at high Ca2+; SERCA pumps it back into the ER, PMCA extrudes it, and the plasma membrane lets it in
+# (a constitutive leak plus store-operated entry, SOCE, which opens as the ER empties).
+#
+# Every flux is in cytosolic concentration units (uM/s); the ER volume is RY_CALCIUM_ER_CYTOSOL_VOLUME_RATIO times the
+# cytosol's, so a transfer of x cytosolic moves x / ratio in the ER and ER ↔ cytosol exchange conserves the total
+# amount (ry_calcium_state_total_amount); only the plasma-membrane fluxes change it. A tick is ceil(dt / 0.01)
+# sub-steps, at most 1000: in each, the ER ↔ cytosol exchange is an explicit step with each transfer capped at its
+# source pool, then influx against first-order PMCA is solved exactly (integrate's `produce_decay`).
+#
+# The Cyrius forms (ADR 0002 row 7): the state advances in place and the flux fills the caller's record. Every
+# operation is in Rust's order (P9), the sub-step count and its loop as Rust writes them.
+
+# ── the types ──
+
+# Calcium oscillation state: cytoplasmic Ca2+ (uM; resting ~0.1, peak ~1–10), ER Ca2+ (uM per ER volume; resting
+# ~500), the IP3R channel open fraction (0.0–1.0).
+struct RyCalciumState {
+    cytoplasmic_ca: f64;
+    er_ca: f64;
+    ip3r_open: f64;
+}
+
+# Kinetic parameters for calcium oscillations, every flux in cytosolic units: the IP3R gating rate (s^-1), its Km for
+# IP3 (> 0), the CICR gain and Km (> 0), the unused slow-inactivation rate (validated, kept for compatibility), the
+# inactivation threshold (> 0), the release rate at the reference ER level, SERCA's Vmax and Km (> 0), the PMCA rate
+# (s^-1) and the passive ER leak coefficient (s^-1).
+struct RyCalciumConfig {
+    ip3r_open_rate: f64;
+    ip3r_km_ip3: f64;
+    cicr_gain: f64;
+    cicr_km: f64;
+    ip3r_inactivation_rate: f64;
+    ip3r_inactivation_threshold: f64;
+    er_release_rate: f64;
+    serca_vmax: f64;
+    serca_km: f64;
+    pmca_rate: f64;
+    er_leak_rate: f64;
+}
+
+# Calcium dynamics flux: each field the mean rate over the tick (amount moved / dt, cytosolic uM/s): ER release through
+# IP3R (the basal leak excluded), SERCA uptake, PMCA extrusion; zero for an invalid dt. The plasma-membrane influx is
+# not a field (ry_plasma_membrane_influx).
+struct RyCalciumFlux {
+    er_release: f64;
+    serca_uptake: f64;
+    pmca_extrusion: f64;
+}
+
+# ── plasma-membrane entry ──
+
+# SOCE's open fraction for an ER level `er_ca` >= 0: 1 / (1 + (er_ca / SOCE_K_ER)⁴), the fourth power as two squares.
+# Mirrors the private `soce_activation`.
+#must_use
+#pure
+fn _ry_calcium_soce_activation(er_ca: f64): f64 {
+    var u: f64 = er_ca / RY_CALCIUM_SOCE_K_ER;
+    var u2: f64 = u * u;
+    var r: f64 = 1.0 / (1.0 + u2 * u2);
+    return r;
+}
+
+# Plasma-membrane Ca2+ influx (uM/s, cytosolic units) at ER level `er_ca` (uM): RY_CALCIUM_PM_CA_LEAK +
+# RY_CALCIUM_SOCE_MAX · SOCE's open fraction, from ≈ 0.05 uM/s with a full store to PM_CA_LEAK + SOCE_MAX as the ER
+# empties. NaN and a negative level are an empty store; +inf gives no SOCE. Mirrors `plasma_membrane_influx`.
+#must_use
+#pure
+fn ry_plasma_membrane_influx(er_ca: f64): f64 {
+    var er: f64 = 0.0;
+    if (er_ca > 0.0) { er = er_ca; }
+    var open: f64 = _ry_calcium_soce_activation(er);
+    var j: f64 = RY_CALCIUM_PM_CA_LEAK + RY_CALCIUM_SOCE_MAX * open;
+    return j;
+}
+
+# ── defaults ──
+
+# Fills *out with Rust's CalciumState::default() (src/calcium_data.cyr).
+fn ry_calcium_state_default(out: *RyCalciumState) {
+    out.cytoplasmic_ca = RY_CALCIUM_CALCIUM_STATE_DEFAULT_CYTOPLASMIC_CA;
+    out.er_ca = RY_CALCIUM_CALCIUM_STATE_DEFAULT_ER_CA;
+    out.ip3r_open = RY_CALCIUM_CALCIUM_STATE_DEFAULT_IP3R_OPEN;
+    return 0;
+}
+
+# Fills *out with Rust's CalciumConfig::default() (src/calcium_data.cyr).
+fn ry_calcium_config_default(out: *RyCalciumConfig) {
+    out.ip3r_open_rate = RY_CALCIUM_CALCIUM_CONFIG_DEFAULT_IP3R_OPEN_RATE;
+    out.ip3r_km_ip3 = RY_CALCIUM_CALCIUM_CONFIG_DEFAULT_IP3R_KM_IP3;
+    out.cicr_gain = RY_CALCIUM_CALCIUM_CONFIG_DEFAULT_CICR_GAIN;
+    out.cicr_km = RY_CALCIUM_CALCIUM_CONFIG_DEFAULT_CICR_KM;
+    out.ip3r_inactivation_rate = RY_CALCIUM_CALCIUM_CONFIG_DEFAULT_IP3R_INACTIVATION_RATE;
+    out.ip3r_inactivation_threshold = RY_CALCIUM_CALCIUM_CONFIG_DEFAULT_IP3R_INACTIVATION_THRESHOLD;
+    out.er_release_rate = RY_CALCIUM_CALCIUM_CONFIG_DEFAULT_ER_RELEASE_RATE;
+    out.serca_vmax = RY_CALCIUM_CALCIUM_CONFIG_DEFAULT_SERCA_VMAX;
+    out.serca_km = RY_CALCIUM_CALCIUM_CONFIG_DEFAULT_SERCA_KM;
+    out.pmca_rate = RY_CALCIUM_CALCIUM_CONFIG_DEFAULT_PMCA_RATE;
+    out.er_leak_rate = RY_CALCIUM_CALCIUM_CONFIG_DEFAULT_ER_LEAK_RATE;
+    return 0;
+}
+
+# Fills *out with Rust's CalciumFlux::default(): every rate 0.
+fn ry_calcium_flux_default(out: *RyCalciumFlux) {
+    out.er_release = 0.0;
+    out.serca_uptake = 0.0;
+    out.pmca_extrusion = 0.0;
+    return 0;
+}
+
+# ── the state ──
+
+# Ok(0) when both concentrations are finite and >= 0 and the open fraction is finite and in [0, 1]; else the first
+# failing field's Err, in declaration order. Mirrors `CalciumState::validate`.
+#must_use
+fn ry_calcium_state_validate(p: *RyCalciumState): Result {
+    var w = p;                                   # a plain address: `p + n` would step n states
+    var name = &_RY_CALCIUM_STATE_FIELDS;
+    var k = 0;
+    while (k < 3) {
+        var value: f64 = load64(w + 8 * k);
+        var t = 0;
+        var v = 0;
+        if (k == 2) {
+            t, v = _ry_guard_fraction(name, value);
+        } else {
+            t, v = _ry_guard_non_negative(name, value);
+        }
+        if (is_err_result(t) == 1) { return Err(v); }
+        name = name + strlen(name) + 1;
+        k = k + 1;
+    }
+    return Ok(0);
+}
+
+# The total Ca2+ amount in cytosolic concentration units (uM): cytoplasmic_ca + RY_CALCIUM_ER_CYTOSOL_VOLUME_RATIO ·
+# er_ca. ER ↔ cytosol exchange conserves it; only the plasma-membrane fluxes change it. Mirrors
+# `CalciumState::total_amount`.
+#must_use
+#pure
+fn ry_calcium_state_total_amount(p: *RyCalciumState): f64 {
+    var t: f64 = p.cytoplasmic_ca + RY_CALCIUM_ER_CYTOSOL_VOLUME_RATIO * p.er_ca;
+    return t;
+}
+
+# Ok(0) when every parameter is finite, the rates >= 0 and the four divisors (ip3r_km_ip3, cicr_km,
+# ip3r_inactivation_threshold, serca_km) > 0; else the first failure's Err, in declaration order. Mirrors
+# `CalciumConfig::validate`.
+#must_use
+fn ry_calcium_config_validate(p: *RyCalciumConfig): Result {
+    var w = p;
+    var name = &_RY_CALCIUM_CONFIG_FIELDS;
+    var k = 0;
+    while (k < 11) {
+        var value: f64 = load64(w + 8 * k);
+        var t = 0;
+        var v = 0;
+        if (k == 1 || k == 3 || k == 5 || k == 8) {
+            t, v = _ry_guard_positive(name, value);
+        } else {
+            t, v = _ry_guard_non_negative(name, value);
+        }
+        if (is_err_result(t) == 1) { return Err(v); }
+        name = name + strlen(name) + 1;
+        k = k + 1;
+    }
+    return Ok(0);
+}
+
+# ── the dynamics ──
+
+# Two non-negative transfer amounts scaled so their sum does not exceed `pool` (a non-positive pool, as max(0), stops
+# both): (a, b) unchanged unless a + b > pool and a + b > 0. Mirrors the private `cap_pair`.
+#must_use
+#pure
+fn _ry_calcium_cap_pair(a: f64, b: f64, pool: f64): (f64, f64) {
+    var sum: f64 = a + b;
+    if (sum > pool && sum > 0.0) {
+        var room: f64 = _ry_max(pool, 0.0);
+        var s: f64 = room / sum;
+        var x: f64 = a * s;
+        var y: f64 = b * s;
+        return (x, y);
+    }
+    return (a, b);
+}
+
+# Advances the calcium dynamics by `dt` seconds under IP3 level `ip3` (sanitized by `conc`: NaN and negatives are 0)
+# and fills *out with the tick's mean fluxes. The tick is ceil(dt / RY_CALCIUM_SUBSTEP_MAX_DT) equal sub-steps,
+# clamped to [1, RY_CALCIUM_MAX_SUBSTEPS], IP3 held: in each, the IP3R gate relaxes toward its open target (IP3, CICR,
+# inactivation) with weight min(rate · h, 1); release and leak leave the ER capped at its content, SERCA the cytosol
+# capped at it, exchanged amount-conserving; then influx (at the sub-step's starting ER level) against PMCA, exactly. A
+# non-finite or non-positive dt leaves the state untouched with a zero flux. Mirrors `CalciumState::tick`.
+fn ry_calcium_state_tick(p: *RyCalciumState, c: *RyCalciumConfig, ip3_level: f64, dt: f64, out: *RyCalciumFlux) {
+    if (_ry_guard_valid_dt(dt) == 0) {
+        ry_calcium_flux_default(out);
+        return 0;
+    }
+    var ip3: f64 = _ry_guard_conc(ip3_level);
+    if (_ry_trace_on() == 1) {
+        var hd[24];
+        var b[256];
+        var e = _ry_ev(&hd, &b, 256, "rasayan::calcium", "calcium_tick");
+        _ry_ev_f(e, "dt", dt);
+        _ry_ev_f(e, "ip3", ip3);
+        _ry_ev_f(e, "ca", p.cytoplasmic_ca);
+        _ry_trace(e);
+    }
+    # ceil() of a finite positive ratio, clamped to [1, MAX_SUBSTEPS], so the conversion is exact.
+    var q: f64 = dt / RY_CALCIUM_SUBSTEP_MAX_DT;
+    var up: f64 = f64_ceil(q);
+    var top: f64 = f64_from(RY_CALCIUM_MAX_SUBSTEPS);
+    var nc: f64 = _ry_clamp(up, 1.0, top);
+    var n = _ry_f64_to_u32(nc);
+    var h: f64 = dt / f64_from(n);
+    # IP3 is held for the tick; the gate's relaxation weight is capped at 1, a convex combination.
+    var ip3_activation: f64 = ip3 / (c.ip3r_km_ip3 + ip3);
+    var gw: f64 = c.ip3r_open_rate * h;
+    var gate_w: f64 = _ry_min(gw, 1.0);
+    var released: f64 = 0.0;
+    var pumped: f64 = 0.0;
+    var extruded: f64 = 0.0;
+    var k = 0;
+    while (k < n) {
+        var ca: f64 = p.cytoplasmic_ca;
+        var er: f64 = p.er_ca;
+        # IP3R gating: opened by IP3, amplified by Ca2+ (CICR), inactivated at high Ca2+.
+        var cicr: f64 = c.cicr_gain * ca / (c.cicr_km + ca);
+        var x: f64 = ca / c.ip3r_inactivation_threshold;
+        var inactivation: f64 = 1.0 / (1.0 + x * x);
+        var drive: f64 = ip3_activation * (1.0 + cicr) * inactivation;
+        var target_open: f64 = _ry_clamp(drive, 0.0, 1.0);
+        var open: f64 = p.ip3r_open + (target_open - p.ip3r_open) * gate_w;
+        p.ip3r_open = open;
+        # ER → cytosol: release through open IP3R and the passive leak, capped at the ER content in cytosolic units.
+        var want_release: f64 = c.er_release_rate * open * (er / RY_CALCIUM_ER_CA_REFERENCE) * h;
+        var want_leak: f64 = c.er_leak_rate * er * h;
+        var content: f64 = er * RY_CALCIUM_ER_CYTOSOL_VOLUME_RATIO;
+        var release, leak = _ry_calcium_cap_pair(want_release, want_leak, content);
+        # Cytosol → ER (SERCA), capped at the cytosolic pool.
+        var want_serca: f64 = c.serca_vmax * ca / (c.serca_km + ca) * h;
+        var serca: f64 = _ry_guard_take(want_serca, ca);
+        # Amount-conserving exchange: x cytosolic ↔ x / ratio in the ER; min absorbs a rounding excess of the capped
+        # ER outflow.
+        var to_cytosol: f64 = release + leak;
+        var er_share: f64 = to_cytosol * _RY_CALCIUM_CYTOSOL_ER_VOLUME_RATIO;
+        var er_out: f64 = _ry_min(er_share, er);
+        var er_new: f64 = (er - er_out) + serca * _RY_CALCIUM_CYTOSOL_ER_VOLUME_RATIO;
+        p.er_ca = er_new;
+        var exchanged: f64 = (ca - serca) + to_cytosol;
+        # Plasma membrane: influx at the sub-step's starting ER level against first-order PMCA, solved exactly.
+        var j_in: f64 = ry_plasma_membrane_influx(er);
+        var after_pm: f64 = _ry_integrate_produce_decay(exchanged, j_in, c.pmca_rate, h);
+        # The exact extrusion is >= 0; max(0) absorbs rounding when PMCA is negligible.
+        var moved: f64 = exchanged + j_in * h - after_pm;
+        var pmca: f64 = _ry_max(moved, 0.0);
+        p.cytoplasmic_ca = after_pm;
+        released = released + release;
+        pumped = pumped + serca;
+        extruded = extruded + pmca;
+        k = k + 1;
+    }
+    out.er_release = released / dt;
+    out.serca_uptake = pumped / dt;
+    out.pmca_extrusion = extruded / dt;
+    return 0;
+}
+
+# ── JSON (P7: serde_json's documents) ──
+
+# Appends CalciumState `p` as serde_json writes it, its three fields in declaration order, on allocator `a`: Ok(0), or
+# Err(RY_ERR_OUT_OF_MEMORY) when the builder could not grow.
+#must_use
+fn ry_calcium_state_to_json_a(a, sb, p: *RyCalciumState): Result {
+    if (_ry_jw_f64_fields(a, sb, p, 3, &_RY_CALCIUM_STATE_FIELDS) != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return Ok(0);
+}
+
+# ry_calcium_state_to_json_a on the default allocator (a builder from str_builder_new).
+#must_use
+fn ry_calcium_state_to_json(sb, p: *RyCalciumState): Result {
+    return ry_calcium_state_to_json_a(default_alloc(), sb, p);
+}
+
+# The CalciumState at node `v` of a parsed document, by serde's rules, into the 24 bytes at `w`: 1, or 0 for a
+# refusal. The signaling network's readers call it for its nested value.
+#must_use
+fn _ry_calcium_state_from_node(v, w): i64 {
+    return _ry_jr_f64_fields(v, w, 3, &_RY_CALCIUM_STATE_FIELDS);
+}
+
+# Reads a CalciumState from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`): Ok(0) with
+# *out filled, or Err(RY_ERR_DESERIALIZE) with *out untouched.
+#must_use
+fn ry_calcium_state_from_json_a(a, buf, n, out: *RyCalciumState): Result {
+    var w[24];
+    var v = _ry_jr_parse(a, buf, n);
+    if (_ry_calcium_state_from_node(v, &w) == 0) {
+        return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "CalciumState", 12));
+    }
+    memcpy(out, &w, 24);
+    return Ok(0);
+}
+
+# ry_calcium_state_from_json_a on the default allocator (the tree is never freed: for a one-off read).
+#must_use
+fn ry_calcium_state_from_json(buf, n, out: *RyCalciumState): Result {
+    return ry_calcium_state_from_json_a(default_alloc(), buf, n, out);
+}
+
+# Appends CalciumConfig `p` as serde_json writes it, its eleven fields in declaration order, on allocator `a`: Ok(0),
+# or Err(RY_ERR_OUT_OF_MEMORY).
+#must_use
+fn ry_calcium_config_to_json_a(a, sb, p: *RyCalciumConfig): Result {
+    if (_ry_jw_f64_fields(a, sb, p, 11, &_RY_CALCIUM_CONFIG_FIELDS) != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return Ok(0);
+}
+
+# ry_calcium_config_to_json_a on the default allocator.
+#must_use
+fn ry_calcium_config_to_json(sb, p: *RyCalciumConfig): Result {
+    return ry_calcium_config_to_json_a(default_alloc(), sb, p);
+}
+
+# The CalciumConfig at node `v` of a parsed document, by serde's rules, into the 88 bytes at `w`: 1, or 0 for a
+# refusal.
+#must_use
+fn _ry_calcium_config_from_node(v, w): i64 {
+    return _ry_jr_f64_fields(v, w, 11, &_RY_CALCIUM_CONFIG_FIELDS);
+}
+
+# Reads a CalciumConfig from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`): Ok(0) with
+# *out filled, or Err(RY_ERR_DESERIALIZE) with *out untouched.
+#must_use
+fn ry_calcium_config_from_json_a(a, buf, n, out: *RyCalciumConfig): Result {
+    var w[88];
+    var v = _ry_jr_parse(a, buf, n);
+    if (_ry_calcium_config_from_node(v, &w) == 0) {
+        return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "CalciumConfig", 13));
+    }
+    memcpy(out, &w, 88);
+    return Ok(0);
+}
+
+# ry_calcium_config_from_json_a on the default allocator (the tree is never freed: for a one-off read).
+#must_use
+fn ry_calcium_config_from_json(buf, n, out: *RyCalciumConfig): Result {
+    return ry_calcium_config_from_json_a(default_alloc(), buf, n, out);
+}
+
+# Appends CalciumFlux `f` as serde_json writes it, its three rates in declaration order, on allocator `a`: Ok(0), or
+# Err(RY_ERR_OUT_OF_MEMORY).
+#must_use
+fn ry_calcium_flux_to_json_a(a, sb, f: *RyCalciumFlux): Result {
+    if (_ry_jw_f64_fields(a, sb, f, 3, &_RY_CALCIUM_FLUX_FIELDS) != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return Ok(0);
+}
+
+# ry_calcium_flux_to_json_a on the default allocator.
+#must_use
+fn ry_calcium_flux_to_json(sb, f: *RyCalciumFlux): Result {
+    return ry_calcium_flux_to_json_a(default_alloc(), sb, f);
+}
+
+# The CalciumFlux at node `v` of a parsed document, by serde's rules, into the 24 bytes at `w`: 1, or 0 for a
+# refusal.
+#must_use
+fn _ry_calcium_flux_from_node(v, w): i64 {
+    return _ry_jr_f64_fields(v, w, 3, &_RY_CALCIUM_FLUX_FIELDS);
+}
+
+# Reads a CalciumFlux from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`): Ok(0) with
+# *out filled, or Err(RY_ERR_DESERIALIZE) with *out untouched.
+#must_use
+fn ry_calcium_flux_from_json_a(a, buf, n, out: *RyCalciumFlux): Result {
+    var w[24];
+    var v = _ry_jr_parse(a, buf, n);
+    if (_ry_calcium_flux_from_node(v, &w) == 0) {
+        return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "CalciumFlux", 11));
+    }
+    memcpy(out, &w, 24);
+    return Ok(0);
+}
+
+# ry_calcium_flux_from_json_a on the default allocator (the tree is never freed: for a one-off read).
+#must_use
+fn ry_calcium_flux_from_json(buf, n, out: *RyCalciumFlux): Result {
+    return ry_calcium_flux_from_json_a(default_alloc(), buf, n, out);
+}
