@@ -1714,3 +1714,30 @@ sub-step count is `ceil(dt / 0.5)` clamped to [1, 1000] and converted saturating
 documents, with node readers the signaling network will call.
 
 **Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): mapk_tick 48.8 → 235 ns.
+
+### 9b. Part 2: PI3K (2026-11-17)
+
+**What is compared.** `tests/golden/pi3k.tsv` (new, 549 rows), through the oracle's public API and a verbatim copy
+of `Pi3kState::tick` (`scripts/oracle/src/v_pi3k.rs`, on a mirror of the state), which must agree on every tick. The
+copy's `integrate` is `v_integrate::noted`, the integrators that note the `exp_m1` branch, shared with `v_mapk.rs`
+since this part (it was MAPK's own module). The rows cover:
+- the two defaults, both validators over every field's edges, pairs where the order picks the error, seeded values;
+- 348 single ticks: the default at 21 step lengths (the series cutoff crossed between 0.08 and 0.18 s at the default
+  rates) at two receptor activities; each state field over its edges at 0.01 s and 2 s; the activity's edges at three
+  step lengths; each config field over its edges; PTEN up five-fold and off, the phosphatases off; 60 seeded runs;
+- 19 trajectories: Rust's runs (stimulus, none, high PTEN, dt 1000, the small-dt Euler comparison's 5000 steps), a
+  six-point dose-response sweep, stimulus on then off, the same minute at 0.01 s and 5 s, NaN recovery, four seeded;
+- the serde documents.
+
+Classes: A 182, B 162, C 186 (an `exp_m1` step), T 19.
+
+| Check | Result |
+|---|---|
+| every row | 531 identical on the first run; 9 ticks differ by 1 ulp, each the corrected oracle's row |
+| corrected oracle | `mpfr_ref.py`'s PI3K model reproduces all 205 class-C and -T rows with glibc's `exp_m1`; MPFR's changes 9 ticks (`pi3k.cr.tsv`); the port equals the corrected row on all 9 (ADR 3) |
+| `validate.py` | every row re-derived from its own transcription of `pi3k.rs` (its spans pinned), with MPFR's `exp_m1` and the recorded libm; 122,995 checks in all; one flipped value per function (an f64's last bit, an Ok made an error, a document byte) is reported, 12 of 12 |
+| Rust tests | the 11 `pi3k.rs` tests and its 2 integration tests ported (`tests/pi3k.tcyr`, 20 checks); the ledger at 550 of 723; surface parity 14 of 14 |
+| fuzz | every input also read as the three documents (1,653 accepted, each written and read back bit for bit); a valid state, and the default state on a valid config, ticked 0.1 s and 100 s stay in [0, 1] |
+| four targets (`scripts/gates.sh`, 455 s, every step green) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 117,428 ok, 295 accepted (ADR 3: 214), 0 failed; coverage 321 of 321 public fns executed |
+
+**Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): pi3k_tick 39.6 → 154 ns.

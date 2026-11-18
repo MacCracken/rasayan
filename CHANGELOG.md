@@ -19,10 +19,28 @@ JSON writers and readers) follow: M1 is complete. M2 part 1 (enzyme), part 2 (me
 complete. M4b part 1 (the electron transport chain), part 2 (β-oxidation) and part 3 (amino-acid catabolism)
 follow: M4b is complete, and with it M4. M5 part 1 (the metabolic network's types, validators, solve layer and
 codecs), part 2 (its step) and part 3 (the steady-state run, the long runs, the soak) follow: M5 is complete.
-M6 part 1 (the MAPK cascade) follows.
+M6 part 1 (the MAPK cascade) and part 2 (PI3K/Akt/mTOR) follow.
 
 ### Added
 
+- **src/pi3k.cyr**, **src/pi3k_data.cyr** (M6 part 2) — `pi3k.rs` transcribed: `RyPi3kState`, `RyPi3kConfig`,
+  `RyPi3kFlux`; the defaults from the generated consts and the three types' field-name blobs; both validators;
+  `ry_pi3k_state_tick` (PIP3 by PI3K against PTEN, then Akt, then mTOR, each by integrate's `activate` from the level
+  above's updated value); the serde codecs of all three, with node readers for the signaling network. Rust's
+  `pi3k_tick` trace event is a level-gated sakshi event under `rasayan::pi3k`
+- **tests/golden/pi3k.tsv** (M6 part 2, 549 rows, a new module: A 182, B 162, C 186, T 19) — the defaults, both
+  validators over every field's edges, 348 single ticks (the default at 21 step lengths across the series cutoff;
+  each state and config field over its edges; the receptor activity's edges; PTEN up and off; seeded states and
+  configs), 19 trajectories (Rust's runs with and without stimulus and PTEN, dt 1000, a dose-response sweep, stimulus on
+  and off, the same minute at 0.01 and 5 s, NaN recovery, seeded runs) and the serde documents. Every tick runs through
+  the oracle's API and a verbatim copy (`v_pi3k.rs`) that must agree; it is class C where `activate` takes the `exp_m1`
+  branch. `pi3k.cr.tsv` holds 9 rows, 1 ulp each, where glibc's `exp_m1` misrounds; the port gives the correctly
+  rounded rows (ADR 3). `validate.py` re-derives every row (122,995 independent checks) and catches each flipped value
+- **tests/pi3k.tcyr** (M6 part 2, 20 checks) — the 11 `pi3k.rs` unit tests (the explicit-Euler reference, stiff rates
+  at dt 100) and the 2 PI3K integration tests, as they are written, and the trace event: the Rust-test ledger at 550
+  of 723. The fuzz harness reads every input as the three documents (1,653 read and written back bit for bit) and
+  ticks every valid state and config, which stay in [0, 1]
+- **benchmarks** (M6 part 2) — pi3k_tick, Rust → Cyrius: 39.6 → 154 ns
 - **src/mapk.cyr**, **src/mapk_data.cyr** (M6 part 1) — `mapk.rs` transcribed: `RyMapkState`, `RyMapkConfig`,
   `RyMapkFlux`; the defaults from the generated consts and the three types' field-name blobs; both validators;
   `ry_mapk_state_tick` and the crate-private `tick_with_raf_inhibition` (the signaling network's Akt → Raf crosstalk):

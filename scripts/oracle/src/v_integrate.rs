@@ -98,3 +98,53 @@ pub(crate) fn exp_branch(y: f64) -> bool {
 
 /// `SERIES_MAX`, for the grids around it.
 pub(crate) const CUTOFF: f64 = SERIES_MAX;
+
+/// The copies again, each noting when its `step_factors` takes the `exp_m1` branch: unless `y < SERIES_MAX` (a NaN `y`
+/// too), after the function's own early return, written as theirs (`total <= 0.0` returns, so a NaN total does not).
+/// A verbatim block that calls `integrate::…` resolves to these when its file imports them as `integrate`
+/// (`v_mapk.rs`, `v_pi3k.rs`, …), and the emitter reads the note for the row's class.
+pub mod noted {
+    use std::cell::Cell;
+
+    thread_local! {
+        static EXP: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Clears the note.
+    pub fn clear_exp() {
+        EXP.with(|e| e.set(false));
+    }
+
+    /// Whether a call since the last `clear_exp` took the `exp_m1` branch.
+    pub fn took_exp() -> bool {
+        EXP.with(Cell::get)
+    }
+
+    fn note(y: f64) {
+        if super::exp_branch(y) {
+            EXP.with(|e| e.set(true));
+        }
+    }
+
+    pub(crate) fn relax(x: f64, target: f64, rate: f64, dt: f64) -> f64 {
+        if !(rate <= 0.0) {
+            note(rate * dt);
+        }
+        super::relax(x, target, rate, dt)
+    }
+
+    pub(crate) fn produce_decay(x: f64, production: f64, decay: f64, dt: f64) -> f64 {
+        if !(decay <= 0.0) {
+            note(decay * dt);
+        }
+        super::produce_decay(x, production, decay, dt)
+    }
+
+    pub(crate) fn activate(x: f64, on: f64, off: f64, dt: f64) -> f64 {
+        let total = on + off;
+        if !(total <= 0.0) {
+            note(total * dt);
+        }
+        super::activate(x, on, off, dt)
+    }
+}

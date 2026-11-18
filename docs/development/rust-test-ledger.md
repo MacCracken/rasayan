@@ -6,7 +6,7 @@
 > milestone hasn't come. The golden corpus (`tests/golden/`) checks every ported function on its grid besides.
 > The 2 doc tests and the example are M9's.
 
-**723 Rust tests:** 537 ported; 89 at M6, 62 at M7, 35 at M8.
+**723 Rust tests:** 550 ported; 76 at M6, 62 at M7, 35 at M8.
 
 | Rust file | Tests | Ported | Due, unported | Later (milestone) |
 |---|---:|---:|---:|---|
@@ -31,16 +31,16 @@
 | `src/neurotransmitter.rs` | 31 | 0 | 0 | 31 (M7) |
 | `src/nuclear_receptor.rs` | 11 | 0 | 0 | 11 (M6) |
 | `src/pathway.rs` | 34 | 34 | 0 | — |
-| `src/pi3k.rs` | 11 | 0 | 0 | 11 (M6) |
+| `src/pi3k.rs` | 11 | 11 | 0 | — |
 | `src/protein.rs` | 68 | 68 | 0 | — |
 | `src/ptm.rs` | 16 | 16 | 0 | — |
 | `src/receptor.rs` | 12 | 0 | 0 | 12 (M6) |
 | `src/signal.rs` | 21 | 21 | 0 | — |
 | `src/signaling.rs` | 13 | 0 | 0 | 13 (M6) |
 | `src/tca.rs` | 26 | 26 | 0 | — |
-| `tests/integration.rs` | 70 | 51 | 0 | 13 (M6), 6 (M7) |
+| `tests/integration.rs` | 70 | 53 | 0 | 11 (M6), 6 (M7) |
 | `tests/validation.rs` | 25 | 25 | 0 | — |
-| **Total** | **723** | **537** | **0** | |
+| **Total** | **723** | **550** | **0** | |
 
 ## Where each is ported
 
@@ -376,6 +376,17 @@
 | `src/pathway.rs` `test_substeps_match_manual_steps` | `tests/pathway.tcyr` `bookkeeping` |
 | `src/pathway.rs` `test_tick_is_tick_in_resting` | `tests/pathway.tcyr` `bookkeeping` |
 | `src/pathway.rs` `test_validate_rejects_bad_cofactors` | `tests/pathway.tcyr` `validation` |
+| `src/pi3k.rs` `test_bounded` | `tests/pi3k.tcyr` `ticking` |
+| `src/pi3k.rs` `test_default_valid` | `tests/pi3k.tcyr` `validation` |
+| `src/pi3k.rs` `test_huge_dt_stable` | `tests/pi3k.tcyr` `integration` |
+| `src/pi3k.rs` `test_invalid_dt_is_noop` | `tests/pi3k.tcyr` `hardening` |
+| `src/pi3k.rs` `test_nan_input_treated_as_zero` | `tests/pi3k.tcyr` `hardening` |
+| `src/pi3k.rs` `test_no_stimulus_decays` | `tests/pi3k.tcyr` `ticking` |
+| `src/pi3k.rs` `test_pten_suppresses_pip3` | `tests/pi3k.tcyr` `ticking` |
+| `src/pi3k.rs` `test_receptor_activates_pathway` | `tests/pi3k.tcyr` `ticking` |
+| `src/pi3k.rs` `test_serde_roundtrip` | `tests/pi3k.tcyr` `serde` |
+| `src/pi3k.rs` `test_small_dt_matches_old_euler` | `tests/pi3k.tcyr` `integration` |
+| `src/pi3k.rs` `test_validate_rejects_nan_and_zero_km` | `tests/pi3k.tcyr` `validation` |
 | `src/protein.rs` `test_amino_acid_average_masses` | `tests/protein.tcyr` `lookups` |
 | `src/protein.rs` `test_amino_acid_count` | `tests/protein.tcyr` `lookups` |
 | `src/protein.rs` `test_bjellqvist_terminal_residue_pka` | `tests/protein.tcyr` `published_sets` |
@@ -555,6 +566,8 @@
 | `tests/integration.rs` `test_network_long_run_stability` | `tests/pathway.tcyr` `ticking` |
 | `tests/integration.rs` `test_network_zero_glucose_graceful` | `tests/pathway.tcyr` `oxygen` |
 | `tests/integration.rs` `test_network_zero_oxygen_graceful` | `tests/pathway.tcyr` `oxygen` |
+| `tests/integration.rs` `test_pi3k_config_serde_roundtrip` | `tests/pi3k.tcyr` `serde` |
+| `tests/integration.rs` `test_pi3k_flux_serde_roundtrip` | `tests/pi3k.tcyr` `serde` |
 | `tests/integration.rs` `test_reversible_haldane_consistency` | `tests/enzyme.tcyr` `reversible` |
 | `tests/integration.rs` `test_second_messenger_serde_roundtrip` | `tests/signal.tcyr` `serde` |
 | `tests/integration.rs` `test_tca_flux_serde_roundtrip` | `tests/tca.tcyr` `serde` |

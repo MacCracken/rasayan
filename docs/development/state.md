@@ -57,6 +57,7 @@ milestone (M9) sets 2.0.0.
 | M5 part 3 — the steady-state run, the long runs, the soak | ✅ `src/pathway.cyr`: `run_to_steady_state` (the net-ATP EMA test from the 12th tick; Rust's DEBUG event at `max_steps`). Golden `pathway.tsv` +31 rows (T): 17 steady-state runs and 14 trajectories (dt invariance over a minute; anoxia and reoxygenation; exercise and recovery; fasting; a glucose bolus; NaN recovery; seeded networks), all matching bit for bit, none moved by a correctly rounded `pow`; `mpfr_ref.py` and `validate.py` model them (121,082). `tests/pathway.tcyr` 78 checks: every network test; ledger 518 of 723; surface parity 45 of 45. Probe 5 (`scripts/probes/p5_soak.cyr`): 10⁶ steps, zero heap growth, in the probe gate. `scripts/gates.sh` green (926 s, under a load of about 18; the same summary on ELF, `--bounds`, PE and aarch64: 116,062 ok, 0 failed); coverage 285 of 285; network_tick re-measured on a quiet machine, 1.02 → 4.9 µs |
 | **M5 — the metabolic network** | ✅ complete: `pathway` (`src/pathway.cyr`, `src/pathway_data.cyr`). 2,877 golden rows (A 1,081, B 842, C 923, T 31), every one matching or, once, accepted (ADR 3: the port's correctly rounded `pow` where glibc misrounds a PFK-1 Hill call in a 5000-step tick); both implicit NADH solves transcribed with every iteration count pinned; the producer probe a frame copy and the network allocation-free over 10⁶ steps; 38 Rust tests ported (34 unit, 4 integration). Next: M6, the signaling cascades |
 | M6 part 1 — MAPK | ✅ `src/mapk.cyr`: MapkState, MapkConfig and MapkFlux, both validators, `tick` and the crate-private `tick_with_raf_inhibition` (Ras and Raf by `activate`, MEK and ERK by the dual-phosphorylation relax; sub-steps past 0.5 s, capped at 1000; Rust's trace event), the three codecs with node readers for the signaling network; `src/mapk_data.cyr` generated. Golden `mapk.tsv` 877 rows (C 342, B 282, A 228, T 25; a new module), every tick through the oracle and a verbatim copy that must agree; `mapk.cr.tsv` 51 rows (glibc's `exp_m1`; the port correctly rounded, ADR 3); `validate.py` models every row (122,249). `tests/mapk.tcyr` 31 checks: Rust's 17 MAPK tests and its 2 integration tests; ledger 537 of 723; surface parity 17 of 17; the fuzz harness reads the three codecs and ticks every valid state and config. mapk_tick benched; `scripts/gates.sh` green (791 s; the same summary on ELF, `--bounds`, PE and aarch64: 116,888 ok, 0 failed); coverage 303 of 303 |
+| M6 part 2 — PI3K | ✅ `src/pi3k.cyr`: Pi3kState, Pi3kConfig and Pi3kFlux, both validators, `tick` (PIP3, Akt, mTOR by `activate`; Rust's trace event), the three codecs with node readers; `src/pi3k_data.cyr` generated; the `exp_m1`-noting integrators shared in `v_integrate.rs`. Golden `pi3k.tsv` 549 rows (C 186, A 182, B 162, T 19; a new module), every tick through the oracle and a verbatim copy; `pi3k.cr.tsv` 9 rows (glibc's `exp_m1`, 1 ulp; the port correctly rounded, ADR 3); `validate.py` models every row (122,995). `tests/pi3k.tcyr` 20 checks: Rust's 11 PI3K tests and its 2 integration tests; ledger 550 of 723; surface parity 14 of 14; the fuzz harness reads the three codecs and ticks every valid state and config. pi3k_tick benched; `scripts/gates.sh` green (455 s; the same summary on ELF, `--bounds`, PE and aarch64: 117,428 ok, 0 failed); coverage 321 of 321 |
 
 ## Golden corpus
 
@@ -85,6 +86,8 @@ milestone (M9) sets 2.0.0.
 | `tests/golden/pathway.cr.tsv` | 1 correction (ADR 0003: glibc's `pow` in a PFK-1 Hill fraction, once in 5000 sub-steps of 0.2 s) | — |
 | `tests/golden/mapk.tsv` | 877 (M6 part 1: the defaults, both validators, 419 ticks and 60 Raf-inhibited ticks, the dual-phosphorylation helpers, 25 trajectories, the serde documents) | A 228 · B 282 · C 342 · T 25 |
 | `tests/golden/mapk.cr.tsv` | 51 corrections (ADR 0003: glibc's `exp_m1` in the cascade's integrators, 1–12 ulp downstream) | — |
+| `tests/golden/pi3k.tsv` | 549 (M6 part 2: the defaults, both validators, 348 ticks, 19 trajectories, the serde documents) | A 182 · B 162 · C 186 · T 19 |
+| `tests/golden/pi3k.cr.tsv` | 9 corrections (ADR 0003: glibc's `exp_m1` in `activate`, 1 ulp) | — |
 | `tests/golden/enzyme.tsv` | 7,219 (60 table cells and `lookup_enzyme`; 7,159 function rows from M2 part 1) | A 309 · B 4,870 · C 2,040 |
 | `tests/golden/enzyme.cr.tsv` | 0 corrections (glibc's pow and exp correctly rounded on every call) | — |
 | `tests/golden/membrane.tsv` | 1,739 (`DEFAULT_PERMEABILITY`; `IonicState::default` and 1,737 function rows from M2 part 2) | A 263 · B 450 · C 1,026 |
@@ -102,18 +105,18 @@ milestone (M9) sets 2.0.0.
 | `tests/golden/logging.tsv` | 196 (M1 part 2: each `RASAYAN_LOG` form × 20 event targets) | A |
 | `tests/golden/json.tsv` | 20,120 (M1 part 3: serde_json's text per scalar kind, Rust's Display of an f64; serde_json's decision on each document per reader) | A |
 
-117,174 rows (20,163 at M0, 11,573 from M1 part 1, 196 from part 2, 20,120 from part 3; 7,159 from M2 part 1, 1,738
+117,723 rows (20,163 at M0, 11,573 from M1 part 1, 196 from part 2, 20,120 from part 3; 7,159 from M2 part 1, 1,738
 from part 2, 6,025 from part 3, 5,088 from part 4, 4,509 from part 5; 14,065 from M3 part 1, 5,768 from part 2, 3,568
 from part 3, 3,922 from part 4; 3,239 from M4a part 1, 2,321 from part 2; 1,572 from M4b part 1, 1,014 from part 2,
 1,380 from part 3;
-1,916 from M5 part 1, 930 from part 2, 31 from part 3; 877 from M6 part 1).
+1,916 from M5 part 1, 930 from part 2, 31 from part 3; 877 from M6 part 1, 549 from part 2).
 Recorded with rustc 1.100.0 on glibc 2.44 x86_64 fma (rasayan 1.2.0). `--check`,
-`validate.py` (122,249 independent checks),
+`validate.py` (122,995 independent checks),
 `mpfr_ref.py --check` and `probe_tables.py --all-targets` (2,470 compiled values) are clean. Generated: `src/constants.cyr` (67 constants, 333 lines), `src/constants_private.cyr` (16,
 74 lines), `src/protein_data.cyr` (721 lines), `src/alignment_data.cyr` (129),
 `src/enzyme_data.cyr` (251), `src/membrane_data.cyr` (56), `src/metabolism_data.cyr` (41), `src/energy_data.cyr` (41),
 `src/glycolysis_data.cyr` (279), `src/tca_data.cyr` (235), `src/etc_data.cyr` (123), `src/beta_oxidation_data.cyr` (88),
-`src/amino_catabolism_data.cyr` (137), `src/pathway_data.cyr` (135), `src/mapk_data.cyr` (128),
+`src/amino_catabolism_data.cyr` (137), `src/pathway_data.cyr` (135), `src/mapk_data.cyr` (128), `src/pi3k_data.cyr` (97),
 `src/signal_data.cyr` (26), `src/ai_data.cyr` (36); and from MPFR,
 `src/mathx_data.cyr` (32 tables and constants, 1,130 lines; `mathx_tables.py --check` is clean).
 
@@ -138,7 +141,7 @@ Raised by the M0 probes; each is decided when its milestone starts.
 - Rust oracle: `rust-old/` — 20,541 lines incl. tests (`rust-old/LINES_OF_SOURCE.txt`); 6,754 code lines in `src/`, 146 public fns
 - Cyrius port: the ported modules (`src/error.cyr`, `guard`, `integrate`, `logging`, `json`, `enzyme`, `membrane`,
   `signal`, `metabolism`, `energy`, `protein`, `alignment`, `ptm`, `domain`, `glycolysis`, `tca`, `etc`,
-  `beta_oxidation`, `amino_catabolism`, `pathway`, `mapk`), the generated sources (`src/constants.cyr`,
+  `beta_oxidation`, `amino_catabolism`, `pathway`, `mapk`, `pi3k`), the generated sources (`src/constants.cyr`,
   `src/constants_private.cyr`, `src/*_data.cyr`), the vendored `src/mathx.cyr` (1,277 lines: the vendored functions
   and rasayan's own helpers) and the vendored `src/fmtf.cyr` (408 lines, impetus's shortest-digit printer by ushma's
   rule, `scripts/vendor_fmtf.py`; M1 part 3b); `src/main.cyr` is the scaffold. `[lib]` bundles them, in dependency
@@ -149,7 +152,7 @@ Raised by the M0 probes; each is decided when its milestone starts.
 
 `cyrius test` runs `tests/parity.tcyr`, warning-free (the same on `--bounds` and aarch64):
 
-`=== parity summary: 23 modules, 0 failing | rows: 116888 ok, 0 failed, 0 measured, 0 pending, 286 accepted (ADR 3: 205), 0 glibc-matching (failed) ===`
+`=== parity summary: 23 modules, 0 failing | rows: 117428 ok, 0 failed, 0 measured, 0 pending, 295 accepted (ADR 3: 214), 0 glibc-matching (failed) ===`
 
 - **ok:** the 108 `const` rows, the 1,229 table rows (from the generated data, index constants
   included), the 7,732 class A/B math rows (`src/mathx.cyr`'s helpers and the builtins), 10,998 class-C math rows at
@@ -166,7 +169,8 @@ Raised by the M0 probes; each is decided when its milestone starts.
   (exactly; the 31 trajectories and coupling runs bit for bit) and amino-acid catabolism's 1,380 (exactly; the 26
   trajectories and coupling runs bit for bit); the network's 2,876 (part 1 exactly, each solve's iteration count and
   exit included; part 2's steps and ticks at 0 ulp on `_ry_cr_pow`; part 3's 31 runs bit for bit); MAPK's 826 (the
-  ticks at 0 ulp on `_ry_cr_expm1`, the 24 trajectories bit for bit). 116,888 in all.
+  ticks at 0 ulp on `_ry_cr_expm1`, the 24 trajectories bit for bit). PI3K's 540 (the ticks at 0 ulp on
+  `_ry_cr_expm1`, the 19 trajectories bit for bit). 117,428 in all.
 - **accepted (ADR 4):** 20 reader rows where bayan refuses or misreads for a filed reason (ADR 0004): 19 json rows
   and one membrane row (an integer `-0` in an IonicState document).
 - **accepted (ADR 2):** 61 logging rows: `RASAYAN_LOG` forms the port refuses (the default applies, with a warning)
@@ -175,7 +179,7 @@ Raised by the M0 probes; each is decided when its milestone starts.
   powf 1), the 39 integrate rows where glibc's expm1 does (`integrate.cr.tsv`: step_factors 16, activate 13,
   produce_decay 7, relax 3), 4 SecondMessenger ticks (`signal.cr.tsv`), 10 `regenerate_atp` steps
   (`metabolism.cr.tsv`), 4 BioenergyState ticks (`energy.cr.tsv`) and 1 network tick (`pathway.cr.tsv`), where the port
-  gives the correctly rounded value, and 51 MAPK ticks and trajectories (`mapk.cr.tsv`, glibc's `exp_m1`): 205.
+  gives the correctly rounded value, 51 MAPK ticks and trajectories (`mapk.cr.tsv`, glibc's `exp_m1`) and 9 PI3K ticks (`pi3k.cr.tsv`): 214.
 - **measured:** none. The stdlib's counterparts (`f64_exp`, `f64_ln`, their polyfills,
   `ganita_f64_pow`, `_gn_expm1`) stay as ungated shadow lines (`port-parity.md` §2c, §2d).
 - **pending:** none; a module row with no dispatcher entry is reported pending.
@@ -197,7 +201,8 @@ Raised by the M0 probes; each is decided when its milestone starts.
   `tests/beta_oxidation.tcyr` (49: Rust's 23 β-oxidation tests and 3 integration tests, the event's text),
   `tests/amino_catabolism.tcyr` (41: Rust's 23 amino-acid catabolism tests and 4 integration tests, the event's
   text), `tests/pathway.tcyr` (78: Rust's 34 network tests and its 4 network integration tests, both events' text),
-  `tests/mapk.tcyr` (31: Rust's 17 MAPK tests and its 2 integration tests, the event's text), the
+  `tests/mapk.tcyr` (31: Rust's 17 MAPK tests and its 2 integration tests, the event's text), `tests/pi3k.tcyr`
+  (20: Rust's 11 PI3K tests and its 2 integration tests, the event's text), the
   fuzz harness (50,000 inputs through `RASAYAN_LOG`, the JSON readers and the five M2 struct codecs, each accepted
   document written and read back, a SecondMessenger stepped and kept in [0, 1], a MetabolicState's charge in [0, 1]
   and a step conserving ATP + ADP, a BioenergyState ticked with its reserves in [0, 1], every protein function on the
@@ -205,7 +210,7 @@ Raised by the M0 probes; each is decided when its milestone starts.
   β-oxidation, amino-acid catabolism and network codecs, and steps of every valid state, which stays valid and conserves
   (glycolysis) or balances (TCA) its carbon, or balances its electron pairs (ETC), or conserves its carbon
   (β-oxidation) or its nitrogen (amino-acid catabolism, also on every valid config), and a valid network stepped,
-  conserving ATP + ADP, and a valid MAPK state or config ticked, staying in [0, 1]);
+  conserving ATP + ADP, and a valid MAPK or PI3K state or config ticked, staying in [0, 1]);
   `cyrius test` warning-free, `--bounds` and `cyrius audit` pass
 - MPFR sweep: `scripts/oracle/cr_verify.py` checks the four primitives on 5,314,811 arguments per target
   (`--quick`: 542,062), both paths, ELF, aarch64 and PE: 0 mismatches (`port-parity.md` §2e)
@@ -261,10 +266,11 @@ Rust crate (crates.io): mastishk 1.1.0, sharira 1.1.0, kiran 1.0.0. No Cyrius co
 
 ## Next
 
-M6 part 2: PI3K (`pi3k.rs`: PI3K → PIP3 → Akt → mTOR with PTEN; single steps, its trajectories, the codecs; port plan
-§6). Then jak_stat, calcium, receptor, nuclear_receptor and the signaling network, one part each.
+M6 part 3: JAK-STAT (`jak_stat.rs`: JAK activation, STAT phosphorylation and dimerization, SOCS feedback, conservation
+in the JAK and STAT pools; single steps, its trajectories, the codecs; port plan §6). Then calcium, receptor,
+nuclear_receptor and the signaling network, one part each.
 
 Parity bookkeeping: `scripts/surface_parity.py` (every Rust public item of a ported module has its Cyrius name) and
-`scripts/rust_test_ledger.py` (`docs/development/rust-test-ledger.md`: 723 Rust tests, 537 ported, 0 due and
+`scripts/rust_test_ledger.py` (`docs/development/rust-test-ledger.md`: 723 Rust tests, 550 ported, 0 due and
 unported)
 run in `scripts/gates.sh` since M1 part 2.

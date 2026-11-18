@@ -301,3 +301,20 @@ Measured on a quiet machine (load 3.6–3.7, two runs), with the reference rows 
 12 ns, glycolysis_tick 734–758 ns, amino_catab_tick 106–107 ns). A step is three Michaelis-Menten rates, two
 `activate` and two `relax` calls, the feedback and the guards.
 
+## M6 part 2: PI3K
+
+| Benchmark | Rust 1.2.0 (ns) | Cyrius (ns) | Notes |
+|---|---|---|---|
+| pi3k_tick | 39.62 | 153–154 | Rust's loop body: a default state, one tick of 0.01 s at receptor activity 0.5 (the series branch) |
+
+Cyrius only:
+
+| Benchmark | Cyrius (ns) | Notes |
+|---|---|---|
+| tick, the state ticked on (no reset) | 150–151 | |
+| tick of 5 s | 314 | one step, its three `activate` calls on the `exp_m1` branch |
+
+Measured on a quiet machine (load 3.1–3.4, two runs), with the reference rows at their quiet values (michaelis_menten
+12 ns, glycolysis_tick 752–757 ns, mapk_tick 233–234 ns). A tick is three Michaelis-Menten rates and three
+`activate` calls.
+

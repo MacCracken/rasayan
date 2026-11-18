@@ -86,6 +86,8 @@ include "src/pathway_data.cyr"
 include "src/pathway.cyr"
 include "src/mapk_data.cyr"
 include "src/mapk.cyr"
+include "src/pi3k_data.cyr"
+include "src/pi3k.cyr"
 
 # pathway's solve_decreasing rows: the Rust tests' closures' contexts (`a - x`, `c - 3·n/(k + n)·c - n`, the constant
 # `v`).
@@ -4318,6 +4320,173 @@ fn _par_mapk_json(fp, fl): i64 {
     return 1;
 }
 
+# ── pi3k ────────────────────────────────────────────────────────────────────────────
+# src/pi3k_data.cyr and src/pi3k.cyr (M6 part 2). A Pi3kState row takes its three levels; a Pi3kConfig is the default
+# with overrides, `i:n` then n pairs `i:field f:x` (0–8). tick takes the state, the config and `f:ra f:dt` and gives
+# the state after and the flux's three values. A trajectory row (class T) is a script: the state, the config, then
+# `i:1 f:ra f:dt i:k` and `i:3 i:field f:x`.
+
+# Reads a PI3K config from input k into *c (the default, then the overrides): the index after it, or -1 when
+# malformed.
+fn _par_pk_in(k, c: *RyPi3kConfig): i64 {
+    ry_pi3k_config_default(c);
+    if (_par_is_i(k) == 0) { return 0 - 1; }
+    var n = _par_in(k);
+    var w = c;
+    var at = k + 1;
+    var j = 0;
+    while (j < n) {
+        if (_par_is_i(at) == 0 || _par_is_f(at + 1) == 0) { return 0 - 1; }
+        var field = _par_in(at);
+        if (field < 0 || field >= 9) { return 0 - 1; }
+        store64(w + 8 * field, _par_in(at + 1));
+        at = at + 2;
+        j = j + 1;
+    }
+    return at;
+}
+
+# Replays a PI3K trajectory script from input k on *s under *c: 1 with *f the last tick's flux, or -1 when malformed.
+fn _par_pi3k_script(s: *RyPi3kState, c: *RyPi3kConfig, k, f: *RyPi3kFlux): i64 {
+    ry_pi3k_flux_default(f);
+    var w = s;
+    var at = k;
+    while (at < _par_in_n) {
+        if (_par_is_i(at) == 0) { return 0 - 1; }
+        var op = _par_in(at);
+        if (op == 1 && _par_all_f_from(at + 1, 2) == 1 && _par_is_i(at + 3) == 1) {
+            var ra: f64 = _par_f(at + 1);
+            var dt: f64 = _par_f(at + 2);
+            var n = _par_in(at + 3);
+            var j = 0;
+            while (j < n) {
+                ry_pi3k_state_tick(s, c, ra, dt, f);
+                j = j + 1;
+            }
+            at = at + 4;
+        } elif (op == 3 && _par_is_i(at + 1) == 1 && _par_is_f(at + 2) == 1) {
+            var field = _par_in(at + 1);
+            if (field < 0 || field > 2) { return 0 - 1; }
+            store64(w + 8 * field, _par_in(at + 2));
+            at = at + 3;
+        } else {
+            return 0 - 1;
+        }
+    }
+    return 1;
+}
+
+# The PI3K rows: the defaults, the validators, the ticks and trajectories, the serde rows.
+fn _par_pi3k(fp, fl): i64 {
+    var s: RyPi3kState;
+    var c: RyPi3kConfig;
+    var fx: RyPi3kFlux;
+    if (_par_eq(fp, fl, "pi3k::Pi3kState::default") == 1) {
+        if (_par_in_n != 0) { return 0 - 1; }
+        ry_pi3k_state_default(&s);
+        _par_got_fields(&s, 3);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "pi3k::Pi3kConfig::default") == 1) {
+        if (_par_in_n != 0) { return 0 - 1; }
+        ry_pi3k_config_default(&c);
+        _par_got_fields(&c, 9);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "pi3k::Pi3kConfig::validate") == 1) {
+        if (_par_pk_in(0, &c) != _par_in_n) { return 0 - 1; }
+        var tc, vc = ry_pi3k_config_validate(&c);
+        _par_got_outcome(tc, vc);
+        return 1;
+    }
+    if (_par_in_n < 3 || _par_all_f_from(0, 3) == 0) { return _par_pi3k_json(fp, fl); }
+    _par_fields_in(0, &s, 3);
+    if (_par_in_n == 3) {
+        if (_par_eq(fp, fl, "pi3k::Pi3kState::validate") == 1) {
+            var ts, vs = ry_pi3k_state_validate(&s);
+            _par_got_outcome(ts, vs);
+            return 1;
+        }
+        return _par_pi3k_json(fp, fl);
+    }
+    var k = _par_pk_in(3, &c);
+    if (k < 0) { return _par_pi3k_json(fp, fl); }
+    if (_par_eq(fp, fl, "pi3k::Pi3kState::trajectory") == 1) {
+        if (_par_pi3k_script(&s, &c, k, &fx) != 1) { return 0 - 1; }
+        _par_got_fields(&s, 3);
+        _par_got_fields(&fx, 3);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "pi3k::Pi3kState::tick") == 1) {
+        if (_par_in_n != k + 2 || _par_all_f_from(k, 2) == 0) { return 0 - 1; }
+        var ra: f64 = _par_f(k);
+        var dt: f64 = _par_f(k + 1);
+        ry_pi3k_state_tick(&s, &c, ra, dt, &fx);
+        _par_got_fields(&s, 3);
+        _par_got_fields(&fx, 3);
+        return 1;
+    }
+    return _par_pi3k_json(fp, fl);
+}
+
+# The serde rows of Pi3kState, Pi3kConfig and Pi3kFlux.
+fn _par_pi3k_json(fp, fl): i64 {
+    var s: RyPi3kState;
+    var c: RyPi3kConfig;
+    var fx: RyPi3kFlux;
+    if (_par_jsb == 0) { _par_jsb = str_builder_new(); }
+    var sb = _par_jsb;
+    store64(sb + 8, 0);
+    var wt = 0;
+    var wv = 0;
+    var wrote = 0;
+    if (_par_eq(fp, fl, "serde_json::to_string<Pi3kState>") == 1 && _par_in_n == 3 && _par_all_f(3) == 1) {
+        _par_fields_in(0, &s, 3);
+        wt, wv = ry_pi3k_state_to_json(sb, &s);
+        wrote = 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::to_string<Pi3kConfig>") == 1 && _par_in_n == 9 && _par_all_f(9) == 1) {
+        _par_fields_in(0, &c, 9);
+        wt, wv = ry_pi3k_config_to_json(sb, &c);
+        wrote = 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::to_string<Pi3kFlux>") == 1 && _par_in_n == 3 && _par_all_f(3) == 1) {
+        _par_fields_in(0, &fx, 3);
+        wt, wv = ry_pi3k_flux_to_json(sb, &fx);
+        wrote = 1;
+    }
+    if (wrote == 1) {
+        if (is_err_result(wt) == 1) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    var kind = 0;
+    if (_par_eq(fp, fl, "serde_json::from_slice<Pi3kState>") == 1) { kind = 1; }
+    if (_par_eq(fp, fl, "serde_json::from_slice<Pi3kConfig>") == 1) { kind = 2; }
+    if (_par_eq(fp, fl, "serde_json::from_slice<Pi3kFlux>") == 1) { kind = 3; }
+    if (kind == 0) { return 0; }
+    var lw[8];
+    var doc = _par_in_bytes(0, &lw);
+    if (doc == 0) { return 0 - 1; }
+    var len = load64(&lw);
+    if (_par_jarena == 0) { _par_jarena = arena_allocator_growable(65536); }
+    _par_json_gap = _par_has_neg_zero_int(doc, len);
+    reset_via(_par_jarena);
+    var rt = 0;
+    var rv = 0;
+    if (kind == 1) { rt, rv = ry_pi3k_state_from_json_a(_par_jarena, doc, len, &s); }
+    if (kind == 2) { rt, rv = ry_pi3k_config_from_json_a(_par_jarena, doc, len, &c); }
+    if (kind == 3) { rt, rv = ry_pi3k_flux_from_json_a(_par_jarena, doc, len, &fx); }
+    if (is_err_result(rt) == 1) {
+        _par_got_err(rv);
+        return 1;
+    }
+    if (kind == 1) { _par_got_fields(&s, 3); }
+    if (kind == 2) { _par_got_fields(&c, 9); }
+    if (kind == 3) { _par_got_fields(&fx, 3); }
+    return 1;
+}
+
 fn _par_dispatch(mp, ml, fp, fl): i64 {
     _par_got_n = 0;
     if (_par_eq(fp, fl, "const") == 1) { return _par_const(); }
@@ -4333,6 +4502,7 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
     if (_par_eq(mp, ml, "amino_catabolism") == 1) { return _par_amino_catabolism(fp, fl); }
     if (_par_eq(mp, ml, "pathway") == 1) { return _par_pathway(fp, fl); }
     if (_par_eq(mp, ml, "mapk") == 1) { return _par_mapk(fp, fl); }
+    if (_par_eq(mp, ml, "pi3k") == 1) { return _par_pi3k(fp, fl); }
     if (_par_eq(mp, ml, "enzyme") == 1) { return _par_enzyme(fp, fl); }
     if (_par_eq(mp, ml, "membrane") == 1) { return _par_membrane(fp, fl); }
     if (_par_eq(mp, ml, "signal") == 1) { return _par_signal(fp, fl); }
@@ -4464,6 +4634,7 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "mapk::MapkState::tick") == 1) { return 0; }
     if (_par_eq(fp, fl, "mapk::MapkState::tick_with_raf_inhibition") == 1) { return 0; }
     if (_par_eq(fp, fl, "mapk::dual_phosphorylation") == 1) { return 0; }
+    if (_par_eq(fp, fl, "pi3k::Pi3kState::tick") == 1) { return 0; }
     return 0 - 1;
 }
 

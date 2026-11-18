@@ -9,7 +9,7 @@
 # every protein function on the input as a sequence; part 2, alignment on its two halves; parts 3 and 4, the PTM and
 # domain scans. M4a: the glycolysis and TCA codecs, and steps of every state the readers accept; M4b, the
 # ETC's, β-oxidation's and amino-acid catabolism's. M5: the metabolic network's six codecs, and steps of every valid
-# network. M6 part 1: the MAPK codecs and steps.
+# network. M6 parts 1 and 2: the MAPK and PI3K codecs and steps.
 
 include "src/constants.cyr"
 include "src/constants_private.cyr"
@@ -51,6 +51,8 @@ include "src/pathway_data.cyr"
 include "src/pathway.cyr"
 include "src/mapk_data.cyr"
 include "src/mapk.cyr"
+include "src/pi3k_data.cyr"
+include "src/pi3k.cyr"
 
 var _fz_state = 0x2545F4914F6CDD1D;
 var _fz_bad = 0;
@@ -72,6 +74,7 @@ var _fz_amino = 0;
 var _fz_network = 0;
 var _fz_net_stepped = 0;
 var _fz_mapk = 0;
+var _fz_pi3k = 0;
 
 # xorshift64*: the next pseudo-random word.
 fn fz_next(): i64 {
@@ -866,6 +869,73 @@ fn fuzz_mapk(data, len) {
     return 0;
 }
 
+# Ticks PI3K state *s on config *c at receptor activity 0.5 for 0.1 s and then 100 s: a failure unless it
+# still validates and every flux value is finite.
+fn fz_pi3k_step(s: *RyPi3kState, c: *RyPi3kConfig) {
+    var f: RyPi3kFlux;
+    ry_pi3k_state_tick(s, c, 0.5, 0.1, &f);
+    var ok = fz_all_finite(&f, 3);
+    ry_pi3k_state_tick(s, c, 0.5, 100.0, &f);
+    if (fz_all_finite(&f, 3) == 0) { ok = 0; }
+    var tv, vv = ry_pi3k_state_validate(s);
+    if (is_ok(tv) == 0 || ok == 0) { _fz_bad = _fz_bad + 1; }
+    return 0;
+}
+
+# pi3k: the three codecs on one input (an accepted value holds only finite f64s and reads back bit for bit from what
+# it writes); a valid state stepped on the default config, and the default state on an accepted config that
+# validates (fz_pi3k_step).
+fn fuzz_pi3k(data, len) {
+    reset_via(_fz_arena);
+    var dc: RyPi3kConfig;
+    ry_pi3k_config_default(&dc);
+    var s: RyPi3kState;
+    var sb2: RyPi3kState;
+    var t1, v1 = ry_pi3k_state_from_json_a(_fz_arena, data, len, &s);
+    if (is_ok(t1) == 1) {
+        _fz_pi3k = _fz_pi3k + 1;
+        store64(_fz_sb + 8, 0);
+        var t2, v2 = ry_pi3k_state_to_json(_fz_sb, &s);
+        var t3, v3 = ry_pi3k_state_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &sb2);
+        if (fz_all_finite(&s, 3) == 0 || is_ok(t2) == 0 || is_ok(t3) == 0 || memeq(&sb2, &s, 24) == 0) {
+            _fz_bad = _fz_bad + 1;
+        }
+        var tv, vv = ry_pi3k_state_validate(&s);
+        if (is_ok(tv) == 1) { fz_pi3k_step(&s, &dc); }
+    }
+    var c2: RyPi3kConfig;
+    var cb: RyPi3kConfig;
+    var t4, v4 = ry_pi3k_config_from_json_a(_fz_arena, data, len, &c2);
+    if (is_ok(t4) == 1) {
+        _fz_pi3k = _fz_pi3k + 1;
+        store64(_fz_sb + 8, 0);
+        var t5, v5 = ry_pi3k_config_to_json(_fz_sb, &c2);
+        var t6, v6 = ry_pi3k_config_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &cb);
+        if (fz_all_finite(&c2, 9) == 0 || is_ok(t5) == 0 || is_ok(t6) == 0 || memeq(&cb, &c2, 72) == 0) {
+            _fz_bad = _fz_bad + 1;
+        }
+        var tc, vc = ry_pi3k_config_validate(&c2);
+        if (is_ok(tc) == 1) {
+            var d: RyPi3kState;
+            ry_pi3k_state_default(&d);
+            fz_pi3k_step(&d, &c2);
+        }
+    }
+    var fx: RyPi3kFlux;
+    var fb: RyPi3kFlux;
+    var t7, v7 = ry_pi3k_flux_from_json_a(_fz_arena, data, len, &fx);
+    if (is_ok(t7) == 1) {
+        _fz_pi3k = _fz_pi3k + 1;
+        store64(_fz_sb + 8, 0);
+        var t8, v8 = ry_pi3k_flux_to_json(_fz_sb, &fx);
+        var t9, v9 = ry_pi3k_flux_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &fb);
+        if (fz_all_finite(&fx, 3) == 0 || is_ok(t8) == 0 || is_ok(t9) == 0 || memeq(&fb, &fx, 24) == 0) {
+            _fz_bad = _fz_bad + 1;
+        }
+    }
+    return 0;
+}
+
 # A NUL-terminated copy of the document builder `sb` holds (a seed).
 fn fz_seed_of(sb): i64 {
     var n = load64(sb + 8);
@@ -1016,7 +1086,7 @@ fn main() {
     var buf = alloc(cap + 1);
     _fz_arena = arena_allocator_growable(65536);
     _fz_sb = str_builder_new();
-    var seeds = alloc(8 * 64);
+    var seeds = alloc(8 * 67);
     store64(seeds, "trace");
     store64(seeds + 8, "DEBUG");
     store64(seeds + 16, "info,warn");
@@ -1176,6 +1246,20 @@ fn main() {
     store64(_fz_sb + 8, 0);
     var tm2, vm2 = ry_mapk_flux_to_json(_fz_sb, &mkf);
     store64(seeds + 504, fz_seed_of(_fz_sb));
+    # The PI3K documents: the default state in the sequence form, the default config and a tick's flux as written.
+    store64(seeds + 512, "[0.05,0.03,0.02]");
+    var pkc: RyPi3kConfig;
+    var pks: RyPi3kState;
+    var pkf: RyPi3kFlux;
+    ry_pi3k_config_default(&pkc);
+    ry_pi3k_state_default(&pks);
+    ry_pi3k_state_tick(&pks, &pkc, 0.5, 0.1, &pkf);
+    store64(_fz_sb + 8, 0);
+    var tp1, vp1 = ry_pi3k_config_to_json(_fz_sb, &pkc);
+    store64(seeds + 520, fz_seed_of(_fz_sb));
+    store64(_fz_sb + 8, 0);
+    var tp2, vp2 = ry_pi3k_flux_to_json(_fz_sb, &pkf);
+    store64(seeds + 528, fz_seed_of(_fz_sb));
     var i = 0;
     while (i < 50000) {
         var n = 0;
@@ -1184,7 +1268,7 @@ fn main() {
             var k = 0;
             while (k < n) { store8(buf + k, fz_below(256)); k = k + 1; }
         } else {
-            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(64)));
+            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(67)));
         }
         fuzz_main(buf, n);
         fuzz_json(buf, n);
@@ -1200,6 +1284,7 @@ fn main() {
         fuzz_amino(buf, n);
         fuzz_network(buf, n);
         fuzz_mapk(buf, n);
+        fuzz_pi3k(buf, n);
         i = i + 1;
     }
     if (_fz_bad != 0) {
@@ -1237,6 +1322,8 @@ fn main() {
     fmt_int(_fz_net_stepped);
     print(", MAPK documents read: ", 23);
     fmt_int(_fz_mapk);
+    print(", PI3K documents read: ", 23);
+    fmt_int(_fz_pi3k);
     println(")");
     return 0;
 }

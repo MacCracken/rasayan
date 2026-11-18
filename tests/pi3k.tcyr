@@ -1,0 +1,292 @@
+# rasayan — src/pi3k.cyr: Rust 1.2.0's PI3K/Akt/mTOR tests, ported
+# Stdlib auto-included via cyrius.cyml
+#
+# The 11 unit tests of `pi3k.rs` and the 2 integration tests (tests/integration.rs) that call only the pathway, as
+# they are written; tests/golden/pi3k.tsv checks every method, single tick and trajectory besides. Beyond them: the
+# trace event and every codec's round trip.
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+include "src/integrate.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
+include "src/enzyme_data.cyr"
+include "src/enzyme.cyr"
+include "src/pi3k_data.cyr"
+include "src/pi3k.cyr"
+
+# 1 when the state validates.
+fn ps_ok(p: *RyPi3kState) {
+    var t, v = ry_pi3k_state_validate(p);
+    return is_ok(t);
+}
+
+# 1 when the config validates.
+fn pc_ok(c: *RyPi3kConfig) {
+    var t, v = ry_pi3k_config_validate(c);
+    return is_ok(t);
+}
+
+# `n` ticks at receptor activity `ra` and step `dt`.
+fn ticks(s: *RyPi3kState, c: *RyPi3kConfig, n, ra: f64, dt: f64) {
+    var f: RyPi3kFlux;
+    var k = 0;
+    while (k < n) {
+        ry_pi3k_state_tick(s, c, ra, dt, &f);
+        k = k + 1;
+    }
+    return 0;
+}
+
+# Rust's test helper `old_euler_tick`: the pre-hardening explicit-Euler step, the small-dt reference.
+fn old_euler_tick(s: *RyPi3kState, c: *RyPi3kConfig, ra: f64, dt: f64) {
+    var v1: f64 = c.pi3k_vmax * (1.0 - s.pip3);
+    var on1: f64 = ry_michaelis_menten(ra, v1, c.pi3k_km);
+    var pip3: f64 = s.pip3 + (on1 - c.pten_rate * s.pip3) * dt;
+    s.pip3 = pip3;
+    var v2: f64 = c.akt_vmax * (1.0 - s.akt_active);
+    var on2: f64 = ry_michaelis_menten(pip3, v2, c.akt_km);
+    var akt: f64 = s.akt_active + (on2 - c.akt_phosphatase_rate * s.akt_active) * dt;
+    s.akt_active = akt;
+    var v3: f64 = c.mtor_vmax * (1.0 - s.mtor_active);
+    var on3: f64 = ry_michaelis_menten(akt, v3, c.mtor_km);
+    var mtor: f64 = s.mtor_active + (on3 - c.mtor_phosphatase_rate * s.mtor_active) * dt;
+    s.mtor_active = mtor;
+    return 0;
+}
+
+# ── the captured events ──
+var _ev_buf[1024];
+var _ev_len = 0;
+
+# sakshi's subscriber: keeps the last event's message.
+fn _ev_hook(ts, level, category, msg, msg_len, extra) {
+    var n = msg_len;
+    if (n > 1024) { n = 1024; }
+    memcpy(&_ev_buf, msg, n);
+    _ev_len = msg_len;
+    return 0;
+}
+
+# 1 if the last captured event is the C string `want`.
+fn _ev_is(want) {
+    var n = strlen(want);
+    if (_ev_len != n) { return 0; }
+    return memeq(&_ev_buf, want, n);
+}
+
+# rust src/pi3k.rs: test_default_valid, test_validate_rejects_nan_and_zero_km
+fn validation() {
+    test_group("pi3k: defaults and validation");
+    var s: RyPi3kState;
+    var c: RyPi3kConfig;
+    ry_pi3k_state_default(&s);
+    ry_pi3k_config_default(&c);
+    assert(ps_ok(&s) == 1 && pc_ok(&c) == 1, "the defaults validate");
+    var nan: f64 = _ry_nan();
+    var refused = 0;
+    var k = 0;
+    while (k < 3) {
+        ry_pi3k_config_default(&c);
+        if (k == 0) { c.pi3k_km = 0.0; }
+        if (k == 1) { c.mtor_km = 0.0; }
+        if (k == 2) { c.pten_rate = nan; }
+        if (pc_ok(&c) == 0) { refused = refused + 1; }
+        k = k + 1;
+    }
+    assert_eq(refused, 3, "each of Rust's three bad configs is refused");
+    s.pip3 = nan;
+    var t1, v1 = ry_pi3k_state_validate(&s);
+    assert_eq(v1, RY_ERR_NON_FINITE, "a NaN PIP3 is refused");
+    return 0;
+}
+
+# rust src/pi3k.rs: test_receptor_activates_pathway, test_no_stimulus_decays, test_pten_suppresses_pip3
+# rust src/pi3k.rs: test_bounded
+fn ticking() {
+    test_group("pi3k: the pathway");
+    var s: RyPi3kState;
+    var c: RyPi3kConfig;
+    var f: RyPi3kFlux;
+    ry_pi3k_config_default(&c);
+    ry_pi3k_state_default(&s);
+    ticks(&s, &c, 200, 1.0, 0.1);
+    var akt: f64 = s.akt_active;
+    var mtor: f64 = s.mtor_active;
+    assert(akt > RY_PI3K_PI3K_STATE_DEFAULT_AKT_ACTIVE && mtor > RY_PI3K_PI3K_STATE_DEFAULT_MTOR_ACTIVE,
+      "the receptor activates Akt and mTOR");
+    s.pip3 = 0.5;
+    s.akt_active = 0.5;
+    s.mtor_active = 0.5;
+    ticks(&s, &c, 200, 0.0, 0.1);
+    var decayed: f64 = s.akt_active;
+    assert(decayed < 0.3, "Akt decays without stimulus");
+    var a: RyPi3kState;
+    var b: RyPi3kState;
+    var hi: RyPi3kConfig;
+    ry_pi3k_config_default(&hi);
+    hi.pten_rate = 2.0;
+    ry_pi3k_state_default(&a);
+    ry_pi3k_state_default(&b);
+    ry_pi3k_state_tick(&a, &c, 1.0, 0.1, &f);
+    ry_pi3k_state_tick(&b, &hi, 1.0, 0.1, &f);
+    var pa: f64 = a.pip3;
+    var pb: f64 = b.pip3;
+    assert(pb < pa, "high PTEN suppresses PIP3");
+    ry_pi3k_state_default(&s);
+    ticks(&s, &c, 1000, 1.0, 0.01);
+    assert_eq(ps_ok(&s), 1, "1000 steps of 0.01 s stay in [0, 1]");
+    return 0;
+}
+
+# rust src/pi3k.rs: test_small_dt_matches_old_euler, test_huge_dt_stable
+fn integration() {
+    test_group("pi3k: the exact steps");
+    var c: RyPi3kConfig;
+    var n: RyPi3kState;
+    var o: RyPi3kState;
+    var f: RyPi3kFlux;
+    ry_pi3k_config_default(&c);
+    ry_pi3k_state_default(&n);
+    ry_pi3k_state_default(&o);
+    var k = 0;
+    while (k < 20000) {
+        ry_pi3k_state_tick(&n, &c, 0.6, 0.001, &f);
+        old_euler_tick(&o, &c, 0.6, 0.001);
+        k = k + 1;
+    }
+    var close = 1;
+    var wn = &n;
+    var wo = &o;
+    var j = 0;
+    while (j < 3) {
+        var x: f64 = load64(wn + 8 * j);
+        var y: f64 = load64(wo + 8 * j);
+        var scale: f64 = _ry_max(f64_abs(y), 0.000001);
+        if (f64_abs(x - y) > 0.01 * scale) { close = 0; }
+        j = j + 1;
+    }
+    assert_eq(close, 1, "small steps match the old explicit Euler to 1 %");
+    var stiff: RyPi3kConfig;
+    ry_pi3k_config_default(&stiff);
+    stiff.pten_rate = 50.0;
+    stiff.akt_vmax = 80.0;
+    var s: RyPi3kState;
+    ry_pi3k_state_default(&s);
+    var stable = 1;
+    k = 0;
+    while (k < 20) {
+        ry_pi3k_state_tick(&s, &stiff, 1.0, 100.0, &f);
+        if (ps_ok(&s) == 0) { stable = 0; }
+        k = k + 1;
+    }
+    assert_eq(stable, 1, "stiff rates at dt 100 stay in [0, 1]");
+    return 0;
+}
+
+# rust src/pi3k.rs: test_invalid_dt_is_noop, test_nan_input_treated_as_zero
+fn hardening() {
+    test_group("pi3k: hardening");
+    var s: RyPi3kState;
+    var d: RyPi3kState;
+    var c: RyPi3kConfig;
+    var f: RyPi3kFlux;
+    var zero: RyPi3kFlux;
+    ry_pi3k_config_default(&c);
+    ry_pi3k_state_default(&d);
+    ry_pi3k_flux_default(&zero);
+    var inf: f64 = _RY_INF;
+    var nan: f64 = _ry_nan();
+    var k = 0;
+    while (k < 4) {
+        var dt: f64 = 0.0;
+        if (k == 1) { dt = -0.1; }
+        if (k == 2) { dt = nan; }
+        if (k == 3) { dt = inf; }
+        ry_pi3k_state_default(&s);
+        memset(&f, 255, 24);
+        ry_pi3k_state_tick(&s, &c, 1.0, dt, &f);
+        assert(memeq(&s, &d, 24) == 1 && memeq(&f, &zero, 24) == 1, "an invalid dt changes nothing, a zero flux");
+        k = k + 1;
+    }
+    var a: RyPi3kState;
+    var b: RyPi3kState;
+    ry_pi3k_state_default(&a);
+    ry_pi3k_state_default(&b);
+    ry_pi3k_state_tick(&a, &c, nan, 0.1, &f);
+    ry_pi3k_state_tick(&b, &c, 0.0, 0.1, &f);
+    assert(memeq(&a, &b, 24) == 1 && ps_ok(&a) == 1, "a NaN receptor activity is no stimulus");
+    return 0;
+}
+
+# Rust's trace event, under the target `rasayan::pi3k`, its fields in Rust's order (the activity sanitized).
+fn events() {
+    test_group("pi3k: trace event");
+    sakshi_set_emit_hook(&_ev_hook);
+    sakshi_set_level(SK_TRACE);
+    var s: RyPi3kState;
+    var c: RyPi3kConfig;
+    var f: RyPi3kFlux;
+    ry_pi3k_state_default(&s);
+    ry_pi3k_config_default(&c);
+    ry_pi3k_state_tick(&s, &c, -2.0, 0.01, &f);
+    assert_eq(_ev_is("rasayan::pi3k: pi3k_tick dt=0.01 receptor_activity=0 akt=0.03"), 1, "pi3k_tick");
+    _ev_len = 0;
+    ry_pi3k_state_tick(&s, &c, 0.5, 0.0, &f);
+    assert_eq(_ev_len, 0, "no event for an invalid dt");
+    sakshi_set_level(SK_INFO);
+    ry_pi3k_state_tick(&s, &c, 0.5, 0.01, &f);
+    assert_eq(_ev_len, 0, "below TRACE, nothing");
+    sakshi_clear_emit_hook();
+    return 0;
+}
+
+# rust src/pi3k.rs: test_serde_roundtrip
+# rust tests/integration.rs: test_pi3k_config_serde_roundtrip, test_pi3k_flux_serde_roundtrip
+fn serde() {
+    test_group("pi3k: serde round trips");
+    var sb = str_builder_new();
+    var s: RyPi3kState;
+    var sb2: RyPi3kState;
+    ry_pi3k_state_default(&s);
+    var t1, v1 = ry_pi3k_state_to_json(sb, &s);
+    var t2, v2 = ry_pi3k_state_from_json(load64(sb), load64(sb + 8), &sb2);
+    assert(is_ok(t2) == 1 && memeq(&sb2, &s, 24) == 1, "the state reads back");
+    var c: RyPi3kConfig;
+    var cb: RyPi3kConfig;
+    ry_pi3k_config_default(&c);
+    store64(sb + 8, 0);
+    var t3, v3 = ry_pi3k_config_to_json(sb, &c);
+    var t4, v4 = ry_pi3k_config_from_json(load64(sb), load64(sb + 8), &cb);
+    assert(is_ok(t4) == 1 && memeq(&cb, &c, 72) == 1, "the config reads back");
+    var f: RyPi3kFlux;
+    var fb: RyPi3kFlux;
+    ry_pi3k_state_tick(&s, &c, 0.5, 0.01, &f);
+    store64(sb + 8, 0);
+    var t5, v5 = ry_pi3k_flux_to_json(sb, &f);
+    var t6, v6 = ry_pi3k_flux_from_json(load64(sb), load64(sb + 8), &fb);
+    assert(is_ok(t6) == 1 && memeq(&fb, &f, 24) == 1, "a tick's flux reads back, bit for bit");
+    return 0;
+}
+
+# Runs the PI3K suite.
+fn main() {
+    alloc_init();
+    validation();
+    ticking();
+    integration();
+    hardening();
+    events();
+    serde();
+    return assert_summary();
+}
+
+var exit_code = main();
+# assert_summary() returns the failure count; a wait status is 8 bits, so any failure exits 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

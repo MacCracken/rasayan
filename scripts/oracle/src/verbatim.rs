@@ -1,12 +1,12 @@
 //! The check behind the verbatim copies (`v_guard.rs`, `v_integrate.rs`, `v_logging.rs`, `v_glycolysis.rs`,
-//! `v_tca.rs`, `v_etc.rs`, `v_beta_oxidation.rs`, `v_amino_catabolism.rs`, `v_pathway.rs`, `v_mapk.rs`): every
-//! `// @verbatim <file>` … `// @end` block in them must be a byte-for-byte span of `rust-old/src/<file>` (both read
-//! with `include_str!`, so the check is of the text that was compiled). The generator runs it before it makes any
-//! row, in both modes, so a copy that drifts from the oracle can never write or pass a golden file. `probe_solver`
-//! (M0 probe 4) checks its own copies the same way.
+//! `v_tca.rs`, `v_etc.rs`, `v_beta_oxidation.rs`, `v_amino_catabolism.rs`, `v_pathway.rs`, `v_mapk.rs`, `v_pi3k.rs`):
+//! every `// @verbatim <file>` … `// @end` block in them must be a byte-for-byte span of `rust-old/src/<file>` (both
+//! read with `include_str!`, so the check is of the text that was compiled). The generator runs it before it makes
+//! any row, in both modes, so a copy that drifts from the oracle can never write or pass a golden file.
+//! `probe_solver` (M0 probe 4) checks its own copies the same way.
 
 /// The copies, by file name, and the oracle files their blocks come from.
-const COPIES: [(&str, &str); 10] = [
+const COPIES: [(&str, &str); 11] = [
     ("v_amino_catabolism.rs", include_str!("v_amino_catabolism.rs")),
     ("v_beta_oxidation.rs", include_str!("v_beta_oxidation.rs")),
     ("v_etc.rs", include_str!("v_etc.rs")),
@@ -16,9 +16,10 @@ const COPIES: [(&str, &str); 10] = [
     ("v_logging.rs", include_str!("v_logging.rs")),
     ("v_mapk.rs", include_str!("v_mapk.rs")),
     ("v_pathway.rs", include_str!("v_pathway.rs")),
+    ("v_pi3k.rs", include_str!("v_pi3k.rs")),
     ("v_tca.rs", include_str!("v_tca.rs")),
 ];
-const SOURCES: [(&str, &str); 10] = [
+const SOURCES: [(&str, &str); 11] = [
     ("amino_catabolism.rs", include_str!("../../../rust-old/src/amino_catabolism.rs")),
     ("beta_oxidation.rs", include_str!("../../../rust-old/src/beta_oxidation.rs")),
     ("etc.rs", include_str!("../../../rust-old/src/etc.rs")),
@@ -28,6 +29,7 @@ const SOURCES: [(&str, &str); 10] = [
     ("logging.rs", include_str!("../../../rust-old/src/logging.rs")),
     ("mapk.rs", include_str!("../../../rust-old/src/mapk.rs")),
     ("pathway.rs", include_str!("../../../rust-old/src/pathway.rs")),
+    ("pi3k.rs", include_str!("../../../rust-old/src/pi3k.rs")),
     ("tca.rs", include_str!("../../../rust-old/src/tca.rs")),
 ];
 

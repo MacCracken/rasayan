@@ -4,52 +4,17 @@
 //! `impl` of a local mirror of `MapkState` (the same fields in the same order), as in `v_glycolysis.rs`; the public
 //! `tick` comes along in the same block and must give the oracle's own bits on every tick row.
 //!
-//! Outside the blocks: the mirror's conversions, and `integrate`, a local module in front of `v_integrate.rs`'s
-//! copies that notes when `activate` or `relax` takes the `exp_m1` branch (the row is then class C).
+//! Outside the blocks: the mirror's conversions. The blocks' `integrate` is `v_integrate::noted`, which notes when
+//! `activate` or `relax` takes the `exp_m1` branch (the row is then class C).
 
 #![allow(dead_code, clippy::all, clippy::pedantic)]
-
-use std::cell::Cell;
 
 use rasayan::enzyme;
 use rasayan::mapk::{MapkConfig, MapkFlux, MAX_SUBSTEPS, SUBSTEP_MAX_DT, ERK_FEEDBACK_KI};
 
 use crate::v_guard as guard;
-
-thread_local! {
-    static EXP: Cell<bool> = const { Cell::new(false) };
-}
-
-/// Clears the `exp_m1` note.
-pub fn clear_exp() {
-    EXP.with(|e| e.set(false));
-}
-
-/// Whether an `activate` or `relax` since the last `clear_exp` took the `exp_m1` branch.
-pub fn took_exp() -> bool {
-    EXP.with(Cell::get)
-}
-
-/// `integrate`'s copies, noting the `exp_m1` branch: `step_factors(y)` takes it unless `y < SERIES_MAX` (a NaN `y`
-/// too), after each function's own early return, written as theirs (`total <= 0.0` returns, so a NaN total does not).
-mod integrate {
-    use crate::v_integrate as vi;
-
-    pub(crate) fn activate(x: f64, on: f64, off: f64, dt: f64) -> f64 {
-        let total = on + off;
-        if !(total <= 0.0) && vi::exp_branch(total * dt) {
-            super::EXP.with(|e| e.set(true));
-        }
-        vi::activate(x, on, off, dt)
-    }
-
-    pub(crate) fn relax(x: f64, target: f64, rate: f64, dt: f64) -> f64 {
-        if !(rate <= 0.0) && vi::exp_branch(rate * dt) {
-            super::EXP.with(|e| e.set(true));
-        }
-        vi::relax(x, target, rate, dt)
-    }
-}
+use crate::v_integrate::noted as integrate;
+pub use crate::v_integrate::noted::{clear_exp, took_exp};
 
 /// The oracle's `MapkState`, field for field.
 #[derive(Clone, Debug, PartialEq)]

@@ -1588,11 +1588,73 @@ MAPK = {
     "mapk::MapkState::trajectory": _mk_trajectory,
 }
 
+# ── pi3k (M6 part 2) ──
+# Pi3kState::tick in Rust's order: PIP3 by PI3K against PTEN, Akt from the updated PIP3, mTOR from the updated Akt,
+# each by integrate's `activate` (its exp_m1 past the series cutoff); Michaelis-Menten is arithmetic.
+
+PK_DEFAULT = [0.4, 0.1, 0.3, 0.6, 0.1, 0.2, 0.4, 0.15, 0.15]  # Pi3kConfig::default(), declaration order
+
+
+def _pk_tick(st, c, ra, dt, P):
+    if not (math.isfinite(dt) and dt > 0.0):
+        return list(st), [0.0] * 3
+    ra = _unit(ra)
+    pip3, akt, mtor = st
+    k1 = _mm(ra, c[0], c[1])
+    v1 = k1 * (1.0 - pip3)
+    pip3 = _activate_any(pip3, k1, c[2], dt, P)
+    k2 = _mm(pip3, c[3], c[4])
+    v2 = k2 * (1.0 - akt)
+    akt = _activate_any(akt, k2, c[5], dt, P)
+    k3 = _mm(akt, c[6], c[7])
+    v3 = k3 * (1.0 - mtor)
+    mtor = _activate_any(mtor, k3, c[8], dt, P)
+    return [pip3, akt, mtor], [v1, v2, v3]
+
+
+def _pk_config(a, at):
+    c = list(PK_DEFAULT)
+    n = a[at]
+    for j in range(n):
+        c[a[at + 1 + 2 * j]] = a[at + 2 + 2 * j]
+    return c, at + 1 + 2 * n
+
+
+def _pk_tick_row(a, P):
+    c, k = _pk_config(a, 3)
+    st, flux = _pk_tick(a[:3], c, a[k], a[k + 1], P)
+    return st + flux
+
+
+def _pk_trajectory(a, P):
+    st = list(a[:3])
+    c, k = _pk_config(a, 3)
+    flux = [0.0] * 3
+    while k < len(a):
+        op = a[k]
+        if op == 1:
+            for _ in range(a[k + 3]):
+                st, flux = _pk_tick(st, c, a[k + 1], a[k + 2], P)
+            k += 4
+        elif op == 3:
+            st[a[k + 1]] = a[k + 2]
+            k += 3
+        else:
+            raise ValueError(f"no operation {op}")
+    return st + flux
+
+
+PI3K = {
+    "pi3k::Pi3kState::tick": _pk_tick_row,
+    "pi3k::Pi3kState::trajectory": _pk_trajectory,
+}
+
 # The modules with class-C (and class-T) rows beyond math, and their models.
 MODELS = {"integrate": INTEGRATE, "enzyme": ENZYME, "membrane": MEMBRANE, "signal": SIGNAL, "metabolism": METABOLISM,
           "energy": ENERGY, "protein": PROTEIN, "glycolysis": GLYCOLYSIS, "tca": TCA,
           "etc": ETC, "beta_oxidation": BETA_OXIDATION,
-          "amino_catabolism": AMINO_CATABOLISM, "pathway": PATHWAY, "mapk": MAPK}
+          "amino_catabolism": AMINO_CATABOLISM, "pathway": PATHWAY, "mapk": MAPK,
+          "pi3k": PI3K}
 
 
 def _arg(tok):

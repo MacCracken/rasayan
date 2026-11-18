@@ -58,6 +58,8 @@ include "src/pathway_data.cyr"
 include "src/pathway.cyr"
 include "src/mapk_data.cyr"
 include "src/mapk.cyr"
+include "src/pi3k_data.cyr"
+include "src/pi3k.cyr"
 
 # Keeps the loops' results observable.
 var _bn_sink = 0;
@@ -1041,6 +1043,38 @@ fn _bn_mapk(name, kind, n): i64 {
     return 0;
 }
 
+# n calls of PI3K benchmark `kind`: 0 pi3k_tick (Rust's body: a default state, one tick of 0.01 s at receptor
+# activity 0.5), 1 the same state ticked on (no reset), 2 a 5 s tick (one step, on the exp_m1 branch); the flux kept.
+fn _bn_pi3k(name, kind, n): i64 {
+    var s: RyPi3kState;
+    var c: RyPi3kConfig;
+    var f: RyPi3kFlux;
+    ry_pi3k_state_default(&s);
+    ry_pi3k_config_default(&c);
+    var acc: f64 = 0.0;
+    var b = bench_new(name);
+    bench_batch_start(b);
+    var i = 0;
+    while (i < n) {
+        if (kind == 0) {
+            ry_pi3k_state_default(&s);
+            ry_pi3k_state_tick(&s, &c, 0.5, 0.01, &f);
+        } elif (kind == 1) {
+            ry_pi3k_state_tick(&s, &c, 0.5, 0.01, &f);
+        } else {
+            ry_pi3k_state_default(&s);
+            ry_pi3k_state_tick(&s, &c, 0.5, 5.0, &f);
+        }
+        var mtor: f64 = f.mtor_activation;
+        acc = acc + mtor;
+        i = i + 1;
+    }
+    bench_batch_stop(b, n);
+    bench_report(b);
+    _bn_keep(acc);
+    return 0;
+}
+
 # Runs the benchmark suite (Rust twins arrive with each milestone).
 fn main(): i64 {
     alloc_init();
@@ -1136,6 +1170,9 @@ fn main(): i64 {
     _bn_mapk("mapk_tick", 0, 1000000);
     _bn_mapk("mapk/tick, no reset", 1, 1000000);
     _bn_mapk("mapk/tick 5 s (10 sub-steps)", 2, 200000);
+    _bn_pi3k("pi3k_tick", 0, 1000000);
+    _bn_pi3k("pi3k/tick, no reset", 1, 1000000);
+    _bn_pi3k("pi3k/tick 5 s (the exp_m1 branch)", 2, 1000000);
     var br = bench_new("json/read MembranePermeability (3 f64)");
     bench_batch_start(br);
     _bn_read("{\"p_na\":0.04,\"p_k\":1.0,\"p_cl\":0.45}", 3, "p_na\0p_k\0p_cl\0", 100000);
