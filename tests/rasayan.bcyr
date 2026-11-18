@@ -64,6 +64,8 @@ include "src/jak_stat_data.cyr"
 include "src/jak_stat.cyr"
 include "src/calcium_data.cyr"
 include "src/calcium.cyr"
+include "src/receptor_data.cyr"
+include "src/receptor.cyr"
 
 # Keeps the loops' results observable.
 var _bn_sink = 0;
@@ -1148,6 +1150,38 @@ fn _bn_calcium(name, kind, n): i64 {
     return 0;
 }
 
+# n calls of receptor benchmark `kind`: 0 receptor_tick (Rust's body: a default state, one tick of 0.01 s at ligand
+# 0.5), 1 the same state ticked on (no reset), 2 a 100 s tick (every outflow capped); the flux kept.
+fn _bn_receptor(name, kind, n): i64 {
+    var s: RyReceptorState;
+    var c: RyReceptorConfig;
+    var f: RyReceptorFlux;
+    ry_receptor_state_default(&s);
+    ry_receptor_config_default(&c);
+    var acc: f64 = 0.0;
+    var b = bench_new(name);
+    bench_batch_start(b);
+    var i = 0;
+    while (i < n) {
+        if (kind == 0) {
+            ry_receptor_state_default(&s);
+            ry_receptor_state_tick(&s, &c, 0.5, 0.01, &f);
+        } elif (kind == 1) {
+            ry_receptor_state_tick(&s, &c, 0.5, 0.01, &f);
+        } else {
+            ry_receptor_state_default(&s);
+            ry_receptor_state_tick(&s, &c, 0.5, 100.0, &f);
+        }
+        var out: f64 = f.signaling_output;
+        acc = acc + out;
+        i = i + 1;
+    }
+    bench_batch_stop(b, n);
+    bench_report(b);
+    _bn_keep(acc);
+    return 0;
+}
+
 # Runs the benchmark suite (Rust twins arrive with each milestone).
 fn main(): i64 {
     alloc_init();
@@ -1253,6 +1287,9 @@ fn main(): i64 {
     _bn_calcium("calcium/tick, no reset", 1, 1000000);
     _bn_calcium("calcium/tick 1 s (100 sub-steps)", 2, 100000);
     _bn_calcium("calcium/tick 1000 s (1000 sub-steps, exp_m1)", 3, 10000);
+    _bn_receptor("receptor_tick", 0, 1000000);
+    _bn_receptor("receptor/tick, no reset", 1, 1000000);
+    _bn_receptor("receptor/tick 100 s (every outflow capped)", 2, 1000000);
     var br = bench_new("json/read MembranePermeability (3 f64)");
     bench_batch_start(br);
     _bn_read("{\"p_na\":0.04,\"p_k\":1.0,\"p_cl\":0.45}", 3, "p_na\0p_k\0p_cl\0", 100000);

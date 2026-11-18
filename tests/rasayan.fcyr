@@ -9,7 +9,7 @@
 # every protein function on the input as a sequence; part 2, alignment on its two halves; parts 3 and 4, the PTM and
 # domain scans. M4a: the glycolysis and TCA codecs, and steps of every state the readers accept; M4b, the
 # ETC's, β-oxidation's and amino-acid catabolism's. M5: the metabolic network's six codecs, and steps of every valid
-# network. M6 parts 1–4: the MAPK, PI3K, JAK-STAT and calcium codecs and steps.
+# network. M6 parts 1–5: the MAPK, PI3K, JAK-STAT, calcium and receptor codecs and steps.
 
 include "src/constants.cyr"
 include "src/constants_private.cyr"
@@ -57,6 +57,8 @@ include "src/jak_stat_data.cyr"
 include "src/jak_stat.cyr"
 include "src/calcium_data.cyr"
 include "src/calcium.cyr"
+include "src/receptor_data.cyr"
+include "src/receptor.cyr"
 
 var _fz_state = 0x2545F4914F6CDD1D;
 var _fz_bad = 0;
@@ -81,6 +83,7 @@ var _fz_mapk = 0;
 var _fz_pi3k = 0;
 var _fz_jak_stat = 0;
 var _fz_calcium = 0;
+var _fz_receptor = 0;
 
 # xorshift64*: the next pseudo-random word.
 fn fz_next(): i64 {
@@ -1084,6 +1087,77 @@ fn fuzz_calcium(data, len) {
     return 0;
 }
 
+# Ticks receptor state *s on config *c at ligand 0.5 for 0.1 s and then 100 s: a failure unless it still validates,
+# its total stays <= 1 (to 1e-9) and every flux value is finite. The caller passes a state whose total is <= 1, the
+# capacity the model conserves.
+fn fz_receptor_step(s: *RyReceptorState, c: *RyReceptorConfig) {
+    var f: RyReceptorFlux;
+    ry_receptor_state_tick(s, c, 0.5, 0.1, &f);
+    var ok = fz_all_finite(&f, 3);
+    ry_receptor_state_tick(s, c, 0.5, 100.0, &f);
+    if (fz_all_finite(&f, 3) == 0) { ok = 0; }
+    var total: f64 = ry_receptor_state_total(s);
+    if (total > 1.0 + 0.000000001) { ok = 0; }
+    var tv, vv = ry_receptor_state_validate(s);
+    if (is_ok(tv) == 0 || ok == 0) { _fz_bad = _fz_bad + 1; }
+    return 0;
+}
+
+# receptor: the three codecs on one input (an accepted value holds only finite f64s and reads back bit for bit from
+# what it writes); a valid state of total <= 1 stepped on the default config, and the default state on an accepted
+# config that validates (fz_receptor_step).
+fn fuzz_receptor(data, len) {
+    reset_via(_fz_arena);
+    var dc: RyReceptorConfig;
+    ry_receptor_config_default(&dc);
+    var s: RyReceptorState;
+    var sb2: RyReceptorState;
+    var t1, v1 = ry_receptor_state_from_json_a(_fz_arena, data, len, &s);
+    if (is_ok(t1) == 1) {
+        _fz_receptor = _fz_receptor + 1;
+        store64(_fz_sb + 8, 0);
+        var t2, v2 = ry_receptor_state_to_json(_fz_sb, &s);
+        var t3, v3 = ry_receptor_state_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &sb2);
+        if (fz_all_finite(&s, 4) == 0 || is_ok(t2) == 0 || is_ok(t3) == 0 || memeq(&sb2, &s, 32) == 0) {
+            _fz_bad = _fz_bad + 1;
+        }
+        var tv, vv = ry_receptor_state_validate(&s);
+        var held: f64 = ry_receptor_state_total(&s);
+        if (is_ok(tv) == 1 && held <= 1.0) { fz_receptor_step(&s, &dc); }
+    }
+    var c2: RyReceptorConfig;
+    var cb: RyReceptorConfig;
+    var t4, v4 = ry_receptor_config_from_json_a(_fz_arena, data, len, &c2);
+    if (is_ok(t4) == 1) {
+        _fz_receptor = _fz_receptor + 1;
+        store64(_fz_sb + 8, 0);
+        var t5, v5 = ry_receptor_config_to_json(_fz_sb, &c2);
+        var t6, v6 = ry_receptor_config_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &cb);
+        if (fz_all_finite(&c2, 7) == 0 || is_ok(t5) == 0 || is_ok(t6) == 0 || memeq(&cb, &c2, 56) == 0) {
+            _fz_bad = _fz_bad + 1;
+        }
+        var tc, vc = ry_receptor_config_validate(&c2);
+        if (is_ok(tc) == 1) {
+            var d: RyReceptorState;
+            ry_receptor_state_default(&d);
+            fz_receptor_step(&d, &c2);
+        }
+    }
+    var fx: RyReceptorFlux;
+    var fb: RyReceptorFlux;
+    var t7, v7 = ry_receptor_flux_from_json_a(_fz_arena, data, len, &fx);
+    if (is_ok(t7) == 1) {
+        _fz_receptor = _fz_receptor + 1;
+        store64(_fz_sb + 8, 0);
+        var t8, v8 = ry_receptor_flux_to_json(_fz_sb, &fx);
+        var t9, v9 = ry_receptor_flux_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &fb);
+        if (fz_all_finite(&fx, 3) == 0 || is_ok(t8) == 0 || is_ok(t9) == 0 || memeq(&fb, &fx, 24) == 0) {
+            _fz_bad = _fz_bad + 1;
+        }
+    }
+    return 0;
+}
+
 # A NUL-terminated copy of the document builder `sb` holds (a seed).
 fn fz_seed_of(sb): i64 {
     var n = load64(sb + 8);
@@ -1234,7 +1308,7 @@ fn main() {
     var buf = alloc(cap + 1);
     _fz_arena = arena_allocator_growable(65536);
     _fz_sb = str_builder_new();
-    var seeds = alloc(8 * 73);
+    var seeds = alloc(8 * 76);
     store64(seeds, "trace");
     store64(seeds + 8, "DEBUG");
     store64(seeds + 16, "info,warn");
@@ -1436,6 +1510,20 @@ fn main() {
     store64(_fz_sb + 8, 0);
     var tc2, vc2 = ry_calcium_flux_to_json(_fz_sb, &caf);
     store64(seeds + 576, fz_seed_of(_fz_sb));
+    # The receptor documents: the default state in the sequence form, the default config and a tick's flux as written.
+    store64(seeds + 584, "[0.9,0.05,0.03,0.02]");
+    var rcc: RyReceptorConfig;
+    var rcs: RyReceptorState;
+    var rcf: RyReceptorFlux;
+    ry_receptor_config_default(&rcc);
+    ry_receptor_state_default(&rcs);
+    ry_receptor_state_tick(&rcs, &rcc, 0.5, 0.1, &rcf);
+    store64(_fz_sb + 8, 0);
+    var tr1, vr1 = ry_receptor_config_to_json(_fz_sb, &rcc);
+    store64(seeds + 592, fz_seed_of(_fz_sb));
+    store64(_fz_sb + 8, 0);
+    var tr2, vr2 = ry_receptor_flux_to_json(_fz_sb, &rcf);
+    store64(seeds + 600, fz_seed_of(_fz_sb));
     var i = 0;
     while (i < 50000) {
         var n = 0;
@@ -1444,7 +1532,7 @@ fn main() {
             var k = 0;
             while (k < n) { store8(buf + k, fz_below(256)); k = k + 1; }
         } else {
-            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(73)));
+            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(76)));
         }
         fuzz_main(buf, n);
         fuzz_json(buf, n);
@@ -1463,6 +1551,7 @@ fn main() {
         fuzz_pi3k(buf, n);
         fuzz_jak_stat(buf, n);
         fuzz_calcium(buf, n);
+        fuzz_receptor(buf, n);
         i = i + 1;
     }
     if (_fz_bad != 0) {
@@ -1506,6 +1595,8 @@ fn main() {
     fmt_int(_fz_jak_stat);
     print(", calcium documents read: ", 26);
     fmt_int(_fz_calcium);
+    print(", receptor documents read: ", 27);
+    fmt_int(_fz_receptor);
     println(")");
     return 0;
 }

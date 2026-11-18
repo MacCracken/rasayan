@@ -1,47 +1,38 @@
-# scripts/oracle — rasayan's golden-value generator
+# scripts/oracle — rasayan's reference: golden rows, data files, and their checks
 
-Drives the frozen Rust rasayan 1.2.0 in `rust-old/` (by path, read-only; it is never edited)
-and writes everything the Cyrius port derives from it:
-- the golden corpus, `tests/golden/<module>.tsv`, which the parity harness replays;
-- the generated Cyrius sources, `src/constants.cyr`, `src/constants_private.cyr` and
-  `src/<module>_data.cyr`.
-
-`mathx_tables.py` writes one more generated source, `src/mathx_data.cyr` (the correctly rounded
-primitives' tables), from MPFR rather than from the oracle (below).
-
-Adapted from ushma's `scripts/oracle/` (format and rules unchanged; kimiya's and tanmatra's
-originally), so the sibling ports' parity harness reads these files as it reads theirs.
+The reference is **accuracy** (ADR 0005): every golden value is its function evaluated in binary64 with correctly
+rounded primitives (MPFR), in the operation order of rasayan 1.2.0's source — never an implementation's printed
+bits. `rust-old/` is the **functional spec**: these tools read its source as text (functions, constants, `Default`
+literals, check orders, doc comments) and run no Rust; no cargo step, crate or binary exists in the tooling. The
+parity harness (`tests/parity.tcyr`) replays every row against the Cyrius port, the second implementation.
 
 ```sh
-cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml             # write
-cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml -- --check  # verify
-python3 -I -B scripts/oracle/validate.py .                                          # independent check
-python3 -I -B scripts/oracle/probe_tables.py . --all-targets                       # every generated value, compiled
-python3 -I -B scripts/oracle/mpfr_ref.py [--write . | --check .]                   # MPFR self-checks; tests/golden/{math,integrate}.cr.tsv
-python3 -I -B scripts/oracle/mathx_tables.py [--check | --check-ushma]             # src/mathx_data.cyr (MPFR)
-python3 -I -B scripts/oracle/cr_verify.py --quick                                  # the primitives vs MPFR, ~11 s
-python3 -I -B scripts/oracle/cr_verify.py                                          # the full sweep, ELF/aarch64/PE
-cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml --bin probe_substeps  # M0 probe 1's Rust side
-cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml --bin probe_solver    # M0 probe 4's Rust side
+python3 -I -B scripts/oracle/gen.py --write .                        # write the modules gen.py owns (M6 part 5 on)
+python3 -I -B scripts/oracle/gen.py --check .                        # regenerate them in memory; byte-identical
+python3 -I -B scripts/oracle/validate.py .                           # every golden row against its accurate model
+python3 -I -B scripts/oracle/mpfr_ref.py --check .                   # every class-C/-T row against a second model
+python3 -I -B scripts/oracle/probe_tables.py . --all-targets         # every generated value, compiled
+python3 -I -B scripts/oracle/mathx_tables.py [--check | --check-ushma]   # src/mathx_data.cyr (MPFR)
+python3 -I -B scripts/oracle/cr_verify.py --quick                    # the correctly rounded primitives vs MPFR, ~11 s
+python3 -I -B scripts/oracle/cr_verify.py                            # the full sweep, ELF/aarch64/PE
 ```
 
-`--check` regenerates every output in memory and compares it byte for byte. It exits 1 on:
-- a difference or a missing file;
-- a `.tsv` with no emitter;
-- a corpus recorded on another glibc platform (`src/glibc.rs`).
+- **`golden.py`** — the format-1 codec and writer (tokens, Rust's `{:?}` text for the notes, the header). It
+  re-renders all 119,256 notes the retired Rust writer made, byte for byte.
+- **`gen.py`** — the generator for the modules ported from M6 part 5 on: each module's input vectors (edges, Rust's
+  own test cases, seeded grids on the xorshift64* generator), its accurate outputs from a Python transcription of the
+  source with MPFR's primitives, and its data file (`src/<module>_data.cyr`: the `Default` literals as positional
+  decimals, the field-name blobs, the source's doc comments). `--check` regenerates in memory and compares bytes.
+- **`validate.py`** — an independent model of every row of every golden file (its own readers of the Rust source,
+  its own MPFR binding), and every value of every data file against the source. For the modules ported before M6
+  part 5, whose vectors the retired Rust generator wrote (frozen; the files' line 3 says `check: … validate.py`),
+  it is the check that recomputes every output.
+- **`mpfr_ref.py`** — the MPFR binding (ctypes, `libmpfr.so.6`) and a second model of every class-C and -T row.
 
-It exits 2, writing nothing, when an output can't be generated: the completeness proof fails
-(a `const` or `static` item neither generated nor excused, below), the source no longer reads
-as an emitter expects, or two generated declarations share a name.
-
-A corpus written by another rustc shows up as DIFFERS too: the header names the compiler
-(`build.rs`), because how each f64 method reaches glibc is the compiler's choice (below).
-
-`Cargo.lock` is committed. It was seeded by copying `rust-old/Cargo.lock` before the first
-build, so every shared dependency is the version the oracle was tested with: the only change
-cargo made is the `rasayan-oracle` package itself, and the oracle's dev-dependencies (criterion
-and its tree) dropped out. The release profile keeps `overflow-checks = true`. Everything builds
-in `scripts/oracle/target/` (gitignored).
+The modules before M6 part 5 were generated by a Rust crate that ran the frozen crate (retired by ADR 0005); the
+tables below name its files (`t_*.rs`, `m_*.rs`, the verbatim copies `v_*.rs`) as the record of how each vector set
+was built. Their 218 misrounded-by-glibc rows were folded into the golden files as their correctly rounded values;
+no `.cr.tsv` file remains.
 
 ## What's generated (M0 parts 2a and 2b)
 
@@ -64,6 +55,7 @@ in `scripts/oracle/target/` (gitignored).
 | `tests/golden/pi3k.tsv` | 549 | M6 part 2 (`t_pi3k.rs`, `m_pi3k.rs`): the two defaults; both validators; `tick` (348 rows: the state, the config, `f:receptor_activity f:dt`; out the state and the flux's three rates) through the API and the verbatim copy `v_pi3k.rs`; 19 trajectory scripts (`i:1 f:ra f:dt i:k`, `i:3 i:field f:x`); the serde documents. Class C where `activate` takes the `exp_m1` branch, else B (`pi3k.cr.tsv`: 9 rows) |
 | `tests/golden/jak_stat.tsv` | 677 | M6 part 3 (`t_jak_stat.rs`, `m_jak_stat.rs`): the two defaults; both validators; `tick` (423 rows: the state, the config, `f:cytokine f:dt`; out the state and the flux's four rates) through the API and the verbatim copy `v_jak_stat.rs`; 23 trajectory scripts (`i:1 f:cytokine f:dt i:k`, `i:3 i:field f:x`); the serde documents. Class C where an integrator takes the `exp_m1` branch, else B (`jak_stat.cr.tsv`: 4 rows) |
 | `tests/golden/calcium.tsv` | 856 | M6 part 4 (`t_calcium.rs`, `m_calcium.rs`): the two defaults; both validators; `plasma_membrane_influx`, `total_amount` and the private `cap_pair` (class B); `tick` (390 rows: the state, the config, `f:ip3 f:dt`; out the state and the flux's three rates) through the API and the verbatim copy `v_calcium.rs`; 37 trajectory scripts (`i:1 f:ip3 f:dt i:k`, `i:3 i:field f:x`); the serde documents. Class C where a sub-step's `produce_decay` takes the `exp_m1` branch, else B (`calcium.cr.tsv`: no rows) |
+| `tests/golden/receptor.tsv` | 717 | M6 part 5, the first module `gen.py` writes (`receptor()`): the two defaults; both validators; `total` and the private `outflow` and `outflow_pair` (class B); `tick` (396 rows: the state, the config, `f:ligand f:dt`; out the state and the flux's three values); 22 trajectory scripts (`i:1 f:ligand f:dt i:k`, `i:3 i:field f:x`), Rust's hour-long runs among them; the serde documents. No transcendental: B, T or A |
 | `tests/golden/energy.tsv` | 4,509 | M2 part 5: `BioenergyState::default()`'s four fields, and every public function and method of `energy.rs` through the oracle's API (`t_energy.rs`, `m_energy.rs`): the four bridges over 14 edges per argument and seeded calls; the methods over 128 states; single steps of `set_exertion` and `tick` (the activation's cutoff ±1 ulp among them); sharira 1.1.0's `MetabolicCoupling::tick` call shape (`sharira::MetabolicCoupling::tick`: the state, then power, mass, dt_seconds as the f32's f64, amplification, fraction; out the state, the energy available and the two multipliers); 35 trajectory scripts (Rust's calibration scenarios, sharira sessions); the serde documents; class C (`exp_m1`; `energy.cr.tsv`), B, T or A |
 | `tests/golden/enzyme.tsv` | 7,219 | the table rows (M0: 60) and, from M2 part 1, every public function and method of `enzyme.rs` through the oracle's API (`m_enzyme.rs`): each rate law's base point varied over 14 edges and 300 seeded calls, the fits over 163 data sets, the methods, the serde documents; class B, C (`powf`, `exp`; `enzyme.cr.tsv`) or A |
 | `tests/golden/membrane.tsv` | 1,739 | `DEFAULT_PERMEABILITY`'s three fields (M0) and, from M2 part 2, `IonicState::default()`'s six and every public function and method of `membrane.rs` through the oracle's API (`m_membrane.rs`): Nernst, Goldman and Fick over 14 edges per argument and seeded physiological (and, for Goldman, wild) calls, nine charges, the validators, `resting_potential`, the serde documents; class C (`ln`; `membrane.cr.tsv`), B or A |
@@ -93,6 +85,7 @@ in `scripts/oracle/target/` (gitignored).
 | `src/pi3k_data.cyr` | 97 lines | `RY_PI3K_PI3K_STATE_DEFAULT_*` and `RY_PI3K_PI3K_CONFIG_DEFAULT_*`, the `Self { … }` literals, checked against the API, and the three types' field-name blobs (`t_pi3k.rs`) |
 | `src/jak_stat_data.cyr` | 121 lines | `RY_JAK_STAT_JAK_STAT_STATE_DEFAULT_*` and `RY_JAK_STAT_JAK_STAT_CONFIG_DEFAULT_*`, the `Self { … }` literals, checked against the API, and the three types' field-name blobs (`t_jak_stat.rs`) |
 | `src/calcium_data.cyr` | 125 lines | `RY_CALCIUM_CALCIUM_STATE_DEFAULT_*` and `RY_CALCIUM_CALCIUM_CONFIG_DEFAULT_*`, the `Self { … }` literals evaluated (named constants, `1.0 / 150.0`) and checked against the API, and the three types' field-name blobs (`t_calcium.rs`) |
+| `src/receptor_data.cyr` | 90 lines | `RY_RECEPTOR_RECEPTOR_STATE_DEFAULT_*` and `RY_RECEPTOR_RECEPTOR_CONFIG_DEFAULT_*`, the `Self { … }` literals evaluated, and the three types' field-name blobs (`gen.py`) |
 | `src/signal_data.cyr` | 26 lines | `RY_SIGNAL_SECOND_MESSENGER_DEFAULT_*`, the `Self { … }` literal of `impl Default for SecondMessenger` (`rustsrc::default_literal`), checked against the API (`t_signal.rs`) |
 | `src/ai_data.cyr` | 36 lines | `_RY_AI_SYSTEM_PROMPT` (308 bytes and a NUL) and its length; for `[lib.ai]` only (`t_ai.rs`) |
 
@@ -349,42 +342,23 @@ a `max` row's signed zero, a `powi(1.1, 4)` row set to the left-fold result, and
 the `exp(-59.49995704921839)` correction deleted from `math.cr.tsv` (part 2c-1: the row count and
 the missing misrounded row both fail). Each gave exit 1.
 
-## mpfr_ref.py and the corrected oracle (ADR 0003)
+## mpfr_ref.py
 
 `mpfr_ref.py` (M0 part 2c-1, from ushma's, kimiya's originally) calls the system MPFR (4.x,
 `libmpfr.so.6`, through ctypes; no Python package): 53 bits, binary64's exponent range (emin =
 −1073, emax = 1024), `mpfr_subnormalize`. That makes each of its primitives — `exp`, `expm1`, `log`,
-`pow`, the four rasayan's library calls through Rust std — the IEEE round-to-nearest-even value of
-the exact function, exact ties and subnormals included. Its self-checks (run on every invocation;
-`python3 -I -B scripts/oracle/mpfr_ref.py` runs only them) cover exact ties, the subnormal and
-overflow ends, signed zeros and C99's special values, `expm1(x) = x` for tiny x, `pow(x, 0.5) =
-sqrt(x)`, and `pow(10, k)` against Python's correctly rounded `float("1ek")` for every k from −330
-to 311 (the Henderson–Hasselbalch sites).
+`pow`, the four rasayan's library calls — the IEEE round-to-nearest-even value of the exact function,
+exact ties and subnormals included. Its self-checks (run on every invocation; `python3 -I -B
+scripts/oracle/mpfr_ref.py` runs only them) cover exact ties, the subnormal and overflow ends, signed
+zeros and C99's special values, `expm1(x) = x` for tiny x, `pow(x, 0.5) = sqrt(x)`, and `pow(10, k)`
+against Python's correctly rounded `float("1ek")` for every k from −330 to 311 (the
+Henderson–Hasselbalch sites).
 
-`--write .` evaluates Rust's operation sequence for every class-C row of `math.tsv` with these
-primitives. A math row is one call: `f64::powf` is `pow` (the `10_f64.powf(x)` rows too, which
-call glibc's `pow`, not `exp10`: "Where the math rows come from"), `f64::exp` is `exp`, `f64::ln`
-`log` and `f64::exp_m1` `expm1`. Each row whose correctly rounded output differs from the golden
-(glibc's) one goes to `tests/golden/math.cr.tsv`:
-
-```text
-fn <TAB> inputs <TAB> corrected outputs <TAB> note
-```
-
-- **fn** and **inputs** are the golden row's, byte for byte: the key the harness matches. A key the
-  corpus repeats gets one row per occurrence (the harness uses each correction once, in file order).
-- **outputs** are format-1 tokens, the oracle's operations with every primitive correctly rounded.
-- **note** is `oracle <outputs>; <fn>(<args>) glibc f:<g> correctly rounded f:<c>`.
-- The five-line header carries the golden file's provenance (so `--check` of the generator reads
-  the same libm platform from it), the MPFR version and the row count.
-
-`--check .` regenerates the file in memory and compares it byte for byte. At part 2c-1: 96 of the
-11,094 class-C rows, each 1 ulp — `exp_m1` 94 (85 on `integrate::step_factors`' branch above
-`SERIES_MAX`), `exp` 1, `powf` 1, `ln` 0. `tests/parity.tcyr` loads the file and compares each such
-row against the corrected outputs (ADR 0003 item 2). Since part 2c-2 class C runs on
-`src/mathx.cyr`'s correctly rounded primitives and is gated at 0 ulp: each of the 96 rows passes as
-"accepted (ADR 3)", and a port value equal to glibc's misrounded one is a failure
-(`docs/development/port-parity.md` §2d).
+`--check .` evaluates every class-C row of `math.tsv` (one call: `f64::powf` is `pow`, the `10_f64.powf(x)` rows too,
+"Where the math rows come from"; `f64::exp` `exp`, `f64::ln` `log`, `f64::exp_m1` `expm1`) and every class-C and -T
+row of the module files (each module's operations in the source's order, its primitives through `Prims`) and the
+golden outputs must be exactly those. It shares nothing with `validate.py`'s models or binding: two independent
+derivations of every row that reaches a transcendental.
 
 ## mathx_tables.py
 
@@ -452,19 +426,22 @@ builds for aarch64 (qemu) and PE (wine) and requires identical output. At part 2
 (156 consts, 2,314 cells of 39 arrays), identical on the three targets. A mismatch fails it, as
 checked when it was written.
 
-## The probe bins (M0 part 3a)
+## The probe references (M0 part 3a; Python since ADR 0005)
 
-Two bins in `src/bin/` write what M0's probes compare the Cyrius side with (`scripts/probes/run.sh` runs both; the
-write-ups are `docs/development/port-parity.md` §3). Their output goes to `build/` (gitignored), never into the
-corpus.
+`scripts/probes/run.sh` first writes what M0's probes compare the Cyrius side with, all in Python from rust-old's
+source text (the write-ups are `docs/development/port-parity.md` §3). Each reproduced the retired Rust binary's
+output byte for byte before it replaced it. Their output goes to `build/` (gitignored), never into the corpus.
 
-- **`probe_substeps`** → `build/probe-substeps/substeps.txt`: the network's, calcium's and mapk's sub-step counts
+- **`probe_substeps.py`** → `build/probe-substeps/substeps.txt`: the network's, calcium's and mapk's sub-step counts
   (`model dt n raw`) on 44,266 dt values, from the three count expressions as `rust-old/src` writes them on the
-  oracle's public constants. Before writing, each copy is tied to the real tick through the public API: one tick of
-  dt must leave the state bit-identical to n ticks of dt / n and different from n + 1 ticks of dt / (n + 1).
-- **`probe_solver`** → `build/probe-solver/solver.txt`: `balanced_nad_ratio` and `end_of_step_nadh` (pathway.rs's
-  implicit NADH solves) on 10⁵ + 10⁵ seeded balances, with the solve's iteration count and exit. The functions are
-  private, so `probe_solver/copy.rs` holds them verbatim; the bin checks that each `// @verbatim <file>` block occurs
-  byte for byte in `rust-old/src/<file>` (both through `include_str!`), and that the instrumented copy of the solver
-  (a counter and an exit code added) gives the verbatim function's bits on every case. It also prints the verbatim
-  functions' time per solve, for the benchmark record.
+  golden constants.
+- **`probe_solver.py`** → `build/probe-solver/solver.txt`: `balanced_nad_ratio` and `end_of_step_nadh` (pathway.rs's
+  implicit NADH solves) on 10⁵ + 10⁵ seeded balances, with the solve's iteration count and exit, transcribed
+  statement for statement.
+- **`probe_json.py`** → `build/probe-json/{docs,floats}.tsv`: serde_json's documents for nine serde types (real
+  values from the golden rows, seeded special and random variants) and serde_json's and Display's text of 338,664
+  doubles (`--verify <dir>` replays another set's inputs through the same writers).
+- **`probe_mcp.py`** → `build/probe-mcp/rust.tsv`: what mcp.rs's dispatcher (on bote 0.92) answers to 19 requests:
+  the eight tool definitions read from the source, the schema checks, the kinetics handler's michaelis_menten.
+- **`probe_ai.py`**: the AI client's eight calls (prompts read from ai.rs) against the hoosh 2.12.3 stub, and the
+  outcome lines from its answers.

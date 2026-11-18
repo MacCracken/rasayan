@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# rasayan — the full gate run (port plan §6): the oracle side, the build and bundle, the parity corpus on three
+# rasayan — the full gate run (port plan §6): the reference side, the build and bundle, the parity corpus on three
 # targets, benchmarks, hygiene, the lock and the audit. Adapted from ushma's scripts/gates.sh (ushma HEAD bdbcc02;
 # kimiya's handoff/gates/gates.sh originally). A step whose tooling doesn't exist yet is reported as SKIP with the
 # milestone that brings it, never silently passed.
@@ -50,10 +50,8 @@ run() { # PAT=<grep -E> [TAILN=n] run <cmd...>
 }
 skip() { echo "=== SKIP: $*"; }
 
-# ── 1. The Rust oracle (read-only) and the golden-value generator ────────────────────────────────────────────────
-PAT='test result' TAILN=8 run cargo test --manifest-path rust-old/Cargo.toml --all-features --locked
-PAT='DIFFER|STALE|missing|complete|error' run cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml -- --check
-PAT='warn|error|Finished' run cargo clippy --release --locked --manifest-path scripts/oracle/Cargo.toml --all-targets -- -D warnings
+# ── 1. The reference: the golden corpus against its accurate models (Python + MPFR; ADR 0005; no Rust is run) ────
+PAT='DIFFERS|regenerate|^ok|error|Traceback' run python3 -I -B scripts/oracle/gen.py --check .
 PAT='FAILURES|independently checked|error' run python3 -I -B scripts/oracle/validate.py .
 PAT='^ok|self-checks|STALE|DIFFER|Error|assert' run python3 -I -B scripts/oracle/mpfr_ref.py --check .
 if [ -f ../ushma/src/mathx_data.cyr ]; then

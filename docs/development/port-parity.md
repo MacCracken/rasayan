@@ -1811,3 +1811,46 @@ Classes: A 208, B 595, C 16 (a sub-step on `exp_m1`), T 37.
 | four targets (`scripts/gates.sh`, 539 s, every step green) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 118,957 ok, 299 accepted (ADR 3: 218), 0 failed; coverage 359 of 359 public fns executed |
 
 **Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): calcium_tick 40.2 → 153 ns.
+
+### 9e. The reference moves to accuracy (ADR 0005, 2026-11-17)
+
+Until here a golden value was the Rust crate's output on glibc 2.44, and a `.cr.tsv` file beside the module's
+golden file carried the correctly rounded outputs where glibc misrounds (218 rows: math 96, integrate 39, mapk 51,
+metabolism 10, pi3k 9, energy 4, jak_stat 4, signal 4, pathway 1), counted "accepted (ADR 3)". Now:
+
+| Check | Result |
+|---|---|
+| the fold | each of the 218 corrected rows replaced its golden row's outputs (and note); every correction matched exactly one golden row; the 18 `.cr.tsv` files deleted |
+| the port | `tests/parity.tcyr`: 119,175 ok, 0 failed, 81 accepted (ADR 2: 61 logging, ADR 4: 20 bayan), ADR 3: 0 — the port was already correctly rounded on every one of the 218 |
+| `validate.py` | every class-C and -T row against its own MPFR model, directly: 125,017 checks, 0 failures |
+| `mpfr_ref.py --check` | every class-C and -T row of the 18 files (11,094 math rows, 26,212 module rows) equal to its MPFR model |
+| `golden.py` | the Python writer rebuilds the note of every one of the 119,256 rows byte for byte (Rust's `{:?}` text, its tie rule up, its string escapes) |
+| the probes | `probe_substeps.py` (44,266 lines), `probe_solver.py` (200,000), `probe_mcp.py` (21) byte-identical to the retired Rust binaries' output; `probe_ai.py`'s 8 requests and outcomes identical; `probe_json.py`'s writers reproduce the retired 1,234 documents and 330,628 float texts |
+
+### 9f. Part 5: receptor (2026-11-18)
+
+**What is compared.** `tests/golden/receptor.tsv` (new, 717 rows), the first module `scripts/oracle/gen.py`
+writes: its Python transcription of `receptor.rs` (binary64, the source's order) against the Cyrius port. No
+transcendental: B, T or A. The rows cover:
+- the two defaults (evaluated from the `Self { … }` literals), both validators over every field's edges, pairs where
+  the order picks the error, Rust's refusals, a state in range whose pools sum past 1;
+- `total` (50), the private `outflow` (30: under and over the cap, zero, NaN and infinite pools and rates) and
+  `outflow_pair` (30: the pair under and over the pool, negative rates, overflow);
+- 396 single ticks: the default at 25 step lengths at ligand 0.5, 1 and 10 (the cap `rate · dt >= 1` crossed per
+  transfer); each state field over its edges at 0.01 s and 2 s; the ligand's edges at three step lengths; each rate
+  over its edges; Rust's cases (binding capped at the surface at ligand 10, dt 0.5; the refill from 0.2; empty and
+  over-full pools); 120 seeded runs inside the capacity;
+- 22 trajectories: Rust's runs (prolonged exposure, recovery, the bounded run, the four hour-long runs at (0, 0.1),
+  (1, 0.1), (10, 0.5) and (10, 100), the 10,000-s refill), a six-point dose-response sweep at 0.5 s, the same minute
+  at 0.01 s and 5 s, NaN and inf recovery, four seeded;
+- the serde documents.
+
+| Check | Result |
+|---|---|
+| every row | 717 identical on the first run |
+| `gen.py --check` | the golden file and `src/receptor_data.cyr` byte-identical on regeneration; one flipped value per function caught, 12 of 12 |
+| Rust tests | the 12 `receptor.rs` tests and its 2 integration tests ported (`tests/receptor.tcyr`, 20 checks); the ledger at 597 of 723; surface parity 15 of 15 |
+| fuzz | every input also read as the three documents (1,453 accepted, each written and read back bit for bit); a valid state of total <= 1, and the default state on a valid config, ticked 0.1 s and 100 s stay valid with total <= 1 + 10⁻⁹ |
+| four targets (`scripts/gates.sh`, 487 s, every step green) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 119,892 ok, 81 accepted (ADR 3: 0), 0 failed; coverage 378 of 378 public fns executed |
+
+**Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): receptor_tick 10.2 → 83 ns.

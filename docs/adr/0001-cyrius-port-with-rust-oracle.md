@@ -3,6 +3,8 @@
 **Status**: Accepted
 **Date**: 2026-11-16 (maintainer accepted the port plan's decisions P1–P9: "Accept all")
 
+**Amended by [0005](0005-accuracy-is-the-reference.md)** (2026-11-17): rust-old/ is the functional spec, read as text and never run; the reference values are accurate (MPFR), and the tooling is Python.
+
 ## Context
 
 AGNOS libraries are moving from Rust to Cyrius. rasayan's optional integrations already point at

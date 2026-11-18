@@ -19,10 +19,44 @@ JSON writers and readers) follow: M1 is complete. M2 part 1 (enzyme), part 2 (me
 complete. M4b part 1 (the electron transport chain), part 2 (β-oxidation) and part 3 (amino-acid catabolism)
 follow: M4b is complete, and with it M4. M5 part 1 (the metabolic network's types, validators, solve layer and
 codecs), part 2 (its step) and part 3 (the steady-state run, the long runs, the soak) follow: M5 is complete.
-M6 part 1 (the MAPK cascade), part 2 (PI3K/Akt/mTOR), part 3 (JAK-STAT) and part 4 (calcium) follow.
+M6 part 1 (the MAPK cascade), part 2 (PI3K/Akt/mTOR), part 3 (JAK-STAT) and part 4 (calcium) follow; then the
+reference moves to accuracy with no Rust in the tooling ([ADR 0005](docs/adr/0005-accuracy-is-the-reference.md)), and
+part 5 (receptor) is the first module its Python generator writes.
 
 ### Added
 
+- **src/receptor.cyr**, **src/receptor_data.cyr** (M6 part 5) — `receptor.rs` transcribed: `RyReceptorState`,
+  `RyReceptorConfig`, `RyReceptorFlux`; the defaults and field-name blobs (`src/receptor_data.cyr`, written by
+  `gen.py`); both validators; `ry_receptor_state_total`; the private `outflow` (capped at the pool) and `outflow_pair`
+  (two exits scaled together); `ry_receptor_state_tick` (binding, dissociation and GRK, internalization, recycling and
+  degradation, capacity-limited synthesis, the pools updated from this tick's transfers); the serde codecs of all three,
+  with node readers for the signaling network. Rust's `receptor_tick` trace event is a level-gated sakshi event under
+  `rasayan::receptor`
+- **tests/golden/receptor.tsv** (M6 part 5, 717 rows: A 189, B 506, T 22) — the first module `scripts/oracle/gen.py`
+  writes: the defaults, both validators over every field's edges, `total` (50), `outflow` and `outflow_pair` (30
+  each), 396 single ticks (25 step lengths at three ligand levels, each state field's and each rate's edges, the
+  ligand's edges, Rust's cases — binding capped at the surface, the refill from a 0.2 surface — and seeded states
+  inside the capacity), 22 trajectories (Rust's runs, among them the four hour-long runs and the 10,000-s refill; a
+  dose-response sweep, NaN and inf recovery, seeded runs) and the serde documents. All 717 match the port on the first
+  run
+- **tests/receptor.tcyr** (M6 part 5, 20 checks) — the 12 `receptor.rs` unit tests (the four hour-long capacity runs,
+  binding capped, the refill to capacity) and the 2 receptor integration tests, as they are written, and the trace
+  event: the Rust-test ledger at 597 of 723. The fuzz harness reads every input as the three documents (1,453 read and
+  written back bit for bit) and ticks every valid state of total <= 1 and every valid config
+- **benchmarks** (M6 part 5) — receptor_tick, Rust → Cyrius: 10.2 → 83 ns
+- **docs/adr/0005-accuracy-is-the-reference.md** — the golden values are accurate (binary64 with correctly rounded
+  primitives, MPFR), rust-old/ is the functional spec (read as text, never run, deleted after the port), and no Rust
+  is run anywhere in the tooling. Amends ADR 0001, supersedes ADR 0003 item 2
+- **scripts/oracle/golden.py** — the format-1 writer in Python (tokens, Rust's `{:?}` note text with its tie rule and
+  string escapes, the header); it re-renders all 119,256 existing notes byte for byte
+- **scripts/oracle/gen.py** — the generator for the modules ported from M6 part 5 on: input vectors on the grids'
+  xorshift64*, accurate outputs from a Python transcription of the source with MPFR's primitives, the data files in the
+  existing layout; `--check` regenerates in memory and compares bytes (a gate step)
+- **scripts/probes/probe_{substeps,solver,json,mcp,ai}.py** — the probes' references in Python, from rust-old's source
+  text: the sub-step counts (44,266 cases) and the implicit NADH solves (200,000) byte-identical to the retired Rust
+  binaries' output; the JSON documents and float texts (the writers reproduce the retired output's 1,234 documents and
+  330,628 doubles exactly, `--verify`); the MCP dispatcher's 19 answers (byte-identical); the AI client's 8 requests
+  and outcomes (identical request lines, bodies, headers and outcome lines)
 - **src/calcium.cyr**, **src/calcium_data.cyr** (M6 part 4) — `calcium.rs` transcribed: `RyCalciumState`,
   `RyCalciumConfig`, `RyCalciumFlux`; the defaults from the generated consts (the module's constants were generated at
   M0 into `src/constants.cyr` and `src/constants_private.cyr`) and the three types' field-name blobs; both validators;
@@ -782,6 +816,16 @@ M6 part 1 (the MAPK cascade), part 2 (PI3K/Akt/mTOR), part 3 (JAK-STAT) and part
 
 ### Changed
 
+- **the reference** (ADR 0005) — the golden values are the accurate ones: the 218 rows the corrected-oracle files held
+  (glibc misrounds them; MPFR's value is the correct one) carry the correctly rounded outputs in the golden files
+  themselves, and every golden header names the MPFR reference instead of rustc and glibc. `validate.py` compares every
+  class-C and -T row with its own MPFR model directly (the glibc cross-checks and the correction parsing are gone);
+  `mpfr_ref.py --check` is a second, independent MPFR model of the same rows (its `--write` of correction files is
+  gone). Parity: 119,175 ok then (119,892 with receptor), 81 accepted (ADR 2 and 4), ADR 3's count 0
+- **scripts/gates.sh**, **scripts/probes/run.sh** — no cargo step: `gen.py --check` replaces the generator's check;
+  the probes run on the Python references; the data files' headers name `validate.py` (or `gen.py`) instead of cargo
+- **CLAUDE.md**, **CONTRIBUTING.md**, **README.md**, **SECURITY.md**, **scripts/oracle/README.md** — rust-old/ is the
+  functional spec, accuracy the reference, no Rust in the tooling
 - **src/glycolysis.cyr**, **src/tca.cyr**, **src/etc.cyr**, **src/beta_oxidation.cyr**, **src/amino_catabolism.cyr**
   (M5 part 1) — each of the 16 JSON readers now parses its document and calls `_ry_<type>_from_node`, which reads a
   node of a parsed tree; the network's readers call the same functions for their nested values. No behaviour
@@ -940,6 +984,13 @@ M6 part 1 (the MAPK cascade), part 2 (PI3K/Akt/mTOR), part 3 (JAK-STAT) and part
   stdlib's functions (the `f64_exp` / `f64_ln` builtins and polyfills, `ganita_f64_pow`, `_gn_expm1`)
   stay as ungated shadow lines. `tests/parity_math.cyr` keeps only `_ry_clamp` and `_ry_f64_to_u32`
   (no counterpart in ushma's mathx) until M1.
+
+### Removed
+
+- **scripts/oracle/** Rust crate (ADR 0005) — `Cargo.toml`, `Cargo.lock`, `build.rs`, the 68 source files (19,589
+  lines: the golden generator, its verbatim copies of rust-old's private functions, the five probe binaries); the
+  18 `tests/golden/*.cr.tsv` correction files; the gate steps `cargo test` (rust-old), the generator's `--check` and
+  clippy
 
 ### Fixed
 

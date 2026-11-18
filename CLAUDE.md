@@ -13,8 +13,10 @@ metabolic pathways, signal transduction, protein structure, membrane transport, 
 - **License**: GPL-3.0-only
 - **Language**: Cyrius. The toolchain is pinned in `cyrius.cyml` `[package].cyrius`
 - **Version**: `VERSION` at the project root is the source of truth. Don't inline the number here
-- **Rust oracle**: rasayan 1.2.0 (tag `1.2.0`), frozen at `rust-old/`. It is never edited and never
-  re-released. It is the parity reference
+- **Functional spec**: rasayan 1.2.0 (tag `1.2.0`), frozen at `rust-old/`: it says *what* to port and is
+  read as text, never compiled or run, never edited, never re-released. The maintainer deletes it after the port
+- **Reference**: accuracy (ADR 0005). Every golden value is the function evaluated in binary64 with correctly
+  rounded primitives (MPFR) in the source's order, never any implementation's printed bits. No Rust is run anywhere
 - **Plan of record**: [`docs/development/rasayan-port-plan.md`](docs/development/rasayan-port-plan.md),
   with the ADRs in [`docs/adr/`](docs/adr/)
 - **Standards**: [First-Party Standards](https://github.com/MacCracken/agnosticos/blob/main/docs/development/applications/first-party-standards.md) · [First-Party Documentation](https://github.com/MacCracken/agnosticos/blob/main/docs/development/applications/first-party-documentation.md)
@@ -33,14 +35,13 @@ cyrius build src/main.cyr build/rasayan       # compile
 cyrius test                                   # run tests/*.tcyr (tests/parity.tcyr replays the golden corpus, from M0 step 7)
 cyrius bench                                  # run benchmarks
 cyrius distlib --all                          # dist/rasayan.cyr ([lib]), rasayan-mcp.cyr, rasayan-ai.cyr (no --features)
-cargo test --manifest-path rust-old/Cargo.toml --all-features   # the Rust oracle, read-only
 ```
 
 ```sh
-cargo run --release --locked --manifest-path scripts/oracle/Cargo.toml -- --check   # golden corpus + generated .cyr up to date
-python3 -I -B scripts/oracle/validate.py .                                         # independent check of the corpus
-python3 -I -B scripts/oracle/mpfr_ref.py --check .                                 # the corrected oracle (math.cr.tsv) current
-python3 -I -B scripts/oracle/mathx_tables.py --check                               # src/mathx_data.cyr current
+python3 -I -B scripts/oracle/gen.py --check .          # the modules gen.py writes: golden rows + data files current
+python3 -I -B scripts/oracle/validate.py .              # every golden row against its accurate model
+python3 -I -B scripts/oracle/mpfr_ref.py --check .      # every class-C and -T row against a second MPFR model
+python3 -I -B scripts/oracle/mathx_tables.py --check    # src/mathx_data.cyr current
 ```
 
 ## Development Process
@@ -76,7 +77,7 @@ cyrius deps --locked
 cyrius audit                    # never pipe it through tail: you would read tail's exit status
 ```
 
-`bash scripts/gates.sh` runs all of the above, plus the oracle-side checks and the parity corpus on
+`bash scripts/gates.sh` runs all of the above, plus the reference-side checks and the parity corpus on
 three targets (x86_64 ELF, PE, aarch64), with logs in `build/gates/`.
 
 `cyrius test` must be **warning-free**. The f64 type diagnostics are warnings, not errors, and each
@@ -122,15 +123,17 @@ one is a bug:
 - **Everything ports.** Every Rust module, feature, test, benchmark and example has a Cyrius
   counterpart. Nothing is dropped or deferred. If something seems to have no Cyrius counterpart,
   grep `lib/` and the Cyrius docs first, then show the evidence and ask.
-- **Cyrius-native, not Rust-shaped.** Rust is the oracle for *results*, not the design. Port each
+- **Cyrius-native, not Rust-shaped.** Rust is the functional spec, not the design. Port each
   capability the way a Cyrius library builds it (stdlib and sibling idioms), never Rust's mechanics.
-  Decide the Cyrius form, record it in an ADR, and compare against Rust only on results.
-- **The Rust code is frozen.** `rust-old/` is never edited and never re-released. When the oracle is
-  wrong, the port does it right and an ADR 0002 row maps the oracle's rows.
-- **Cross-check against `rust-old/`.** The correctness bar is "matches what Rust did", within the
-  tolerance class the port plan (§5) assigns. Diverge only with an ADR.
+  Decide the Cyrius form, record it in an ADR.
+- **The Rust code is frozen.** `rust-old/` is never edited and never re-released. Where its behaviour is wrong,
+  the port does it right and an ADR 0002 row records the difference.
+- **Accuracy is the reference** (ADR 0005). The correctness bar is the accurate value of the source's algorithm
+  (binary64, correctly rounded primitives), within the tolerance class the port plan (§5) assigns. Two
+  implementations must agree on every row: the Python model (`scripts/oracle/gen.py`, and `validate.py` for the
+  older modules) and the Cyrius port. **No Rust in the tooling**: no cargo step, no Rust crate, no Rust binary.
 - **Transcribe stateful and iterative code exactly** (P9): same operation order, iteration caps and
-  termination tests as the oracle — every `tick()`, the sub-steppers and the metabolic network's
+  termination tests as the source — every `tick()`, the sub-steppers and the metabolic network's
   implicit NADH solves. Single-step rows and trajectory digests (class T) check them. An algebraically
   equal rewrite is not a transcription: the textbook secant step changes 28 % of the NADH solves, and
   `dt * 50.0` for `dt / 0.02` changes sub-step counts (probes 1, 4).
@@ -190,8 +193,9 @@ one is a bug:
   - Bind a struct-returning call to a local before storing it into a field (`s.f = g(t.e)` miscompiles).
   - Never put an attribute (`#must_use`, `#inline`) directly before a `var` or `const`; it attaches to the next fn.
   - Never `alloc_reset`; per-step scratch lives in an arena.
-- **Constants and tables are generated, never typed by hand.** `scripts/oracle/` writes them from the
-  oracle (amino acids, substitution matrices, enzyme database, pKa sets, Chou-Fasman tables).
+- **Constants and tables are generated, never typed by hand.** They come from rust-old's source text (amino acids,
+  substitution matrices, enzyme database, pKa sets, Chou-Fasman tables, every `Default` literal); `gen.py` writes the
+  new modules' data files and `validate.py` checks every value of every data file against the source.
 - **Names.** Public names carry a written `ry_` prefix (`ry_*` fns; `RY_*` constants, enum members,
   error codes); private helpers use `_ry_` (ADR 0001, P6).
 - Build with `cyrius build`, not raw `cat file | cc5` — the manifest auto-resolves deps
@@ -203,8 +207,9 @@ one is a bug:
 
 - **Do not commit or push** — the user handles all git operations (commit, push, tag)
 - **NEVER use `gh` CLI** — use `curl` to GitHub API only
-- **Do not modify `rust-old/`** — it is the frozen parity oracle. Tools that drive it live in
-  `scripts/oracle/` and depend on it by path, read-only. No Rust fixes, no Rust releases
+- **Do not modify or delete `rust-old/`** — it is the functional spec, read as text, until the port is done; the
+  maintainer deletes it then. No Rust fixes, no Rust releases, and never compile or run it
+- **Do not add Rust to the tooling** — no cargo step, crate or binary in `scripts/` or the gates (ADR 0005)
 - **Do not drop or defer Rust functionality** — everything ports
 - Do not modify `lib/` files (vendored stdlib / dep snapshots)
 - Do not hardcode toolchain versions in CI YAML — `cyrius = "X.Y.Z"` in `cyrius.cyml` is the source of truth
@@ -213,8 +218,7 @@ one is a bug:
 - Do not abort or panic in library code
 - Do not skip benchmarks before claiming performance improvements
 - Do not skip tests before claiming changes work
-- Do not commit `build/` or `rust-old/target/`. `rust-old/Cargo.lock` and `scripts/oracle/Cargo.lock`
-  **are** committed: the oracle must rebuild against its exact pins
+- Do not commit `build/` or `rust-old/target/`
 
 ## Documentation Structure
 

@@ -33,10 +33,10 @@ root = Path(sys.argv[1]).resolve()
 PORTED = ["constants", "error", "guard", "integrate", "logging", "enzyme", "membrane", "signal", "metabolism",
           "energy", "protein", "alignment", "ptm", "domain", "glycolysis", "tca", "etc", "beta_oxidation",
           "amino_catabolism", "pathway", "mapk", "pi3k", "jak_stat",
-          "calcium"]
+          "calcium", "receptor"]
 # The rest, with their milestone (port plan §3.1).
 SCHEDULED = {
-    "receptor": "M6", "nuclear_receptor": "M6",
+    "nuclear_receptor": "M6",
     "signaling": "M6",
     "neurotransmitter": "M7", "hormonal": "M7",
     "mcp": "M8", "ai": "M8",
@@ -101,6 +101,9 @@ TYPES = {
     "CalciumState": ("RyCalciumState", "calcium_state"),
     "CalciumConfig": ("RyCalciumConfig", "calcium_config"),
     "CalciumFlux": ("RyCalciumFlux", "calcium_flux"),
+    "ReceptorState": ("RyReceptorState", "receptor_state"),
+    "ReceptorConfig": ("RyReceptorConfig", "receptor_config"),
+    "ReceptorFlux": ("RyReceptorFlux", "receptor_flux"),
 }
 # Rust item -> the Cyrius names that carry it ("fn x", "const X", "enum X", "struct X"), where the rules give none.
 MAPPED = {

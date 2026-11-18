@@ -6,7 +6,7 @@
 > milestone hasn't come. The golden corpus (`tests/golden/`) checks every ported function on its grid besides.
 > The 2 doc tests and the example are M9's.
 
-**723 Rust tests:** 583 ported; 43 at M6, 62 at M7, 35 at M8.
+**723 Rust tests:** 597 ported; 29 at M6, 62 at M7, 35 at M8.
 
 | Rust file | Tests | Ported | Due, unported | Later (milestone) |
 |---|---:|---:|---:|---|
@@ -34,13 +34,13 @@
 | `src/pi3k.rs` | 11 | 11 | 0 | — |
 | `src/protein.rs` | 68 | 68 | 0 | — |
 | `src/ptm.rs` | 16 | 16 | 0 | — |
-| `src/receptor.rs` | 12 | 0 | 0 | 12 (M6) |
+| `src/receptor.rs` | 12 | 12 | 0 | — |
 | `src/signal.rs` | 21 | 21 | 0 | — |
 | `src/signaling.rs` | 13 | 0 | 0 | 13 (M6) |
 | `src/tca.rs` | 26 | 26 | 0 | — |
-| `tests/integration.rs` | 70 | 57 | 0 | 7 (M6), 6 (M7) |
+| `tests/integration.rs` | 70 | 59 | 0 | 5 (M6), 6 (M7) |
 | `tests/validation.rs` | 25 | 25 | 0 | — |
-| **Total** | **723** | **583** | **0** | |
+| **Total** | **723** | **597** | **0** | |
 
 ## Where each is ported
 
@@ -500,6 +500,18 @@
 | `src/ptm.rs` `test_pka_site` | `tests/ptm.tcyr` `kinases_and_cys` |
 | `src/ptm.rs` `test_sorted_by_position` | `tests/ptm.tcyr` `order_and_edges` |
 | `src/ptm.rs` `test_whitespace_and_non_ascii_do_not_panic` | `tests/ptm.tcyr` `order_and_edges` |
+| `src/receptor.rs` `test_binding_capped_at_surface` | `tests/receptor.tcyr` `conservation` |
+| `src/receptor.rs` `test_bounded` | `tests/receptor.tcyr` `lifecycle` |
+| `src/receptor.rs` `test_default_valid` | `tests/receptor.tcyr` `validation` |
+| `src/receptor.rs` `test_invalid_dt_is_noop` | `tests/receptor.tcyr` `hardening` |
+| `src/receptor.rs` `test_ligand_activates` | `tests/receptor.tcyr` `lifecycle` |
+| `src/receptor.rs` `test_nan_and_negative_ligand` | `tests/receptor.tcyr` `hardening` |
+| `src/receptor.rs` `test_prolonged_exposure_desensitizes` | `tests/receptor.tcyr` `lifecycle` |
+| `src/receptor.rs` `test_recovery_after_removal` | `tests/receptor.tcyr` `lifecycle` |
+| `src/receptor.rs` `test_serde_roundtrip` | `tests/receptor.tcyr` `serde` |
+| `src/receptor.rs` `test_synthesis_refills_to_capacity` | `tests/receptor.tcyr` `conservation` |
+| `src/receptor.rs` `test_total_bounded_one_hour` | `tests/receptor.tcyr` `conservation` |
+| `src/receptor.rs` `test_validate_rejects_nan` | `tests/receptor.tcyr` `validation` |
 | `src/signal.rs` `test_activations_clamp_out_of_range_state` | `tests/signal.tcyr` `activation_hardening` |
 | `src/signal.rs` `test_activations_sanitize_intensity` | `tests/signal.tcyr` `activation_hardening` |
 | `src/signal.rs` `test_dose_response_at_ec50` | `tests/signal.tcyr` `binding` |
@@ -601,6 +613,8 @@
 | `tests/integration.rs` `test_network_zero_oxygen_graceful` | `tests/pathway.tcyr` `oxygen` |
 | `tests/integration.rs` `test_pi3k_config_serde_roundtrip` | `tests/pi3k.tcyr` `serde` |
 | `tests/integration.rs` `test_pi3k_flux_serde_roundtrip` | `tests/pi3k.tcyr` `serde` |
+| `tests/integration.rs` `test_receptor_config_serde_roundtrip` | `tests/receptor.tcyr` `serde` |
+| `tests/integration.rs` `test_receptor_flux_serde_roundtrip` | `tests/receptor.tcyr` `serde` |
 | `tests/integration.rs` `test_reversible_haldane_consistency` | `tests/enzyme.tcyr` `reversible` |
 | `tests/integration.rs` `test_second_messenger_serde_roundtrip` | `tests/signal.tcyr` `serde` |
 | `tests/integration.rs` `test_tca_flux_serde_roundtrip` | `tests/tca.tcyr` `serde` |

@@ -1,0 +1,322 @@
+# rasayan — src/receptor.cyr: receptor desensitization and internalization (rust-old/src/receptor.rs)
+#
+# The GPCR lifecycle: active → GRK phosphorylation → β-arrestin binding → internalization → recycling or degradation.
+# The four pools are fractions of a receptor capacity of 1: every transfer moves receptor between pools, degradation
+# removes it, and synthesis is capacity-limited (synthesis_rate · (1 − total)), so from total <= 1 the total stays
+# <= 1. Within a tick each pool's outflow is capped at the pool, so no pool goes negative and no receptor is created
+# even when rate · dt is large.
+#
+# The Cyrius forms (ADR 0002 row 7): the state advances in place and the flux fills the caller's record. Every
+# operation is in the source's order (P9).
+
+# ── the types ──
+
+# Receptor population state, fractions of capacity (total() <= 1): surface receptors available for binding, active
+# (ligand-bound), desensitized (GRK-phosphorylated, β-arrestin bound), internalized (endosomal).
+struct RyReceptorState {
+    surface: f64;
+    active: f64;
+    desensitized: f64;
+    internalized: f64;
+}
+
+# Kinetic parameters for receptor desensitization, every rate in s^-1: binding (per unit ligand), dissociation, GRK
+# phosphorylation of active receptors, internalization of desensitized ones, recycling and degradation of internalized
+# ones, capacity-limited synthesis.
+struct RyReceptorConfig {
+    binding_rate: f64;
+    dissociation_rate: f64;
+    grk_rate: f64;
+    internalization_rate: f64;
+    recycling_rate: f64;
+    degradation_rate: f64;
+    synthesis_rate: f64;
+}
+
+# Receptor dynamics flux: the signaling output (the active fraction after the tick) and the mean internalization and
+# recycling rates over the tick (amount moved / dt); zero for an invalid dt.
+struct RyReceptorFlux {
+    signaling_output: f64;
+    internalization: f64;
+    recycling: f64;
+}
+
+# ── defaults ──
+
+# Fills *out with Rust's ReceptorState::default() (src/receptor_data.cyr).
+fn ry_receptor_state_default(out: *RyReceptorState) {
+    out.surface = RY_RECEPTOR_RECEPTOR_STATE_DEFAULT_SURFACE;
+    out.active = RY_RECEPTOR_RECEPTOR_STATE_DEFAULT_ACTIVE;
+    out.desensitized = RY_RECEPTOR_RECEPTOR_STATE_DEFAULT_DESENSITIZED;
+    out.internalized = RY_RECEPTOR_RECEPTOR_STATE_DEFAULT_INTERNALIZED;
+    return 0;
+}
+
+# Fills *out with Rust's ReceptorConfig::default() (src/receptor_data.cyr).
+fn ry_receptor_config_default(out: *RyReceptorConfig) {
+    out.binding_rate = RY_RECEPTOR_RECEPTOR_CONFIG_DEFAULT_BINDING_RATE;
+    out.dissociation_rate = RY_RECEPTOR_RECEPTOR_CONFIG_DEFAULT_DISSOCIATION_RATE;
+    out.grk_rate = RY_RECEPTOR_RECEPTOR_CONFIG_DEFAULT_GRK_RATE;
+    out.internalization_rate = RY_RECEPTOR_RECEPTOR_CONFIG_DEFAULT_INTERNALIZATION_RATE;
+    out.recycling_rate = RY_RECEPTOR_RECEPTOR_CONFIG_DEFAULT_RECYCLING_RATE;
+    out.degradation_rate = RY_RECEPTOR_RECEPTOR_CONFIG_DEFAULT_DEGRADATION_RATE;
+    out.synthesis_rate = RY_RECEPTOR_RECEPTOR_CONFIG_DEFAULT_SYNTHESIS_RATE;
+    return 0;
+}
+
+# Fills *out with Rust's ReceptorFlux::default(): every value 0.
+fn ry_receptor_flux_default(out: *RyReceptorFlux) {
+    out.signaling_output = 0.0;
+    out.internalization = 0.0;
+    out.recycling = 0.0;
+    return 0;
+}
+
+# ── the state ──
+
+# Ok(0) when the `n` f64 fields at `p` (named by the NUL-separated `names`) are each finite and >= 0; else the first
+# failing one's `_ry_guard_non_negative` Err, in declaration order.
+#must_use
+fn _ry_receptor_non_negative(p, n, names): Result {
+    var name = names;
+    var k = 0;
+    while (k < n) {
+        var value: f64 = load64(p + 8 * k);
+        var t, v = _ry_guard_non_negative(name, value);
+        if (is_err_result(t) == 1) { return Err(v); }
+        name = name + strlen(name) + 1;
+        k = k + 1;
+    }
+    return Ok(0);
+}
+
+# Ok(0) when every pool is finite and >= 0; else the first failing one's Err, in declaration order. Mirrors
+# `ReceptorState::validate`.
+#must_use
+fn ry_receptor_state_validate(p: *RyReceptorState): Result {
+    var w = p;                                   # a plain address: `p + n` would step n states
+    return _ry_receptor_non_negative(w, 4, &_RY_RECEPTOR_STATE_FIELDS);
+}
+
+# The total receptor pool, surface + active + desensitized + internalized (<= 1; below 1 while degradation outpaces
+# capacity-limited synthesis). Mirrors `ReceptorState::total`.
+#must_use
+#pure
+fn ry_receptor_state_total(p: *RyReceptorState): f64 {
+    var t: f64 = p.surface + p.active + p.desensitized + p.internalized;
+    return t;
+}
+
+# Ok(0) when every rate is finite and >= 0; else the first failing one's Err, in declaration order. Mirrors
+# `ReceptorConfig::validate`.
+#must_use
+fn ry_receptor_config_validate(p: *RyReceptorConfig): Result {
+    var w = p;
+    return _ry_receptor_non_negative(w, 7, &_RY_RECEPTOR_CONFIG_FIELDS);
+}
+
+# ── the dynamics ──
+
+# A first-order transfer out of `pool` over `dt`, capped at the pool: pool · min(rate · dt, 1). Mirrors the private
+# `outflow`.
+#must_use
+#pure
+fn _ry_receptor_outflow(pool: f64, rate: f64, dt: f64): f64 {
+    var y: f64 = rate * dt;
+    var w: f64 = _ry_min(y, 1.0);
+    var r: f64 = pool * w;
+    return r;
+}
+
+# Two first-order exits from `pool` over `dt` (pool · k · dt each), scaled so that together they never exceed the
+# pool. Mirrors the private `outflow_pair`.
+#must_use
+#pure
+fn _ry_receptor_outflow_pair(pool: f64, k1: f64, k2: f64, dt: f64): (f64, f64) {
+    var a: f64 = pool * k1 * dt;
+    var b: f64 = pool * k2 * dt;
+    var sum: f64 = a + b;
+    if (sum > pool && sum > 0.0) {
+        var s: f64 = pool / sum;
+        var x: f64 = a * s;
+        var y: f64 = b * s;
+        return (x, y);
+    }
+    return (a, b);
+}
+
+# Advances the receptor dynamics by `dt` seconds at ligand level `ligand` (sanitized by `conc`: NaN and negatives are
+# 0) and fills *out with the flux: binding from the surface, dissociation and GRK from the active pool (capped
+# together), internalization of desensitized receptor, recycling and degradation of internalized receptor (capped
+# together), synthesis into the free capacity; then the four pools updated from this tick's transfers. A non-finite or
+# non-positive dt leaves the state untouched with a zero flux. Mirrors `ReceptorState::tick`.
+fn ry_receptor_state_tick(p: *RyReceptorState, c: *RyReceptorConfig, ligand_in: f64, dt: f64, out: *RyReceptorFlux) {
+    if (_ry_guard_valid_dt(dt) == 0) {
+        ry_receptor_flux_default(out);
+        return 0;
+    }
+    var ligand: f64 = _ry_guard_conc(ligand_in);
+    if (_ry_trace_on() == 1) {
+        var hd[24];
+        var b[256];
+        var e = _ry_ev(&hd, &b, 256, "rasayan::receptor", "receptor_tick");
+        _ry_ev_f(e, "dt", dt);
+        _ry_ev_f(e, "ligand", ligand);
+        _ry_ev_f(e, "active", p.active);
+        _ry_trace(e);
+    }
+    # Binding: surface + ligand → active.
+    var on: f64 = c.binding_rate * ligand;
+    var bind: f64 = _ry_receptor_outflow(p.surface, on, dt);
+    # Dissociation (active → surface) and GRK (active → desensitized).
+    var dissoc, grk = _ry_receptor_outflow_pair(p.active, c.dissociation_rate, c.grk_rate, dt);
+    # Internalization: desensitized → internalized.
+    var intern: f64 = _ry_receptor_outflow(p.desensitized, c.internalization_rate, dt);
+    # Recycling (internalized → surface) and degradation (→ destroyed).
+    var recycle, degrade = _ry_receptor_outflow_pair(p.internalized, c.recycling_rate, c.degradation_rate, dt);
+    # Synthesis: new → surface, limited to the free capacity.
+    var all: f64 = ry_receptor_state_total(p);
+    var free: f64 = 1.0 - all;
+    var room: f64 = _ry_max(free, 0.0);
+    var y: f64 = c.synthesis_rate * dt;
+    var share: f64 = _ry_min(y, 1.0);
+    var synth: f64 = room * share;
+    var d_surface: f64 = dissoc - bind + recycle + synth;
+    var d_active: f64 = bind - dissoc - grk;
+    var d_desens: f64 = grk - intern;
+    var d_intern: f64 = intern - recycle - degrade;
+    var surface: f64 = p.surface + d_surface;
+    var active: f64 = p.active + d_active;
+    var desens: f64 = p.desensitized + d_desens;
+    var internal: f64 = p.internalized + d_intern;
+    p.surface = surface;
+    p.active = active;
+    p.desensitized = desens;
+    p.internalized = internal;
+    out.signaling_output = active;
+    out.internalization = intern / dt;
+    out.recycling = recycle / dt;
+    return 0;
+}
+
+# ── JSON (P7: serde_json's documents) ──
+
+# Appends ReceptorState `p` as serde_json writes it, its four pools in declaration order, on allocator `a`: Ok(0), or
+# Err(RY_ERR_OUT_OF_MEMORY) when the builder could not grow.
+#must_use
+fn ry_receptor_state_to_json_a(a, sb, p: *RyReceptorState): Result {
+    if (_ry_jw_f64_fields(a, sb, p, 4, &_RY_RECEPTOR_STATE_FIELDS) != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return Ok(0);
+}
+
+# ry_receptor_state_to_json_a on the default allocator (a builder from str_builder_new).
+#must_use
+fn ry_receptor_state_to_json(sb, p: *RyReceptorState): Result {
+    return ry_receptor_state_to_json_a(default_alloc(), sb, p);
+}
+
+# The ReceptorState at node `v` of a parsed document, by serde's rules, into the 32 bytes at `w`: 1, or 0 for a
+# refusal. The signaling network's readers call it for its nested value.
+#must_use
+fn _ry_receptor_state_from_node(v, w): i64 {
+    return _ry_jr_f64_fields(v, w, 4, &_RY_RECEPTOR_STATE_FIELDS);
+}
+
+# Reads a ReceptorState from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`): Ok(0) with
+# *out filled, or Err(RY_ERR_DESERIALIZE) with *out untouched.
+#must_use
+fn ry_receptor_state_from_json_a(a, buf, n, out: *RyReceptorState): Result {
+    var w[32];
+    var v = _ry_jr_parse(a, buf, n);
+    if (_ry_receptor_state_from_node(v, &w) == 0) {
+        return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "ReceptorState", 13));
+    }
+    memcpy(out, &w, 32);
+    return Ok(0);
+}
+
+# ry_receptor_state_from_json_a on the default allocator (the tree is never freed: for a one-off read).
+#must_use
+fn ry_receptor_state_from_json(buf, n, out: *RyReceptorState): Result {
+    return ry_receptor_state_from_json_a(default_alloc(), buf, n, out);
+}
+
+# Appends ReceptorConfig `p` as serde_json writes it, its seven rates in declaration order, on allocator `a`: Ok(0),
+# or Err(RY_ERR_OUT_OF_MEMORY).
+#must_use
+fn ry_receptor_config_to_json_a(a, sb, p: *RyReceptorConfig): Result {
+    if (_ry_jw_f64_fields(a, sb, p, 7, &_RY_RECEPTOR_CONFIG_FIELDS) != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return Ok(0);
+}
+
+# ry_receptor_config_to_json_a on the default allocator.
+#must_use
+fn ry_receptor_config_to_json(sb, p: *RyReceptorConfig): Result {
+    return ry_receptor_config_to_json_a(default_alloc(), sb, p);
+}
+
+# The ReceptorConfig at node `v` of a parsed document, by serde's rules, into the 56 bytes at `w`: 1, or 0 for a
+# refusal.
+#must_use
+fn _ry_receptor_config_from_node(v, w): i64 {
+    return _ry_jr_f64_fields(v, w, 7, &_RY_RECEPTOR_CONFIG_FIELDS);
+}
+
+# Reads a ReceptorConfig from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`): Ok(0) with
+# *out filled, or Err(RY_ERR_DESERIALIZE) with *out untouched.
+#must_use
+fn ry_receptor_config_from_json_a(a, buf, n, out: *RyReceptorConfig): Result {
+    var w[56];
+    var v = _ry_jr_parse(a, buf, n);
+    if (_ry_receptor_config_from_node(v, &w) == 0) {
+        return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "ReceptorConfig", 14));
+    }
+    memcpy(out, &w, 56);
+    return Ok(0);
+}
+
+# ry_receptor_config_from_json_a on the default allocator (the tree is never freed: for a one-off read).
+#must_use
+fn ry_receptor_config_from_json(buf, n, out: *RyReceptorConfig): Result {
+    return ry_receptor_config_from_json_a(default_alloc(), buf, n, out);
+}
+
+# Appends ReceptorFlux `f` as serde_json writes it, its three values in declaration order, on allocator `a`: Ok(0),
+# or Err(RY_ERR_OUT_OF_MEMORY).
+#must_use
+fn ry_receptor_flux_to_json_a(a, sb, f: *RyReceptorFlux): Result {
+    if (_ry_jw_f64_fields(a, sb, f, 3, &_RY_RECEPTOR_FLUX_FIELDS) != 0) { return Err(RY_ERR_OUT_OF_MEMORY); }
+    return Ok(0);
+}
+
+# ry_receptor_flux_to_json_a on the default allocator.
+#must_use
+fn ry_receptor_flux_to_json(sb, f: *RyReceptorFlux): Result {
+    return ry_receptor_flux_to_json_a(default_alloc(), sb, f);
+}
+
+# The ReceptorFlux at node `v` of a parsed document, by serde's rules, into the 24 bytes at `w`: 1, or 0 for a
+# refusal.
+#must_use
+fn _ry_receptor_flux_from_node(v, w): i64 {
+    return _ry_jr_f64_fields(v, w, 3, &_RY_RECEPTOR_FLUX_FIELDS);
+}
+
+# Reads a ReceptorFlux from the `n`-byte document at `buf` by serde's rules (its tree on allocator `a`): Ok(0) with
+# *out filled, or Err(RY_ERR_DESERIALIZE) with *out untouched.
+#must_use
+fn ry_receptor_flux_from_json_a(a, buf, n, out: *RyReceptorFlux): Result {
+    var w[24];
+    var v = _ry_jr_parse(a, buf, n);
+    if (_ry_receptor_flux_from_node(v, &w) == 0) {
+        return Err(_ry_fail_text(RY_ERR_DESERIALIZE, "ReceptorFlux", 12));
+    }
+    memcpy(out, &w, 24);
+    return Ok(0);
+}
+
+# ry_receptor_flux_from_json_a on the default allocator (the tree is never freed: for a one-off read).
+#must_use
+fn ry_receptor_flux_from_json(buf, n, out: *RyReceptorFlux): Result {
+    return ry_receptor_flux_from_json_a(default_alloc(), buf, n, out);
+}

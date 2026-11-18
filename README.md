@@ -95,7 +95,6 @@ cyrius build src/main.cyr build/rasayan       # compile the Cyrius port
 cyrius test                                   # tests (golden parity corpus from M0)
 cyrius bench                                  # benchmarks
 cyrius audit                                  # fmt, lint, docs, tests, bench
-cargo test --manifest-path rust-old/Cargo.toml --all-features   # the frozen Rust oracle
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full cleanliness check.

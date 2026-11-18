@@ -24,5 +24,6 @@ pathway
 pi3k
 protein
 ptm
+receptor
 signal
 tca

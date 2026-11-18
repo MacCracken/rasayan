@@ -1,0 +1,265 @@
+# rasayan — src/receptor.cyr: Rust 1.2.0's receptor tests, ported
+# Stdlib auto-included via cyrius.cyml
+#
+# The 12 unit tests of `receptor.rs` and the 2 integration tests (tests/integration.rs) that call only the receptor
+# model, as they are written; tests/golden/receptor.tsv checks every method, single tick and trajectory besides.
+# Beyond them: the trace event and every codec's round trip.
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
+include "src/receptor_data.cyr"
+include "src/receptor.cyr"
+
+# 1 when the state validates.
+fn rs_ok(p: *RyReceptorState) {
+    var t, v = ry_receptor_state_validate(p);
+    return is_ok(t);
+}
+
+# 1 when the config validates.
+fn rc_ok(c: *RyReceptorConfig) {
+    var t, v = ry_receptor_config_validate(c);
+    return is_ok(t);
+}
+
+# `n` ticks at ligand `ligand` and step `dt`.
+fn ticks(s: *RyReceptorState, c: *RyReceptorConfig, n, ligand: f64, dt: f64) {
+    var f: RyReceptorFlux;
+    var k = 0;
+    while (k < n) {
+        ry_receptor_state_tick(s, c, ligand, dt, &f);
+        k = k + 1;
+    }
+    return 0;
+}
+
+# ── the captured events ──
+var _ev_buf[1024];
+var _ev_len = 0;
+
+# sakshi's subscriber: keeps the last event's message.
+fn _ev_hook(ts, level, category, msg, msg_len, extra) {
+    var n = msg_len;
+    if (n > 1024) { n = 1024; }
+    memcpy(&_ev_buf, msg, n);
+    _ev_len = msg_len;
+    return 0;
+}
+
+# 1 if the last captured event is the C string `want`.
+fn _ev_is(want) {
+    var n = strlen(want);
+    if (_ev_len != n) { return 0; }
+    return memeq(&_ev_buf, want, n);
+}
+
+# rust src/receptor.rs: test_default_valid, test_validate_rejects_nan
+fn validation() {
+    test_group("receptor: defaults and validation");
+    var s: RyReceptorState;
+    var c: RyReceptorConfig;
+    ry_receptor_state_default(&s);
+    ry_receptor_config_default(&c);
+    assert(rs_ok(&s) == 1 && rc_ok(&c) == 1, "the defaults validate");
+    var nan: f64 = _ry_nan();
+    c.grk_rate = nan;
+    var bad1 = rc_ok(&c);
+    ry_receptor_config_default(&c);
+    c.synthesis_rate = 0.0 - 0.1;
+    var bad2 = rc_ok(&c);
+    s.surface = nan;
+    assert(bad1 == 0 && bad2 == 0 && rs_ok(&s) == 0, "a NaN GRK rate, a negative synthesis, a NaN surface refused");
+    return 0;
+}
+
+# rust src/receptor.rs: test_ligand_activates, test_prolonged_exposure_desensitizes, test_recovery_after_removal
+# rust src/receptor.rs: test_bounded
+fn lifecycle() {
+    test_group("receptor: the lifecycle");
+    var s: RyReceptorState;
+    var c: RyReceptorConfig;
+    var f: RyReceptorFlux;
+    ry_receptor_config_default(&c);
+    ry_receptor_state_default(&s);
+    ry_receptor_state_tick(&s, &c, 1.0, 0.1, &f);
+    var out: f64 = f.signaling_output;
+    assert(out > 0.0, "ligand gives a signaling output");
+    ry_receptor_state_default(&s);
+    ticks(&s, &c, 200, 1.0, 0.1);
+    var surface: f64 = s.surface;
+    var internal: f64 = s.internalized;
+    var fewer = 0;
+    if (surface < RY_RECEPTOR_RECEPTOR_STATE_DEFAULT_SURFACE) { fewer = 1; }
+    assert(fewer == 1 && internal > RY_RECEPTOR_RECEPTOR_STATE_DEFAULT_INTERNALIZED,
+      "prolonged agonist: fewer surface receptors, more internalized");
+    ry_receptor_state_default(&s);
+    ticks(&s, &c, 100, 1.0, 0.1);
+    var exposed: f64 = s.surface;
+    ticks(&s, &c, 500, 0.0, 0.1);
+    var back: f64 = s.surface;
+    assert(back > exposed, "surface receptors recover once the ligand is gone");
+    ry_receptor_state_default(&s);
+    ticks(&s, &c, 1000, 0.5, 0.01);
+    assert_eq(rs_ok(&s), 1, "1000 steps of 0.01 s stay valid");
+    return 0;
+}
+
+# rust src/receptor.rs: test_total_bounded_one_hour, test_binding_capped_at_surface
+# rust src/receptor.rs: test_synthesis_refills_to_capacity
+fn conservation() {
+    test_group("receptor: the capacity");
+    var c: RyReceptorConfig;
+    var s: RyReceptorState;
+    var f: RyReceptorFlux;
+    ry_receptor_config_default(&c);
+    var held = 0;
+    var r = 0;
+    while (r < 4) {
+        var ligand: f64 = 0.0;
+        var dt: f64 = 0.1;
+        if (r == 1) { ligand = 1.0; }
+        if (r == 2) { ligand = 10.0; dt = 0.5; }
+        if (r == 3) { ligand = 10.0; dt = 100.0; }
+        ry_receptor_state_default(&s);
+        var q: f64 = 3600.0 / dt;
+        var steps = _ry_f64_to_u32(q);
+        var ok = 1;
+        var k = 0;
+        while (k < steps) {
+            ry_receptor_state_tick(&s, &c, ligand, dt, &f);
+            var total: f64 = ry_receptor_state_total(&s);
+            if (rs_ok(&s) == 0 || total > 1.0 + 0.000000001) { ok = 0; }
+            k = k + 1;
+        }
+        held = held + ok;
+        r = r + 1;
+    }
+    assert_eq(held, 4, "an hour at four (ligand, dt): valid, total <= 1");
+    ry_receptor_state_default(&s);
+    var before: f64 = ry_receptor_state_total(&s);
+    ry_receptor_state_tick(&s, &c, 10.0, 0.5, &f);
+    var after: f64 = ry_receptor_state_total(&s);
+    var surface: f64 = s.surface;
+    assert(surface >= 0.0 && after <= before + 0.000000000001, "binding is capped at the surface pool");
+    s.surface = 0.2;
+    s.active = 0.0;
+    s.desensitized = 0.0;
+    s.internalized = 0.0;
+    ticks(&s, &c, 10000, 0.0, 1.0);
+    var full: f64 = ry_receptor_state_total(&s);
+    var gap: f64 = full - 1.0;
+    assert(f64_abs(gap) < 0.001, "synthesis refills to capacity");
+    return 0;
+}
+
+# rust src/receptor.rs: test_invalid_dt_is_noop, test_nan_and_negative_ligand
+fn hardening() {
+    test_group("receptor: hardening");
+    var s: RyReceptorState;
+    var d: RyReceptorState;
+    var c: RyReceptorConfig;
+    var f: RyReceptorFlux;
+    var zero: RyReceptorFlux;
+    ry_receptor_config_default(&c);
+    ry_receptor_state_default(&d);
+    ry_receptor_flux_default(&zero);
+    var inf: f64 = _RY_INF;
+    var nan: f64 = _ry_nan();
+    var k = 0;
+    while (k < 4) {
+        var dt: f64 = 0.0;
+        if (k == 1) { dt = -0.1; }
+        if (k == 2) { dt = nan; }
+        if (k == 3) { dt = inf; }
+        ry_receptor_state_default(&s);
+        memset(&f, 255, 24);
+        ry_receptor_state_tick(&s, &c, 1.0, dt, &f);
+        assert(memeq(&s, &d, 32) == 1 && memeq(&f, &zero, 24) == 1, "an invalid dt changes nothing, a zero flux");
+        k = k + 1;
+    }
+    var a: RyReceptorState;
+    var b: RyReceptorState;
+    ry_receptor_state_default(&a);
+    ry_receptor_state_default(&b);
+    ry_receptor_state_tick(&a, &c, nan, 0.1, &f);
+    ry_receptor_state_tick(&b, &c, 0.0, 0.1, &f);
+    var same1 = memeq(&a, &b, 32);
+    ry_receptor_state_tick(&a, &c, 0.0 - 3.0, 0.1, &f);
+    ry_receptor_state_tick(&b, &c, 0.0, 0.1, &f);
+    assert(same1 == 1 && memeq(&a, &b, 32) == 1 && rs_ok(&a) == 1, "a NaN or negative ligand is no ligand");
+    return 0;
+}
+
+# Rust's trace event, under the target `rasayan::receptor`, its fields in Rust's order (the ligand sanitized).
+fn events() {
+    test_group("receptor: trace event");
+    sakshi_set_emit_hook(&_ev_hook);
+    sakshi_set_level(SK_TRACE);
+    var s: RyReceptorState;
+    var c: RyReceptorConfig;
+    var f: RyReceptorFlux;
+    ry_receptor_state_default(&s);
+    ry_receptor_config_default(&c);
+    ry_receptor_state_tick(&s, &c, 0.0 - 2.0, 0.01, &f);
+    assert_eq(_ev_is("rasayan::receptor: receptor_tick dt=0.01 ligand=0 active=0.05"), 1, "receptor_tick");
+    _ev_len = 0;
+    ry_receptor_state_tick(&s, &c, 0.5, 0.0, &f);
+    assert_eq(_ev_len, 0, "no event for an invalid dt");
+    sakshi_set_level(SK_INFO);
+    ry_receptor_state_tick(&s, &c, 0.5, 0.01, &f);
+    assert_eq(_ev_len, 0, "below TRACE, nothing");
+    sakshi_clear_emit_hook();
+    return 0;
+}
+
+# rust src/receptor.rs: test_serde_roundtrip
+# rust tests/integration.rs: test_receptor_config_serde_roundtrip, test_receptor_flux_serde_roundtrip
+fn serde() {
+    test_group("receptor: serde round trips");
+    var sb = str_builder_new();
+    var s: RyReceptorState;
+    var sb2: RyReceptorState;
+    ry_receptor_state_default(&s);
+    var t1, v1 = ry_receptor_state_to_json(sb, &s);
+    var t2, v2 = ry_receptor_state_from_json(load64(sb), load64(sb + 8), &sb2);
+    assert(is_ok(t2) == 1 && memeq(&sb2, &s, 32) == 1, "the state reads back");
+    var c: RyReceptorConfig;
+    var cb: RyReceptorConfig;
+    ry_receptor_config_default(&c);
+    store64(sb + 8, 0);
+    var t3, v3 = ry_receptor_config_to_json(sb, &c);
+    var t4, v4 = ry_receptor_config_from_json(load64(sb), load64(sb + 8), &cb);
+    assert(is_ok(t4) == 1 && memeq(&cb, &c, 56) == 1, "the config reads back");
+    var f: RyReceptorFlux;
+    var fb: RyReceptorFlux;
+    ry_receptor_state_tick(&s, &c, 0.5, 0.01, &f);
+    store64(sb + 8, 0);
+    var t5, v5 = ry_receptor_flux_to_json(sb, &f);
+    var t6, v6 = ry_receptor_flux_from_json(load64(sb), load64(sb + 8), &fb);
+    assert(is_ok(t6) == 1 && memeq(&fb, &f, 24) == 1, "a tick's flux reads back, bit for bit");
+    return 0;
+}
+
+# Runs the receptor suite.
+fn main() {
+    alloc_init();
+    validation();
+    lifecycle();
+    conservation();
+    hardening();
+    events();
+    serde();
+    return assert_summary();
+}
+
+var exit_code = main();
+# assert_summary() returns the failure count; a wait status is 8 bits, so any failure exits 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

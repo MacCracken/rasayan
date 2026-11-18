@@ -353,3 +353,20 @@ Measured on a quiet machine (load 1.4–1.6, two runs), with the reference rows 
 11–12 ns, glycolysis_tick 724–729 ns, mapk_tick 227 ns, pi3k_tick 149 ns, jak_stat_tick 162 ns). A sub-step is three
 saturating rates, the gate's clamp, the pair cap, `take`, the influx's fourth power and `produce_decay`.
 
+## M6 part 5: receptor
+
+| Benchmark | Rust 1.2.0 (ns) | Cyrius (ns) | Notes |
+|---|---|---|---|
+| receptor_tick | 10.24 | 82–83 | Rust's loop body: a default state, one tick of 0.01 s at ligand 0.5 |
+
+Cyrius only:
+
+| Benchmark | Cyrius (ns) | Notes |
+|---|---|---|
+| tick, the state ticked on (no reset) | 77–78 | |
+| tick of 100 s | 90 | every outflow at its cap |
+
+Measured at load 3.9–4.2 (two runs), with the reference rows at their quiet values (michaelis_menten 12 ns,
+glycolysis_tick 751–754 ns, calcium_tick 158–159 ns). A tick is five capped transfers, the total and the synthesis,
+and the four pool updates; no transcendental.
+

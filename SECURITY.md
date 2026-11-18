@@ -21,7 +21,7 @@ Rasayan is a pure biochemistry computation library providing enzyme kinetics, me
 | Version | Supported |
 |---------|-----------|
 | 2.0.x (Cyrius) | In development — the port; fixes land here |
-| 1.2.x (Rust) | Final release, frozen as the port's oracle; no further Rust releases |
+| 1.2.x (Rust) | Final release, frozen as the port's functional spec; no further Rust releases |
 | < 1.2 | No |
 
 ## Reporting

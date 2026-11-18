@@ -4,20 +4,21 @@
 #   bash scripts/probes/run.sh            # build every probe, run each on x86_64 ELF and print what it measures
 #   bash scripts/probes/run.sh --gate     # what scripts/gates.sh runs (below)
 #
-# Both modes first run the oracle's probe bins (scripts/oracle/src/bin/probe_substeps.rs, probe_solver/, probe_mcp.rs,
-# probe_json.rs), which write build/probe-substeps/, build/probe-solver/, build/probe-mcp/ and build/probe-json/.
+# Both modes first write the references in Python (scripts/probes/probe_substeps.py, probe_solver.py, probe_mcp.py,
+# probe_json.py: rust-old/src read as text, nothing run in Rust), into build/probe-substeps/, build/probe-solver/,
+# build/probe-mcp/ and build/probe-json/.
 # Then:
 # - every probe builds on x86_64 with no warning line, except p12, which holds the f64 traps on purpose and must give
 #   exactly its 8 diagnostics; p12's exponent-literal trap (-D P12_EXPONENT) must be a compile error;
-# - p1 (sub-step counts) and p4 (the implicit NADH solves) must agree with the oracle on every row, on x86_64 ELF,
+# - p1 (sub-step counts) and p4 (the implicit NADH solves) must agree with the reference on every row, on x86_64 ELF,
 #   aarch64 (qemu) and x86_64 PE (wine), one target at a time, each log checked for its summary line (wine can truncate
 #   output under load and still exit 0); p4's control build (-D P4_ALT, the algebraically equal secant step) must NOT
 #   agree, which shows the comparison sees a 1-ulp difference;
 # - p2 (copies without the heap), p3 (wide results) and p5 (the network's 10^6-step soak, M5) check their own
 #   claims and exit 1 if one fails;
-# - p6 (bote 3.8.15, part 3b) answers the oracle's MCP requests on x86_64 ELF, aarch64 and PE, and p6_compare.py must
+# - p6 (bote 3.8.15, part 3b) answers the reference MCP requests on x86_64 ELF, aarch64 and PE, and p6_compare.py must
 #   find every tools/call payload and the inputSchema byte-identical and no difference but the recorded ones;
-# - p7 (hoosh 2.12.3, P8): the oracle bin probe_ai and p7_hoosh each make the client's eight calls against their own
+# - p7 (hoosh 2.12.3, P8): the reference client probe_ai.py and p7_hoosh each make the client's eight calls against their own
 #   loopback stub (p7_hoosh_stub.py, ports 18741 and 18742), and p7_compare.py must find the request lines, bodies,
 #   Content-Type and Accept, and every outcome line identical (x86_64 ELF);
 # - p10 (the manifest and the bundles) runs p10_manifest.sh, which checks its own claims (consumers on three targets);
@@ -35,13 +36,13 @@ GATE=0
 [ "${1:-}" = "--gate" ] && GATE=1
 FAILED=()
 
-# The oracle's side.
-for bin in probe_substeps probe_solver probe_mcp probe_json; do
-    if cargo run -q --release --locked --manifest-path scripts/oracle/Cargo.toml --bin "$bin" > "$OUT/$bin.log" 2>&1; then
-        grep -E "^$bin:" "$OUT/$bin.log"
+# The references (Python; rust-old/src read as text).
+for ref in probe_substeps probe_solver probe_mcp probe_json; do
+    if python3 -I -B "scripts/probes/$ref.py" > "$OUT/$ref.log" 2>&1; then
+        grep -E "^$ref:" "$OUT/$ref.log"
     else
-        cat "$OUT/$bin.log"
-        FAILED+=("oracle bin $bin")
+        cat "$OUT/$ref.log"
+        FAILED+=("reference $ref")
     fi
 done
 
@@ -141,19 +142,18 @@ else
     FAILED+=("build --win p6_bote")
 fi
 
-# p7: the oracle's client and the Cyrius requests, each against its own hoosh 2.12.3 stub (8 requests each).
-rm -f "$OUT/p7-rust.log" "$OUT/p7-cyrius.log"
-python3 -I -B scripts/probes/p7_hoosh_stub.py 18741 "$OUT/p7-rust.log" 8 &
+# p7: the reference client and the Cyrius requests, each against its own hoosh 2.12.3 stub (8 requests each).
+rm -f "$OUT/p7-ref.log" "$OUT/p7-cyrius.log"
+python3 -I -B scripts/probes/p7_hoosh_stub.py 18741 "$OUT/p7-ref.log" 8 &
 stub_r=$!
 python3 -I -B scripts/probes/p7_hoosh_stub.py 18742 "$OUT/p7-cyrius.log" 8 &
 stub_c=$!
 python3 -I -B -c 'import time; time.sleep(0.5)'
-cargo run -q --release --locked --manifest-path scripts/oracle/Cargo.toml --bin probe_ai -- http://127.0.0.1:18741 \
-    > "$OUT/p7-rust.out" 2>&1 || FAILED+=("oracle bin probe_ai")
+python3 -I -B scripts/probes/probe_ai.py http://127.0.0.1:18741 > "$OUT/p7-ref.out" 2>&1 || FAILED+=("reference probe_ai")
 "./$OUT/p7_hoosh" http://127.0.0.1:18742 > "$OUT/p7-cyrius.out" 2>&1 || FAILED+=("p7_hoosh")
 wait "$stub_r" "$stub_c" 2> /dev/null
-runs p7_hoosh 'probe 7: differences 0$' python3 -I -B scripts/probes/p7_compare.py "$OUT/p7-rust.log" \
-    "$OUT/p7-cyrius.log" "$OUT/p7-rust.out" "$OUT/p7-cyrius.out"
+runs p7_hoosh 'probe 7: differences 0$' python3 -I -B scripts/probes/p7_compare.py "$OUT/p7-ref.log" \
+    "$OUT/p7-cyrius.log" "$OUT/p7-ref.out" "$OUT/p7-cyrius.out"
 
 # p10: the manifest, the bundles and their consumers (its own checks).
 runs p10_manifest 'probe 10: all checks passed$' bash scripts/probes/p10_manifest.sh

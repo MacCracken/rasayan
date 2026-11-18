@@ -3,6 +3,8 @@
 **Status**: Accepted
 **Date**: 2026-11-16
 
+**Item 2 superseded by [0005](0005-accuracy-is-the-reference.md)** (2026-11-17): the golden rows hold the correctly rounded values themselves; the `.cr.tsv` files are gone and no row is "accepted under ADR 0003".
+
 ## Context
 
 The oracle's transcendentals come from glibc 2.44 through Rust std: `powf` (6 call sites, including
