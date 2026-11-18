@@ -44,6 +44,8 @@ mod m_metabolism;
 mod m_protein;
 mod m_ptm;
 mod m_signal;
+mod m_tca;
+mod reads;
 mod rustsrc;
 mod t_ai;
 mod t_alignment;
@@ -55,12 +57,14 @@ mod t_membrane;
 mod t_metabolism;
 mod t_private;
 mod t_signal;
+mod t_tca;
 mod t_protein;
 mod tsv;
 mod v_glycolysis;
 mod v_guard;
 mod v_integrate;
 mod v_logging;
+mod v_tca;
 mod verbatim;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -100,6 +104,7 @@ fn golden_modules(root: &Path) -> Result<Vec<tsv::Module>, String> {
         t_membrane::golden(&read("membrane")?)?,
         t_metabolism::golden(&read("metabolism")?)?,
         t_signal::golden(&read("signal")?)?,
+        t_tca::golden(&read("tca")?)?,
         t_ai::golden(&read("ai")?)?,
     ];
     v.sort_by_key(|m| m.name);
@@ -155,6 +160,10 @@ fn cyrius_outputs(root: &Path, prov: &str) -> Result<Vec<Output>, String> {
         (
             "src/signal_data.cyr",
             t_signal::emit_cyr(&read("signal")?, prov)?,
+        ),
+        (
+            "src/tca_data.cyr",
+            t_tca::emit_cyr(&read("tca")?, prov)?,
         ),
         ("src/ai_data.cyr", t_ai::emit_cyr(&read("ai")?, prov)?),
     ];

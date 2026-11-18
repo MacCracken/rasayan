@@ -31,10 +31,10 @@ root = Path(sys.argv[1]).resolve()
 
 # The modules whose milestone has come.
 PORTED = ["constants", "error", "guard", "integrate", "logging", "enzyme", "membrane", "signal", "metabolism",
-          "energy", "protein", "alignment", "ptm", "domain", "glycolysis"]
+          "energy", "protein", "alignment", "ptm", "domain", "glycolysis", "tca"]
 # The rest, with their milestone (port plan §3.1).
 SCHEDULED = {
-    "tca": "M4a", "etc": "M4b", "beta_oxidation": "M4b", "amino_catabolism": "M4b",
+    "etc": "M4b", "beta_oxidation": "M4b", "amino_catabolism": "M4b",
     "pathway": "M5",
     "mapk": "M6", "pi3k": "M6", "jak_stat": "M6", "calcium": "M6", "receptor": "M6", "nuclear_receptor": "M6",
     "signaling": "M6",
@@ -70,6 +70,9 @@ TYPES = {
     "GlycolysisState": ("RyGlycolysisState", "glycolysis_state"),
     "GlycolysisConfig": ("RyGlycolysisConfig", "glycolysis_config"),
     "GlycolysisFlux": ("RyGlycolysisFlux", "glycolysis_flux"),
+    "TcaState": ("RyTcaState", "tca_state"),
+    "TcaConfig": ("RyTcaConfig", "tca_config"),
+    "TcaFlux": ("RyTcaFlux", "tca_flux"),
 }
 # Rust item -> the Cyrius names that carry it ("fn x", "const X", "enum X", "struct X"), where the rules give none.
 MAPPED = {

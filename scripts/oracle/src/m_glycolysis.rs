@@ -25,7 +25,8 @@ use std::hint::black_box;
 use rasayan::glycolysis::{GlycolysisConfig, GlycolysisFlux, GlycolysisState};
 
 use crate::grids::Rng;
-use crate::tsv::{Class, Module, Tok, err, f, i, s, sb};
+use crate::reads::{read_row, same};
+use crate::tsv::{Class, Module, Tok, err, f, i, s};
 use crate::v_glycolysis as vg;
 
 /// A record of f64 fields: its field names in declaration order, its values, and one built from values.
@@ -189,10 +190,6 @@ fn cofactors() -> Vec<(f64, f64, f64)> {
 
 fn toks(a: &[f64]) -> Vec<Tok> {
     a.iter().map(|&x| f(x)).collect()
-}
-
-fn same(a: &[f64], b: &[f64]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
 }
 
 /// GlycolysisFlux's five amounts, in declaration order (then `step_rates`).
@@ -599,58 +596,6 @@ fn trajectory_rows(m: &mut Module) {
     scenario(m, &start, &[], &[tick(0.1, 1), tick(0.1, 10), Op::Set(0, 5.0), tick(1.0, 10)], &[1, 2, 4]);
 }
 
-/// The values a `from_slice` row records for object document `d`: serde_json's reads, with each number token
-/// re-parsed by core's correctly rounded `parse::<f64>` (rasayan 1.2.0's serde_json has no `float_roundtrip`, so its
-/// parse misreads some long decimals by an ulp; ADR 0004: read rows record the correctly rounded value). `names` are
-/// the f64 fields in order, then, when `rates`, the ten `step_rates`. An array document (the sequence form) is
-/// recorded as read: its numbers are short.
-fn reread(d: &str, names: &[&str], rates: bool, got: &[f64]) -> (Vec<f64>, bool) {
-    let mut v = got.to_vec();
-    if d.trim_start().starts_with('[') {
-        return (v, false);
-    }
-    let token = |at: usize| -> Option<f64> {
-        let rest = &d[at..];
-        let end = rest.find([',', '}', ']']).unwrap_or(rest.len());
-        rest[..end].trim().parse().ok()
-    };
-    for (k, n) in names.iter().enumerate() {
-        let key = format!("\"{n}\":");
-        if let Some(x) = d.find(&key).and_then(|at| token(at + key.len())) {
-            v[k] = x;
-        }
-    }
-    if let Some(at) = d.find("\"step_rates\":[").filter(|_| rates) {
-        let mut pos = at + "\"step_rates\":[".len();
-        for k in 0..10 {
-            if let Some(x) = token(pos) {
-                v[names.len() + k] = x;
-            }
-            pos += d[pos..].find(',').map_or(0, |c| c + 1);
-        }
-    }
-    let changed = !same(&v, got);
-    (v, changed)
-}
-
-/// A `from_slice` row: the read values (re-read correctly rounded, noted where serde_json misread), or the refusal.
-fn read_row(m: &mut Module, name: &str, d: &str, got: Option<Vec<f64>>, names: &[&str], rates: bool) {
-    let ins = [sb(d.as_bytes())];
-    match got {
-        None => m.row(name, Class::A, &ins, &[Tok::Err("Deserialize".to_string())]),
-        Some(g) => {
-            let (v, changed) = reread(d, names, rates, &g);
-            if changed {
-                let read: Vec<String> = g.iter().map(|x| format!("{:016x}", x.to_bits())).collect();
-                let extra = format!("serde_json reads {}; the correctly rounded values are recorded", read.join(" "));
-                m.row_noted(name, Class::A, &ins, &toks(&v), &extra);
-            } else {
-                m.row(name, Class::A, &ins, &toks(&v));
-            }
-        }
-    }
-}
-
 fn json_rows(m: &mut Module) {
     let cfg = GlycolysisConfig::default();
     let mut worked = GlycolysisState::default();
@@ -702,7 +647,7 @@ fn json_rows(m: &mut Module) {
     ];
     for d in &state_docs {
         let r: Result<GlycolysisState, _> = serde_json::from_slice(d.as_bytes());
-        read_row(m, "serde_json::from_slice<GlycolysisState>", d, r.ok().map(|v| gs::vals(&v)), gs::NAMES, false);
+        read_row(m, "serde_json::from_slice<GlycolysisState>", d, r.ok().map(|v| gs::vals(&v)), gs::NAMES, 0);
     }
 
     let cj = serde_json::to_string(&cfg).unwrap_or_default();
@@ -719,7 +664,7 @@ fn json_rows(m: &mut Module) {
     ];
     for d in &cfg_docs {
         let r: Result<GlycolysisConfig, _> = serde_json::from_slice(d.as_bytes());
-        read_row(m, "serde_json::from_slice<GlycolysisConfig>", d, r.ok().map(|v| gc::vals(&v)), gc::NAMES, false);
+        read_row(m, "serde_json::from_slice<GlycolysisConfig>", d, r.ok().map(|v| gc::vals(&v)), gc::NAMES, 0);
     }
 
     let fj = serde_json::to_string(&flux).unwrap_or_default();
@@ -739,7 +684,7 @@ fn json_rows(m: &mut Module) {
     ];
     for d in &flux_docs {
         let r: Result<GlycolysisFlux, _> = serde_json::from_slice(d.as_bytes());
-        read_row(m, "serde_json::from_slice<GlycolysisFlux>", d, r.ok().map(|v| flux_vals(&v)), FLUX_NAMES, true);
+        read_row(m, "serde_json::from_slice<GlycolysisFlux>", d, r.ok().map(|v| flux_vals(&v)), FLUX_NAMES, 10);
     }
 }
 

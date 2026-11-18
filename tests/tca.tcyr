@@ -1,0 +1,519 @@
+# rasayan — src/tca.cyr: Rust 1.2.0's TCA tests, ported
+# Stdlib auto-included via cyrius.cyml
+#
+# The 26 unit tests of `tca.rs` and the 2 integration tests (tests/integration.rs) that call only glycolysis and TCA,
+# as they are written; tests/golden/tca.tsv checks every method, single step, trajectory and the glycolysis-to-TCA
+# coupling besides. Beyond them: the trace event, the crate-private accumulate the metabolic network calls, the
+# step-rate view and the codecs' refusals.
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+include "src/integrate.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
+include "src/enzyme_data.cyr"
+include "src/enzyme.cyr"
+include "src/glycolysis_data.cyr"
+include "src/glycolysis.cyr"
+include "src/tca_data.cyr"
+include "src/tca.cyr"
+
+# 1 when |a − b| < tol.
+fn near(a: f64, b: f64, tol: f64) {
+    var d: f64 = f64_abs(a - b);
+    return d < tol;
+}
+
+# NaN (k 0), +inf (1), -inf (2): the non-finite values of Rust's hardening tests.
+fn nonfinite(k): f64 {
+    if (k == 0) { return _ry_nan(); }
+    var inf: f64 = _RY_INF;
+    if (k == 1) { return inf; }
+    return -inf;
+}
+
+# Step rate i (0-based, Rust's `step_rates[i]`) of flux `f`.
+fn rate(f: *RyTcaFlux, i): f64 {
+    var r: f64 = load64(ry_tca_flux_step_rates(f) + 8 * i);
+    return r;
+}
+
+# 1 when the state validates.
+fn ts_ok(p: *RyTcaState) {
+    var t, v = ry_tca_state_validate(p);
+    return is_ok(t);
+}
+
+# The validation outcome of the default config with field k (declaration order) set to x: 1 for Ok, else 0.
+fn cfg_ok_with(k, x: f64) {
+    var c: RyTcaConfig;
+    ry_tca_config_default(&c);
+    var w = &c;
+    store64(w + 8 * k, load64(&x));
+    var t, v = ry_tca_config_validate(&c);
+    return is_ok(t);
+}
+
+# The carbon held in the TCA state (mM of carbon atoms): Rust's test helper `tca_carbon`.
+fn tca_carbon(s: *RyTcaState): f64 {
+    var c6: f64 = s.citrate + s.isocitrate;
+    var c4: f64 = s.succinyl_coa + s.succinate + s.fumarate + s.malate + s.oxaloacetate;
+    var r: f64 = 2.0 * s.acetyl_coa + 6.0 * c6 + 5.0 * s.alpha_kg + 4.0 * c4;
+    return r;
+}
+
+# Rust's run_tca: `steps` ticks of `dt` at pyruvate 0.1, ATP 6, ADP 0.5, NAD+/NADH 700 from the default state into *s;
+# *total sums the amounts and keeps the last tick's rates.
+fn run_tca(steps, dt: f64, s: *RyTcaState, total: *RyTcaFlux) {
+    var c: RyTcaConfig;
+    var f: RyTcaFlux;
+    ry_tca_state_default(s);
+    ry_tca_config_default(&c);
+    ry_tca_flux_default(total);
+    var k = 0;
+    while (k < steps) {
+        ry_tca_state_tick(s, &c, 0.1, 6.0, 0.5, 700.0, dt, &f);
+        var pyr: f64 = total.pyruvate_consumed + f.pyruvate_consumed;
+        var nadh: f64 = total.nadh_produced + f.nadh_produced;
+        var fadh2: f64 = total.fadh2_produced + f.fadh2_produced;
+        var gtp: f64 = total.gtp_produced + f.gtp_produced;
+        var co2: f64 = total.co2_produced + f.co2_produced;
+        total.pyruvate_consumed = pyr;
+        total.nadh_produced = nadh;
+        total.fadh2_produced = fadh2;
+        total.gtp_produced = gtp;
+        total.co2_produced = co2;
+        memcpy(ry_tca_flux_step_rates(total), ry_tca_flux_step_rates(&f), 72);
+        k = k + 1;
+    }
+    return 0;
+}
+
+# ── the captured events ──
+var _ev_buf[1024];
+var _ev_len = 0;
+
+# sakshi's subscriber: keeps the last event's message.
+fn _ev_hook(ts, level, category, msg, msg_len, extra) {
+    var n = msg_len;
+    if (n > 1024) { n = 1024; }
+    memcpy(&_ev_buf, msg, n);
+    _ev_len = msg_len;
+    return 0;
+}
+
+# 1 if the last captured event is the C string `want`.
+fn _ev_is(want) {
+    var n = strlen(want);
+    if (_ev_len != n) { return 0; }
+    return memeq(&_ev_buf, want, n);
+}
+
+# rust src/tca.rs: test_default_state_positive, test_validate_state, test_validate_config
+# rust src/tca.rs: test_validate_state_rejects_nan, test_validate_config_rejects_bad_values
+fn validation() {
+    test_group("tca: defaults and validation");
+    var s: RyTcaState;
+    var c: RyTcaConfig;
+    ry_tca_state_default(&s);
+    var accoa: f64 = s.acetyl_coa;
+    var cit: f64 = s.citrate;
+    var oaa: f64 = s.oxaloacetate;
+    assert(accoa > 0.0 && cit > 0.0 && oaa > 0.0, "the default state is positive");
+    assert_eq(ts_ok(&s), 1, "the default state validates");
+    s.citrate = -1.0;
+    var t1, v1 = ry_tca_state_validate(&s);
+    assert_eq(v1, RY_ERR_NEGATIVE_CONCENTRATION, "negative citrate is refused");
+    ry_tca_state_default(&s);
+    s.malate = _ry_nan();
+    var t2, v2 = ry_tca_state_validate(&s);
+    assert_eq(v2, RY_ERR_NON_FINITE, "a NaN malate is refused");
+    ry_tca_config_default(&c);
+    var t3, v3 = ry_tca_config_validate(&c);
+    assert_eq(is_ok(t3), 1, "the default config validates");
+    # Rust's nine cases: pdh_vmax NaN, cs_vmax -0.1, pdh_km_pyruvate 0, cs_ki_citrate 0, kgdh_ki_succoa 0,
+    # energy_half_inhibition 0, idh_adp_ka inf, idh_hill_n NaN, idh_adp_max_activation 0.9.
+    var inf: f64 = _RY_INF;
+    assert_eq(cfg_ok_with(0, _ry_nan()), 0, "pdh_vmax NaN");
+    assert_eq(cfg_ok_with(2, -0.1), 0, "cs_vmax -0.1");
+    assert_eq(cfg_ok_with(1, 0.0), 0, "pdh_km_pyruvate 0");
+    assert_eq(cfg_ok_with(6, 0.0), 0, "cs_ki_citrate 0");
+    assert_eq(cfg_ok_with(18, 0.0), 0, "kgdh_ki_succoa 0");
+    assert_eq(cfg_ok_with(31, 0.0), 0, "energy_half_inhibition 0");
+    assert_eq(cfg_ok_with(14, inf), 0, "idh_adp_ka inf");
+    assert_eq(cfg_ok_with(13, _ry_nan()), 0, "idh_hill_n NaN");
+    assert_eq(cfg_ok_with(15, 0.9), 0, "idh_adp_max_activation 0.9");
+    # The order picks the error: the divisors before the fold change, which sits between them in the struct.
+    ry_tca_config_default(&c);
+    c.idh_adp_max_activation = _ry_nan();
+    c.energy_half_inhibition = 0.0;
+    var t4, v4 = ry_tca_config_validate(&c);
+    assert_eq(v4, RY_ERR_INVALID_PARAMETER, "a divisor is checked before the fold change");
+    return 0;
+}
+
+# rust src/tca.rs: test_single_tick_produces_flux, test_nadh_produced, test_fadh2_produced, test_gtp_produced
+# rust src/tca.rs: test_co2_produced, test_pyruvate_consumed, test_concentrations_non_negative, test_nadh_gt_fadh2
+# rust src/tca.rs: test_oaa_is_catalytic, test_total_pool_stability
+fn ticking() {
+    test_group("tca: ticking");
+    var s: RyTcaState;
+    var c: RyTcaConfig;
+    var f: RyTcaFlux;
+    ry_tca_state_default(&s);
+    ry_tca_config_default(&c);
+    ry_tca_state_tick(&s, &c, 0.1, 6.0, 0.5, 700.0, 0.01, &f);
+    var bad = 0;
+    var i = 0;
+    while (i < 9) {
+        var r: f64 = rate(&f, i);
+        if (r < 0.0) { bad = bad + 1; }
+        i = i + 1;
+    }
+    assert_eq(bad, 0, "every step runs forward from the resting cell");
+    var total: RyTcaFlux;
+    run_tca(100, 0.1, &s, &total);
+    var nadh: f64 = total.nadh_produced;
+    var fadh2: f64 = total.fadh2_produced;
+    var gtp: f64 = total.gtp_produced;
+    var co2: f64 = total.co2_produced;
+    var pyr: f64 = total.pyruvate_consumed;
+    assert(nadh > 0.0 && fadh2 > 0.0 && gtp > 0.0, "NADH, FADH2 and GTP are produced");
+    assert(co2 > 0.0 && pyr > 0.0, "CO2 is released and pyruvate consumed");
+    var oaa: f64 = s.oxaloacetate;
+    assert(oaa > 0.0, "oxaloacetate is regenerated");
+    var pool0: RyTcaState;
+    ry_tca_state_default(&pool0);
+    var initial: f64 = ry_tca_state_total_pool(&pool0);
+    var later: f64 = ry_tca_state_total_pool(&s);
+    var drift: f64 = f64_abs(later - initial) / initial;
+    assert(drift < 0.5, "the intermediate pool stays within 50 %");
+    run_tca(200, 0.1, &s, &total);
+    var n2: f64 = total.nadh_produced;
+    var f2: f64 = total.fadh2_produced;
+    assert(n2 > f2, "more NADH than FADH2");
+    run_tca(1000, 0.01, &s, &total);
+    assert_eq(ts_ok(&s), 1, "every concentration stays >= 0 over 1000 steps of 0.01 s");
+    return 0;
+}
+
+# rust src/tca.rs: test_high_atp_inhibits_cycle, test_adp_activates_idh, test_no_pyruvate_depletes_acetyl_coa
+# rust src/tca.rs: test_pdh_capped_at_pyruvate_supply
+fn regulation() {
+    test_group("tca: regulation");
+    var s: RyTcaState;
+    var c: RyTcaConfig;
+    var a: RyTcaFlux;
+    var b: RyTcaFlux;
+    ry_tca_config_default(&c);
+    ry_tca_state_default(&s);
+    ry_tca_state_tick(&s, &c, 0.1, 6.0, 0.5, 700.0, 0.1, &a);
+    ry_tca_state_default(&s);
+    ry_tca_state_tick(&s, &c, 0.1, 20.0, 0.1, 700.0, 0.1, &b);
+    var normal: f64 = a.rate_idh;
+    var high: f64 = b.rate_idh;
+    assert(high < normal, "high ATP inhibits IDH");
+    ry_tca_state_default(&s);
+    ry_tca_state_tick(&s, &c, 0.1, 6.0, 0.1, 700.0, 0.1, &a);
+    ry_tca_state_default(&s);
+    ry_tca_state_tick(&s, &c, 0.1, 6.0, 2.0, 700.0, 0.1, &b);
+    var low: f64 = a.rate_idh;
+    var act: f64 = b.rate_idh;
+    assert(act > low, "ADP activates IDH");
+    ry_tca_state_default(&s);
+    var k = 0;
+    while (k < 500) {
+        ry_tca_state_tick(&s, &c, 0.0, 6.0, 0.5, 700.0, 0.1, &a);
+        k = k + 1;
+    }
+    var accoa: f64 = s.acetyl_coa;
+    assert(accoa < 0.01, "no pyruvate drains acetyl-CoA");
+    ry_tca_state_default(&s);
+    ry_tca_state_tick(&s, &c, 0.001, 6.0, 0.5, 700.0, 10.0, &a);
+    var used: f64 = a.pyruvate_consumed;
+    assert(used <= 0.001 && near(used, 0.001, 0.000000000000001), "PDH takes at most the pyruvate supplied");
+    return 0;
+}
+
+# rust src/tca.rs: test_invalid_dt_is_noop, test_nan_inputs_sanitized
+fn hardening() {
+    test_group("tca: hardening");
+    var s: RyTcaState;
+    var d: RyTcaState;
+    var c: RyTcaConfig;
+    var f: RyTcaFlux;
+    var zero: RyTcaFlux;
+    ry_tca_config_default(&c);
+    ry_tca_state_default(&d);
+    ry_tca_flux_default(&zero);
+    var k = 0;
+    while (k < 5) {
+        var dt: f64 = 0.0;
+        if (k == 1) { dt = -0.1; }
+        if (k > 1) { dt = nonfinite(k - 2); }
+        ry_tca_state_default(&s);
+        memset(&f, 255, 112);
+        ry_tca_state_tick(&s, &c, 0.1, 6.0, 0.5, 700.0, dt, &f);
+        assert(memeq(&s, &d, 72) == 1 && memeq(&f, &zero, 112) == 1, "an invalid dt changes nothing, a zero flux");
+        k = k + 1;
+    }
+    # (NaN, 6, 0.5, 700), (0.1, NaN, 0.5, 700), (0.1, 6, NaN, 700), (0.1, 6, 0.5, NaN), (inf, -1, inf, -5)
+    var j = 0;
+    while (j < 5) {
+        var pyr: f64 = 0.1;
+        var atp: f64 = 6.0;
+        var adp: f64 = 0.5;
+        var nad: f64 = 700.0;
+        if (j == 0) { pyr = _ry_nan(); }
+        if (j == 1) { atp = _ry_nan(); }
+        if (j == 2) { adp = _ry_nan(); }
+        if (j == 3) { nad = _ry_nan(); }
+        if (j == 4) {
+            pyr = nonfinite(1);
+            atp = -1.0;
+            adp = nonfinite(1);
+            nad = -5.0;
+        }
+        ry_tca_state_default(&s);
+        ry_tca_state_tick(&s, &c, pyr, atp, adp, nad, 0.1, &f);
+        var fin = 1;
+        var w = &f;
+        var i = 0;
+        while (i < 14) {
+            var x: f64 = load64(w + 8 * i);
+            if (_ry_is_finite(x) == 0) { fin = 0; }
+            i = i + 1;
+        }
+        assert(ts_ok(&s) == 1 && fin == 1, "bad inputs keep the state valid, the flux finite");
+        j = j + 1;
+    }
+    ry_tca_state_default(&s);
+    ry_tca_state_tick(&s, &c, _ry_nan(), 6.0, 0.5, 700.0, 0.1, &f);
+    var none: f64 = f.pyruvate_consumed;
+    assert(none == 0.0, "a NaN pyruvate supply feeds nothing into PDH");
+    return 0;
+}
+
+# rust src/tca.rs: test_carbon_balance_exact, test_large_dt_no_negative_pools_no_carbon_created
+# rust src/tca.rs: test_cycle_stoichiometry_per_acetyl_coa
+fn conservation() {
+    test_group("tca: carbon and stoichiometry");
+    var s: RyTcaState;
+    var c: RyTcaConfig;
+    var f: RyTcaFlux;
+    ry_tca_config_default(&c);
+    var dt: f64 = 0.01;
+    var r = 0;
+    while (r < 4) {
+        ry_tca_state_default(&s);
+        var c0: f64 = tca_carbon(&s);
+        var pool0: f64 = ry_tca_state_total_pool(&s);
+        var co2: f64 = 0.0;
+        var pyr_in: f64 = 0.0;
+        var ok = 1;
+        var k = 0;
+        while (k < 300) {
+            ry_tca_state_tick(&s, &c, 0.1, 6.0, 0.5, 700.0, dt, &f);
+            co2 = co2 + f.co2_produced;
+            pyr_in = pyr_in + f.pyruvate_consumed;
+            if (ts_ok(&s) == 0) { ok = 0; }
+            k = k + 1;
+        }
+        var cn: f64 = tca_carbon(&s);
+        var balance: f64 = cn + co2 - (c0 + 3.0 * pyr_in);
+        var pool: f64 = ry_tca_state_total_pool(&s);
+        assert(ok == 1 && near(balance, 0.0, 0.000000001) && near(pool, pool0, 0.000000001),
+          "carbon in = carbon out + held, the pool kept");
+        if (r == 0) { dt = 0.1; }
+        if (r == 1) { dt = 1.0; }
+        if (r == 2) { dt = 5.0; }
+        r = r + 1;
+    }
+    var big: f64 = 1.0;
+    var q = 0;
+    while (q < 2) {
+        ry_tca_state_default(&s);
+        var start: f64 = tca_carbon(&s);
+        var fine = 1;
+        var n = 0;
+        while (n < 200) {
+            ry_tca_state_tick(&s, &c, 0.0, 6.0, 0.5, 700.0, big, &f);
+            var out: f64 = f.co2_produced;
+            if (ts_ok(&s) == 0 || out < 0.0) { fine = 0; }
+            n = n + 1;
+        }
+        var end: f64 = tca_carbon(&s);
+        var cap: f64 = start * (1.0 + 0.000000000001);
+        assert(fine == 1 && end <= cap, "a large dt with no supply: no negative pool, carbon only leaves");
+        big = 5.0;
+        q = q + 1;
+    }
+    # Acetyl-CoA fed at 0.01 mM/s: per acetyl-CoA entering by citrate synthase, 3 NADH : 1 FADH2 : 1 GTP : 2 CO2.
+    ry_tca_state_default(&s);
+    var step: f64 = 0.1;
+    var feed: f64 = 0.01 * step;
+    var w = 0;
+    while (w < 20000) {
+        var a0: f64 = s.acetyl_coa + feed;
+        s.acetyl_coa = a0;
+        ry_tca_state_tick(&s, &c, 0.0, 6.0, 0.5, 700.0, step, &f);
+        w = w + 1;
+    }
+    var accoa: f64 = 0.0;
+    var nadh: f64 = 0.0;
+    var fadh2: f64 = 0.0;
+    var gtp: f64 = 0.0;
+    var co2s: f64 = 0.0;
+    var m = 0;
+    while (m < 10000) {
+        var a1: f64 = s.acetyl_coa + feed;
+        s.acetyl_coa = a1;
+        ry_tca_state_tick(&s, &c, 0.0, 6.0, 0.5, 700.0, step, &f);
+        accoa = accoa + f.rate_cs * step;
+        nadh = nadh + f.nadh_produced;
+        fadh2 = fadh2 + f.fadh2_produced;
+        gtp = gtp + f.gtp_produced;
+        co2s = co2s + f.co2_produced;
+        m = m + 1;
+    }
+    assert(accoa > 1.0, "the cycle turns over");
+    var pn: f64 = nadh / accoa;
+    var pf: f64 = fadh2 / accoa;
+    var pg: f64 = gtp / accoa;
+    var pc: f64 = co2s / accoa;
+    assert(near(pn, 3.0, 0.06) && near(pf, 1.0, 0.02) && near(pg, 1.0, 0.02) && near(pc, 2.0, 0.04),
+      "3 NADH, 1 FADH2, 1 GTP and 2 CO2 per acetyl-CoA");
+    return 0;
+}
+
+# rust tests/integration.rs: test_glycolysis_feeds_tca
+fn coupling() {
+    test_group("tca: fed by glycolysis");
+    var gc: RyGlycolysisConfig;
+    var tc: RyTcaConfig;
+    var g: RyGlycolysisState;
+    var t: RyTcaState;
+    var gf: RyGlycolysisFlux;
+    var tf: RyTcaFlux;
+    ry_glycolysis_config_default(&gc);
+    ry_tca_config_default(&tc);
+    ry_glycolysis_state_default(&g);
+    ry_tca_state_default(&t);
+    var nadh: f64 = 0.0;
+    var made: f64 = 0.0;
+    var k = 0;
+    while (k < 500) {
+        ry_glycolysis_state_tick(&g, &gc, 6.0, 0.5, 700.0, 0.1, &gf);
+        var pyr: f64 = g.pyruvate;
+        ry_tca_state_tick(&t, &tc, pyr, 6.0, 0.5, 700.0, 0.1, &tf);
+        var left: f64 = g.pyruvate - tf.pyruvate_consumed;
+        var kept: f64 = _ry_max(left, 0.0);
+        g.pyruvate = kept;
+        nadh = nadh + (gf.nadh_produced + tf.nadh_produced);
+        made = made + (gf.net_atp + tf.gtp_produced);
+        k = k + 1;
+    }
+    assert(nadh > 0.0 && made > 0.0, "the two pathways make NADH and ATP + GTP");
+    var rest: f64 = g.pyruvate;
+    assert(rest < 5.0, "TCA consumes the pyruvate glycolysis makes");
+    return 0;
+}
+
+# The crate-private accumulate the metabolic network calls (M5).
+fn network() {
+    test_group("tca: the network's accumulate");
+    var s: RyTcaState;
+    var c: RyTcaConfig;
+    var f: RyTcaFlux;
+    var total: RyTcaFlux;
+    ry_tca_state_default(&s);
+    ry_tca_config_default(&c);
+    ry_tca_state_tick(&s, &c, 0.1, 6.0, 0.5, 700.0, 0.1, &f);
+    ry_tca_flux_default(&total);
+    _ry_tca_flux_accumulate(&total, &f, 0.5);
+    _ry_tca_flux_accumulate(&total, &f, 0.5);
+    var co2: f64 = total.co2_produced;
+    var once: f64 = f.co2_produced;
+    var idh2: f64 = total.rate_idh;
+    var idh1: f64 = f.rate_idh;
+    assert(co2 == once + once && idh2 == idh1 * 0.5 + idh1 * 0.5, "amounts summed, rates weighted");
+    return 0;
+}
+
+# Rust's trace event, under the target `rasayan::tca`, its fields in Rust's order (after the input guards).
+fn events() {
+    test_group("tca: trace event");
+    sakshi_set_emit_hook(&_ev_hook);
+    sakshi_set_level(SK_TRACE);
+    var s: RyTcaState;
+    var c: RyTcaConfig;
+    var f: RyTcaFlux;
+    ry_tca_state_default(&s);
+    ry_tca_config_default(&c);
+    ry_tca_state_tick(&s, &c, 0.1, 6.0, 0.5, 700.0, 0.01, &f);
+    assert_eq(_ev_is("rasayan::tca: tca_tick dt=0.01 pyruvate=0.1 atp=6 acetyl_coa=0.05"), 1, "tca_tick");
+    _ev_len = 0;
+    ry_tca_state_tick(&s, &c, 0.1, 6.0, 0.5, 700.0, -1.0, &f);
+    assert_eq(_ev_len, 0, "no event for an invalid dt");
+    sakshi_set_level(SK_INFO);
+    ry_tca_state_tick(&s, &c, 0.1, 6.0, 0.5, 700.0, 0.01, &f);
+    assert_eq(_ev_len, 0, "below TRACE, nothing");
+    sakshi_clear_emit_hook();
+    return 0;
+}
+
+# rust src/tca.rs: test_serde_roundtrip_state, test_serde_roundtrip_config
+# rust tests/integration.rs: test_tca_flux_serde_roundtrip
+fn serde() {
+    test_group("tca: serde round trips");
+    var sb = str_builder_new();
+    var s: RyTcaState;
+    var back: RyTcaState;
+    ry_tca_state_default(&s);
+    var t1, v1 = ry_tca_state_to_json(sb, &s);
+    var t2, v2 = ry_tca_state_from_json(load64(sb), load64(sb + 8), &back);
+    assert(is_ok(t2) == 1 && memeq(&back, &s, 72) == 1, "the state reads back");
+    var c: RyTcaConfig;
+    var cb: RyTcaConfig;
+    ry_tca_config_default(&c);
+    store64(sb + 8, 0);
+    var t3, v3 = ry_tca_config_to_json(sb, &c);
+    var t4, v4 = ry_tca_config_from_json(load64(sb), load64(sb + 8), &cb);
+    assert(is_ok(t4) == 1 && memeq(&cb, &c, 256) == 1, "the config reads back");
+    var f: RyTcaFlux;
+    var fb: RyTcaFlux;
+    ry_tca_state_tick(&s, &c, 0.1, 6.0, 0.5, 700.0, 0.01, &f);
+    store64(sb + 8, 0);
+    var t5, v5 = ry_tca_flux_to_json(sb, &f);
+    var t6, v6 = ry_tca_flux_from_json(load64(sb), load64(sb + 8), &fb);
+    assert(is_ok(t6) == 1 && memeq(&fb, &f, 112) == 1, "a step's flux reads back, bit for bit");
+    var short = "[1,4,1,1,3,[1,2,3]]";
+    var t7, v7 = ry_tca_flux_from_json(short, strlen(short), &fb);
+    assert_eq(v7, RY_ERR_DESERIALIZE, "step_rates must hold nine numbers");
+    return 0;
+}
+
+# Runs the TCA suite.
+fn main() {
+    alloc_init();
+    validation();
+    ticking();
+    regulation();
+    hardening();
+    conservation();
+    coupling();
+    network();
+    events();
+    serde();
+    return assert_summary();
+}
+
+var exit_code = main();
+# assert_summary() returns the failure count; a wait status is 8 bits, so any failure exits 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

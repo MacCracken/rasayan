@@ -6,7 +6,7 @@
 > milestone hasn't come. The golden corpus (`tests/golden/`) checks every ported function on its grid besides.
 > The 2 doc tests and the example are M9's.
 
-**723 Rust tests:** 372 ported; 28 at M4a, 80 at M4b, 38 at M5, 108 at M6, 62 at M7, 35 at M8.
+**723 Rust tests:** 400 ported; 80 at M4b, 38 at M5, 108 at M6, 62 at M7, 35 at M8.
 
 | Rust file | Tests | Ported | Due, unported | Later (milestone) |
 |---|---:|---:|---:|---|
@@ -37,10 +37,10 @@
 | `src/receptor.rs` | 12 | 0 | 0 | 12 (M6) |
 | `src/signal.rs` | 21 | 21 | 0 | — |
 | `src/signaling.rs` | 13 | 0 | 0 | 13 (M6) |
-| `src/tca.rs` | 26 | 0 | 0 | 26 (M4a) |
-| `tests/integration.rs` | 70 | 33 | 0 | 2 (M4a), 10 (M4b), 4 (M5), 15 (M6), 6 (M7) |
+| `src/tca.rs` | 26 | 26 | 0 | — |
+| `tests/integration.rs` | 70 | 35 | 0 | 10 (M4b), 4 (M5), 15 (M6), 6 (M7) |
 | `tests/validation.rs` | 25 | 25 | 0 | — |
-| **Total** | **723** | **372** | **0** | |
+| **Total** | **723** | **400** | **0** | |
 
 ## Where each is ported
 
@@ -360,6 +360,32 @@
 | `src/signal.rs` `test_validate_out_of_range` | `tests/signal.tcyr` `validation` |
 | `src/signal.rs` `test_validate_rejects_non_finite` | `tests/signal.tcyr` `validation` |
 | `src/signal.rs` `test_validate_valid` | `tests/signal.tcyr` `validation` |
+| `src/tca.rs` `test_adp_activates_idh` | `tests/tca.tcyr` `regulation` |
+| `src/tca.rs` `test_carbon_balance_exact` | `tests/tca.tcyr` `conservation` |
+| `src/tca.rs` `test_co2_produced` | `tests/tca.tcyr` `ticking` |
+| `src/tca.rs` `test_concentrations_non_negative` | `tests/tca.tcyr` `ticking` |
+| `src/tca.rs` `test_cycle_stoichiometry_per_acetyl_coa` | `tests/tca.tcyr` `conservation` |
+| `src/tca.rs` `test_default_state_positive` | `tests/tca.tcyr` `validation` |
+| `src/tca.rs` `test_fadh2_produced` | `tests/tca.tcyr` `ticking` |
+| `src/tca.rs` `test_gtp_produced` | `tests/tca.tcyr` `ticking` |
+| `src/tca.rs` `test_high_atp_inhibits_cycle` | `tests/tca.tcyr` `regulation` |
+| `src/tca.rs` `test_invalid_dt_is_noop` | `tests/tca.tcyr` `hardening` |
+| `src/tca.rs` `test_large_dt_no_negative_pools_no_carbon_created` | `tests/tca.tcyr` `conservation` |
+| `src/tca.rs` `test_nadh_gt_fadh2` | `tests/tca.tcyr` `ticking` |
+| `src/tca.rs` `test_nadh_produced` | `tests/tca.tcyr` `ticking` |
+| `src/tca.rs` `test_nan_inputs_sanitized` | `tests/tca.tcyr` `hardening` |
+| `src/tca.rs` `test_no_pyruvate_depletes_acetyl_coa` | `tests/tca.tcyr` `regulation` |
+| `src/tca.rs` `test_oaa_is_catalytic` | `tests/tca.tcyr` `ticking` |
+| `src/tca.rs` `test_pdh_capped_at_pyruvate_supply` | `tests/tca.tcyr` `regulation` |
+| `src/tca.rs` `test_pyruvate_consumed` | `tests/tca.tcyr` `ticking` |
+| `src/tca.rs` `test_serde_roundtrip_config` | `tests/tca.tcyr` `serde` |
+| `src/tca.rs` `test_serde_roundtrip_state` | `tests/tca.tcyr` `serde` |
+| `src/tca.rs` `test_single_tick_produces_flux` | `tests/tca.tcyr` `ticking` |
+| `src/tca.rs` `test_total_pool_stability` | `tests/tca.tcyr` `ticking` |
+| `src/tca.rs` `test_validate_config` | `tests/tca.tcyr` `validation` |
+| `src/tca.rs` `test_validate_config_rejects_bad_values` | `tests/tca.tcyr` `validation` |
+| `src/tca.rs` `test_validate_state` | `tests/tca.tcyr` `validation` |
+| `src/tca.rs` `test_validate_state_rejects_nan` | `tests/tca.tcyr` `validation` |
 | `tests/integration.rs` `test_alignment_score_serialize` | `tests/alignment.tcyr` `serde` |
 | `tests/integration.rs` `test_all_defaults_validate` | `tests/energy.tcyr` `hardening` |
 | `tests/integration.rs` `test_amino_acid_serialize` | `tests/protein.tcyr` `serde` |
@@ -375,6 +401,7 @@
 | `tests/integration.rs` `test_error_display_unknown_amino_acid` | `tests/guard.tcyr` `error_display` |
 | `tests/integration.rs` `test_error_display_unknown_pathway` | `tests/guard.tcyr` `error_display` |
 | `tests/integration.rs` `test_extinction_coefficient_serialize` | `tests/protein.tcyr` `serde` |
+| `tests/integration.rs` `test_glycolysis_feeds_tca` | `tests/tca.tcyr` `coupling` |
 | `tests/integration.rs` `test_goldman_with_custom_permeability` | `tests/membrane.tcyr` `goldman` |
 | `tests/integration.rs` `test_inhibition_hierarchy` | `tests/enzyme.tcyr` `reference_values` |
 | `tests/integration.rs` `test_ionic_state_serde_roundtrip` | `tests/membrane.tcyr` `serde` |
@@ -393,6 +420,7 @@
 | `tests/integration.rs` `test_nernst_zero_concentrations` | `tests/membrane.tcyr` `nernst` |
 | `tests/integration.rs` `test_reversible_haldane_consistency` | `tests/enzyme.tcyr` `reversible` |
 | `tests/integration.rs` `test_second_messenger_serde_roundtrip` | `tests/signal.tcyr` `serde` |
+| `tests/integration.rs` `test_tca_flux_serde_roundtrip` | `tests/tca.tcyr` `serde` |
 | `tests/validation.rs` `validate_arrhenius_temperature_sensitivity` | `tests/enzyme.tcyr` `temperature` |
 | `tests/validation.rs` `validate_blosum62_known_entries` | `tests/alignment.tcyr` `matrices` |
 | `tests/validation.rs` `validate_competitive_inhibition_malonate` | `tests/enzyme.tcyr` `reference_values` |

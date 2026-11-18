@@ -820,9 +820,136 @@ GLYCOLYSIS = {
     "glycolysis::GlycolysisState::trajectory": _g_trajectory,
 }
 
+# ── tca (M4a part 2) ──
+# TcaState::tick in Rust's order: PDH and the eight rates from the state at the start of the step, then the transfers
+# in cycle order, each capped at the pool it drains. Isocitrate dehydrogenase's Hill fraction is its only primitive
+# call; `powi(2)` is the inline x·x, `sqrt` correctly rounded in binary64 as in Rust.
+
+T_DEFAULT = [  # TcaConfig::default(), in declaration order (pdh_vmax … energy_half_inhibition)
+    0.3, 0.025, 0.15, 0.005, 0.01, 0.002, 2.0, 1.0, 0.5, 0.8, 0.05, 0.08, 0.008, 2.5, 0.5, 3.0, 0.1, 0.1, 0.5, 0.2,
+    0.1, 0.15, 0.5, 1.0, 0.005, 0.5, 0.15, 0.3, 0.15, 0.5, 0.01, 12.0,
+]
+T_STATE = 9
+T_PDH_KI = 0.2  # tca::PDH_KI_ACETYL_COA
+MAX_NAD_FACTOR = 2.0  # constants::
+
+
+def _seq(a, b, vmax, kma, kmb, kia):
+    a, b = _conc(a), _conc(b)
+    d = kia * kmb + kmb * a + kma * b + a * b
+    return vmax * a * b / d if d > 0.0 else 0.0
+
+
+def _t_config(a, at):
+    c = list(T_DEFAULT)
+    n = a[at]
+    for j in range(n):
+        c[a[at + 1 + 2 * j]] = a[at + 2 + 2 * j]
+    return c, at + 1 + 2 * n
+
+
+def _t_tick(st, c, pyr, atp, adp, nad, dt, P):
+    """One TcaState::tick on the 9 state values: (state after, the 14 flux values)."""
+    if not (math.isfinite(dt) and dt > 0.0):
+        return list(st), [0.0] * 14
+    pyr, atp, adp, nad = _conc(pyr), _conc(atp), _conc(adp), _conc(nad)
+    accoa, cit, iso, akg, sca, suc, fum, mal, oaa = st
+    nf = _rust_min(nad / RESTING_NAD_RATIO, MAX_NAD_FACTOR)
+    ratio = atp / adp if adp > M_EPS else MAX_ATP_ADP_RATIO
+    q = _fdiv(ratio, c[31])
+    ei = 1.0 / (1.0 + q * q)
+    ai = _fdiv(1.0, 1.0 + accoa / T_PDH_KI)
+    v_pdh = _mm(pyr, c[0] * (ei * nf * ai), c[1])
+    cs_inh = _fdiv(1.0, 1.0 + _fdiv(cit, c[6])) * math.sqrt(ei)
+    v1 = _seq(oaa, accoa, c[2], c[3], c[4], c[5]) * cs_inh
+    v2 = _rmm(cit, iso, c[7], c[8], c[9], c[10])
+    act = _rust_min(1.0 + _fdiv(adp, c[14]), c[15])
+    v3 = c[11] * ei * nf * act * _hill_any(iso, c[12], c[13], P)
+    v4 = _competitive(akg, sca, c[16] * ei * nf, c[17], c[18])
+    v5 = _mm(sca, c[19], c[20])
+    v6 = _mm(suc, c[21], c[22])
+    v7 = _rmm(fum, mal, c[23], c[24], c[25], c[26])
+    v8 = _rmm(mal, oaa, c[27] * nf, c[28], c[29] / _rust_max(nf, 0.1), c[30])
+    a0 = _take(v_pdh * dt, pyr)
+    accoa += a0
+    a1 = _take(v1 * dt, _rust_min(oaa, accoa))
+    oaa, accoa, cit = oaa - a1, accoa - a1, cit + a1
+    a2 = _shift(v2 * dt, cit, iso)
+    cit, iso = cit - a2, iso + a2
+    a3 = _take(v3 * dt, iso)
+    iso, akg = iso - a3, akg + a3
+    a4 = _take(v4 * dt, akg)
+    akg, sca = akg - a4, sca + a4
+    a5 = _take(v5 * dt, sca)
+    sca, suc = sca - a5, suc + a5
+    a6 = _take(v6 * dt, suc)
+    suc, fum = suc - a6, fum + a6
+    a7 = _shift(v7 * dt, fum, mal)
+    fum, mal = fum - a7, mal + a7
+    a8 = _shift(v8 * dt, mal, oaa)
+    mal, oaa = mal - a8, oaa + a8
+    inv = 1.0 / dt
+    flux = [a0, a0 + a3 + a4 + a8, a6, a5, a0 + a3 + a4] + [x * inv for x in (a0, a1, a2, a3, a4, a5, a6, a7, a8)]
+    return [accoa, cit, iso, akg, sca, suc, fum, mal, oaa], flux
+
+
+def _t_step(a, P):
+    c, k = _t_config(a, T_STATE)
+    pyr, atp, adp, nad, dt = a[k:k + 5]
+    s2, flux = _t_tick(a[:T_STATE], c, pyr, atp, adp, nad, dt, P)
+    return s2 + flux
+
+
+def _t_trajectory(a, P):
+    """A class-T script: the state, the config, then `1 p a d n dt k`, `2 field x p a d n dt k` (field += x, then a
+    tick, k times), `3 field x`."""
+    st = list(a[:T_STATE])
+    c, k = _t_config(a, T_STATE)
+    flux = [0.0] * 14
+    while k < len(a):
+        op = a[k]
+        if op == 1:
+            p, at, d, n, dt, reps = a[k + 1:k + 7]
+            for _ in range(reps):
+                st, flux = _t_tick(st, c, p, at, d, n, dt, P)
+            k += 7
+        elif op == 2:
+            field, x, p, at, d, n, dt, reps = a[k + 1:k + 9]
+            for _ in range(reps):
+                st[field] += x
+                st, flux = _t_tick(st, c, p, at, d, n, dt, P)
+            k += 9
+        elif op == 3:
+            st[a[k + 1]] = a[k + 2]
+            k += 3
+        else:
+            raise ValueError(f"no operation {op}")
+    return st + flux
+
+
+def _t_coupled(a, P):
+    """Rust's test_glycolysis_feeds_tca loop: both states, then `atp adp nad dt k`."""
+    g, t = list(a[:G_STATE]), list(a[G_STATE:G_STATE + T_STATE])
+    atp, adp, nad, dt, reps = a[G_STATE + T_STATE:]
+    nadh = made = 0.0
+    for _ in range(reps):
+        g, gf = _g_tick(g, list(G_DEFAULT), atp, adp, nad, 1.0, dt, P)
+        t, tf = _t_tick(t, list(T_DEFAULT), g[10], atp, adp, nad, dt, P)
+        g[10] = _rust_max(g[10] - tf[0], 0.0)
+        nadh += gf[3] + tf[1]
+        made += gf[2] + tf[3]
+    return g + t + [nadh, made]
+
+
+TCA = {
+    "tca::TcaState::tick": _t_step,
+    "tca::TcaState::trajectory": _t_trajectory,
+    "tca::glycolysis_feeds_tca": _t_coupled,
+}
+
 # The modules with class-C (and class-T) rows beyond math, and their models.
 MODELS = {"integrate": INTEGRATE, "enzyme": ENZYME, "membrane": MEMBRANE, "signal": SIGNAL, "metabolism": METABOLISM,
-          "energy": ENERGY, "protein": PROTEIN, "glycolysis": GLYCOLYSIS}
+          "energy": ENERGY, "protein": PROTEIN, "glycolysis": GLYCOLYSIS, "tca": TCA}
 
 
 def _arg(tok):

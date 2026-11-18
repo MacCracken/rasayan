@@ -1358,3 +1358,53 @@ tick.
 correctly rounded `pow` calls take ~290 ns (ADR 0003). The rest is the rate-law and guard calls Rust inlines. The
 review made `take` and `shift` one call each (`_ry_guard_take` compares its operands directly, `_ry_guard_shift`
 writes its `take`s out), which every pathway tick shares.
+
+### 7b. M4a part 2: TCA (2026-11-17)
+
+**What is compared.** `tests/golden/tca.tsv` (new, 2,321 rows), through the oracle's public API and, for the
+crate-private `TcaFlux::accumulate`, its verbatim copy (`scripts/oracle/src/v_tca.rs`). The rows cover:
+- the two defaults, and both validators over every field's edges, plus pairs where Rust's check order picks the error
+  (the fold change `idh_adp_max_activation` sits between two divisors in the struct and is still checked last);
+- `total_pool` over 221 states;
+- 1,307 single `tick` rows: each of the 9 state fields over 14 edges, each of the 32 parameters over 13, 29 supplies
+  (PDH capped at a 1 µM supply over 10 s, ADP's activation of IDH, the ATP/ADP ratio's EPSILON edge and its overflow,
+  the NAD+/NADH factor through malate dehydrogenase's 0.1 floor to its cap of 2), 20 time steps, and seeded states
+  and configs;
+- 57 `accumulate` rows and the serde documents;
+- 37 trajectory frames: Rust's tests (0.1 s and 0.01 s runs, no pyruvate, the exact carbon balance at dt 0.01, 0.1, 1
+  and 5, 200 large steps with no supply, and the stoichiometry test's 30,000 steps fed acetyl-CoA, through a script
+  op that adds to a field before each tick), high ATP and an energy crisis, hypoxia, anaplerosis, enzyme deficiencies
+  and a degenerate start;
+- 8 rows of Rust's `test_glycolysis_feeds_tca` loop (`tca::glycolysis_feeds_tca`): both ported pathways, the
+  pyruvate passed from one to the other each step, at four time steps and two cofactor states.
+
+The class follows the branch: C where isocitrate dehydrogenase's Hill fraction reaches `powf` (1,270), B elsewhere
+(315), T for the scripts and the coupling (45), A for the validators, the defaults and the documents (691).
+
+| Check | Result |
+|---|---|
+| every row | identical on the first run (classes B and C at 0 ulp, the trajectories and coupling runs bit for bit) |
+| corrected oracle | `mpfr_ref.py` reproduces all 1,315 class-C and class-T rows with glibc's `pow` (the coupling with glycolysis's model); the correctly rounded `pow` changes none (`tca.cr.tsv`: 0 rows) |
+| `validate.py` | every row re-derived from its own transcription of `tca.rs` (pinned lines, the constants read from the sources, the validators' lists from validate's text, the step's class from whether the model called `pow`), the coupling with its glycolysis model; 112,912 checks in all; one flipped bit in a step, a trajectory or a coupling row is reported |
+| Rust tests | 26 unit and 2 integration tests ported (`tests/tca.tcyr`, 55 checks); the ledger at 400 of 723, 0 due and unported |
+| fuzz | every input also read as the three documents (830 accepted, each written and read back bit for bit); an accepted valid state stepped 0.5 s and 50 s on a pyruvate supply stays valid, and its carbon held plus the CO2 released equals what it held plus 3 per pyruvate taken, to 1e-12 |
+| four targets (`scripts/gates.sh`, 298 s, every step green) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 109,220 ok, 234 accepted, 0 failed; coverage 184 of 184 public fns executed |
+
+**The Cyrius forms** (ADR 0002 rows 7, 10, 14), as glycolysis's: the tick loads the state into locals, computes PDH
+and the eight rates from the start-of-tick values, applies the nine transfers in Rust's order (citrate synthase capped
+at the smaller of OAA and acetyl-CoA after PDH's addition) and stores the state back; the nine step rates are
+consecutive fields with `ry_tca_flux_step_rates` as the array view.
+
+**Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): tca_tick 75.4 → 507 ns. The correctly rounded `pow` takes ~145
+ns (ADR 0003); the rest is the rate-law and guard calls Rust inlines.
+
+### 7c. M4a complete
+
+Two modules, 5,560 golden rows of their own (glycolysis 3,239, TCA 2,321), every one matching the oracle with no row
+accepted: glibc's `pow` was correctly rounded on all 2,858 class-C rows, so both corrected-oracle files are empty.
+The shared forms M4a settled: a stateful tick updates its state in place and fills the caller's flux record; a config
+row is the default with overrides; a fixed-size array field is consecutive fields with an address view (ADR 0002 row
+14); a struct's field names are generated where they outgrow one line; the crate-private entry points the metabolic
+network calls are ported now and pinned through verbatim copies, so M5 starts on tested code; and read rows record the
+correctly rounded value of each number (`reads.rs`). 53 Rust tests are ported with them.
+

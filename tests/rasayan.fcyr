@@ -7,7 +7,7 @@
 # The sequence readers and each type's codec join with their milestones: M2 part 2, IonicState's and
 # MembranePermeability's; part 3, SecondMessenger's; part 4, MetabolicState's; part 5, BioenergyState's. M3 part 1:
 # every protein function on the input as a sequence; part 2, alignment on its two halves; parts 3 and 4, the PTM and
-# domain scans. M4a part 1: the three glycolysis codecs, and a tick of every state the reader accepts.
+# domain scans. M4a: the glycolysis and TCA codecs, and steps of every state the readers accept.
 
 include "src/constants.cyr"
 include "src/constants_private.cyr"
@@ -37,6 +37,8 @@ include "src/ptm.cyr"
 include "src/domain.cyr"
 include "src/glycolysis_data.cyr"
 include "src/glycolysis.cyr"
+include "src/tca_data.cyr"
+include "src/tca.cyr"
 
 var _fz_state = 0x2545F4914F6CDD1D;
 var _fz_bad = 0;
@@ -51,6 +53,7 @@ var _fz_aligned = 0;
 var _fz_ptm = 0;
 var _fz_domain = 0;
 var _fz_glycolysis = 0;
+var _fz_tca = 0;
 
 # xorshift64*: the next pseudo-random word.
 fn fz_next(): i64 {
@@ -363,6 +366,83 @@ fn fuzz_glycolysis(data, len) {
     return 0;
 }
 
+# The carbon a TCA state holds (mM of carbon atoms), as Rust's tests count it.
+fn fz_tca_carbon(s: *RyTcaState): f64 {
+    var c6: f64 = s.citrate + s.isocitrate;
+    var c4: f64 = s.succinyl_coa + s.succinate + s.fumarate + s.malate + s.oxaloacetate;
+    var r: f64 = 2.0 * s.acetyl_coa + 6.0 * c6 + 5.0 * s.alpha_kg + 4.0 * c4;
+    return r;
+}
+
+# The TCA codecs on one input: an accepted state, config or flux is finite and reads back bit for bit. An accepted
+# state that validates, with every pool below 1e300, stays valid through a 0.5 s and a 50 s step fed 0.1 mM of
+# pyruvate, and its carbon balances: what it holds plus the CO2 released is what it held plus 3 per pyruvate taken.
+fn fuzz_tca(data, len) {
+    reset_via(_fz_arena);
+    var s: RyTcaState;
+    var sb2: RyTcaState;
+    var t1, v1 = ry_tca_state_from_json_a(_fz_arena, data, len, &s);
+    if (is_ok(t1) == 1) {
+        _fz_tca = _fz_tca + 1;
+        if (fz_all_finite(&s, 9) == 0) { _fz_bad = _fz_bad + 1; }
+        store64(_fz_sb + 8, 0);
+        var t2, v2 = ry_tca_state_to_json(_fz_sb, &s);
+        var t3, v3 = ry_tca_state_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &sb2);
+        if (is_ok(t2) == 0 || is_ok(t3) == 0 || memeq(&sb2, &s, 72) == 0) { _fz_bad = _fz_bad + 1; }
+        var tv, vv = ry_tca_state_validate(&s);
+        var huge: f64 = 0x7E37E43C8800759C;     # 1e300
+        var big = 0;
+        var k = 0;
+        while (k < 9) {
+            var x: f64 = load64(&s + 8 * k);
+            if (x >= huge) { big = 1; }
+            k = k + 1;
+        }
+        if (is_ok(tv) == 1 && big == 0) {
+            var c: RyTcaConfig;
+            var f: RyTcaFlux;
+            ry_tca_config_default(&c);
+            var before: f64 = fz_tca_carbon(&s);
+            ry_tca_state_tick(&s, &c, 0.1, 6.0, 0.5, 700.0, 0.5, &f);
+            var co2: f64 = f.co2_produced;
+            var pyr: f64 = f.pyruvate_consumed;
+            ry_tca_state_tick(&s, &c, 0.1, 6.0, 0.5, 700.0, 50.0, &f);
+            co2 = co2 + f.co2_produced;
+            pyr = pyr + f.pyruvate_consumed;
+            var after: f64 = fz_tca_carbon(&s);
+            var tw, vw = ry_tca_state_validate(&s);
+            var balance: f64 = f64_abs(after + co2 - (before + 3.0 * pyr));
+            var bound: f64 = 0.000000000001 * (1.0 + before);
+            if (is_ok(tw) == 0 || fz_all_finite(&f, 14) == 0 || balance > bound) { _fz_bad = _fz_bad + 1; }
+        }
+    }
+    var c2: RyTcaConfig;
+    var cb: RyTcaConfig;
+    var t4, v4 = ry_tca_config_from_json_a(_fz_arena, data, len, &c2);
+    if (is_ok(t4) == 1) {
+        _fz_tca = _fz_tca + 1;
+        store64(_fz_sb + 8, 0);
+        var t5, v5 = ry_tca_config_to_json(_fz_sb, &c2);
+        var t6, v6 = ry_tca_config_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &cb);
+        if (fz_all_finite(&c2, 32) == 0 || is_ok(t5) == 0 || is_ok(t6) == 0 || memeq(&cb, &c2, 256) == 0) {
+            _fz_bad = _fz_bad + 1;
+        }
+    }
+    var fx: RyTcaFlux;
+    var fb: RyTcaFlux;
+    var t7, v7 = ry_tca_flux_from_json_a(_fz_arena, data, len, &fx);
+    if (is_ok(t7) == 1) {
+        _fz_tca = _fz_tca + 1;
+        store64(_fz_sb + 8, 0);
+        var t8, v8 = ry_tca_flux_to_json(_fz_sb, &fx);
+        var t9, v9 = ry_tca_flux_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &fb);
+        if (fz_all_finite(&fx, 14) == 0 || is_ok(t8) == 0 || is_ok(t9) == 0 || memeq(&fb, &fx, 112) == 0) {
+            _fz_bad = _fz_bad + 1;
+        }
+    }
+    return 0;
+}
+
 # A NUL-terminated copy of the document builder `sb` holds (a seed).
 fn fz_seed_of(sb): i64 {
     var n = load64(sb + 8);
@@ -513,7 +593,7 @@ fn main() {
     var buf = alloc(cap + 1);
     _fz_arena = arena_allocator_growable(65536);
     _fz_sb = str_builder_new();
-    var seeds = alloc(8 * 42);
+    var seeds = alloc(8 * 45);
     store64(seeds, "trace");
     store64(seeds + 8, "DEBUG");
     store64(seeds + 16, "info,warn");
@@ -568,6 +648,20 @@ fn main() {
     store64(_fz_sb + 8, 0);
     var tg2, vg2 = ry_glycolysis_flux_to_json(_fz_sb, &gf);
     store64(seeds + 328, fz_seed_of(_fz_sb));
+    # The TCA documents: the default state in the sequence form, the default config and a step's flux as written.
+    store64(seeds + 336, "[0.05,0.3,0.02,0.3,0.1,0.5,0.05,0.3,0.01]");
+    var tc: RyTcaConfig;
+    var tst: RyTcaState;
+    var tfx: RyTcaFlux;
+    ry_tca_config_default(&tc);
+    ry_tca_state_default(&tst);
+    ry_tca_state_tick(&tst, &tc, 0.1, 6.0, 0.5, 700.0, 0.1, &tfx);
+    store64(_fz_sb + 8, 0);
+    var tt1, vt1 = ry_tca_config_to_json(_fz_sb, &tc);
+    store64(seeds + 344, fz_seed_of(_fz_sb));
+    store64(_fz_sb + 8, 0);
+    var tt2, vt2 = ry_tca_flux_to_json(_fz_sb, &tfx);
+    store64(seeds + 352, fz_seed_of(_fz_sb));
     var i = 0;
     while (i < 50000) {
         var n = 0;
@@ -576,7 +670,7 @@ fn main() {
             var k = 0;
             while (k < n) { store8(buf + k, fz_below(256)); k = k + 1; }
         } else {
-            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(42)));
+            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(45)));
         }
         fuzz_main(buf, n);
         fuzz_json(buf, n);
@@ -586,6 +680,7 @@ fn main() {
         fuzz_ptm(buf, n);
         fuzz_domain(buf, n);
         fuzz_glycolysis(buf, n);
+        fuzz_tca(buf, n);
         i = i + 1;
     }
     if (_fz_bad != 0) {
@@ -609,6 +704,8 @@ fn main() {
     fmt_int(_fz_domain);
     print(", glycolysis documents read: ", 29);
     fmt_int(_fz_glycolysis);
+    print(", TCA documents read: ", 22);
+    fmt_int(_fz_tca);
     println(")");
     return 0;
 }

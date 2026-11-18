@@ -57,6 +57,7 @@ include "src/signal_data.cyr"
 include "src/metabolism_data.cyr"
 include "src/energy_data.cyr"
 include "src/glycolysis_data.cyr"
+include "src/tca_data.cyr"
 include "src/ai_data.cyr"
 include "src/fmtf.cyr"
 include "src/error.cyr"
@@ -74,6 +75,7 @@ include "src/alignment.cyr"
 include "src/ptm.cyr"
 include "src/domain.cyr"
 include "src/glycolysis.cyr"
+include "src/tca.cyr"
 
 alloc_init();
 
@@ -2568,6 +2570,269 @@ fn _par_glycolysis_json(fp, fl): i64 {
     return 1;
 }
 
+# ── tca ─────────────────────────────────────────────────────────────────────────────
+# src/tca_data.cyr and src/tca.cyr (M4a part 2). A TcaState row takes the state's nine fields; a TcaConfig is the
+# default with overrides, `i:n` then n pairs `i:field f:x`. tick takes the state, the config and `f:pyruvate f:atp
+# f:adp f:nad_ratio f:dt` and gives the state after and the flux's fourteen values; accumulate takes the two fluxes and
+# `f:weight`. A trajectory row (class T) is a script: the state, the config, then `i:1 f:p f:atp f:adp f:nad f:dt i:k`
+# k ticks, `i:2 i:field f:x f:p f:atp f:adp f:nad f:dt i:k` k times a field += x then a tick, `i:3 i:field f:x` a field
+# set; it gives the state after and the last step's flux. A coupling row (`tca::glycolysis_feeds_tca`) is Rust's
+# integration loop: the glycolysis state, the TCA state and `f:atp f:adp f:nad f:dt i:k`.
+
+# Reads a TCA config from input k into *c (the default, then the overrides): the index after it, or -1 when
+# malformed.
+fn _par_tc_in(k, c: *RyTcaConfig): i64 {
+    ry_tca_config_default(c);
+    if (_par_is_i(k) == 0) { return 0 - 1; }
+    var n = _par_in(k);
+    var w = c;
+    var at = k + 1;
+    var j = 0;
+    while (j < n) {
+        if (_par_is_i(at) == 0 || _par_is_f(at + 1) == 0) { return 0 - 1; }
+        var field = _par_in(at);
+        if (field < 0 || field >= 32) { return 0 - 1; }
+        store64(w + 8 * field, _par_in(at + 1));
+        at = at + 2;
+        j = j + 1;
+    }
+    return at;
+}
+
+# Replays a TCA trajectory script from input k on *s under *c: 1 with *f the last step's flux (the zero flux when no
+# step ran), or -1 for a malformed script.
+fn _par_tca_script(s: *RyTcaState, c: *RyTcaConfig, k, f: *RyTcaFlux): i64 {
+    ry_tca_flux_default(f);
+    var w = s;
+    var at = k;
+    while (at < _par_in_n) {
+        if (_par_is_i(at) == 0) { return 0 - 1; }
+        var op = _par_in(at);
+        if (op == 1 && _par_all_f_from(at + 1, 5) == 1 && _par_is_i(at + 6) == 1) {
+            var pyr: f64 = _par_f(at + 1);
+            var atp: f64 = _par_f(at + 2);
+            var adp: f64 = _par_f(at + 3);
+            var nad: f64 = _par_f(at + 4);
+            var dt: f64 = _par_f(at + 5);
+            var n = _par_in(at + 6);
+            var j = 0;
+            while (j < n) {
+                ry_tca_state_tick(s, c, pyr, atp, adp, nad, dt, f);
+                j = j + 1;
+            }
+            at = at + 7;
+        } elif (op == 2 && _par_is_i(at + 1) == 1 && _par_all_f_from(at + 2, 6) == 1 && _par_is_i(at + 8) == 1) {
+            var field = _par_in(at + 1);
+            if (field < 0 || field > 8) { return 0 - 1; }
+            var x: f64 = _par_f(at + 2);
+            var fpyr: f64 = _par_f(at + 3);
+            var fatp: f64 = _par_f(at + 4);
+            var fadp: f64 = _par_f(at + 5);
+            var fnad: f64 = _par_f(at + 6);
+            var fdt: f64 = _par_f(at + 7);
+            var reps = _par_in(at + 8);
+            var r = 0;
+            while (r < reps) {
+                var cur: f64 = load64(w + 8 * field);
+                var fed: f64 = cur + x;
+                store64(w + 8 * field, load64(&fed));
+                ry_tca_state_tick(s, c, fpyr, fatp, fadp, fnad, fdt, f);
+                r = r + 1;
+            }
+            at = at + 9;
+        } elif (op == 3 && _par_is_i(at + 1) == 1 && _par_is_f(at + 2) == 1) {
+            var sf = _par_in(at + 1);
+            if (sf < 0 || sf > 8) { return 0 - 1; }
+            store64(w + 8 * sf, _par_in(at + 2));
+            at = at + 3;
+        } else {
+            return 0 - 1;
+        }
+    }
+    return 1;
+}
+
+# Rust's test_glycolysis_feeds_tca loop (inputs: the two states, then `f:atp f:adp f:nad f:dt i:k`): 1 with the two
+# states, the NADH sum and the ATP sum as the outputs, or -1 when malformed.
+fn _par_tca_coupled(): i64 {
+    if (_par_in_n != 25 || _par_all_f_from(0, 24) == 0 || _par_is_i(24) == 0) { return 0 - 1; }
+    var g: RyGlycolysisState;
+    var gc: RyGlycolysisConfig;
+    var gf: RyGlycolysisFlux;
+    var t: RyTcaState;
+    var tc: RyTcaConfig;
+    var tf: RyTcaFlux;
+    _par_fields_in(0, &g, 11);
+    _par_fields_in(11, &t, 9);
+    ry_glycolysis_config_default(&gc);
+    ry_tca_config_default(&tc);
+    var atp: f64 = _par_f(20);
+    var adp: f64 = _par_f(21);
+    var nad: f64 = _par_f(22);
+    var dt: f64 = _par_f(23);
+    var n = _par_in(24);
+    var nadh: f64 = 0.0;
+    var made: f64 = 0.0;
+    var k = 0;
+    while (k < n) {
+        ry_glycolysis_state_tick(&g, &gc, atp, adp, nad, dt, &gf);
+        var pyr: f64 = g.pyruvate;
+        ry_tca_state_tick(&t, &tc, pyr, atp, adp, nad, dt, &tf);
+        var left: f64 = g.pyruvate - tf.pyruvate_consumed;
+        var kept: f64 = _ry_max(left, 0.0);
+        g.pyruvate = kept;
+        nadh = nadh + (gf.nadh_produced + tf.nadh_produced);
+        made = made + (gf.net_atp + tf.gtp_produced);
+        k = k + 1;
+    }
+    _par_got_fields(&g, 11);
+    _par_got_fields(&t, 9);
+    _par_got_f(nadh);
+    _par_got_f(made);
+    return 1;
+}
+
+# The TCA rows: the defaults, the validators, the pool, accumulate, the steps, trajectories and the coupling, the serde
+# rows.
+fn _par_tca(fp, fl): i64 {
+    var s: RyTcaState;
+    var c: RyTcaConfig;
+    var fx: RyTcaFlux;
+    if (_par_eq(fp, fl, "tca::TcaState::default") == 1) {
+        if (_par_in_n != 0) { return 0 - 1; }
+        ry_tca_state_default(&s);
+        _par_got_fields(&s, 9);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "tca::TcaConfig::default") == 1) {
+        if (_par_in_n != 0) { return 0 - 1; }
+        ry_tca_config_default(&c);
+        _par_got_fields(&c, 32);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "tca::TcaConfig::validate") == 1) {
+        if (_par_tc_in(0, &c) != _par_in_n) { return 0 - 1; }
+        var tc, vc = ry_tca_config_validate(&c);
+        _par_got_outcome(tc, vc);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "tca::glycolysis_feeds_tca") == 1) { return _par_tca_coupled(); }
+    if (_par_eq(fp, fl, "tca::TcaFlux::accumulate") == 1) {
+        if (_par_in_n != 29 || _par_all_f(29) == 0) { return 0 - 1; }
+        var o: RyTcaFlux;
+        _par_fields_in(0, &fx, 14);
+        _par_fields_in(14, &o, 14);
+        var weight: f64 = _par_f(28);
+        _ry_tca_flux_accumulate(&fx, &o, weight);
+        _par_got_fields(&fx, 14);
+        return 1;
+    }
+    if (_par_in_n < 9 || _par_all_f_from(0, 9) == 0) { return _par_tca_json(fp, fl); }
+    _par_fields_in(0, &s, 9);
+    if (_par_in_n == 9) {
+        if (_par_eq(fp, fl, "tca::TcaState::validate") == 1) {
+            var ts, vs = ry_tca_state_validate(&s);
+            _par_got_outcome(ts, vs);
+            return 1;
+        }
+        if (_par_eq(fp, fl, "tca::TcaState::total_pool") == 1) {
+            var r: f64 = ry_tca_state_total_pool(&s);
+            _par_got_f(r);
+            return 1;
+        }
+        return _par_tca_json(fp, fl);
+    }
+    var k = _par_tc_in(9, &c);
+    if (k < 0) { return _par_tca_json(fp, fl); }
+    if (_par_eq(fp, fl, "tca::TcaState::trajectory") == 1) {
+        if (_par_tca_script(&s, &c, k, &fx) != 1) { return 0 - 1; }
+        _par_got_fields(&s, 9);
+        _par_got_fields(&fx, 14);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "tca::TcaState::tick") == 1) {
+        if (_par_in_n != k + 5 || _par_all_f_from(k, 5) == 0) { return 0 - 1; }
+        var pyr: f64 = _par_f(k);
+        var atp: f64 = _par_f(k + 1);
+        var adp: f64 = _par_f(k + 2);
+        var nad: f64 = _par_f(k + 3);
+        var dt: f64 = _par_f(k + 4);
+        ry_tca_state_tick(&s, &c, pyr, atp, adp, nad, dt, &fx);
+        _par_got_fields(&s, 9);
+        _par_got_fields(&fx, 14);
+        return 1;
+    }
+    return _par_tca_json(fp, fl);
+}
+
+# The serde rows of TcaState, TcaConfig and TcaFlux.
+fn _par_tca_json(fp, fl): i64 {
+    var s: RyTcaState;
+    var c: RyTcaConfig;
+    var fx: RyTcaFlux;
+    if (_par_jsb == 0) { _par_jsb = str_builder_new(); }
+    var sb = _par_jsb;
+    store64(sb + 8, 0);
+    if (_par_eq(fp, fl, "serde_json::to_string<TcaState>") == 1 && _par_in_n == 9 && _par_all_f(9) == 1) {
+        _par_fields_in(0, &s, 9);
+        var t1, v1 = ry_tca_state_to_json(sb, &s);
+        if (is_err_result(t1) == 1) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::to_string<TcaConfig>") == 1 && _par_in_n == 32 && _par_all_f(32) == 1) {
+        _par_fields_in(0, &c, 32);
+        var t2, v2 = ry_tca_config_to_json(sb, &c);
+        if (is_err_result(t2) == 1) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::to_string<TcaFlux>") == 1 && _par_in_n == 14 && _par_all_f(14) == 1) {
+        _par_fields_in(0, &fx, 14);
+        var t3, v3 = ry_tca_flux_to_json(sb, &fx);
+        if (is_err_result(t3) == 1) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    var kind = 0;
+    if (_par_eq(fp, fl, "serde_json::from_slice<TcaState>") == 1) { kind = 1; }
+    if (_par_eq(fp, fl, "serde_json::from_slice<TcaConfig>") == 1) { kind = 2; }
+    if (_par_eq(fp, fl, "serde_json::from_slice<TcaFlux>") == 1) { kind = 3; }
+    if (kind == 0) { return 0; }
+    var lw[8];
+    var doc = _par_in_bytes(0, &lw);
+    if (doc == 0) { return 0 - 1; }
+    var n = load64(&lw);
+    if (_par_jarena == 0) { _par_jarena = arena_allocator_growable(65536); }
+    _par_json_gap = _par_has_neg_zero_int(doc, n);
+    reset_via(_par_jarena);
+    if (kind == 1) {
+        var t4, v4 = ry_tca_state_from_json_a(_par_jarena, doc, n, &s);
+        if (is_err_result(t4) == 1) {
+            _par_got_err(v4);
+            return 1;
+        }
+        _par_got_fields(&s, 9);
+        return 1;
+    }
+    if (kind == 2) {
+        var t5, v5 = ry_tca_config_from_json_a(_par_jarena, doc, n, &c);
+        if (is_err_result(t5) == 1) {
+            _par_got_err(v5);
+            return 1;
+        }
+        _par_got_fields(&c, 32);
+        return 1;
+    }
+    var t6, v6 = ry_tca_flux_from_json_a(_par_jarena, doc, n, &fx);
+    if (is_err_result(t6) == 1) {
+        _par_got_err(v6);
+        return 1;
+    }
+    _par_got_fields(&fx, 14);
+    return 1;
+}
+
 fn _par_dispatch(mp, ml, fp, fl): i64 {
     _par_got_n = 0;
     if (_par_eq(fp, fl, "const") == 1) { return _par_const(); }
@@ -2577,6 +2842,7 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
     if (_par_eq(mp, ml, "ptm") == 1) { return _par_ptm(fp, fl); }
     if (_par_eq(mp, ml, "domain") == 1) { return _par_domain(fp, fl); }
     if (_par_eq(mp, ml, "glycolysis") == 1) { return _par_glycolysis(fp, fl); }
+    if (_par_eq(mp, ml, "tca") == 1) { return _par_tca(fp, fl); }
     if (_par_eq(mp, ml, "enzyme") == 1) { return _par_enzyme(fp, fl); }
     if (_par_eq(mp, ml, "membrane") == 1) { return _par_membrane(fp, fl); }
     if (_par_eq(mp, ml, "signal") == 1) { return _par_signal(fp, fl); }
@@ -2701,6 +2967,7 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "protein::isoelectric_point_with") == 1) { return 0; }
     if (_par_eq(fp, fl, "glycolysis::GlycolysisState::tick") == 1) { return 0; }
     if (_par_eq(fp, fl, "glycolysis::GlycolysisState::tick_regulated") == 1) { return 0; }
+    if (_par_eq(fp, fl, "tca::TcaState::tick") == 1) { return 0; }
     return 0 - 1;
 }
 

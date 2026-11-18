@@ -1,20 +1,23 @@
-//! The check behind `v_guard.rs`, `v_integrate.rs`, `v_logging.rs` and `v_glycolysis.rs`: every `// @verbatim <file>` …
-//! `// @end` block in them must be a byte-for-byte span of `rust-old/src/<file>` (both read with `include_str!`, so the check is of the text that was
-//! compiled). The generator runs it before it makes any row, in both modes, so a copy that drifts from the oracle can
-//! never write or pass a golden file. `probe_solver` (M0 probe 4) checks its own copies the same way.
+//! The check behind `v_guard.rs`, `v_integrate.rs`, `v_logging.rs`, `v_glycolysis.rs` and `v_tca.rs`: every
+//! `// @verbatim <file>` … `// @end` block in them must be a byte-for-byte span of `rust-old/src/<file>` (both read
+//! with `include_str!`, so the check is of the text that was compiled). The generator runs it before it makes any
+//! row, in both modes, so a copy that drifts from the oracle can never write or pass a golden file. `probe_solver`
+//! (M0 probe 4) checks its own copies the same way.
 
 /// The copies, by file name, and the oracle files their blocks come from.
-const COPIES: [(&str, &str); 4] = [
+const COPIES: [(&str, &str); 5] = [
     ("v_glycolysis.rs", include_str!("v_glycolysis.rs")),
     ("v_guard.rs", include_str!("v_guard.rs")),
     ("v_integrate.rs", include_str!("v_integrate.rs")),
     ("v_logging.rs", include_str!("v_logging.rs")),
+    ("v_tca.rs", include_str!("v_tca.rs")),
 ];
-const SOURCES: [(&str, &str); 4] = [
+const SOURCES: [(&str, &str); 5] = [
     ("glycolysis.rs", include_str!("../../../rust-old/src/glycolysis.rs")),
     ("guard.rs", include_str!("../../../rust-old/src/guard.rs")),
     ("integrate.rs", include_str!("../../../rust-old/src/integrate.rs")),
     ("logging.rs", include_str!("../../../rust-old/src/logging.rs")),
+    ("tca.rs", include_str!("../../../rust-old/src/tca.rs")),
 ];
 
 /// Every block of every copy checked: the number of copies and the lines of their blocks, or the first block that is

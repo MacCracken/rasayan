@@ -15,10 +15,34 @@ the profiles, and step 10's upstream drafts). M0 is complete. M1 part 1 (the fou
 and integrators), part 2 (logging, the failure events, the surface-parity and Rust-test gates) and part 3 (the
 JSON writers and readers) follow: M1 is complete. M2 part 1 (enzyme), part 2 (membrane), part 3 (signal), part 4
 (metabolism) and part 5 (energy) follow: M2 is complete. M3 part 1 (protein), part 2 (alignment), part 3
-(ptm) and part 4 (domain) follow: M3 is complete. M4a part 1 (glycolysis) follows.
+(ptm) and part 4 (domain) follow: M3 is complete. M4a part 1 (glycolysis) and part 2 (TCA) follow: M4a is
+complete.
 
 ### Added
 
+- **src/tca.cyr**, **src/tca_data.cyr** (M4a part 2) — `tca.rs` transcribed (P9: PDH and the eight rates, then every
+  pool-capped transfer, in Rust's order): `RyTcaState`, `RyTcaConfig` and `RyTcaFlux` (the nine step rates as
+  consecutive fields with `ry_tca_flux_step_rates` as the array view, [ADR 0002](docs/adr/0002-port-api-divergences.md)
+  row 14); their defaults from the generated consts and field-name blobs; both validators; `ry_tca_state_tick` (PDH
+  capped at the pyruvate supplied, the flux into the caller's record); `total_pool`; the serde codecs of all three;
+  the crate-private `TcaFlux::accumulate` for M5. Rust's `tca_tick` trace event is a level-gated sakshi event under
+  `rasayan::tca`
+- **tests/golden/tca.tsv** (M4a part 2, 2,321 rows, a new module) — the defaults. Both validators over every field's
+  edges, and pairs where Rust's check order picks the error. The pool over 221 states. 1,307 single `tick` rows: each
+  state field and each of the 32 parameters over its edges, 29 supplies (PDH capped at a 1 µM supply, the ATP/ADP
+  ratio's EPSILON edge and its overflow, the NAD+/NADH factor through MDH's 0.1 floor to its cap of 2), 20 time steps,
+  and seeded states and configs. 57 `accumulate` rows, 37 trajectories (Rust's tests: the exact carbon balance at four
+  time steps, the 30,000-step acetyl-CoA stoichiometry; high ATP, an energy crisis, hypoxia, anaplerosis, enzyme
+  deficiencies, a degenerate start), 8 rows of Rust's glycolysis-to-TCA coupling loop, and the serde documents. 1,270
+  rows are class C, through isocitrate dehydrogenase's Hill `powf`. Every row matches at 0 ulp on the first run, and
+  the corrected `pow` changes none (tests/golden/tca.cr.tsv: 0 rows). `validate.py` re-derives every row (112,912
+  independent checks) and `mpfr_ref.py` models the class C and T rows, the coupling with glycolysis's model
+- **tests/tca.tcyr** (M4a part 2, 55 checks) — the 26 `tca.rs` unit tests and the 2 integration tests that now
+  come due (`test_tca_flux_serde_roundtrip`, `test_glycolysis_feeds_tca`), as they are written, and the network's
+  `accumulate`, the trace event and the codecs' refusals: the Rust-test ledger at 400 of 723, 0 due and unported. The
+  fuzz harness reads every input as the three documents (830 read and written back bit for bit), and steps every
+  accepted valid state with a pyruvate supply: it stays valid and balances its carbon to 1e-12
+- **benchmarks** (M4a part 2) — tca_tick, Rust → Cyrius: 75 → 507 ns
 - **src/glycolysis.cyr**, **src/glycolysis_data.cyr** (M4a part 1) — `glycolysis.rs` transcribed (P9: every rate,
   then every pool-capped transfer, in Rust's order): `RyGlycolysisState`, `RyGlycolysisConfig` and `RyGlycolysisFlux`;
   their defaults from the generated consts; both validators (the Vmax, then the divisors, then the fold change);
@@ -512,6 +536,14 @@ JSON writers and readers) follow: M1 is complete. M2 part 1 (enzyme), part 2 (me
 
 ### Changed
 
+- **scripts/oracle/src/reads.rs** (M4a part 2) — the `from_slice` rows' re-read of each number at its correctly
+  rounded value (ADR 0004), moved out of `m_glycolysis.rs` at its second user, the `step_rates` count a parameter;
+  `validate.py`'s flux reader likewise (`serde_flux`). The glycolysis corpus is unchanged
+- **tests/parity.tcyr** (M4a part 2) — the TCA dispatcher (`tca::TcaState::tick` gated at 0 ulp, class C) and the
+  glycolysis-to-TCA coupling rows, which run both ported pathways
+- **scripts/surface_parity.py**, **scripts/rust_test_ledger.py** (M4a part 2) — TCA is ported: its 16 public items
+  have their names
+- **cyrius.cyml** (M4a part 2) — `src/tca_data.cyr` and `src/tca.cyr` in the three bundles after `src/glycolysis.cyr`
 - **src/guard.cyr** (M4a part 1) — `_ry_guard_take` compares its operands directly instead of calling `_ry_min`
   (both are > 0 there, so neither is NaN or a zero, and equal operands have equal bits), and `_ry_guard_shift` writes
   both of its `take`s out: one call per transfer on every pathway tick. The 3,440 guard rows and every tick row are

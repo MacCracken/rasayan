@@ -179,3 +179,22 @@ to the rate laws, the guards and the Rust-semantics helpers, which Rust inlines 
 transfer one call instead of two or three: `_ry_guard_take` compares its operands directly (both are > 0 there), and
 `_ry_guard_shift` writes its `take`s out (glycolysis_tick 808 → 755 ns, bioenergy_tick 152 → 148). The rate laws stay
 calls: they are `src/enzyme.cyr`'s public functions, multi-statement, so `#inline` does not take them at the pin.
+
+## M4a part 2: TCA
+
+| Benchmark | Rust 1.2.0 (ns) | Cyrius (ns) | Notes |
+|---|---|---|---|
+| tca_tick | 75.40 | 507 | Rust's loop body: a default state, one tick of 0.01 s at pyruvate 0.1, ATP 6, ADP 0.5, NAD+/NADH 700; one correctly rounded `pow` (isocitrate dehydrogenase's Hill fraction, ~145 ns, ADR 0003) and one `sqrt` |
+
+Cyrius only:
+
+| Benchmark | Cyrius (ns) | Notes |
+|---|---|---|
+| tick, the state stepped on (no reset) | 502 | |
+| glycolysis feeding TCA, one step | 1,280 | Rust's integration loop body: a glycolysis tick, a TCA tick on its pyruvate, the pyruvate taken back |
+
+Measured at load 2.0–2.8, with the reference rows at their quiet values (michaelis_menten 12 ns, nernst 80 ns,
+`_ry_cr_pow` 143 ns). After the `pow`, the tick is about 60 calls to the rate laws, the guards and the Rust-semantics
+helpers, which Rust inlines; the transfers are one call each since part 1's review. Nothing further to take out in
+review: the rate laws are `src/enzyme.cyr`'s public functions, multi-statement, so `#inline` does not take them.
+
