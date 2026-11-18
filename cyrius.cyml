@@ -68,6 +68,8 @@ modules = [
     "src/alignment.cyr",
     "src/ptm.cyr",
     "src/domain.cyr",
+    "src/glycolysis_data.cyr",
+    "src/glycolysis.cyr",
 ]
 
 # [lib.mcp] (dist/rasayan-mcp.cyr): [lib] plus src/mcp.cyr, the eight bote tools, at M8. Its consumer declares bote
@@ -100,6 +102,8 @@ modules = [
     "src/alignment.cyr",
     "src/ptm.cyr",
     "src/domain.cyr",
+    "src/glycolysis_data.cyr",
+    "src/glycolysis.cyr",
 ]
 
 # [lib.ai] (dist/rasayan-ai.cyr): [lib] plus the hoosh client's data (src/ai_data.cyr, the system prompt) and, at M8,
@@ -133,6 +137,8 @@ modules = [
     "src/alignment.cyr",
     "src/ptm.cyr",
     "src/domain.cyr",
+    "src/glycolysis_data.cyr",
+    "src/glycolysis.cyr",
     "src/ai_data.cyr",
 ]
 

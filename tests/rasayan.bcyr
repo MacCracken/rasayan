@@ -44,6 +44,8 @@ include "src/alignment_data.cyr"
 include "src/alignment.cyr"
 include "src/ptm.cyr"
 include "src/domain.cyr"
+include "src/glycolysis_data.cyr"
+include "src/glycolysis.cyr"
 
 # Keeps the loops' results observable.
 var _bn_sink = 0;
@@ -730,6 +732,44 @@ fn _bn_ev(name, n): i64 {
     return 0;
 }
 
+# ── M4a part 1: glycolysis, the Rust bench's twin (the same loop body) and the regulated entry ──
+
+# n calls of glycolysis benchmark `kind`: 0 glycolysis_tick (Rust's body: a default state, one tick of 0.01 s at ATP 6,
+# ADP 0.5, NAD+/NADH 700), 1 the same state ticked on (no reset), 2 tick_regulated at a modifier of 0.3, 3
+# gapdh_nad_factor; the flux kept.
+fn _bn_glycolysis(name, kind, n): i64 {
+    var s: RyGlycolysisState;
+    var c: RyGlycolysisConfig;
+    var f: RyGlycolysisFlux;
+    ry_glycolysis_state_default(&s);
+    ry_glycolysis_config_default(&c);
+    var acc: f64 = 0.0;
+    var b = bench_new(name);
+    bench_batch_start(b);
+    var i = 0;
+    while (i < n) {
+        if (kind == 0) {
+            ry_glycolysis_state_default(&s);
+            ry_glycolysis_state_tick(&s, &c, 6.0, 0.5, 700.0, 0.01, &f);
+        } elif (kind == 1) {
+            ry_glycolysis_state_tick(&s, &c, 6.0, 0.5, 700.0, 0.01, &f);
+        } elif (kind == 2) {
+            ry_glycolysis_state_default(&s);
+            _ry_glycolysis_state_tick_regulated(&s, &c, 6.0, 0.5, 700.0, 0.3, 0.01, &f);
+        } else {
+            var x: f64 = _ry_glycolysis_gapdh_nad_factor(700.0);
+            acc = acc + x;
+        }
+        var net: f64 = f.net_atp;
+        acc = acc + net;
+        i = i + 1;
+    }
+    bench_batch_stop(b, n);
+    bench_report(b);
+    _bn_keep(acc);
+    return 0;
+}
+
 # Runs the benchmark suite (Rust twins arrive with each milestone).
 fn main(): i64 {
     alloc_init();
@@ -801,6 +841,10 @@ fn main(): i64 {
     _bn_align("score_alignment", 3, 1000000);
     _bn_ptm("ptm_scan_20", 1000000);
     _bn_domain("domain_scan_20", 1000000);
+    _bn_glycolysis("glycolysis_tick", 0, 1000000);
+    _bn_glycolysis("glycolysis/tick, no reset", 1, 1000000);
+    _bn_glycolysis("glycolysis/tick_regulated 0.3", 2, 1000000);
+    _bn_glycolysis("glycolysis/gapdh_nad_factor", 3, 1000000);
     var br = bench_new("json/read MembranePermeability (3 f64)");
     bench_batch_start(br);
     _bn_read("{\"p_na\":0.04,\"p_k\":1.0,\"p_cl\":0.45}", 3, "p_na\0p_k\0p_cl\0", 100000);

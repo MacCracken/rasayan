@@ -6,7 +6,8 @@
 # document parsed on an arena reset per input, then read as an all-f64 struct, a [f64; 5], a string and an integer).
 # The sequence readers and each type's codec join with their milestones: M2 part 2, IonicState's and
 # MembranePermeability's; part 3, SecondMessenger's; part 4, MetabolicState's; part 5, BioenergyState's. M3 part 1:
-# every protein function on the input as a sequence; part 2, alignment on its two halves.
+# every protein function on the input as a sequence; part 2, alignment on its two halves; parts 3 and 4, the PTM and
+# domain scans. M4a part 1: the three glycolysis codecs, and a tick of every state the reader accepts.
 
 include "src/constants.cyr"
 include "src/constants_private.cyr"
@@ -34,6 +35,8 @@ include "src/alignment_data.cyr"
 include "src/alignment.cyr"
 include "src/ptm.cyr"
 include "src/domain.cyr"
+include "src/glycolysis_data.cyr"
+include "src/glycolysis.cyr"
 
 var _fz_state = 0x2545F4914F6CDD1D;
 var _fz_bad = 0;
@@ -47,6 +50,7 @@ var _fz_protein = 0;
 var _fz_aligned = 0;
 var _fz_ptm = 0;
 var _fz_domain = 0;
+var _fz_glycolysis = 0;
 
 # xorshift64*: the next pseudo-random word.
 fn fz_next(): i64 {
@@ -294,6 +298,80 @@ fn fuzz_alignment(data, len) {
     return 0;
 }
 
+# The glycolysis codecs on one input: an accepted state, config or flux is finite and reads back bit for bit. An
+# accepted state that validates, with every pool below 1e300 (no sum can overflow), stays valid through a step of
+# 0.5 s and one of 50 s on the default config, and neither creates carbon nor loses it beyond rounding.
+fn fuzz_glycolysis(data, len) {
+    reset_via(_fz_arena);
+    var s: RyGlycolysisState;
+    var sb2: RyGlycolysisState;
+    var t1, v1 = ry_glycolysis_state_from_json_a(_fz_arena, data, len, &s);
+    if (is_ok(t1) == 1) {
+        _fz_glycolysis = _fz_glycolysis + 1;
+        if (fz_all_finite(&s, 11) == 0) { _fz_bad = _fz_bad + 1; }
+        store64(_fz_sb + 8, 0);
+        var t2, v2 = ry_glycolysis_state_to_json(_fz_sb, &s);
+        var t3, v3 = ry_glycolysis_state_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &sb2);
+        if (is_ok(t2) == 0 || is_ok(t3) == 0 || memeq(&sb2, &s, 88) == 0) { _fz_bad = _fz_bad + 1; }
+        var tv, vv = ry_glycolysis_state_validate(&s);
+        var huge: f64 = 0x7E37E43C8800759C;                  # 1e300
+        var big = 0;
+        var k = 0;
+        while (k < 11) {
+            var x: f64 = load64(&s + 8 * k);
+            if (x >= huge) { big = 1; }
+            k = k + 1;
+        }
+        if (is_ok(tv) == 1 && big == 0) {
+            var c: RyGlycolysisConfig;
+            var f: RyGlycolysisFlux;
+            ry_glycolysis_config_default(&c);
+            var before: f64 = ry_glycolysis_state_total_carbon(&s);
+            ry_glycolysis_state_tick(&s, &c, 6.0, 0.5, 700.0, 0.5, &f);
+            ry_glycolysis_state_tick(&s, &c, 6.0, 0.5, 700.0, 50.0, &f);
+            var after: f64 = ry_glycolysis_state_total_carbon(&s);
+            var tw, vw = ry_glycolysis_state_validate(&s);
+            var drift: f64 = f64_abs(after - before);
+            var bound: f64 = 0.000000000001 * before;
+            if (is_ok(tw) == 0 || fz_all_finite(&f, 15) == 0 || drift > bound) { _fz_bad = _fz_bad + 1; }
+        }
+    }
+    var c2: RyGlycolysisConfig;
+    var cb: RyGlycolysisConfig;
+    var t4, v4 = ry_glycolysis_config_from_json_a(_fz_arena, data, len, &c2);
+    if (is_ok(t4) == 1) {
+        _fz_glycolysis = _fz_glycolysis + 1;
+        store64(_fz_sb + 8, 0);
+        var t5, v5 = ry_glycolysis_config_to_json(_fz_sb, &c2);
+        var t6, v6 = ry_glycolysis_config_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &cb);
+        if (fz_all_finite(&c2, 38) == 0 || is_ok(t5) == 0 || is_ok(t6) == 0 || memeq(&cb, &c2, 304) == 0) {
+            _fz_bad = _fz_bad + 1;
+        }
+    }
+    var fx: RyGlycolysisFlux;
+    var fb: RyGlycolysisFlux;
+    var t7, v7 = ry_glycolysis_flux_from_json_a(_fz_arena, data, len, &fx);
+    if (is_ok(t7) == 1) {
+        _fz_glycolysis = _fz_glycolysis + 1;
+        store64(_fz_sb + 8, 0);
+        var t8, v8 = ry_glycolysis_flux_to_json(_fz_sb, &fx);
+        var t9, v9 = ry_glycolysis_flux_from_json_a(_fz_arena, load64(_fz_sb), load64(_fz_sb + 8), &fb);
+        if (fz_all_finite(&fx, 15) == 0 || is_ok(t8) == 0 || is_ok(t9) == 0 || memeq(&fb, &fx, 120) == 0) {
+            _fz_bad = _fz_bad + 1;
+        }
+    }
+    return 0;
+}
+
+# A NUL-terminated copy of the document builder `sb` holds (a seed).
+fn fz_seed_of(sb): i64 {
+    var n = load64(sb + 8);
+    var s = alloc(n + 1);
+    memcpy(s, load64(sb), n);
+    store8(s + n, 0);
+    return s;
+}
+
 # A word as a *RyPtmSite (the cast-helper idiom).
 #must_use
 fn _fz_as_sites(p): *RyPtmSite { return p; }
@@ -435,7 +513,7 @@ fn main() {
     var buf = alloc(cap + 1);
     _fz_arena = arena_allocator_growable(65536);
     _fz_sb = str_builder_new();
-    var seeds = alloc(8 * 39);
+    var seeds = alloc(8 * 42);
     store64(seeds, "trace");
     store64(seeds + 8, "DEBUG");
     store64(seeds + 16, "info,warn");
@@ -475,6 +553,21 @@ fn main() {
     store64(seeds + 288, "MGÉ🧬ASANÉSARRÉSSÉÉEcCnasa");
     store64(seeds + 296, "RGDAADEADKKAKGAAAAGKSDKDGDGTITTKEAKDEL");
     store64(seeds + 304, "PYACPVESCDRRFSRSDELTRHIRIHTGQKLAAAAAALAAAAAALAAAAAALCAACCCALLLAAAAAAHHHAHHHHH");
+    # The glycolysis documents: the default state in the sequence form, the default config and a step's flux as
+    # written.
+    store64(seeds + 312, "[5,0.083,0.014,0.031,0.14,0.019,0.001,0.12,0.03,0.023,0.051]");
+    var gc: RyGlycolysisConfig;
+    var gs: RyGlycolysisState;
+    var gf: RyGlycolysisFlux;
+    ry_glycolysis_config_default(&gc);
+    ry_glycolysis_state_default(&gs);
+    ry_glycolysis_state_tick(&gs, &gc, 6.0, 0.5, 700.0, 0.1, &gf);
+    store64(_fz_sb + 8, 0);
+    var tg1, vg1 = ry_glycolysis_config_to_json(_fz_sb, &gc);
+    store64(seeds + 320, fz_seed_of(_fz_sb));
+    store64(_fz_sb + 8, 0);
+    var tg2, vg2 = ry_glycolysis_flux_to_json(_fz_sb, &gf);
+    store64(seeds + 328, fz_seed_of(_fz_sb));
     var i = 0;
     while (i < 50000) {
         var n = 0;
@@ -483,7 +576,7 @@ fn main() {
             var k = 0;
             while (k < n) { store8(buf + k, fz_below(256)); k = k + 1; }
         } else {
-            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(39)));
+            n = fz_mutate(buf, cap, load64(seeds + 8 * fz_below(42)));
         }
         fuzz_main(buf, n);
         fuzz_json(buf, n);
@@ -492,6 +585,7 @@ fn main() {
         fuzz_alignment(buf, n);
         fuzz_ptm(buf, n);
         fuzz_domain(buf, n);
+        fuzz_glycolysis(buf, n);
         i = i + 1;
     }
     if (_fz_bad != 0) {
@@ -513,6 +607,8 @@ fn main() {
     fmt_int(_fz_ptm);
     print(", domain hits: ", 15);
     fmt_int(_fz_domain);
+    print(", glycolysis documents read: ", 29);
+    fmt_int(_fz_glycolysis);
     println(")");
     return 0;
 }

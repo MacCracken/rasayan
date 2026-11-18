@@ -56,6 +56,7 @@ include "src/membrane_data.cyr"
 include "src/signal_data.cyr"
 include "src/metabolism_data.cyr"
 include "src/energy_data.cyr"
+include "src/glycolysis_data.cyr"
 include "src/ai_data.cyr"
 include "src/fmtf.cyr"
 include "src/error.cyr"
@@ -72,6 +73,7 @@ include "src/protein.cyr"
 include "src/alignment.cyr"
 include "src/ptm.cyr"
 include "src/domain.cyr"
+include "src/glycolysis.cyr"
 
 alloc_init();
 
@@ -2324,6 +2326,248 @@ fn _par_domain(fp, fl): i64 {
 
 # Routes a row to its module's dispatcher. 0 (pending) for a module or function with no Cyrius code yet: the module
 # rows of every module arrive from M1 on, each with its dispatcher here.
+# ── glycolysis ──────────────────────────────────────────────────────────────────────
+# src/glycolysis_data.cyr and src/glycolysis.cyr (M4a part 1). A GlycolysisState row takes the state's eleven fields;
+# a GlycolysisConfig is the default with overrides, `i:n` then n pairs `i:field f:x`. tick takes the state, the config
+# and `f:atp f:adp f:nad_ratio f:dt` (tick_regulated `f:pfk_modifier` before dt) and gives the state after and the
+# flux's fifteen values; accumulate takes the two fluxes and `f:weight`. A trajectory row (class T) is a script: the
+# state, the config, then `i:1 f:atp f:adp f:nad f:dt i:k` k ticks, `i:2 f:atp f:adp f:nad f:pfk f:dt i:k` k regulated
+# ticks, `i:3 i:field f:x` a state field set; it gives the state after and the last step's flux.
+
+# Reads a config from input k into *c (the default, then the overrides): the index after it, or -1 when malformed.
+fn _par_gc_in(k, c: *RyGlycolysisConfig): i64 {
+    ry_glycolysis_config_default(c);
+    if (k >= _par_in_n || load64(_par_in_k + k * 8) != 105) { return 0 - 1; }
+    var n = _par_in(k);
+    var w = c;
+    var at = k + 1;
+    var j = 0;
+    while (j < n) {
+        if (at + 1 >= _par_in_n || load64(_par_in_k + at * 8) != 105 || _par_is_f(at + 1) == 0) { return 0 - 1; }
+        var field = _par_in(at);
+        if (field < 0 || field >= 38) { return 0 - 1; }
+        store64(w + 8 * field, _par_in(at + 1));
+        at = at + 2;
+        j = j + 1;
+    }
+    return at;
+}
+
+# 1 if input k is an integer token.
+#must_use
+fn _par_is_i(k): i64 {
+    if (k >= _par_in_n) { return 0; }
+    if (load64(_par_in_k + k * 8) == 105) { return 1; }
+    return 0;
+}
+
+# Replays a trajectory script from input k on *s under *c: 1 with *f the last step's flux (the zero flux when no step
+# ran), or -1 for a malformed script.
+fn _par_gl_script(s: *RyGlycolysisState, c: *RyGlycolysisConfig, k, f: *RyGlycolysisFlux): i64 {
+    ry_glycolysis_flux_default(f);
+    var w = s;
+    var at = k;
+    while (at < _par_in_n) {
+        if (_par_is_i(at) == 0) { return 0 - 1; }
+        var op = _par_in(at);
+        if (op == 1 && _par_all_f_from(at + 1, 4) == 1 && _par_is_i(at + 5) == 1) {
+            var atp: f64 = _par_f(at + 1);
+            var adp: f64 = _par_f(at + 2);
+            var nad: f64 = _par_f(at + 3);
+            var dt: f64 = _par_f(at + 4);
+            var n = _par_in(at + 5);
+            var j = 0;
+            while (j < n) {
+                ry_glycolysis_state_tick(s, c, atp, adp, nad, dt, f);
+                j = j + 1;
+            }
+            at = at + 6;
+        } elif (op == 2 && _par_all_f_from(at + 1, 5) == 1 && _par_is_i(at + 6) == 1) {
+            var ratp: f64 = _par_f(at + 1);
+            var radp: f64 = _par_f(at + 2);
+            var rnad: f64 = _par_f(at + 3);
+            var pfk: f64 = _par_f(at + 4);
+            var rdt: f64 = _par_f(at + 5);
+            var rn = _par_in(at + 6);
+            var r = 0;
+            while (r < rn) {
+                _ry_glycolysis_state_tick_regulated(s, c, ratp, radp, rnad, pfk, rdt, f);
+                r = r + 1;
+            }
+            at = at + 7;
+        } elif (op == 3 && _par_is_i(at + 1) == 1 && _par_is_f(at + 2) == 1) {
+            var field = _par_in(at + 1);
+            if (field < 0 || field > 10) { return 0 - 1; }
+            store64(w + 8 * field, _par_in(at + 2));
+            at = at + 3;
+        } else {
+            return 0 - 1;
+        }
+    }
+    return 1;
+}
+
+# The glycolysis rows: the defaults, the validators, the pools, gapdh_nad_factor, accumulate, the steps and
+# trajectories, the serde rows.
+fn _par_glycolysis(fp, fl): i64 {
+    var s: RyGlycolysisState;
+    var c: RyGlycolysisConfig;
+    var fx: RyGlycolysisFlux;
+    if (_par_eq(fp, fl, "glycolysis::GlycolysisState::default") == 1) {
+        if (_par_in_n != 0) { return 0 - 1; }
+        ry_glycolysis_state_default(&s);
+        _par_got_fields(&s, 11);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "glycolysis::GlycolysisConfig::default") == 1) {
+        if (_par_in_n != 0) { return 0 - 1; }
+        ry_glycolysis_config_default(&c);
+        _par_got_fields(&c, 38);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "glycolysis::GlycolysisConfig::validate") == 1) {
+        if (_par_gc_in(0, &c) != _par_in_n) { return 0 - 1; }
+        var tc, vc = ry_glycolysis_config_validate(&c);
+        _par_got_outcome(tc, vc);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "glycolysis::gapdh_nad_factor") == 1) {
+        if (_par_in_n != 1 || _par_is_f(0) == 0) { return 0 - 1; }
+        var x: f64 = _par_f(0);
+        var g: f64 = _ry_glycolysis_gapdh_nad_factor(x);
+        _par_got_f(g);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "glycolysis::GlycolysisFlux::accumulate") == 1) {
+        if (_par_in_n != 31 || _par_all_f(31) == 0) { return 0 - 1; }
+        var o: RyGlycolysisFlux;
+        _par_fields_in(0, &fx, 15);
+        _par_fields_in(15, &o, 15);
+        var weight: f64 = _par_f(30);
+        _ry_glycolysis_flux_accumulate(&fx, &o, weight);
+        _par_got_fields(&fx, 15);
+        return 1;
+    }
+    if (_par_in_n < 11 || _par_all_f_from(0, 11) == 0) { return _par_glycolysis_json(fp, fl); }
+    _par_fields_in(0, &s, 11);
+    if (_par_in_n == 11) {
+        var r: f64 = 0.0;
+        if (_par_eq(fp, fl, "glycolysis::GlycolysisState::validate") == 1) {
+            var ts, vs = ry_glycolysis_state_validate(&s);
+            _par_got_outcome(ts, vs);
+            return 1;
+        } elif (_par_eq(fp, fl, "glycolysis::GlycolysisState::total_intermediates") == 1) {
+            r = ry_glycolysis_state_total_intermediates(&s);
+        } elif (_par_eq(fp, fl, "glycolysis::GlycolysisState::total_carbon") == 1) {
+            r = ry_glycolysis_state_total_carbon(&s);
+        } else {
+            return _par_glycolysis_json(fp, fl);
+        }
+        _par_got_f(r);
+        return 1;
+    }
+    var k = _par_gc_in(11, &c);
+    if (k < 0) { return _par_glycolysis_json(fp, fl); }
+    if (_par_eq(fp, fl, "glycolysis::GlycolysisState::trajectory") == 1) {
+        if (_par_gl_script(&s, &c, k, &fx) != 1) { return 0 - 1; }
+        _par_got_fields(&s, 11);
+        _par_got_fields(&fx, 15);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "glycolysis::GlycolysisState::tick") == 1) {
+        if (_par_in_n != k + 4 || _par_all_f_from(k, 4) == 0) { return 0 - 1; }
+        var atp: f64 = _par_f(k);
+        var adp: f64 = _par_f(k + 1);
+        var nad: f64 = _par_f(k + 2);
+        var dt: f64 = _par_f(k + 3);
+        ry_glycolysis_state_tick(&s, &c, atp, adp, nad, dt, &fx);
+        _par_got_fields(&s, 11);
+        _par_got_fields(&fx, 15);
+        return 1;
+    }
+    if (_par_eq(fp, fl, "glycolysis::GlycolysisState::tick_regulated") == 1) {
+        if (_par_in_n != k + 5 || _par_all_f_from(k, 5) == 0) { return 0 - 1; }
+        var ratp: f64 = _par_f(k);
+        var radp: f64 = _par_f(k + 1);
+        var rnad: f64 = _par_f(k + 2);
+        var pfk: f64 = _par_f(k + 3);
+        var rdt: f64 = _par_f(k + 4);
+        _ry_glycolysis_state_tick_regulated(&s, &c, ratp, radp, rnad, pfk, rdt, &fx);
+        _par_got_fields(&s, 11);
+        _par_got_fields(&fx, 15);
+        return 1;
+    }
+    return _par_glycolysis_json(fp, fl);
+}
+
+# The serde rows of GlycolysisState, GlycolysisConfig and GlycolysisFlux.
+fn _par_glycolysis_json(fp, fl): i64 {
+    var s: RyGlycolysisState;
+    var c: RyGlycolysisConfig;
+    var fx: RyGlycolysisFlux;
+    if (_par_jsb == 0) { _par_jsb = str_builder_new(); }
+    var sb = _par_jsb;
+    store64(sb + 8, 0);
+    if (_par_eq(fp, fl, "serde_json::to_string<GlycolysisState>") == 1 && _par_in_n == 11 && _par_all_f(11) == 1) {
+        _par_fields_in(0, &s, 11);
+        var t1, v1 = ry_glycolysis_state_to_json(sb, &s);
+        if (is_err_result(t1) == 1) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::to_string<GlycolysisConfig>") == 1 && _par_in_n == 38 && _par_all_f(38) == 1) {
+        _par_fields_in(0, &c, 38);
+        var t2, v2 = ry_glycolysis_config_to_json(sb, &c);
+        if (is_err_result(t2) == 1) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    if (_par_eq(fp, fl, "serde_json::to_string<GlycolysisFlux>") == 1 && _par_in_n == 15 && _par_all_f(15) == 1) {
+        _par_fields_in(0, &fx, 15);
+        var t3, v3 = ry_glycolysis_flux_to_json(sb, &fx);
+        if (is_err_result(t3) == 1) { return 0 - 1; }
+        _par_got_text(load64(sb), load64(sb + 8));
+        return 1;
+    }
+    var kind = 0;
+    if (_par_eq(fp, fl, "serde_json::from_slice<GlycolysisState>") == 1) { kind = 1; }
+    if (_par_eq(fp, fl, "serde_json::from_slice<GlycolysisConfig>") == 1) { kind = 2; }
+    if (_par_eq(fp, fl, "serde_json::from_slice<GlycolysisFlux>") == 1) { kind = 3; }
+    if (kind == 0) { return 0; }
+    var lw[8];
+    var doc = _par_in_bytes(0, &lw);
+    if (doc == 0) { return 0 - 1; }
+    var n = load64(&lw);
+    if (_par_jarena == 0) { _par_jarena = arena_allocator_growable(65536); }
+    _par_json_gap = _par_has_neg_zero_int(doc, n);
+    reset_via(_par_jarena);
+    if (kind == 1) {
+        var t4, v4 = ry_glycolysis_state_from_json_a(_par_jarena, doc, n, &s);
+        if (is_err_result(t4) == 1) {
+            _par_got_err(v4);
+            return 1;
+        }
+        _par_got_fields(&s, 11);
+        return 1;
+    }
+    if (kind == 2) {
+        var t5, v5 = ry_glycolysis_config_from_json_a(_par_jarena, doc, n, &c);
+        if (is_err_result(t5) == 1) {
+            _par_got_err(v5);
+            return 1;
+        }
+        _par_got_fields(&c, 38);
+        return 1;
+    }
+    var t6, v6 = ry_glycolysis_flux_from_json_a(_par_jarena, doc, n, &fx);
+    if (is_err_result(t6) == 1) {
+        _par_got_err(v6);
+        return 1;
+    }
+    _par_got_fields(&fx, 15);
+    return 1;
+}
+
 fn _par_dispatch(mp, ml, fp, fl): i64 {
     _par_got_n = 0;
     if (_par_eq(fp, fl, "const") == 1) { return _par_const(); }
@@ -2332,6 +2576,7 @@ fn _par_dispatch(mp, ml, fp, fl): i64 {
     if (_par_eq(mp, ml, "alignment") == 1) { return _par_alignment(fp, fl); }
     if (_par_eq(mp, ml, "ptm") == 1) { return _par_ptm(fp, fl); }
     if (_par_eq(mp, ml, "domain") == 1) { return _par_domain(fp, fl); }
+    if (_par_eq(mp, ml, "glycolysis") == 1) { return _par_glycolysis(fp, fl); }
     if (_par_eq(mp, ml, "enzyme") == 1) { return _par_enzyme(fp, fl); }
     if (_par_eq(mp, ml, "membrane") == 1) { return _par_membrane(fp, fl); }
     if (_par_eq(mp, ml, "signal") == 1) { return _par_signal(fp, fl); }
@@ -2454,6 +2699,8 @@ fn _par_c_bound(fp, fl): i64 {
     if (_par_eq(fp, fl, "protein::net_charge_with") == 1) { return 0; }
     if (_par_eq(fp, fl, "protein::isoelectric_point") == 1) { return 0; }
     if (_par_eq(fp, fl, "protein::isoelectric_point_with") == 1) { return 0; }
+    if (_par_eq(fp, fl, "glycolysis::GlycolysisState::tick") == 1) { return 0; }
+    if (_par_eq(fp, fl, "glycolysis::GlycolysisState::tick_regulated") == 1) { return 0; }
     return 0 - 1;
 }
 

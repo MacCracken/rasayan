@@ -104,29 +104,38 @@ fn _ry_guard_unit(x: f64): f64 {
 
 # The amount a one-directional transfer moves this step: `amount` capped at the `pool` it drains. NaN, negative
 # amounts and empty or invalid pools move nothing (+0), so a large `dt` can never overdraw a pool and create mass.
-# Mirrors `guard::take`.
+# Rust's `amount.min(pool)` is taken with both operands > 0, so neither is NaN or a zero and the plain comparison is
+# exact (equal operands have equal bits). Mirrors `guard::take`.
 #must_use
 #pure
 fn _ry_guard_take(amount: f64, pool: f64): f64 {
     if (amount > 0.0 && pool > 0.0) {
-        var r: f64 = _ry_min(amount, pool);
-        return r;
+        if (pool < amount) { return pool; }
+        return amount;
     }
     return 0.0;
 }
 
 # The net amount a reversible step moves this step (positive = forward), capped at the substrate pool going forward
 # or the product pool going backward. Backward it is Rust's `-take(-amount, product)`: both negations are sign flips,
-# so an empty product pool gives −0 (port-parity.md §0.7). Mirrors `guard::shift`.
+# so an empty product pool gives −0 (port-parity.md §0.7). Both `take`s are written out (one call per transfer on the
+# pathways' tick paths): backward, `-amount` is > 0, so only the product pool is tested. Mirrors `guard::shift`.
 #must_use
 #pure
 fn _ry_guard_shift(amount: f64, substrate: f64, product: f64): f64 {
     if (amount < 0.0) {
         var back: f64 = -amount;
-        var moved: f64 = _ry_guard_take(back, product);
-        var r: f64 = -moved;
+        if (product > 0.0) {
+            if (product < back) { back = product; }
+        } else {
+            back = 0.0;
+        }
+        var r: f64 = -back;
         return r;
     }
-    var fwd: f64 = _ry_guard_take(amount, substrate);
-    return fwd;
+    if (amount > 0.0 && substrate > 0.0) {
+        if (substrate < amount) { return substrate; }
+        return amount;
+    }
+    return 0.0;
 }

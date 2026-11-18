@@ -6,7 +6,7 @@
 > milestone hasn't come. The golden corpus (`tests/golden/`) checks every ported function on its grid besides.
 > The 2 doc tests and the example are M9's.
 
-**723 Rust tests:** 347 ported; 53 at M4a, 80 at M4b, 38 at M5, 108 at M6, 62 at M7, 35 at M8.
+**723 Rust tests:** 372 ported; 28 at M4a, 80 at M4b, 38 at M5, 108 at M6, 62 at M7, 35 at M8.
 
 | Rust file | Tests | Ported | Due, unported | Later (milestone) |
 |---|---:|---:|---:|---|
@@ -19,7 +19,7 @@
 | `src/energy.rs` | 29 | 29 | 0 | — |
 | `src/enzyme.rs` | 58 | 58 | 0 | — |
 | `src/etc.rs` | 24 | 0 | 0 | 24 (M4b) |
-| `src/glycolysis.rs` | 25 | 0 | 0 | 25 (M4a) |
+| `src/glycolysis.rs` | 25 | 25 | 0 | — |
 | `src/guard.rs` | 4 | 4 | 0 | — |
 | `src/hormonal.rs` | 25 | 0 | 0 | 25 (M7) |
 | `src/integrate.rs` | 5 | 5 | 0 | — |
@@ -40,7 +40,7 @@
 | `src/tca.rs` | 26 | 0 | 0 | 26 (M4a) |
 | `tests/integration.rs` | 70 | 33 | 0 | 2 (M4a), 10 (M4b), 4 (M5), 15 (M6), 6 (M7) |
 | `tests/validation.rs` | 25 | 25 | 0 | — |
-| **Total** | **723** | **347** | **0** | |
+| **Total** | **723** | **372** | **0** | |
 
 ## Where each is ported
 
@@ -176,6 +176,31 @@
 | `src/enzyme.rs` `test_validate_rejects_non_finite_and_zero_divisors` | `tests/enzyme.tcyr` `enzyme_params` |
 | `src/enzyme.rs` `test_validate_valid` | `tests/enzyme.tcyr` `enzyme_params` |
 | `src/enzyme.rs` `test_zero_inhibitor_ignores_ki` | `tests/enzyme.tcyr` `hardening_rates` |
+| `src/glycolysis.rs` `test_concentrations_non_negative` | `tests/glycolysis.tcyr` `ticking` |
+| `src/glycolysis.rs` `test_default_config_positive` | `tests/glycolysis.tcyr` `basics` |
+| `src/glycolysis.rs` `test_default_state_positive` | `tests/glycolysis.tcyr` `basics` |
+| `src/glycolysis.rs` `test_g6p_inhibits_hexokinase` | `tests/glycolysis.tcyr` `regulation` |
+| `src/glycolysis.rs` `test_glucose_consumed` | `tests/glycolysis.tcyr` `ticking` |
+| `src/glycolysis.rs` `test_high_atp_inhibits_pfk` | `tests/glycolysis.tcyr` `regulation` |
+| `src/glycolysis.rs` `test_invalid_dt_is_noop` | `tests/glycolysis.tcyr` `hardening` |
+| `src/glycolysis.rs` `test_large_dt_no_negative_pools_no_carbon_created` | `tests/glycolysis.tcyr` `conservation` |
+| `src/glycolysis.rs` `test_nadh_produced` | `tests/glycolysis.tcyr` `ticking` |
+| `src/glycolysis.rs` `test_nan_inputs_sanitized` | `tests/glycolysis.tcyr` `hardening` |
+| `src/glycolysis.rs` `test_net_atp_positive` | `tests/glycolysis.tcyr` `ticking` |
+| `src/glycolysis.rs` `test_no_glucose_no_flux` | `tests/glycolysis.tcyr` `regulation` |
+| `src/glycolysis.rs` `test_pyruvate_accumulates` | `tests/glycolysis.tcyr` `ticking` |
+| `src/glycolysis.rs` `test_serde_roundtrip_config` | `tests/glycolysis.tcyr` `serde` |
+| `src/glycolysis.rs` `test_serde_roundtrip_flux` | `tests/glycolysis.tcyr` `serde` |
+| `src/glycolysis.rs` `test_serde_roundtrip_state` | `tests/glycolysis.tcyr` `serde` |
+| `src/glycolysis.rs` `test_single_tick_produces_flux` | `tests/glycolysis.tcyr` `ticking` |
+| `src/glycolysis.rs` `test_step_cap_limits_consumption` | `tests/glycolysis.tcyr` `hardening` |
+| `src/glycolysis.rs` `test_total_carbon_conserved` | `tests/glycolysis.tcyr` `conservation` |
+| `src/glycolysis.rs` `test_total_carbon_counts` | `tests/glycolysis.tcyr` `basics` |
+| `src/glycolysis.rs` `test_total_intermediates` | `tests/glycolysis.tcyr` `basics` |
+| `src/glycolysis.rs` `test_validate_config` | `tests/glycolysis.tcyr` `validation` |
+| `src/glycolysis.rs` `test_validate_config_rejects_bad_values` | `tests/glycolysis.tcyr` `validation` |
+| `src/glycolysis.rs` `test_validate_state` | `tests/glycolysis.tcyr` `validation` |
+| `src/glycolysis.rs` `test_validate_state_rejects_nan` | `tests/glycolysis.tcyr` `validation` |
 | `src/guard.rs` `dt_and_sanitizers` | `tests/guard.tcyr` `dt_and_sanitizers` |
 | `src/guard.rs` `take_and_shift_cap_at_pool` | `tests/guard.tcyr` `take_and_shift_cap_at_pool` |
 | `src/guard.rs` `validators_ranges` | `tests/guard.tcyr` `validators_ranges` |

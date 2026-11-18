@@ -6,6 +6,7 @@ constants_private
 domain
 energy
 enzyme
+glycolysis
 guard
 integrate
 json

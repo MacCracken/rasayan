@@ -157,3 +157,25 @@ Measured at load 2.3–2.5, with the reference rows at their quiet values (micha
 probe of the scan: 109 ns for one residue (filling the ring's first 26 positions), 322 ns for 20 residues that start
 no pattern, 1,268 ns for 100. That is about 12 ns a character for the decode and the first-character dispatch. The
 review loaded each position's code and start byte in place instead of through the ring helper (410 → 383 ns).
+
+## M4a part 1: glycolysis
+
+| Benchmark | Rust 1.2.0 (ns) | Cyrius (ns) | Before review (ns) | Notes |
+|---|---|---|---|---|
+| glycolysis_tick | 112.68 | 755 | 808 | Rust's loop body: a default state, one tick of 0.01 s at ATP 6, ADP 0.5, NAD+/NADH 700; two correctly rounded `pow` (PFK-1's and pyruvate kinase's Hill fractions, ~146 ns each, ADR 0003) against glibc's ~12 |
+
+Cyrius only:
+
+| Benchmark | Cyrius (ns) | Notes |
+|---|---|---|
+| tick, the state stepped on (no reset) | 777 | the pools move off the default |
+| tick_regulated, modifier 0.3 | 751 | the network's entry: `tick` with citrate's PFK-1 modifier |
+| gapdh_nad_factor | 21 | one guard, two divisions |
+| guard/take, guard/shift | 8, 10 | 10 and 17 before the review |
+
+Measured at load 2.0–2.7 (another project's jobs), with the reference rows at their quiet values (michaelis_menten
+12 ns, nernst 80 ns, `_ry_cr_pow` 146 ns). After the two `pow` calls (~290 ns), the rest of the tick is about 75 calls
+to the rate laws, the guards and the Rust-semantics helpers, which Rust inlines into its loop. The review made each
+transfer one call instead of two or three: `_ry_guard_take` compares its operands directly (both are > 0 there), and
+`_ry_guard_shift` writes its `take`s out (glycolysis_tick 808 → 755 ns, bioenergy_tick 152 → 148). The rate laws stay
+calls: they are `src/enzyme.cyr`'s public functions, multi-statement, so `#inline` does not take them at the pin.

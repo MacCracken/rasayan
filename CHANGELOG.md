@@ -15,10 +15,36 @@ the profiles, and step 10's upstream drafts). M0 is complete. M1 part 1 (the fou
 and integrators), part 2 (logging, the failure events, the surface-parity and Rust-test gates) and part 3 (the
 JSON writers and readers) follow: M1 is complete. M2 part 1 (enzyme), part 2 (membrane), part 3 (signal), part 4
 (metabolism) and part 5 (energy) follow: M2 is complete. M3 part 1 (protein), part 2 (alignment), part 3
-(ptm) and part 4 (domain) follow: M3 is complete.
+(ptm) and part 4 (domain) follow: M3 is complete. M4a part 1 (glycolysis) follows.
 
 ### Added
 
+- **src/glycolysis.cyr**, **src/glycolysis_data.cyr** (M4a part 1) — `glycolysis.rs` transcribed (P9: every rate,
+  then every pool-capped transfer, in Rust's order): `RyGlycolysisState`, `RyGlycolysisConfig` and `RyGlycolysisFlux`;
+  their defaults from the generated consts; both validators (the Vmax, then the divisors, then the fold change);
+  `ry_glycolysis_state_tick` (fills the caller's flux); `total_intermediates` and `total_carbon`; the serde codecs of
+  all three. Also the crate-private entry points the metabolic network calls at M5: `tick_regulated` (citrate's PFK-1
+  modifier), `gapdh_nad_factor` and `GlycolysisFlux::accumulate`. The flux's `step_rates: [f64; 10]` is ten
+  consecutive fields named for their enzymes, with `ry_glycolysis_flux_step_rates` as the array view
+  ([ADR 0002](docs/adr/0002-port-api-divergences.md) row 14). Rust's `glycolysis_tick` trace event is a level-gated
+  sakshi event under `rasayan::glycolysis`
+- **tests/golden/glycolysis.tsv** (M4a part 1, 3,239 rows, a new module) — the defaults. Both validators over every
+  field's edges, and pairs where Rust's check order picks the error. The pools over 255 states. `gapdh_nad_factor`
+  over 226 ratios. 1,483 single `tick` rows: each state field and each of the 38 parameters over its edges, 28
+  cofactor triples (the ATP/ADP ratio's EPSILON edge and its overflow, NAD+/NADH from 0.1 to 1e300), 20 time steps
+  from 5e-324 to f64::MAX, and seeded states and configs. 124 `tick_regulated` rows over the PFK-1 modifier's range,
+  57 `accumulate` rows, 32 trajectories (Rust's tests, the Randle cycle, a fed cell, hypoxia, an energy crisis, enzyme
+  deficiencies, a degenerate start) and the serde documents. 1,588 rows are class C, through PFK-1's and pyruvate
+  kinase's Hill `powf`. Every row matches at 0 ulp, and the corrected `pow` changes none
+  (tests/golden/glycolysis.cr.tsv: 0 rows). The crate-private rows run through verbatim copies
+  (`scripts/oracle/src/v_glycolysis.rs`), and every `tick` row also runs through the copy at a modifier of 1.0, which
+  must give the oracle's bits. `validate.py` re-derives every row (110,092 independent checks) and `mpfr_ref.py`
+  models the class C and T rows
+- **tests/glycolysis.tcyr** (M4a part 1, 61 checks) — the 25 `glycolysis.rs` unit tests as they are written, and
+  the network's entry points, the trace event and the codecs' refusals: the Rust-test ledger at 372 of 723, 0 due and
+  unported. The fuzz harness reads every input as the three documents (884 read and written back bit for bit), and
+  steps every accepted valid state: it stays valid and conserves carbon
+- **benchmarks** (M4a part 1) — glycolysis_tick, Rust → Cyrius: 113 → 755 ns
 - **src/domain.cyr** (M3 part 4) — `domain.rs` transcribed: `RyDomainType` (CatalyticTriad reserved, as in Rust),
   `ry_scan_domains` (RGD, DEAD, C-terminal KDEL, the basic NLS, Walker A, the PS00018 EF-hand loop, the leucine
   zipper's heptads and the PS00028 C2H2 finger at its nine spacings, matched by character with positions as
@@ -486,6 +512,18 @@ JSON writers and readers) follow: M1 is complete. M2 part 1 (enzyme), part 2 (me
 
 ### Changed
 
+- **src/guard.cyr** (M4a part 1) — `_ry_guard_take` compares its operands directly instead of calling `_ry_min`
+  (both are > 0 there, so neither is NaN or a zero, and equal operands have equal bits), and `_ry_guard_shift` writes
+  both of its `take`s out: one call per transfer on every pathway tick. The 3,440 guard rows and every tick row are
+  unchanged
+- **scripts/oracle/src/verbatim.rs** (M4a part 1) — a copy may hold several `// @verbatim` blocks. An inherent method
+  can only be copied inside an `impl` of a local mirror type, so `v_glycolysis.rs` holds three
+- **tests/parity.tcyr** (M4a part 1) — the glycolysis dispatcher: a config is the default with `i:<field> f:<value>`
+  overrides; `tick` and `tick_regulated` gated at 0 ulp (class C)
+- **scripts/surface_parity.py**, **scripts/rust_test_ledger.py** (M4a part 1) — glycolysis is ported: its 21 public
+  items have their names
+- **cyrius.cyml** (M4a part 1) — `src/glycolysis_data.cyr` and `src/glycolysis.cyr` in the three bundles after
+  `src/domain.cyr`
 - **tests/parity.tcyr** (M3 part 4) — the domain dispatcher: each scan row also checks that a buffer one hit short
   is refused and left as it was, and that an exact buffer gives the same records
 - **scripts/surface_parity.py**, **scripts/rust_test_ledger.py** (M3 part 4) — domain is ported: its 14 public items
@@ -608,6 +646,9 @@ JSON writers and readers) follow: M1 is complete. M2 part 1 (enzyme), part 2 (me
 
 ### Performance
 
+- **src/guard.cyr** (M4a part 1, review) — the transfer guards without their inner calls: guard/take 10 → 8 ns,
+  guard/shift 17 → 10 ns; glycolysis_tick 808 → 755 ns (Rust 113: two correctly rounded `pow`, ~146 ns each, ADR
+  0003), bioenergy_tick 152 → 148 ns (Rust 27)
 - **src/domain.cyr** (M3 part 4, review) — each position's code and start byte loaded in place rather than through
   the ring helper (`#inline` leaves about 1 ns a call): domain_scan_20 410 → 383 ns (Rust 141)
 - **src/ptm.cyr** (M3 part 3, review) — the scan decodes the next character in place, and the myristoylation check

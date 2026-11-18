@@ -1,0 +1,483 @@
+# rasayan — src/glycolysis.cyr: Rust 1.2.0's glycolysis tests, ported
+# Stdlib auto-included via cyrius.cyml
+#
+# The 25 unit tests of `glycolysis.rs`, as they are written; tests/golden/glycolysis.tsv checks every method, single
+# step and trajectory besides. Beyond them: the trace event, the crate-private entry points the metabolic network
+# calls (tick_regulated, gapdh_nad_factor, accumulate), the step-rate view and the codecs' refusals. Literals Cyrius
+# can't write positionally (the subnormals, f64::EPSILON) are bit patterns.
+
+include "src/constants.cyr"
+include "src/constants_private.cyr"
+include "src/mathx_data.cyr"
+include "src/mathx.cyr"
+include "src/fmtf.cyr"
+include "src/error.cyr"
+include "src/guard.cyr"
+include "src/integrate.cyr"
+include "src/logging.cyr"
+include "src/json.cyr"
+include "src/enzyme_data.cyr"
+include "src/enzyme.cyr"
+include "src/glycolysis_data.cyr"
+include "src/glycolysis.cyr"
+
+# 1 when |a − b| < tol.
+fn near(a: f64, b: f64, tol: f64) {
+    var d: f64 = f64_abs(a - b);
+    return d < tol;
+}
+
+# NaN (k 0), +inf (1), -inf (2): the non-finite values of Rust's hardening tests.
+fn nonfinite(k): f64 {
+    if (k == 0) { return _ry_nan(); }
+    var inf: f64 = _RY_INF;
+    if (k == 1) { return inf; }
+    return -inf;
+}
+
+# Step rate i (0-based, Rust's `step_rates[i]`) of flux `f`.
+fn rate(f: *RyGlycolysisFlux, i): f64 {
+    var r: f64 = load64(ry_glycolysis_flux_step_rates(f) + 8 * i);
+    return r;
+}
+
+# 1 when the state validates.
+fn gs_ok(p: *RyGlycolysisState) {
+    var t, v = ry_glycolysis_state_validate(p);
+    return is_ok(t);
+}
+
+# The validation outcome of the default config with field k (declaration order) set to x: 1 for Ok, else 0.
+fn cfg_ok_with(k, x: f64) {
+    var c: RyGlycolysisConfig;
+    ry_glycolysis_config_default(&c);
+    var w = &c;
+    store64(w + 8 * k, load64(&x));
+    var t, v = ry_glycolysis_config_validate(&c);
+    return is_ok(t);
+}
+
+# Rust's run_glycolysis: `steps` ticks of `dt` at ATP 6, ADP 0.5, NAD+/NADH 700 from the default state into *s; *total
+# sums the amounts and keeps the last tick's rates.
+fn run_glycolysis(steps, dt: f64, s: *RyGlycolysisState, total: *RyGlycolysisFlux) {
+    var c: RyGlycolysisConfig;
+    var f: RyGlycolysisFlux;
+    ry_glycolysis_state_default(s);
+    ry_glycolysis_config_default(&c);
+    ry_glycolysis_flux_default(total);
+    var k = 0;
+    while (k < steps) {
+        ry_glycolysis_state_tick(s, &c, 6.0, 0.5, 700.0, dt, &f);
+        var used: f64 = total.atp_consumed + f.atp_consumed;
+        var made: f64 = total.atp_produced + f.atp_produced;
+        var net: f64 = total.net_atp + f.net_atp;
+        var nadh: f64 = total.nadh_produced + f.nadh_produced;
+        var pyr: f64 = total.pyruvate_produced + f.pyruvate_produced;
+        total.atp_consumed = used;
+        total.atp_produced = made;
+        total.net_atp = net;
+        total.nadh_produced = nadh;
+        total.pyruvate_produced = pyr;
+        memcpy(ry_glycolysis_flux_step_rates(total), ry_glycolysis_flux_step_rates(&f), 80);
+        k = k + 1;
+    }
+    return 0;
+}
+
+# ── the captured events ──
+var _ev_buf[1024];
+var _ev_len = 0;
+
+# sakshi's subscriber: keeps the last event's message.
+fn _ev_hook(ts, level, category, msg, msg_len, extra) {
+    var n = msg_len;
+    if (n > 1024) { n = 1024; }
+    memcpy(&_ev_buf, msg, n);
+    _ev_len = msg_len;
+    return 0;
+}
+
+# 1 if the last captured event is the C string `want`.
+fn _ev_is(want) {
+    var n = strlen(want);
+    if (_ev_len != n) { return 0; }
+    return memeq(&_ev_buf, want, n);
+}
+
+# rust src/glycolysis.rs: test_default_state_positive, test_default_config_positive, test_total_intermediates
+# rust src/glycolysis.rs: test_total_carbon_counts
+fn basics() {
+    test_group("glycolysis: defaults and pools");
+    var s: RyGlycolysisState;
+    var c: RyGlycolysisConfig;
+    ry_glycolysis_state_default(&s);
+    ry_glycolysis_config_default(&c);
+    var glucose: f64 = s.glucose;
+    var g6p: f64 = s.g6p;
+    var pyr: f64 = s.pyruvate;
+    assert(glucose > 0.0 && g6p > 0.0 && pyr > 0.0, "the default state is positive");
+    var hk: f64 = c.hk_vmax;
+    var pfk: f64 = c.pfk_vmax;
+    var pk: f64 = c.pk_vmax;
+    assert(hk > 0.0 && pfk > 0.0 && pk > 0.0, "the default config is positive");
+    var total: f64 = ry_glycolysis_state_total_intermediates(&s);
+    var expected: f64 = 0.083 + 0.014 + 0.031 + 0.14 + 0.019 + 0.001 + 0.12 + 0.03 + 0.023;
+    assert(total > 0.0 && near(total, expected, 0.01), "the intermediates G6P through PEP");
+    memset(&s, 0, 88);
+    s.glucose = 1.0;
+    s.pyruvate = 2.0;
+    var carbon: f64 = ry_glycolysis_state_total_carbon(&s);
+    assert(near(carbon, 12.0, 0.000000000001), "6 per hexose, 3 per triose");
+    return 0;
+}
+
+# rust src/glycolysis.rs: test_validate_state, test_validate_config, test_validate_state_rejects_nan
+# rust src/glycolysis.rs: test_validate_config_rejects_bad_values
+fn validation() {
+    test_group("glycolysis: validation");
+    var s: RyGlycolysisState;
+    var c: RyGlycolysisConfig;
+    ry_glycolysis_state_default(&s);
+    assert_eq(gs_ok(&s), 1, "the default state validates");
+    s.glucose = -1.0;
+    var t1, v1 = ry_glycolysis_state_validate(&s);
+    assert_eq(v1, RY_ERR_NEGATIVE_CONCENTRATION, "negative glucose is refused");
+    var k = 0;
+    while (k < 2) {
+        ry_glycolysis_state_default(&s);
+        s.pyruvate = nonfinite(k);
+        var t2, v2 = ry_glycolysis_state_validate(&s);
+        assert_eq(v2, RY_ERR_NON_FINITE, "a non-finite pyruvate is refused");
+        k = k + 1;
+    }
+    ry_glycolysis_config_default(&c);
+    var t3, v3 = ry_glycolysis_config_validate(&c);
+    assert_eq(is_ok(t3), 1, "the default config validates");
+    # Rust's ten cases: hk_vmax NaN, pk_vmax inf, hk_km_glucose 0, hk_ki_g6p 0, pfk_atp_half_inhibition 0, tpi_km_r 0,
+    # pk_f16bp_ka 0, pfk_hill_n NaN, pk_f16bp_max_activation 0.5 and NaN.
+    var inf: f64 = _RY_INF;
+    assert_eq(cfg_ok_with(0, _ry_nan()), 0, "hk_vmax NaN");
+    assert_eq(cfg_ok_with(33, inf), 0, "pk_vmax inf");
+    assert_eq(cfg_ok_with(1, 0.0), 0, "hk_km_glucose 0");
+    assert_eq(cfg_ok_with(2, 0.0), 0, "hk_ki_g6p 0");
+    assert_eq(cfg_ok_with(10, 0.0), 0, "pfk_atp_half_inhibition 0");
+    assert_eq(cfg_ok_with(18, 0.0), 0, "tpi_km_r 0");
+    assert_eq(cfg_ok_with(36, 0.0), 0, "pk_f16bp_ka 0");
+    assert_eq(cfg_ok_with(9, _ry_nan()), 0, "pfk_hill_n NaN");
+    assert_eq(cfg_ok_with(37, 0.5), 0, "pk_f16bp_max_activation 0.5");
+    assert_eq(cfg_ok_with(37, _ry_nan()), 0, "pk_f16bp_max_activation NaN");
+    # The order picks the error: the Vmax first, then the divisors, then the fold change.
+    ry_glycolysis_config_default(&c);
+    c.hk_km_glucose = _ry_nan();
+    c.pk_vmax = -1.0;
+    var t4, v4 = ry_glycolysis_config_validate(&c);
+    assert_eq(v4, RY_ERR_NEGATIVE_CONCENTRATION, "a Vmax is checked before a Km");
+    ry_glycolysis_config_default(&c);
+    c.pk_f16bp_max_activation = _ry_nan();
+    c.pk_f16bp_ka = 0.0;
+    var t5, v5 = ry_glycolysis_config_validate(&c);
+    assert_eq(v5, RY_ERR_INVALID_PARAMETER, "a divisor is checked before the fold change");
+    assert_eq(cfg_ok_with(37, 1.0), 1, "a fold change of exactly 1 passes");
+    return 0;
+}
+
+# rust src/glycolysis.rs: test_single_tick_produces_flux, test_pyruvate_accumulates, test_net_atp_positive
+# rust src/glycolysis.rs: test_nadh_produced, test_glucose_consumed, test_concentrations_non_negative
+fn ticking() {
+    test_group("glycolysis: ticking");
+    var s: RyGlycolysisState;
+    var c: RyGlycolysisConfig;
+    var f: RyGlycolysisFlux;
+    ry_glycolysis_state_default(&s);
+    ry_glycolysis_config_default(&c);
+    ry_glycolysis_state_tick(&s, &c, 6.0, 0.5, 700.0, 0.01, &f);
+    var bad = 0;
+    var i = 0;
+    while (i < 10) {
+        var r: f64 = rate(&f, i);
+        if (r < 0.0) { bad = bad + 1; }
+        i = i + 1;
+    }
+    assert_eq(bad, 0, "every step runs forward from the resting cell");
+    var total: RyGlycolysisFlux;
+    run_glycolysis(100, 0.1, &s, &total);
+    var made: f64 = total.pyruvate_produced;
+    var pyr: f64 = s.pyruvate;
+    assert(made > 0.0 && pyr > 0.051, "pyruvate accumulates over 10 s");
+    var net: f64 = total.net_atp;
+    assert(net > 0.0, "net ATP is positive");
+    var nadh: f64 = total.nadh_produced;
+    assert(nadh > 0.0, "NADH is produced");
+    var glucose: f64 = s.glucose;
+    assert(glucose < 5.0, "glucose is consumed");
+    run_glycolysis(1000, 0.01, &s, &total);
+    assert_eq(gs_ok(&s), 1, "every concentration stays >= 0 over 1000 steps of 0.01 s");
+    return 0;
+}
+
+# rust src/glycolysis.rs: test_high_atp_inhibits_pfk, test_g6p_inhibits_hexokinase, test_no_glucose_no_flux
+fn regulation() {
+    test_group("glycolysis: regulation");
+    var s: RyGlycolysisState;
+    var c: RyGlycolysisConfig;
+    var normal: RyGlycolysisFlux;
+    var high: RyGlycolysisFlux;
+    ry_glycolysis_config_default(&c);
+    ry_glycolysis_state_default(&s);
+    ry_glycolysis_state_tick(&s, &c, 6.0, 0.5, 700.0, 0.1, &normal);
+    ry_glycolysis_state_default(&s);
+    ry_glycolysis_state_tick(&s, &c, 20.0, 0.1, 700.0, 0.1, &high);
+    var pn: f64 = normal.rate_pfk;
+    var ph: f64 = high.rate_pfk;
+    assert(ph < pn, "high ATP inhibits PFK-1");
+    ry_glycolysis_state_default(&s);
+    s.g6p = 50.0;
+    ry_glycolysis_state_tick(&s, &c, 6.0, 0.5, 700.0, 0.1, &high);
+    var hn: f64 = normal.rate_hk;
+    var hh: f64 = high.rate_hk;
+    assert(hh < hn, "G6P inhibits hexokinase");
+    ry_glycolysis_state_default(&s);
+    s.glucose = 0.0;
+    var k = 0;
+    while (k < 1000) {
+        ry_glycolysis_state_tick(&s, &c, 6.0, 0.5, 700.0, 0.1, &high);
+        k = k + 1;
+    }
+    ry_glycolysis_state_tick(&s, &c, 6.0, 0.5, 700.0, 0.1, &high);
+    var h0: f64 = high.rate_hk;
+    assert(h0 < 0.0000000001, "no glucose, no hexokinase flux");
+    return 0;
+}
+
+# rust src/glycolysis.rs: test_invalid_dt_is_noop, test_nan_inputs_sanitized, test_step_cap_limits_consumption
+fn hardening() {
+    test_group("glycolysis: hardening");
+    var s: RyGlycolysisState;
+    var d: RyGlycolysisState;
+    var c: RyGlycolysisConfig;
+    var f: RyGlycolysisFlux;
+    var zero: RyGlycolysisFlux;
+    ry_glycolysis_config_default(&c);
+    ry_glycolysis_state_default(&d);
+    ry_glycolysis_flux_default(&zero);
+    var k = 0;
+    while (k < 5) {
+        var dt: f64 = 0.0;
+        if (k == 1) { dt = -0.1; }
+        if (k > 1) { dt = nonfinite(k - 2); }
+        ry_glycolysis_state_default(&s);
+        memset(&f, 255, 120);
+        ry_glycolysis_state_tick(&s, &c, 6.0, 0.5, 700.0, dt, &f);
+        assert(memeq(&s, &d, 88) == 1 && memeq(&f, &zero, 120) == 1, "an invalid dt changes nothing, a zero flux");
+        k = k + 1;
+    }
+    # (NaN, 0.5, 700), (6, NaN, 700), (6, 0.5, NaN), (inf, -1, -inf)
+    var j = 0;
+    while (j < 4) {
+        var atp: f64 = 6.0;
+        var adp: f64 = 0.5;
+        var nad: f64 = 700.0;
+        if (j == 0) { atp = _ry_nan(); }
+        if (j == 1) { adp = _ry_nan(); }
+        if (j == 2) { nad = _ry_nan(); }
+        if (j == 3) {
+            atp = nonfinite(1);
+            adp = -1.0;
+            nad = nonfinite(2);
+        }
+        ry_glycolysis_state_default(&s);
+        ry_glycolysis_state_tick(&s, &c, atp, adp, nad, 0.1, &f);
+        var fin = 1;
+        var w = &f;
+        var i = 0;
+        while (i < 15) {
+            var x: f64 = load64(w + 8 * i);
+            if (_ry_is_finite(x) == 0) { fin = 0; }
+            i = i + 1;
+        }
+        assert(gs_ok(&s) == 1 && fin == 1, "bad cofactors keep the state valid, the flux finite");
+        j = j + 1;
+    }
+    ry_glycolysis_state_default(&s);
+    s.glucose = 0.000001;
+    ry_glycolysis_state_tick(&s, &c, 6.0, 0.5, 700.0, 100.0, &f);
+    var g: f64 = s.glucose;
+    var moved: f64 = f.rate_hk * 100.0;
+    assert(g == 0.0 && near(moved, 0.000001, 0.000000000000000001), "hexokinase takes at most the glucose there is");
+    return 0;
+}
+
+# rust src/glycolysis.rs: test_total_carbon_conserved, test_large_dt_no_negative_pools_no_carbon_created
+fn conservation() {
+    test_group("glycolysis: carbon");
+    var s: RyGlycolysisState;
+    var c: RyGlycolysisConfig;
+    var f: RyGlycolysisFlux;
+    ry_glycolysis_config_default(&c);
+    ry_glycolysis_state_default(&s);
+    var initial: f64 = ry_glycolysis_state_total_carbon(&s);
+    var out: f64 = 0.0;
+    var k = 0;
+    while (k < 1000) {
+        ry_glycolysis_state_tick(&s, &c, 6.0, 0.5, 700.0, 0.1, &f);
+        out = out + f.pyruvate_produced;
+        k = k + 1;
+    }
+    var carbon: f64 = ry_glycolysis_state_total_carbon(&s);
+    var tol: f64 = 0.000000001 * initial;
+    assert(near(carbon, initial, tol) && out > 0.1, "carbon is conserved over 1000 steps, and reaches pyruvate");
+    var dts: f64 = 1.0;
+    var r = 0;
+    while (r < 2) {
+        ry_glycolysis_state_default(&s);
+        var start: f64 = ry_glycolysis_state_total_carbon(&s);
+        var ok = 1;
+        var n = 0;
+        while (n < 200) {
+            var prev: f64 = s.pyruvate;
+            ry_glycolysis_state_tick(&s, &c, 6.0, 0.5, 700.0, dts, &f);
+            var now: f64 = s.pyruvate;
+            var made: f64 = f.pyruvate_produced;
+            if (gs_ok(&s) == 0 || near(now - prev, made, 0.000000000001) == 0) { ok = 0; }
+            var i = 0;
+            while (i < 10) {
+                var x: f64 = rate(&f, i);
+                if (_ry_is_finite(x) == 0) { ok = 0; }
+                i = i + 1;
+            }
+            n = n + 1;
+        }
+        var end: f64 = ry_glycolysis_state_total_carbon(&s);
+        var cap: f64 = start * (1.0 + 0.000000000001);
+        var drift: f64 = 0.000000001 * start;
+        assert(ok == 1 && end <= cap && near(end, start, drift), "a large dt: no negative pool, no carbon created");
+        dts = 5.0;
+        r = r + 1;
+    }
+    return 0;
+}
+
+# The crate-private entry points the metabolic network calls (M5): tick_regulated, gapdh_nad_factor, accumulate.
+fn network() {
+    test_group("glycolysis: the network's entry points");
+    var s: RyGlycolysisState;
+    var t: RyGlycolysisState;
+    var c: RyGlycolysisConfig;
+    var f: RyGlycolysisFlux;
+    var g: RyGlycolysisFlux;
+    ry_glycolysis_config_default(&c);
+    ry_glycolysis_state_default(&s);
+    ry_glycolysis_state_default(&t);
+    ry_glycolysis_state_tick(&s, &c, 6.0, 0.5, 700.0, 0.1, &f);
+    _ry_glycolysis_state_tick_regulated(&t, &c, 6.0, 0.5, 700.0, 1.0, 0.1, &g);
+    assert(memeq(&s, &t, 88) == 1 && memeq(&f, &g, 120) == 1, "tick is tick_regulated at a modifier of 1");
+    ry_glycolysis_state_default(&t);
+    _ry_glycolysis_state_tick_regulated(&t, &c, 6.0, 0.5, 700.0, 0.0, 0.1, &g);
+    var shut: f64 = g.rate_pfk;
+    assert(shut == 0.0, "a modifier of 0 stops PFK-1");
+    ry_glycolysis_state_default(&t);
+    _ry_glycolysis_state_tick_regulated(&t, &c, 6.0, 0.5, 700.0, 2.0, 0.1, &g);
+    assert(memeq(&f, &g, 120) == 1, "a modifier above 1 is clamped to 1");
+    ry_glycolysis_state_default(&t);
+    _ry_glycolysis_state_tick_regulated(&t, &c, 6.0, 0.5, 700.0, _ry_nan(), 0.1, &g);
+    var nan_rate: f64 = g.rate_pfk;
+    assert(nan_rate == 0.0, "a NaN modifier counts as 0");
+    var one: f64 = _ry_glycolysis_gapdh_nad_factor(700.0);
+    assert(near(one, 1.0, 0.000000000000001), "the GAPDH factor is 1 at the resting ratio");
+    var low: f64 = _ry_glycolysis_gapdh_nad_factor(0.5);
+    assert(low > 0.0 && low < one, "lower but running at a low ratio (the Pasteur mode)");
+    var none: f64 = _ry_glycolysis_gapdh_nad_factor(_ry_nan());
+    assert(none == 0.0, "a NaN ratio gives 0");
+    # accumulate: two half steps sum to the amounts, and the rates weighted by ½ average.
+    var total: RyGlycolysisFlux;
+    ry_glycolysis_flux_default(&total);
+    _ry_glycolysis_flux_accumulate(&total, &f, 0.5);
+    _ry_glycolysis_flux_accumulate(&total, &f, 0.5);
+    var used: f64 = total.atp_consumed;
+    var once: f64 = f.atp_consumed;
+    var hk2: f64 = total.rate_hk;
+    var hk1: f64 = f.rate_hk;
+    assert(used == once + once && hk2 == hk1 * 0.5 + hk1 * 0.5, "amounts summed, rates weighted");
+    return 0;
+}
+
+# Rust's trace event, under the target `rasayan::glycolysis`, its fields in Rust's order (after the cofactor guards).
+fn events() {
+    test_group("glycolysis: trace event");
+    sakshi_set_emit_hook(&_ev_hook);
+    sakshi_set_level(SK_TRACE);
+    var s: RyGlycolysisState;
+    var c: RyGlycolysisConfig;
+    var f: RyGlycolysisFlux;
+    ry_glycolysis_state_default(&s);
+    ry_glycolysis_config_default(&c);
+    ry_glycolysis_state_tick(&s, &c, 6.0, 0.5, 700.0, 0.01, &f);
+    assert_eq(_ev_is("rasayan::glycolysis: glycolysis_tick dt=0.01 atp=6 adp=0.5 glucose=5"), 1, "glycolysis_tick");
+    ry_glycolysis_state_tick(&s, &c, _ry_nan(), -1.0, 700.0, 0.01, &f);
+    assert_eq(_ev_is("rasayan::glycolysis: glycolysis_tick dt=0.01 atp=0 adp=0 glucose=4.999150045330916"), 1,
+      "the sanitized cofactors");
+    _ev_len = 0;
+    ry_glycolysis_state_tick(&s, &c, 6.0, 0.5, 700.0, 0.0, &f);
+    assert_eq(_ev_len, 0, "no event for an invalid dt");
+    sakshi_set_level(SK_INFO);
+    ry_glycolysis_state_tick(&s, &c, 6.0, 0.5, 700.0, 0.01, &f);
+    assert_eq(_ev_len, 0, "below TRACE, nothing");
+    sakshi_clear_emit_hook();
+    return 0;
+}
+
+# rust src/glycolysis.rs: test_serde_roundtrip_state, test_serde_roundtrip_config, test_serde_roundtrip_flux
+fn serde() {
+    test_group("glycolysis: serde round trips");
+    var sb = str_builder_new();
+    var s: RyGlycolysisState;
+    var back: RyGlycolysisState;
+    ry_glycolysis_state_default(&s);
+    var t1, v1 = ry_glycolysis_state_to_json(sb, &s);
+    var t2, v2 = ry_glycolysis_state_from_json(load64(sb), load64(sb + 8), &back);
+    assert(is_ok(t2) == 1 && memeq(&back, &s, 88) == 1, "the state reads back");
+    var c: RyGlycolysisConfig;
+    var cb: RyGlycolysisConfig;
+    ry_glycolysis_config_default(&c);
+    store64(sb + 8, 0);
+    var t3, v3 = ry_glycolysis_config_to_json(sb, &c);
+    var t4, v4 = ry_glycolysis_config_from_json(load64(sb), load64(sb + 8), &cb);
+    assert(is_ok(t4) == 1 && memeq(&cb, &c, 304) == 1, "the config reads back");
+    var f: RyGlycolysisFlux;
+    var fb: RyGlycolysisFlux;
+    ry_glycolysis_state_tick(&s, &c, 6.0, 0.5, 700.0, 0.1, &f);
+    store64(sb + 8, 0);
+    var t5, v5 = ry_glycolysis_flux_to_json(sb, &f);
+    var t6, v6 = ry_glycolysis_flux_from_json(load64(sb), load64(sb + 8), &fb);
+    var net: f64 = fb.net_atp;
+    var used: f64 = fb.atp_consumed;
+    var nadh: f64 = fb.nadh_produced;
+    var tol: f64 = 0.000000000001;
+    assert(is_ok(t6) == 1 && near(net, f.net_atp, tol) && near(used, f.atp_consumed, tol)
+      && near(nadh, f.nadh_produced, tol), "the flux reads back");
+    assert(memeq(&fb, &f, 120) == 1, "bit for bit (bayan's parse is correctly rounded)");
+    var short = "[1,2,1,1,1,[1,2,3]]";
+    var t7, v7 = ry_glycolysis_flux_from_json(short, strlen(short), &fb);
+    assert_eq(v7, RY_ERR_DESERIALIZE, "step_rates must hold ten numbers");
+    return 0;
+}
+
+# Runs the glycolysis suite.
+fn main() {
+    alloc_init();
+    basics();
+    validation();
+    ticking();
+    regulation();
+    hardening();
+    conservation();
+    network();
+    events();
+    serde();
+    return assert_summary();
+}
+
+var exit_code = main();
+# assert_summary() returns the failure count; a wait status is 8 bits, so any failure exits 1.
+if (exit_code > 0) { exit_code = 1; }
+sys_exit_group(exit_code);

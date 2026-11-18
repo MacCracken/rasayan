@@ -1312,3 +1312,49 @@ new to the corpus (ptm, domain). The shared forms M3 settled are a sequence as `
 caller buffers with `RY_ERR_BUFFER_TOO_SMALL` and nothing written on a refusal, and strings owned by a result as byte
 ranges into the input. Byte reading where every non-residue is rejected or skipped (protein, alignment) and character
 reading where a wildcard can take any character (ptm, domain) are both used. 139 Rust tests are ported with them.
+
+## 7. M4 (Metabolic pathways)
+
+### 7a. M4a part 1: glycolysis (2026-11-17)
+
+**What is compared.** `tests/golden/glycolysis.tsv` (new, 3,239 rows), through the oracle's public API and, for the
+three crate-private entry points the metabolic network calls (`tick_regulated`, `gapdh_nad_factor`,
+`GlycolysisFlux::accumulate`), through verbatim copies (`scripts/oracle/src/v_glycolysis.rs`). The rows cover:
+- the two defaults, and both validators over every field's edges, plus pairs where Rust's check order picks the error
+  (the Vmax loop, then the divisors, then the fold change);
+- the pools over 255 states, and `gapdh_nad_factor` over 226 ratios;
+- 1,483 single `tick` rows: each of the 11 state fields over 14 edges, each of the 38 parameters over 13, 28
+  cofactor triples (the ATP/ADP ratio's `adp > EPSILON` edge and its overflow, NAD+/NADH from 0.1 to 1e300), 20
+  time steps from 5e-324 to f64::MAX, and seeded states and configs;
+- 124 `tick_regulated` rows over the PFK-1 modifier's range, 57 `accumulate` rows, and the serde documents;
+- 32 trajectory frames: Rust's tests (0.1 s and 0.01 s to 1,000 steps, no glucose, 200 steps of 1 s and 5 s), the
+  Randle cycle, a fed cell, hypoxia, an energy crisis, enzyme deficiencies and a degenerate start.
+
+A config is the default with overrides (`i:<n>` then n pairs `i:<field> f:<value>`), so a row carries only what it
+changes. The class follows the branch: C where PFK-1's or pyruvate kinase's Hill fraction reaches `powf` (1,588), B
+elsewhere (812: the rest is + − × ÷, √ and `powi(2)`, the inline x·x), T for the scripts (32), A for the validators,
+the defaults and the documents (807). Two checks guard the copy, both before a row is written. Every block is a
+byte-for-byte span of `glycolysis.rs`, and every `tick` row is also run through the copy's `tick_regulated` at a
+modifier of 1.0, which must give the oracle's own `tick` bits.
+
+| Check | Result |
+|---|---|
+| every row | identical on the first run of each dispatcher (classes B and C at 0 ulp, the trajectories bit for bit), but 2 read rows: serde_json, built without `float_roundtrip`, misread two 17-digit rates of a ticked flux by 1 ulp. Under ADR 0004 a read row records each number's correctly rounded value, so the emitter re-reads the tokens and notes serde_json's value |
+| corrected oracle | `mpfr_ref.py` reproduces all 1,620 class-C and class-T rows with glibc's `pow`; the correctly rounded `pow` changes none (`glycolysis.cr.tsv`: 0 rows) |
+| `validate.py` | every row re-derived from its own transcription of `glycolysis.rs`: the pinned lines, the constants read from the source, the validators' field lists and guards read from validate's text, the step's class from whether the model called `pow`. 110,092 checks in all; one flipped bit in a step, a trajectory or a read row is reported |
+| Rust tests | 25 ported (`tests/glycolysis.tcyr`, 61 checks, the network's entry points and the trace event among them); the ledger at 372 of 723, 0 due and unported |
+| fuzz | every input also read as the three documents (884 accepted, each written and read back bit for bit); an accepted valid state stepped 0.5 s and 50 s stays valid and conserves carbon to 1e-12 |
+| four targets (`scripts/gates.sh`, 362 s) | the same summary on x86_64 ELF, `--bounds`, PE and aarch64: 106,899 ok, 234 accepted, 0 failed; coverage 164 of 164 public fns executed. The run's one failure was clippy on the new emitter (two collapsible `if`s, a needless `vec!`); fixed, clippy and `--check` rerun clean, the corpus unchanged |
+
+**The Cyrius forms** (ADR 0002 rows 7, 10, 14): the tick updates the state in place and fills the caller's flux; the
+flux's `step_rates: [f64; 10]` is ten consecutive fields named for their enzymes, with
+`ry_glycolysis_flux_step_rates` as the array view (a struct holds no array field at the pin); the two types' field
+names are generated as byte blobs beside their consts (the config's 38 names exceed a 120-column literal). The tick
+loads the state into locals, computes the ten rates, then applies the ten transfers in Rust's order and stores the
+state back. That equals Rust's in-place updates: nothing aliases, and every rate reads the state at the start of the
+tick.
+
+**Benchmarks** (`docs/benchmarks-rust-v-cyrius.md`): glycolysis_tick 112.7 → 755 ns (808 before the review). The two
+correctly rounded `pow` calls take ~290 ns (ADR 0003). The rest is the rate-law and guard calls Rust inlines. The
+review made `take` and `shift` one call each (`_ry_guard_take` compares its operands directly, `_ry_guard_shift`
+writes its `take`s out), which every pathway tick shares.

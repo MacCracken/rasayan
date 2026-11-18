@@ -659,9 +659,170 @@ PROTEIN = {
     "protein::isoelectric_point_with": lambda a, P: [_pi(a[0], a[1], P)],
 }
 
+# ── glycolysis (M4a part 1) ──
+# GlycolysisState::tick_regulated (tick is it at a PFK-1 modifier of 1.0) in Rust's order: the ten rates from the
+# state at the start of the step, then the transfers in pathway order, each capped at the pool it drains. The two
+# Hill fractions (PFK-1, pyruvate kinase) are its only primitive calls; `powi(2)` is the inline x·x.
+
+G_STATE = 11
+G_DEFAULT = [  # GlycolysisConfig::default(), in declaration order (hk_vmax … pk_f16bp_max_activation)
+    0.1, 0.1, 0.02, 1.0, 0.4, 0.8, 0.12, 0.1, 0.03, 3.8, 6.0, 0.5, 0.012, 0.2, 0.1, 5.0, 0.47, 2.5, 0.4, 0.5, 0.05,
+    1.0, 0.003, 0.5, 0.2, 0.5, 0.2, 0.3, 0.1, 0.3, 0.04, 0.15, 0.05, 0.5, 0.2, 4.0, 0.05, 3.0,
+]
+G_HK_KM_ATP, G_PFK_KM_ATP, G_PGK_KM_ADP, G_PK_KM_ADP = 0.4, 0.05, 0.3, 0.3  # glycolysis's Km(ATP / ADP) consts
+G_GAPDH_K = 0.1  # GAPDH_KM_NAD_FRACTION
+RESTING_NAD_RATIO, MAX_ATP_ADP_RATIO = 700.0, 100.0  # constants::
+
+
+def _hill_any(s_, k, n, P):
+    """`enzyme::hill_fraction` on any branch."""
+    s_ = _conc(s_)
+    if s_ <= 0.0 or n != n:
+        return 0.0
+    if k == 0.0:
+        return 1.0
+    if 0.0 < k < math.inf:
+        return 1.0 / (1.0 + P.pow(k / s_, n))
+    return 0.0
+
+
+def _mm(s_, vmax, km):
+    s_ = _conc(s_)
+    denom = km + s_
+    return vmax * s_ / denom if denom > 0.0 else 0.0
+
+
+def _rmm(s_, p, vf, kf, vr, kr):
+    if not (kf > 0.0 and kr > 0.0):
+        return 0.0
+    s_, p = _conc(s_), _conc(p)
+    num = vf * s_ / kf - vr * p / kr
+    den = 1.0 + s_ / kf + p / kr
+    return num / den if den > 0.0 else 0.0
+
+
+def _competitive(s_, i, vmax, km, ki):
+    i = _conc(i)
+    if i <= 0.0:
+        factor = 1.0
+    elif ki > 0.0:
+        factor = 1.0 + i / ki
+    else:
+        return 0.0
+    return _mm(s_, vmax, km * factor)
+
+
+def _sat(x, k):
+    return x / (k + x) if x > 0.0 else 0.0
+
+
+def _gapdh(r):
+    r = _conc(r)
+    resting = RESTING_NAD_RATIO / (G_GAPDH_K + (1.0 + G_GAPDH_K) * RESTING_NAD_RATIO)
+    return r / (G_GAPDH_K + (1.0 + G_GAPDH_K) * r) / resting
+
+
+def _g_config(a, at):
+    """The config at a[at] (the default with `n` overrides) and the index after it."""
+    c = list(G_DEFAULT)
+    n = a[at]
+    for j in range(n):
+        c[a[at + 1 + 2 * j]] = a[at + 2 + 2 * j]
+    return c, at + 1 + 2 * n
+
+
+def _g_tick(st, c, atp, adp, nad, pfk, dt, P):
+    """One tick_regulated on the 11 state values: (state after, the 15 flux values)."""
+    if not (math.isfinite(dt) and dt > 0.0):
+        return list(st), [0.0] * 15
+    pfk, atp, adp, nad = _unit(pfk), _conc(atp), _conc(adp), _conc(nad)
+    glc, g6p, f6p, f16bp, dhap, g3p, bpg13, pg3, pg2, pep, pyr = st
+    v1 = _competitive(glc, g6p, c[0], c[1], c[2]) * _sat(atp, G_HK_KM_ATP)
+    v2 = _rmm(g6p, f6p, c[3], c[4], c[5], c[6])
+    ratio = atp / adp if adp > M_EPS else MAX_ATP_ADP_RATIO
+    q = _fdiv(ratio, c[10])
+    factor = 1.0 / (1.0 + q * q)
+    v3 = c[7] * factor * pfk * _hill_any(f6p, c[8], c[9], P) * _sat(atp, G_PFK_KM_ATP)
+    v4 = _mm(f16bp, c[11], c[12]) - _mm(math.sqrt(dhap * g3p) if dhap * g3p >= 0.0 else math.nan, c[13], c[14])
+    v5 = _rmm(dhap, g3p, c[15], c[16], c[17], c[18])
+    v6 = _mm(g3p, c[19] * _gapdh(nad), c[20])
+    v7 = _rmm(bpg13, pg3, c[21], c[22], c[23], c[24])
+    v7 = v7 * _sat(adp, G_PGK_KM_ADP) if v7 >= 0.0 else v7 * _sat(atp, G_PGK_KM_ADP)
+    v8 = _rmm(pg3, pg2, c[25], c[26], c[27], c[28])
+    v9 = _rmm(pg2, pep, c[29], c[30], c[31], c[32])
+    act = _rust_min(1.0 + _fdiv(f16bp, c[36]), c[37])
+    v10 = c[33] * act * _hill_any(pep, c[34], c[35], P) * _sat(adp, G_PK_KM_ADP)
+    a1 = _take(v1 * dt, glc)
+    glc, g6p = glc - a1, g6p + a1
+    a2 = _shift(v2 * dt, g6p, f6p)
+    g6p, f6p = g6p - a2, f6p + a2
+    a3 = _take(v3 * dt, f6p)
+    f6p, f16bp = f6p - a3, f16bp + a3
+    a4 = _shift(v4 * dt, f16bp, _rust_min(dhap, g3p))
+    f16bp, dhap, g3p = f16bp - a4, dhap + a4, g3p + a4
+    a5 = _shift(v5 * dt, dhap, g3p)
+    dhap, g3p = dhap - a5, g3p + a5
+    a6 = _take(v6 * dt, g3p)
+    g3p, bpg13 = g3p - a6, bpg13 + a6
+    a7 = _shift(v7 * dt, bpg13, pg3)
+    bpg13, pg3 = bpg13 - a7, pg3 + a7
+    a8 = _shift(v8 * dt, pg3, pg2)
+    pg3, pg2 = pg3 - a8, pg2 + a8
+    a9 = _shift(v9 * dt, pg2, pep)
+    pg2, pep = pg2 - a9, pep + a9
+    a10 = _take(v10 * dt, pep)
+    pep, pyr = pep - a10, pyr + a10
+    consumed, produced, inv = a1 + a3, a7 + a10, 1.0 / dt
+    flux = [consumed, produced, produced - consumed, a6, a10] + [x * inv for x in (a1, a2, a3, a4, a5, a6, a7, a8,
+                                                                                    a9, a10)]
+    return [glc, g6p, f6p, f16bp, dhap, g3p, bpg13, pg3, pg2, pep, pyr], flux
+
+
+def _g_step(a, P, regulated):
+    st = a[:G_STATE]
+    c, k = _g_config(a, G_STATE)
+    if regulated:
+        atp, adp, nad, pfk, dt = a[k:k + 5]
+    else:
+        (atp, adp, nad, dt), pfk = a[k:k + 4], 1.0
+    s2, flux = _g_tick(st, c, atp, adp, nad, pfk, dt, P)
+    return s2 + flux
+
+
+def _g_trajectory(a, P):
+    """A class-T script: the state, the config, then `1 atp adp nad dt k`, `2 atp adp nad pfk dt k`, `3 field x`."""
+    st = list(a[:G_STATE])
+    c, k = _g_config(a, G_STATE)
+    flux = [0.0] * 15
+    while k < len(a):
+        op = a[k]
+        if op == 1:
+            atp, adp, nad, dt, n = a[k + 1:k + 6]
+            for _ in range(n):
+                st, flux = _g_tick(st, c, atp, adp, nad, 1.0, dt, P)
+            k += 6
+        elif op == 2:
+            atp, adp, nad, pfk, dt, n = a[k + 1:k + 7]
+            for _ in range(n):
+                st, flux = _g_tick(st, c, atp, adp, nad, pfk, dt, P)
+            k += 7
+        elif op == 3:
+            st[a[k + 1]] = a[k + 2]
+            k += 3
+        else:
+            raise ValueError(f"no operation {op}")
+    return st + flux
+
+
+GLYCOLYSIS = {
+    "glycolysis::GlycolysisState::tick": lambda a, P: _g_step(a, P, False),
+    "glycolysis::GlycolysisState::tick_regulated": lambda a, P: _g_step(a, P, True),
+    "glycolysis::GlycolysisState::trajectory": _g_trajectory,
+}
+
 # The modules with class-C (and class-T) rows beyond math, and their models.
 MODELS = {"integrate": INTEGRATE, "enzyme": ENZYME, "membrane": MEMBRANE, "signal": SIGNAL, "metabolism": METABOLISM,
-          "energy": ENERGY, "protein": PROTEIN}
+          "energy": ENERGY, "protein": PROTEIN, "glycolysis": GLYCOLYSIS}
 
 
 def _arg(tok):
