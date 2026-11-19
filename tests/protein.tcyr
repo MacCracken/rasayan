@@ -806,6 +806,21 @@ fn serde() {
     return 0;
 }
 
+# 2.0.1: a negative length reads as an empty sequence (None), as it always did for the scans.
+fn negative_lengths() {
+    test_group("protein: a negative length is an empty sequence");
+    var mw: f64 = 0.0;
+    var pi: f64 = 0.0;
+    var ec: RyExtinctionCoefficient;
+    assert_eq(ry_molecular_weight("ACD", 0 - 3, &mw), 0, "molecular_weight: None");
+    assert_eq(ry_isoelectric_point("ACD", 0 - 3, &pi), 0, "isoelectric_point: None");
+    assert_eq(ry_extinction_coefficient("WYC", 0 - 3, &ec), 0, "extinction_coefficient: None");
+    var ss[8];
+    var t, v = ry_chou_fasman("ACD", 0 - 3, &ss, 8);
+    assert(is_err_result(t) == 0 && v == 0, "chou_fasman: Ok(0), Rust's None");
+    return 0;
+}
+
 # Runs the protein suite.
 fn main() {
     alloc_init();
@@ -823,6 +838,7 @@ fn main() {
     chou_fasman_rules();
     chou_fasman_proteins();
     serde();
+    negative_lengths();
     return assert_summary();
 }
 

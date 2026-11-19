@@ -213,6 +213,20 @@ fn serde() {
     return 0;
 }
 
+# 2.0.1: a negative length, which no `&str` has, reads as an empty sequence; 2.0.0's Needleman-Wunsch sized its
+# scratch from it and returned the word before its allocation as the score.
+fn negative_lengths() {
+    test_group("alignment: a negative length is an empty sequence");
+    var score = 12345;
+    var t1, v1 = ry_needleman_wunsch("ACD", 3, "ACD", 0 - 1, RY_MATRIX_BLOSUM62, 0 - 4, &score);
+    var t2, v2 = ry_needleman_wunsch("ACD", 0 - 2, "ACD", 3, RY_MATRIX_BLOSUM62, 0 - 4, &score);
+    assert(is_err_result(t1) == 0 && v1 == 0 && is_err_result(t2) == 0 && v2 == 0, "NW: None (Ok(0)), as for empty");
+    assert_eq(score, 12345, "and *out untouched");
+    var s: RyAlignmentScore;
+    assert_eq(ry_score_alignment("AAAAA", 0 - 5, "AAAAA", 0 - 5, RY_MATRIX_BLOSUM62, &s), 0, "score_alignment: None");
+    return 0;
+}
+
 # Runs the alignment suite.
 fn main() {
     alloc_init();
@@ -220,6 +234,7 @@ fn main() {
     scoring();
     needleman_wunsch();
     serde();
+    negative_lengths();
     return assert_summary();
 }
 

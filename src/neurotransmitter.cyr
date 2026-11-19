@@ -10,14 +10,16 @@
 # - acetylcholine: choline + acetyl-CoA → ACh (ChAT) → AChE → choline, so choline + ACh is conserved;
 # - β-endorphin from POMC cleavage (stimulus-driven), cleared by peptidases.
 # Every production / first-order loss is integrated exactly over dt (integrate's `produce_decay` and `relax`), every
-# precursor-consuming flux capped at the precursor the step has. Seven bridge functions give steady-state levels.
+# precursor-consuming flux capped at the precursor the step has. Six bridge functions for mastishk: four steady-state
+# levels (each a synthesis rate over max(clearance, RY_NEUROTRANSMITTER_MIN_CLEARANCE_RATE)), a synthesis rate and a
+# rate-over-level ratio.
 #
 # The Cyrius forms (ADR 0002 row 7): the state advances in place and the flux fills the caller's record. Every
 # operation is in the source's order (P9).
 
 # ── the types ──
 
-# The lumped neurotransmitter and precursor levels (uM-ish, normalized; resting ~1): serotonin, dopamine,
+# The lumped neurotransmitter and precursor levels (arbitrary normalized units, resting ~1): serotonin, dopamine,
 # norepinephrine, GABA, glutamate, acetylcholine, β-endorphin; the precursors tryptophan, tyrosine, glutamine, choline.
 struct RyNeurotransmitterState {
     serotonin: f64;
@@ -240,12 +242,7 @@ fn ry_neurotransmitter_state_tick(p: *RyNeurotransmitterState, c: *RyNeurotransm
   stimulus: f64, dt: f64, out: *RyNeurotransmitterFlux) {
     if (_ry_guard_valid_dt(dt) == 0) {
         if (_ry_trace_on() == 1) {
-            var hd0[24];
-            var b0[256];
-            var msg = "neurotransmitter_tick skipped: invalid dt";
-            var e0 = _ry_ev(&hd0, &b0, 256, "rasayan::neurotransmitter", msg);
-            _ry_ev_f(e0, "dt", dt);
-            _ry_trace(e0);
+            _ry_trace_f1("rasayan::neurotransmitter", "neurotransmitter_tick skipped: invalid dt", "dt", dt);
         }
         ry_neurotransmitter_flux_default(out);
         return 0;
@@ -253,12 +250,7 @@ fn ry_neurotransmitter_state_tick(p: *RyNeurotransmitterState, c: *RyNeurotransm
     var stim: f64 = _ry_guard_conc(stimulus);
     var accoa: f64 = _ry_guard_unit(acetyl_coa);
     if (_ry_trace_on() == 1) {
-        var hd[24];
-        var b[256];
-        var e = _ry_ev(&hd, &b, 256, "rasayan::neurotransmitter", "neurotransmitter_tick");
-        _ry_ev_f(e, "dt", dt);
-        _ry_ev_f(e, "stimulus", stim);
-        _ry_trace(e);
+        _ry_trace_f2("rasayan::neurotransmitter", "neurotransmitter_tick", "dt", dt, "stimulus", stim);
     }
     # Serotonin: Trp → 5-HT (TPH) → MAO; Trp resupplied by LAT1.
     var tph: f64 = ry_michaelis_menten(p.tryptophan, c.tph_vmax, c.tph_km);
@@ -364,8 +356,9 @@ fn ry_serotonin_synthesis_rate(tryptophan: f64, enzyme_activity: f64): f64 {
     return r;
 }
 
-# Steady-state dopamine: TH synthesis (Vmax 0.08 · activity, Km 2.0) over the reuptake rate. Mirrors
-# `dopamine_level`.
+# Steady-state dopamine: TH synthesis (Vmax 0.08 · activity, Km 2.0) over max(reuptake_rate,
+# RY_NEUROTRANSMITTER_MIN_CLEARANCE_RATE), so a zero, negative or NaN rate gives the floor's level, never inf; NaN,
+# infinite or negative precursor and activity read as 0. Mirrors `dopamine_level`.
 #must_use
 #pure
 fn ry_dopamine_level(tyrosine: f64, th_activity: f64, reuptake_rate: f64): f64 {
@@ -376,8 +369,9 @@ fn ry_dopamine_level(tyrosine: f64, th_activity: f64, reuptake_rate: f64): f64 {
     return r;
 }
 
-# GABA synthesis over the glutamate level (both sanitized by `conc`), 0 for glutamate at or below f64's epsilon.
-# Mirrors `gaba_glutamate_ratio`.
+# GABA synthesis over the glutamate level (both sanitized by `conc`), 0 for glutamate at or below f64's epsilon. A
+# synthesis RATE over a LEVEL, in s⁻¹: not comparable with ry_neurotransmitter_state_gaba_glutamate_ratio (a level
+# over a level), as Rust's doc warns. Mirrors `gaba_glutamate_ratio`.
 #must_use
 #pure
 fn ry_gaba_glutamate_ratio(gaba_synthesis: f64, glutamate_level: f64): f64 {
@@ -391,8 +385,8 @@ fn ry_gaba_glutamate_ratio(gaba_synthesis: f64, glutamate_level: f64): f64 {
     return 0.0;
 }
 
-# Steady-state norepinephrine: DBH synthesis (Vmax 0.04 · activity, Km 0.5) on `dopamine` over the degradation rate.
-# Mirrors `norepinephrine_level`.
+# Steady-state norepinephrine: DBH synthesis (Vmax 0.04 · activity, Km 0.5) on `dopamine` over max(degradation_rate,
+# RY_NEUROTRANSMITTER_MIN_CLEARANCE_RATE); NaN, infinite or negative inputs read as 0. Mirrors `norepinephrine_level`.
 #must_use
 #pure
 fn ry_norepinephrine_level(dopamine: f64, dbh_activity: f64, degradation_rate: f64): f64 {
@@ -403,8 +397,8 @@ fn ry_norepinephrine_level(dopamine: f64, dbh_activity: f64, degradation_rate: f
     return r;
 }
 
-# Steady-state acetylcholine: 0.1 · choline saturation (Km 1.0) · acetyl-CoA availability (`unit`) over the AChE
-# rate. Mirrors `acetylcholine_level`.
+# Steady-state acetylcholine: 0.1 · choline saturation (Km 1.0) · acetyl-CoA availability (`unit`: clamped into
+# [0, 1], NaN 0) over max(ache_rate, RY_NEUROTRANSMITTER_MIN_CLEARANCE_RATE). Mirrors `acetylcholine_level`.
 #must_use
 #pure
 fn ry_acetylcholine_level(choline: f64, acetyl_coa: f64, ache_rate: f64): f64 {
@@ -416,7 +410,8 @@ fn ry_acetylcholine_level(choline: f64, acetyl_coa: f64, ache_rate: f64): f64 {
     return r;
 }
 
-# Steady-state β-endorphin: 0.01 · POMC activity (`conc`) over the degradation rate. Mirrors `endorphin_level`.
+# Steady-state β-endorphin: 0.01 · POMC activity (`conc`) over max(degradation_rate,
+# RY_NEUROTRANSMITTER_MIN_CLEARANCE_RATE). Mirrors `endorphin_level`.
 #must_use
 #pure
 fn ry_endorphin_level(pomc_activity: f64, degradation_rate: f64): f64 {

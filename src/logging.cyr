@@ -29,8 +29,8 @@
 #
 #     if (_ry_trace_on() == 1) {
 #         var h[24];
-#         var b[256];
-#         var e = _ry_ev(&h, &b, 256, "rasayan::calcium", "calcium_tick");
+#         var b[_RY_EV_CAP];
+#         var e = _ry_ev(&h, &b, _RY_EV_CAP, "rasayan::calcium", "calcium_tick");
 #         _ry_ev_f(e, "dt", dt);
 #         _ry_ev_f(e, "ca", ca);
 #         _ry_trace(e);
@@ -213,55 +213,124 @@ fn _ry_warn_on(): i64 {
 }
 
 # Starts an event's text, `<target>: <message>` (C strings), in a str_builder over the caller's buffer: header `hdr`
-# (24 bytes) on `buf` of `cap` bytes. Returns the builder.
+# (24 bytes) on `buf` of `cap` bytes (_RY_EV_CAP at every event). Returns the builder. The event helpers append with
+# _ry_sb_fit and never grow it: an event allocates nothing, at any value (2.0.1).
 fn _ry_ev(hdr, buf, cap, target, msg): i64 {
     var sb = _ry_sb_on(hdr, buf, cap);
-    str_builder_add_cstr(sb, target);
-    str_builder_add_cstr(sb, ": ");
-    str_builder_add_cstr(sb, msg);
+    _ry_sb_fit(sb, target, strlen(target));
+    _ry_sb_fit(sb, ": ", 2);
+    _ry_sb_fit(sb, msg, strlen(msg));
     return sb;
 }
 
-# Appends the field ` <key>=<x>`, x in Display form (Rust's `dt`, `atp = self.atp`).
+# Appends the field ` <key>=<x>`, x in Display form (Rust's `dt`, `atp = self.atp`), written first in a 336-byte frame
+# buffer (the longest Display form is 327 bytes).
 fn _ry_ev_f(sb, key, x: f64) {
-    str_builder_putc(sb, 32);
-    str_builder_add_cstr(sb, key);
-    str_builder_putc(sb, 61);
-    _ry_fmt_f64_display(sb, x);
+    var hd[24];
+    var v[336];
+    var t = _ry_sb_on(&hd, &v, 336);
+    _ry_fmt_f64_display(t, x);
+    _ry_sb_fit(sb, " ", 1);
+    _ry_sb_fit(sb, key, strlen(key));
+    _ry_sb_fit(sb, "=", 1);
+    _ry_sb_fit(sb, load64(t), load64(t + 8));
     return 0;
 }
 
 # Appends the field ` <key>=<n>`, an integer (Rust's `prompt_len = question.len()`, `max_steps`).
 fn _ry_ev_i(sb, key, n) {
-    str_builder_putc(sb, 32);
-    str_builder_add_cstr(sb, key);
-    str_builder_putc(sb, 61);
-    str_builder_add_int(sb, n);
+    var hd[24];
+    var v[32];
+    var t = _ry_sb_on(&hd, &v, 32);
+    str_builder_add_int(t, n);
+    _ry_sb_fit(sb, " ", 1);
+    _ry_sb_fit(sb, key, strlen(key));
+    _ry_sb_fit(sb, "=", 1);
+    _ry_sb_fit(sb, load64(t), load64(t + 8));
     return 0;
 }
 
 # Appends the field ` <key>=true` or ` <key>=false` (Rust's `installed`).
 fn _ry_ev_b(sb, key, b) {
-    str_builder_putc(sb, 32);
-    str_builder_add_cstr(sb, key);
+    _ry_sb_fit(sb, " ", 1);
+    _ry_sb_fit(sb, key, strlen(key));
     if (b != 0) {
-        str_builder_add_cstr(sb, "=true");
+        _ry_sb_fit(sb, "=true", 5);
     } else {
-        str_builder_add_cstr(sb, "=false");
+        _ry_sb_fit(sb, "=false", 6);
     }
     return 0;
 }
 
-# Appends the field ` <key>=<text>`, the `n` bytes at `p` (Rust's `%` Display of a string: `model = %self.model`).
+# Appends the field ` <key>=<text>`, the `n` bytes at `p` (Rust's `%` Display of a string: `model = %self.model`), cut
+# at the buffer's end if it does not fit.
 fn _ry_ev_s(sb, key, p, n) {
-    str_builder_putc(sb, 32);
-    str_builder_add_cstr(sb, key);
-    str_builder_putc(sb, 61);
-    var i = 0;
-    while (i < n) {
-        str_builder_putc(sb, load8(p + i));
-        i = i + 1;
-    }
+    _ry_sb_fit(sb, " ", 1);
+    _ry_sb_fit(sb, key, strlen(key));
+    _ry_sb_fit(sb, "=", 1);
+    _ry_sb_fit(sb, p, n);
+    return 0;
+}
+
+# The TRACE events of one to five f64 fields (Rust's `trace!(k1 = x1, …, "msg")`), each built in its own frame:
+# called past the site's `_ry_trace_on()` gate, so a tick's frame holds no event buffer. (Measured at 2.0.1: a
+# _RY_EV_CAP buffer inside a tick's frame cost 5–10 % of the tick with the event filtered out.)
+fn _ry_trace_f1(target, msg, k1, x1: f64) {
+    var hd[24];
+    var b[_RY_EV_CAP];
+    var e = _ry_ev(&hd, &b, _RY_EV_CAP, target, msg);
+    _ry_ev_f(e, k1, x1);
+    _ry_trace(e);
+    return 0;
+}
+
+# _ry_trace_f1 with two fields.
+fn _ry_trace_f2(target, msg, k1, x1: f64, k2, x2: f64) {
+    var hd[24];
+    var b[_RY_EV_CAP];
+    var e = _ry_ev(&hd, &b, _RY_EV_CAP, target, msg);
+    _ry_ev_f(e, k1, x1);
+    _ry_ev_f(e, k2, x2);
+    _ry_trace(e);
+    return 0;
+}
+
+# _ry_trace_f1 with three fields.
+fn _ry_trace_f3(target, msg, k1, x1: f64, k2, x2: f64, k3, x3: f64) {
+    var hd[24];
+    var b[_RY_EV_CAP];
+    var e = _ry_ev(&hd, &b, _RY_EV_CAP, target, msg);
+    _ry_ev_f(e, k1, x1);
+    _ry_ev_f(e, k2, x2);
+    _ry_ev_f(e, k3, x3);
+    _ry_trace(e);
+    return 0;
+}
+
+# _ry_trace_f1 with four fields.
+fn _ry_trace_f4(target, msg, k1, x1: f64, k2, x2: f64, k3, x3: f64, k4, x4: f64) {
+    var hd[24];
+    var b[_RY_EV_CAP];
+    var e = _ry_ev(&hd, &b, _RY_EV_CAP, target, msg);
+    _ry_ev_f(e, k1, x1);
+    _ry_ev_f(e, k2, x2);
+    _ry_ev_f(e, k3, x3);
+    _ry_ev_f(e, k4, x4);
+    _ry_trace(e);
+    return 0;
+}
+
+# _ry_trace_f1 with five fields.
+fn _ry_trace_f5(target, msg, k1, x1: f64, k2, x2: f64, k3, x3: f64, k4, x4: f64, k5, x5: f64) {
+    var hd[24];
+    var b[_RY_EV_CAP];
+    var e = _ry_ev(&hd, &b, _RY_EV_CAP, target, msg);
+    _ry_ev_f(e, k1, x1);
+    _ry_ev_f(e, k2, x2);
+    _ry_ev_f(e, k3, x3);
+    _ry_ev_f(e, k4, x4);
+    _ry_ev_f(e, k5, x5);
+    _ry_trace(e);
     return 0;
 }
 

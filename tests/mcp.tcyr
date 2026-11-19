@@ -360,6 +360,65 @@ fn events() {
     return 0;
 }
 
+# A NUL-terminated `{"<key>":"<head><0xC2 and l bytes 0x80><tail>"<rest>}`: an argument string that is not UTF-8,
+# which serde_json refuses before a Rust handler sees it and bote passes through.
+fn raw_doc(key, head, l, tail, rest): i64 {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "{\"");
+    str_builder_add_cstr(sb, key);
+    str_builder_add_cstr(sb, "\":\"");
+    str_builder_add_cstr(sb, head);
+    str_builder_putc(sb, 194);
+    var k = 0;
+    while (k < l) {
+        str_builder_putc(sb, 128);
+        k = k + 1;
+    }
+    str_builder_add_cstr(sb, tail);
+    str_builder_add_cstr(sb, "\"");
+    str_builder_add_cstr(sb, rest);
+    str_builder_add_cstr(sb, "}");
+    return str_data(str_builder_build(sb));
+}
+
+# 2.0.1: an argument string that is not UTF-8 reads as absent, as serde_json's refusal of the document; in 2.0.0 the
+# ptm and domain replies then carried 8 bytes of a buffer the scan never wrote. The scans' records are allocated for
+# the hits found, not for the worst case.
+fn utf8_and_memory() {
+    test_group("mcp: invalid UTF-8 arguments, exact scan records");
+    var p1 = call(7, raw_doc("sequence", "N", 30, "SA", ""));
+    var d1 = call(8, raw_doc("sequence", "A", 120, "GKS", ""));
+    var m1 = call(4, raw_doc("sequence", "A", 2, "C", ",\"function\":\"molecular_weight\""));
+    assert(p1 != 0 && err_has(p1, "missing 'sequence'") == 1, "ptm: a sequence that is not UTF-8 is refused");
+    assert(d1 != 0 && err_has(d1, "missing 'sequence'") == 1, "domain: the same");
+    assert(m1 != 0 && err_has(m1, "requires: sequence") == 1, "protein: the same, in its usage text");
+    var s1 = call(6, "{\"function\":\"substitution\",\"residue_a\":\"\xF0\",\"residue_b\":\"A\"}");
+    var lone = str_builder_new();
+    str_builder_add_cstr(lone, "{\"function\":\"substitution\",\"residue_a\":\"");
+    str_builder_putc(lone, 240);                 # a 4-byte lead alone: 2.0.0 read 3 bytes past it
+    str_builder_add_cstr(lone, "\",\"residue_b\":\"A\"}");
+    var s2 = call(6, str_data(str_builder_build(lone)));
+    assert(s2 != 0 && err_has(s2, "substitution requires") == 1, "a lone lead byte as a residue is refused");
+    assert(s1 != 0, "the escaped form is a reply");
+    # Valid UTF-8 scans as before: a 4-byte character fills a wildcard.
+    var ok = call(7, "{\"sequence\":\"N\xF0\x9F\xA7\xACSA\"}");
+    var okr = str_builder_new();
+    str_builder_add_cstr(okr, "{\"sequence\":\"N");
+    str_builder_add_cstr(okr, "🧬");
+    str_builder_add_cstr(okr, "SA\"}");
+    var g = call(7, str_data(str_builder_build(okr)));
+    assert(g != 0 && has(g, "sites") == 1 && num(g, "count") >= 1.0, "N🧬SA: an N-glycosylation site");
+    assert(ok != 0, "the escaped form is a reply");
+    # 100,000 residues with no site: 2.0.0 took 12 MB (ptm) and 36 MB (domain) of records before scanning.
+    var used = alloc_used();
+    var r7 = call(7, doc_of("sequence", 65, RY_MCP_MAX_SEQUENCE_LEN, ""));
+    var r8 = call(8, doc_of("sequence", 65, RY_MCP_MAX_SEQUENCE_LEN, ""));
+    var grew = alloc_used() - used;
+    assert(has(r7, "sites") == 1 && has(r8, "domains") == 1, "both scan the whole sequence");
+    assert(grew < 4000000, "and allocate for the hits found (both requests, documents included, under 4 MB)");
+    return 0;
+}
+
 # Runs the mcp suite.
 fn main() {
     alloc_init();
@@ -370,6 +429,7 @@ fn main() {
     kinetics();
     tools();
     events();
+    utf8_and_memory();
     return assert_summary();
 }
 

@@ -56,8 +56,9 @@ fn ry_error_name(code): cstring {
     return "Unknown";
 }
 
-# The fixed message of an error code: Rust's Display text up to its first payload (`"non-finite value"`), `"no error"`
-# for RY_ERR_NONE and `"unknown error"` for a value that is no code. The payload, which Rust formats into the text
+# The fixed message of an error code: Rust's Display text without its payloads (`"non-finite value"`;
+# NegativeConcentration's keeps its fixed tail, `"concentration out of range (must be >= 0)"`), `"no error"` for
+# RY_ERR_NONE and `"unknown error"` for a value that is no code. The payload, which Rust formats into the text
 # (`non-finite value: km = NaN`), is in the failing guard's DEBUG event.
 #must_use
 #pure
@@ -82,12 +83,50 @@ fn ry_error_message(code): cstring {
 # ── the failure events (Rust's Display, ADR 0002 row 1) ──
 
 # A str_builder over a caller's stack buffer: header `hdr` (24 bytes: buf, len, cap) on `buf` of `cap` bytes. It grows
-# onto the heap only past `cap`, as any str_builder does.
+# onto the heap only past `cap`, as any str_builder does; the event and failure texts are written with _ry_sb_fit,
+# which never grows it.
 fn _ry_sb_on(hdr, buf, cap): i64 {
     store64(hdr, buf);
     store64(hdr + 8, 0);
     store64(hdr + 16, cap);
     return hdr;
+}
+
+# The bytes an event's or a failure's text is built in, on the stack: the header and five f64 fields in Display form
+# (at most 327 bytes each, −5e-324's) with room to spare, so every event rasayan writes fits whole (the ETC tick's five
+# fields, the most, come to about 1,700 bytes; sakshi keeps a message of up to 4,084). 2.0.0's 256-byte buffers grew
+# onto the never-freed heap for an extreme value, and a refused grow exits the process.
+const _RY_EV_CAP = 2048;
+
+# Appends the n bytes at p to builder sb as far as its capacity allows, never growing it: an event is built on a frame
+# buffer, and a text field from the caller (a model name, a pathway name) can be any length, so a text past the
+# capacity is cut there.
+fn _ry_sb_fit(sb, p, n) {
+    var len = load64(sb + 8);
+    var m = load64(sb + 16) - len;
+    if (n < m) { m = n; }
+    var buf = load64(sb) + len;
+    var i = 0;
+    while (i < m) {
+        store8(buf + i, load8(p + i));
+        i = i + 1;
+    }
+    if (m > 0) { store64(sb + 8, len + m); }
+    return 0;
+}
+
+# ── memory ──
+
+# Zeroes the `words` 8-byte words at `w`. The stdlib's memset stores a byte at a time (about 1.4 ns a byte; a
+# 536-byte network tick 2 µs against this loop's 70 ns), and every record rasayan zeroes is a whole number of words, so
+# a record is cleared as `_ry_zero_words(out, sizeof(T) / 8)`: all-zero bits are +0.0 and 0, as memset gives.
+fn _ry_zero_words(w, words) {
+    var k = 0;
+    while (k < words) {
+        store64(w + 8 * k, 0);
+        k = k + 1;
+    }
+    return 0;
 }
 
 # Writes Rust's Display text of an error with a name and an f64 payload into `sb`: `non-finite value: <name> = <value>`
@@ -118,15 +157,16 @@ fn _ry_error_display_f(sb, code, name, value: f64, reason, has_min, min: f64) {
 }
 
 # The refusal `code` of the value `value` named `name`, for `return Err(..)`: with DEBUG on it first emits the error's
-# Display text (_ry_error_display_f) as one DEBUG event, built in a 512-byte stack buffer (a value's Display text is
-# at most 327 bytes, −5e-324's), so it never allocates. Rust's `Err(RasayanError::InvalidParameter { name, value,
+# Display text (_ry_error_display_f) as one DEBUG event, built in a _RY_EV_CAP-byte stack buffer (the value and the
+# bound are at most 327 bytes each in Display form, −5e-324's, the name and reason rasayan's own), so it never
+# allocates. Rust's `Err(RasayanError::InvalidParameter { name, value,
 # reason })` at a validate() is `return Err(_ry_fail_f(RY_ERR_INVALID_PARAMETER, name, value, reason, 0, 0.0));`.
 #must_use
 fn _ry_fail_f(code, name, value: f64, reason, has_min, min: f64): i64 {
     if (sakshi_get_level() >= SK_DEBUG) {
         var hdr[24];
-        var buf[512];
-        var sb = _ry_sb_on(&hdr, &buf, 512);
+        var buf[_RY_EV_CAP];
+        var sb = _ry_sb_on(&hdr, &buf, _RY_EV_CAP);
         _ry_error_display_f(sb, code, name, value, reason, has_min, min);
         sakshi_debug(load64(sb), load64(sb + 8));
     }
@@ -135,21 +175,18 @@ fn _ry_fail_f(code, name, value: f64, reason, has_min, min: f64): i64 {
 
 # The refusal `code` of the text [p, p + n): with DEBUG on it first emits Rust's Display text, `unknown amino acid:
 # <the code's UTF-8 bytes>` (RY_ERR_UNKNOWN_AMINO_ACID) or `unknown metabolic pathway: <the name>`
-# (RY_ERR_UNKNOWN_PATHWAY), as one DEBUG event in a stack buffer (a longer text grows it onto the heap). Returns
-# `code`.
+# (RY_ERR_UNKNOWN_PATHWAY), as one DEBUG event in a _RY_EV_CAP-byte stack buffer (a longer text is cut there: the
+# event never allocates). Returns `code`.
 #must_use
 fn _ry_fail_text(code, p, n): i64 {
     if (sakshi_get_level() >= SK_DEBUG) {
         var hdr[24];
-        var buf[256];
-        var sb = _ry_sb_on(&hdr, &buf, 256);
-        str_builder_add_cstr(sb, ry_error_message(code));
-        str_builder_add_cstr(sb, ": ");
-        var i = 0;
-        while (i < n) {
-            str_builder_putc(sb, load8(p + i));
-            i = i + 1;
-        }
+        var buf[_RY_EV_CAP];
+        var sb = _ry_sb_on(&hdr, &buf, _RY_EV_CAP);
+        var m = ry_error_message(code);
+        _ry_sb_fit(sb, m, strlen(m));
+        _ry_sb_fit(sb, ": ", 2);
+        _ry_sb_fit(sb, p, n);
         sakshi_debug(load64(sb), load64(sb + 8));
     }
     return code;

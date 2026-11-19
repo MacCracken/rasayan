@@ -47,7 +47,8 @@ jobs:
           echo "$HOME/.cyrius/bin" >> "$GITHUB_PATH"
 
       - name: Resolve dependencies
-        run: cyrius deps
+        # --locked: the release builds from the committed cyrius.lock, as CI does.
+        run: cyrius deps --locked
 
       - name: Build
         run: |

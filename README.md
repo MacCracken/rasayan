@@ -2,7 +2,7 @@
 
 > **Rasayan** (Sanskrit: रसायन — alchemy, chemistry of life) — biochemistry engine for AGNOS
 
-> **Cyrius 2.0.0.** The Cyrius library in `src/` is the port of the Rust crate **1.2.0**, frozen in
+> **Cyrius 2.0.1.** The Cyrius library in `src/` is the port of the Rust crate **1.2.0**, frozen in
 > [`rust-old/`](rust-old/) as its functional spec and kept on [crates.io](https://crates.io/crates/rasayan) for Rust
 > consumers. Every Rust module, test, benchmark and example has a Cyrius counterpart: the
 > [migration guide](docs/guides/migration-2.0.md) maps the API, and the [state](docs/development/state.md) and
@@ -34,7 +34,7 @@ Used by [mastishk](https://github.com/MacCracken/mastishk) (neuroscience), [kimi
 | `alignment` | BLOSUM62 / PAM250, pairwise scoring, Needleman-Wunsch (linear memory) |
 | `ptm`, `domain` | PROSITE-style PTM sites (N-glycosylation, phosphorylation, PKA, CK2, myristoylation, disulfides) and domain motifs (C2H2 zinc finger, leucine zipper, EF-hand, Walker A, RGD, DEAD-box, NLS, KDEL) |
 
-Every state type validates (`ry_<t>_validate`: NaN and ±inf refused), and every tick ignores a non-finite or non-positive `dt`, so a bad frame time can't corrupt a simulation.
+Every state type validates (`ry_<t>_validate`: NaN and ±inf refused), and every tick ignores a non-finite or non-positive `dt`, so a bad frame time can't corrupt a simulation. Every function is reentrant, so calls on separate records may run on separate threads; one record stepped from two threads at once races ([SECURITY.md](SECURITY.md)).
 
 ## Profiles
 

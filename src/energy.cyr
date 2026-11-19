@@ -86,11 +86,7 @@ fn ry_bioenergy_state_o2_consumption(p: *RyBioenergyState): f64 {
 # `BioenergyState::set_exertion`.
 fn ry_bioenergy_state_set_exertion(p: *RyBioenergyState, met: f64) {
     if (_ry_trace_on() == 1) {
-        var h[24];
-        var b[256];
-        var e = _ry_ev(&h, &b, 256, "rasayan::energy", "set_exertion");
-        _ry_ev_f(e, "met", met);
-        _ry_trace(e);
+        _ry_trace_f1("rasayan::energy", "set_exertion", "met", met);
     }
     var c: f64 = _ry_guard_conc(met);
     var r: f64 = _ry_max(c, 1.0);
@@ -110,13 +106,8 @@ fn ry_bioenergy_state_tick(p: *RyBioenergyState, dt_minutes: f64) {
     var met_in: f64 = p.met;
     var thr: f64 = p.anaerobic_threshold;
     if (_ry_trace_on() == 1) {
-        var h[24];
-        var b[256];
-        var e = _ry_ev(&h, &b, 256, "rasayan::energy", "bioenergy_tick");
-        _ry_ev_f(e, "dt_minutes", dt_minutes);
-        _ry_ev_f(e, "met", met_in);
-        _ry_ev_f(e, "anaerobic_threshold", thr);
-        _ry_trace(e);
+        _ry_trace_f3("rasayan::energy", "bioenergy_tick", "dt_minutes", dt_minutes, "met", met_in,
+          "anaerobic_threshold", thr);
     }
     var above_rest: f64 = _ry_guard_conc(met_in - 1.0);
     var met: f64 = 1.0 + above_rest;

@@ -4,10 +4,16 @@ The Cyrius compiler prints `warning: large static data (N bytes) — consider al
 program's static data passes 128 KiB (`_warn_large_static` in the compiler's `src/frontend/parse/fn/def.cyr`: the
 test is `totvar > 131072`). Three things make that line easy to cross without noticing:
 
-- **A function-local array is static.** `var b[256]` inside a function is reserved in `.bss`, not on the stack, and
-  the advisory counts it like a global (and a `var x[N]` counts as N words).
-- **sigil's TLS code keeps 16–32 KB of scratch as function-local arrays** (`var W[32768]`, `var VM[16384]`, …), and
-  sandhi's request path reaches it, so any program that makes an HTTP request through sandhi carries it.
+- **Module-level data counts; a function-local array does not.** Since cyrius 6.3.15 an array local is on the
+  calling thread's stack (`CYRIUS_STACK_ARRAYS=0` restores the old shared `.bss` arrays), up to the per-fn frame
+  budget of about 120 KB; past it the compiler makes it static and says so (`array local over the per-fn frame
+  budget gets STATIC storage: one buffer shared by all calls and all threads`). Measured at 6.7.18 (2026-11-18): two
+  functions with a 70,000-byte local each build with 2,544 B of `.bss` and no advisory, and a local's address differs
+  at two recursion depths. (This note said until 2.0.1 that a function-local array was static; that was the compiler
+  before 6.3.15.)
+- **sandhi's request path brings sigil's TLS stack and its module-level data**, so any program that makes an HTTP
+  request through sandhi carries it: probe 10's ai consumer has 170,864 B of `.bss` on ELF, against 61,040 for a core
+  consumer and 80,656 for an mcp one.
 - **A test build adds the test stdlib** (assert, bench, ganita and overflow), so a `.tcyr` sits higher than the same
   code built by `cyrius build`.
 

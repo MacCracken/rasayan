@@ -168,14 +168,7 @@ fn ry_signaling_network_tick(p: *RySignalingNetwork, c: *RySignalingConfig, inpu
     var cytokine: f64 = _ry_guard_unit(input.cytokine);
     var ip3: f64 = _ry_guard_conc(input.ip3);
     if (_ry_trace_on() == 1) {
-        var hd[24];
-        var b[256];
-        var e = _ry_ev(&hd, &b, 256, "rasayan::signaling", "signaling_tick");
-        _ry_ev_f(e, "dt", dt);
-        _ry_ev_f(e, "gf", gf);
-        _ry_ev_f(e, "cytokine", cytokine);
-        _ry_ev_f(e, "ip3", ip3);
-        _ry_trace(e);
+        _ry_trace_f4("rasayan::signaling", "signaling_tick", "dt", dt, "gf", gf, "cytokine", cytokine, "ip3", ip3);
     }
     var w = p;
     var cw = c;

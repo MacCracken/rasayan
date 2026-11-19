@@ -16,8 +16,10 @@
 # that gets no answer is Err(RY_ERR_HTTP) (hoosh's `Http`), one that hoosh answers with an error or an unreadable body
 # Err(RY_ERR_PROVIDER) (hoosh's `Provider`), each with Rust's Display in a DEBUG failure event. Every call builds on
 # the caller's allocator (its `_a` form; the plain form on the default allocator): the request, the answer and the
-# strings the result points to. This file holds the client, the request bodies and the reading of the answers (the
-# parity harness checks them without sandhi); src/ai_http.cyr, after it, the requests.
+# strings the result points to. The default allocator never frees, so a long-running consumer calls the `_a` forms on
+# an arena it resets between calls; each plain call keeps its request, its answer (sandhi reads at most 256 KiB of it)
+# and the parse on the heap for the life of the process. This file holds the client, the request bodies and the
+# reading of the answers (the parity harness checks them without sandhi); src/ai_http.cyr, after it, the requests.
 
 # ── the types ──
 
@@ -48,7 +50,8 @@ struct RyBiochemClient {
 }
 
 # An inference answer (hoosh's `InferenceResponse`): the text, the model and the provider (C strings on the call's
-# allocator), the token counts, the latency in ms and the number of tool calls.
+# allocator), the token counts, the latency in ms and the number of tool calls. A text whose content holds U+0000
+# (`\u0000` in the answer) reads, as a C string, up to it; Rust's String keeps the rest.
 struct RyInferenceResponse {
     text;
     model;
@@ -134,23 +137,33 @@ fn ry_biochem_client_with_system_prompt(c: *RyBiochemClient, prompt): i64 {
 }
 
 # Sends `Authorization: Bearer <token>` with every request (hoosh 2.12.3 checks one when tokens are configured; Rust's
-# client never sends one), or none for a token of 0. 1, or 0 when the copy was refused. Cyrius only (ADR 0002 row 6).
+# client never sends one), or none for a token of 0. 1, or 0 when the copy was refused or the token holds a CR or LF
+# (no header value may: 2.0.1), the token unchanged. Cyrius only (ADR 0002 row 6).
 fn ry_biochem_client_with_token(c: *RyBiochemClient, token): i64 {
     if (token == 0) {
         c.token = 0;
         return 1;
     }
-    var t = _ry_ai_dup(default_alloc(), token, strlen(token));
+    var nt = strlen(token);
+    var i = 0;
+    while (i < nt) {
+        var b = load8(token + i);
+        if (b == 13 || b == 10) { return 0; }
+        i = i + 1;
+    }
+    var t = _ry_ai_dup(default_alloc(), token, nt);
     if (t == 0) { return 0; }
     c.token = t;
     return 1;
 }
 
-# Sets the request's total and read deadlines in ms (0 for none, Rust's). Cyrius only (ADR 0002 row 5).
+# Sets the request's total and read deadlines in ms (0 for none, Rust's: a server that stops answering then holds the
+# call until it closes the connection). Returns 1, as its siblings do on success (2.0.0 returned 0, their failure
+# value). Cyrius only (ADR 0002 row 5).
 fn ry_biochem_client_with_deadlines(c: *RyBiochemClient, total_ms, read_ms): i64 {
     c.total_ms = total_ms;
     c.read_ms = read_ms;
-    return 0;
+    return 1;
 }
 
 # ── the request body ──
@@ -278,7 +291,7 @@ fn _ry_ai_infer_parse_a(a, status, body, n, model, out: *RyInferenceResponse): R
         k = k + 1;
     }
     var toks[24];
-    memset(&toks, 0, 24);
+    _ry_zero_words(&toks, 3);
     var u = _ry_ai_at(v, form, 2, "usage");
     if (u != 0 && bayan_json_v_tag(u) != JTAG_NULL) {
         var fu = _ry_ai_form(u, 3);

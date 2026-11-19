@@ -60,15 +60,39 @@ jobs:
         # Not piped: the step must see audit's own exit status.
         run: cyrius audit
 
-      - name: Bundle current ([lib], from M0 part 2c-2)
+      - name: Bundles current ([lib], [lib.mcp], [lib.ai], [lib.full])
         # dist/ is generated and committed: it must be what `cyrius distlib --all` writes now.
         run: cyrius distlib --check
 
-  oracle:
-    name: Rust oracle (rust-old/, frozen)
+  reference:
+    # The golden corpus against its accurate models (ADR 0005): Python and MPFR, no Rust toolchain. rust-old/ and
+    # hoosh 1.3's client.rs are read as text, never built or run.
+    name: Reference (Python + MPFR)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Oracle builds and passes against its committed lockfile
-        run: cargo test --manifest-path rust-old/Cargo.toml --all-features --locked
+
+      - name: Install MPFR
+        run: sudo apt-get update && sudo apt-get install -y libmpfr6
+
+      - name: hoosh 1.3.0's source, as text
+        # gen.py's ai_client rows read hoosh 1.3's client.rs from the cargo registry's layout. The crate is fetched and
+        # unpacked only: its sha256 is the one crates.io's index publishes for 1.3.0.
+        run: |
+          set -e
+          curl -sSfL -o hoosh-1.3.0.crate https://static.crates.io/crates/hoosh/hoosh-1.3.0.crate
+          echo "5572ec30ab2e11be054df3caf1cf8cdcbcc86bc09948d0ac2c158d310cbab7a7  hoosh-1.3.0.crate" | sha256sum -c -
+          mkdir -p "$HOME/.cargo/registry/src/ci"
+          tar -xzf hoosh-1.3.0.crate -C "$HOME/.cargo/registry/src/ci"
+
+      - name: Generated golden rows and data files current
+        run: python3 -I -B scripts/oracle/gen.py --check .
+
+      - name: Every golden row against its accurate model
+        run: python3 -I -B scripts/oracle/validate.py .
+
+      - name: Class C and T rows against a second MPFR model
+        run: python3 -I -B scripts/oracle/mpfr_ref.py --check .
+
+      - name: src/mathx_data.cyr current
+        run: python3 -I -B scripts/oracle/mathx_tables.py --check

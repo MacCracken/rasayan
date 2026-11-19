@@ -157,13 +157,7 @@ fn ry_receptor_state_tick(p: *RyReceptorState, c: *RyReceptorConfig, ligand_in: 
     }
     var ligand: f64 = _ry_guard_conc(ligand_in);
     if (_ry_trace_on() == 1) {
-        var hd[24];
-        var b[256];
-        var e = _ry_ev(&hd, &b, 256, "rasayan::receptor", "receptor_tick");
-        _ry_ev_f(e, "dt", dt);
-        _ry_ev_f(e, "ligand", ligand);
-        _ry_ev_f(e, "active", p.active);
-        _ry_trace(e);
+        _ry_trace_f3("rasayan::receptor", "receptor_tick", "dt", dt, "ligand", ligand, "active", p.active);
     }
     # Binding: surface + ligand → active.
     var on: f64 = c.binding_rate * ligand;
@@ -216,7 +210,7 @@ fn ry_receptor_state_to_json(sb, p: *RyReceptorState): Result {
 }
 
 # The ReceptorState at node `v` of a parsed document, by serde's rules, into the 32 bytes at `w`: 1, or 0 for a
-# refusal. The signaling network's readers call it for its nested value.
+# refusal.
 #must_use
 fn _ry_receptor_state_from_node(v, w): i64 {
     return _ry_jr_f64_fields(v, w, 4, &_RY_RECEPTOR_STATE_FIELDS);

@@ -198,12 +198,7 @@ fn ry_metabolic_state_metabolic_rate(p: *RyMetabolicState): f64 {
 fn ry_metabolic_state_consume_atp(p: *RyMetabolicState, amount: f64): f64 {
     var atp: f64 = p.atp;
     if (_ry_trace_on() == 1) {
-        var h[24];
-        var b[256];
-        var e = _ry_ev(&h, &b, 256, "rasayan::metabolism", "consume_atp");
-        _ry_ev_f(e, "amount", amount);
-        _ry_ev_f(e, "atp_before", atp);
-        _ry_trace(e);
+        _ry_trace_f2("rasayan::metabolism", "consume_atp", "amount", amount, "atp_before", atp);
     }
     var want: f64 = _ry_guard_conc(amount);
     var have: f64 = _ry_guard_conc(atp);
@@ -227,14 +222,8 @@ fn ry_metabolic_state_regenerate_atp(p: *RyMetabolicState, dt: f64) {
     var adp_in: f64 = p.adp;
     var oxygen: f64 = p.oxygen;
     if (_ry_trace_on() == 1) {
-        var h[24];
-        var b[256];
-        var e = _ry_ev(&h, &b, 256, "rasayan::metabolism", "regenerate_atp");
-        _ry_ev_f(e, "dt", dt);
-        _ry_ev_f(e, "atp_before", atp);
-        _ry_ev_f(e, "adp_before", adp_in);
-        _ry_ev_f(e, "oxygen", oxygen);
-        _ry_trace(e);
+        _ry_trace_f4("rasayan::metabolism", "regenerate_atp", "dt", dt, "atp_before", atp, "adp_before", adp_in,
+          "oxygen", oxygen);
     }
     var o2: f64 = _ry_guard_unit(oxygen);
     var adp: f64 = _ry_guard_conc(adp_in);

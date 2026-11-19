@@ -7,6 +7,113 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-11-18
+
+A P(-1) audit of the 2.0.0 port. `src/` was read against `rust-old/` in four independent reviews, every finding was
+checked against the code, and the data tables were checked against their published sources. No public signature
+changes, and every golden row gives the result it gave in 2.0.0 (124,970 ok, 81 accepted, on x86_64 ELF, PE and
+aarch64). Results change only for input Rust 1.2.0 cannot hold (bytes that are not UTF-8, a negative length, a token
+with CR or LF) or for invalid input that was reported under the wrong code. 48 new checks (1,873 → 1,921). Each new
+test group was run against 2.0.0's `src/` and fails there, except logging's, which needs the new buffer constant to
+compile.
+
+### Security
+
+- **mcp: the ptm and domain replies could carry bytes the scan never wrote.** Both handlers wrote a motif or fragment
+  without checking the tag of `ry_ptm_site_motif` / `ry_domain_hit_fragment`. A sequence that is not UTF-8 made one
+  "character" longer than the 24- and 100-byte bounds: a lead byte followed by a run of continuation bytes (the
+  example was `"N" + 0xC2 + 30 × 0x80 + "SA"`). The accessor then returned Err, and the reply took its code (8) as a
+  length, writing 8 bytes of an unwritten stack buffer (ptm) or of the reused request arena (domain). Three fixes:
+  - the handlers check the tag;
+  - an argument string that is not UTF-8 reads as absent (`_ry_mcp_str`). serde_json refuses such a document before a
+    Rust handler sees it, and bote passes the bytes through. This also ends a 3-byte read past a lone lead byte given
+    as an alignment residue;
+  - the scans read a character as at most four bytes (Fixed).
+- **alignment: a negative length read before the allocation.** `ry_needleman_wunsch_a` sized its scratch from the
+  length and returned the word before its allocation as the score. It now returns None (`Ok(0)`), as for an empty
+  sequence.
+
+### Fixed
+
+- **ptm, domain** — a character is a lead byte and at most three continuation bytes, as in UTF-8. A longer run of
+  continuation bytes begins another character every four bytes, so a motif stays within 24 bytes and a fragment
+  within `RY_DOMAIN_MAX_FRAGMENT_BYTES` for any input. Valid UTF-8 scans exactly as before.
+- **protein, alignment** — a negative length reads as an empty sequence (None) in `ry_molecular_weight`,
+  `ry_isoelectric_point_with`, `ry_extinction_coefficient`, `ry_chou_fasman_a`, `ry_score_alignment` and Needleman-Wunsch.
+  The scans already did this. 2.0.0 returned a value instead: water's mass (molecular weight), the bare termini's pI,
+  zero coefficients (extinction), a length of −5 (score_alignment).
+- **logging: events allocate nothing.** In 2.0.0 an event's 256-byte stack buffer grew onto the never-freed heap
+  whenever a field's Display form ran long (1e-300 is 302 characters, −5e-324 is 327). That was at TRACE, on every
+  tick that met such a value, and a refused grow exits the process (`_sb_die`). Now:
+  - every event is built in `_RY_EV_CAP` (2,048) bytes, enough for the header and five fields of 327 bytes;
+  - the helpers append with `_ry_sb_fit`, which never grows a builder. A caller's text past the buffer (a model name,
+    a pathway name) is cut at its end;
+  - `_ry_fail_f` (whose bound adds a second Display value) and `_ry_fail_text` are built the same way.
+  For every value the event text is the same as before.
+- **ai** — the client hardening:
+  - `_ry_ai_headers` checks sandhi's refusals. 2.0.0 sent the request without a header sandhi had refused: a token
+    holding CR or LF went out unauthenticated, and an out-of-memory dropped `Content-Type`;
+  - `ry_biochem_client_with_token` refuses a token holding CR or LF (0, the token unchanged);
+  - a turn whose role is none is `Err(RY_ERR_INVALID_PARAMETER)` before anything is sent, not
+    `Err(RY_ERR_OUT_OF_MEMORY)`;
+  - `ry_biochem_client_with_deadlines` returns 1, as its siblings do on success. It returned 0, their failure value;
+  - the `HTTP status <n>` text of a failure event is built only when DEBUG is on.
+- **mcp** — the ptm and domain handlers count the hits, then allocate exactly that many records, as Rust's `Vec`
+  holds them. 2.0.0 sized for the worst case: 12 MB (ptm) and 36 MB (domain) at the 100,000-byte limit, on a request
+  arena that keeps its chunks. Two 100,000-residue requests now take under 4 MB together, their documents included.
+  `_ry_mcp_rawf` reserves the longest Display form (336 bytes, not 40).
+- **beta_oxidation** — `ry_beta_ox_config_validate` refuses a `chain_length` past 4294967295 (Rust's `u32`). A longer
+  one validated, but its JSON did not read back.
+- **enzyme** — `ry_lineweaver_burk_fit` and `ry_eadie_hofstee_fit` carry `#must_use`, as Rust's fits do. The three
+  tests that dropped their results now assert them (Rust's `unwrap`). The private `_ry_{glycolysis,tca,etc}_config_check`
+  are `#must_use` too.
+- **CI** — the `oracle` job ran `cargo test` on `rust-old/`, against ADR 0005 (no Rust is run anywhere). It is replaced
+  by a `reference` job running `gen.py --check`, `validate.py`, `mpfr_ref.py --check` and `mathx_tables.py --check`.
+  That job uses MPFR and hoosh 1.3.0's source, fetched as text and checked against the sha256 crates.io's index
+  publishes. The release workflow resolves dependencies with `--locked`.
+
+### Changed
+
+- **Layout checks** — the hand-written byte offsets are checked at compile time (`#assert`): the network's nested
+  records (`_RY_NET_*`, `_RY_NETCFG_*`, `_RY_NETFLUX_*`, `_RY_NETTICK_SIZE`, `_RY_PROD_*`), the amino-acid config's
+  carbon routing at byte 32, and the step rates at `+ 40` in the glycolysis, TCA and ETC fluxes. A field added to a
+  nested record now stops the build, rather than silently moving the fields its neighbours read (the 2.2.x additions).
+- **Shared helpers** — `_ry_zero_words` (in `src/error.cyr`, the network's former `_ry_pathway_zero`) clears every
+  record that was cleared by the stdlib's byte-at-a-time `memset`, as `sizeof(T) / 8` words. The 25 TRACE events of one
+  to five f64 fields call `_ry_trace_f1` … `_ry_trace_f5` (`src/logging.cyr`), past the same level gate.
+- **Documentation**
+  - SECURITY.md now describes the Cyrius library. It had kept the Rust crate's `forbid(unsafe_code)`, Send + Sync,
+    cargo-deny and rustls lines. It now covers the reentrancy rules (scratch in each call's frame; one record is not
+    to be stepped from two threads), the AI client across threads (sandhi's TLS contract), and the mitigations above.
+  - Architecture note 001 is corrected: a function-local array is on the stack since cyrius 6.3.15 (measured at 6.7.18),
+    and it is module-level data that crosses the static-data advisory. CONTRIBUTING names the level-gated event
+    helpers in place of sakshi spans.
+  - Module docs:
+    - PAM250 is Dayhoff's 1978 matrix as printed. It differs from NCBI's recomputed PAM250 in four pairs. BLOSUM62
+      matches NCBI's cell for cell;
+    - an invalid matrix or pKa set computes as the default, and the writers refuse it;
+    - the neurotransmitter bridges state the clearance floor and the units (six bridges, normalized units);
+    - receptor and nuclear_receptor lose a false sentence about the signaling network's readers;
+    - the error-message, JSON-writer and AI-client docs are corrected (heap use of the plain forms, a U+0000 in an
+      answer).
+  - The data tables were checked against their sources and match: Kyte-Doolittle, the four pKa sets, Pace's extinction
+    coefficients, Chou-Fasman (Prevelige & Fasman 1989), and R and F as the exact SI products.
+
+### Performance
+
+Measured with `cyrius bench` on x86_64: 2.0.0's and 2.0.1's trees alternated, four runs each, the minimum of each
+(`docs/benchmarks-rust-v-cyrius.md`, 2.0.1). Other builds were loading the machine (load 2.4–2.8), so a difference
+under about 5% is not a result:
+- composition 519 → 252 ns (Rust 1.2.0: 292 ns): its 26 counts are zeroed as words, not 208 bytes;
+- enzyme_lookup 87 → 58 ns (Rust 4.43 ns): each entry's length comes from the generated offsets, with no `strlen`,
+  and is tested first, as `eq_ignore_ascii_case` does;
+- net_charge 1.74 → 1.59 µs: the counts are zeroed as words, and the side-chain match stops at its first hit.
+- The median over the 123 benchmarks is 0.99. The ticks are within 5% of 2.0.0: MAPK, PI3K, JAK-STAT, calcium and the
+  network measure 4–5% slower, glycolysis, TCA, signaling and bioenergy 2–4% faster. That is where the code now sits,
+  not what it does. PI3K's tick with its 2.0.0 event block put back measures the same 153 ns, since every function
+  after `src/error.cyr` moved. Keeping the 2 KB event buffers in the ticks' frames measured 5–10% slower with the
+  event filtered out, so they live in the helpers instead.
+
 ## [2.0.0] - 2026-11-18
 
 rasayan 2.0.0 is the Cyrius port of the Rust crate 1.2.0 ([port plan](docs/development/rasayan-port-plan.md)). Every

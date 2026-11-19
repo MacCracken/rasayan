@@ -194,7 +194,7 @@ fn ry_glycolysis_config_default(out: *RyGlycolysisConfig) {
 
 # Fills *out with the zero flux (every field +0). Mirrors the derived `GlycolysisFlux::default()`.
 fn ry_glycolysis_flux_default(out: *RyGlycolysisFlux) {
-    memset(out, 0, 120);
+    _ry_zero_words(out, sizeof(RyGlycolysisFlux) / 8);
     return 0;
 }
 
@@ -206,6 +206,7 @@ fn ry_glycolysis_flux_step_rates(f: *RyGlycolysisFlux): i64 {
     var w = f;                                   # a plain address: `f + n` would step n · 120 bytes
     return w + 40;
 }
+#assert sizeof(RyGlycolysisFlux) == 40 + 8 * 10, "RyGlycolysisFlux: the rates at + 40";
 
 # ── validation ──
 
@@ -228,6 +229,7 @@ fn ry_glycolysis_state_validate(p: *RyGlycolysisState): Result {
 
 # The first refusal among config fields whose rule is `rule` (`v` or `k`, _RY_GLYCOLYSIS_CONFIG_RULES), in declaration
 # order: Ok(0), or the guard's Err.
+#must_use
 fn _ry_glycolysis_config_check(p: *RyGlycolysisConfig, rule): Result {
     var w = p;                                   # a plain address: `p + n` would step n · 304 bytes
     var name = &_RY_GLYCOLYSIS_CONFIG_FIELDS;
@@ -303,7 +305,7 @@ fn _ry_glycolysis_saturation(x: f64, k: f64): f64 {
 fn _ry_glycolysis_state_tick_regulated(p: *RyGlycolysisState, c: *RyGlycolysisConfig, atp_in: f64, adp_in: f64,
   nad_in: f64, pfk_in: f64, dt: f64, out: *RyGlycolysisFlux) {
     if (_ry_guard_valid_dt(dt) == 0) {
-        memset(out, 0, 120);
+        _ry_zero_words(out, sizeof(RyGlycolysisFlux) / 8);
         return 0;
     }
     var pfk_modifier: f64 = _ry_guard_unit(pfk_in);
@@ -312,14 +314,7 @@ fn _ry_glycolysis_state_tick_regulated(p: *RyGlycolysisState, c: *RyGlycolysisCo
     var nad_ratio: f64 = _ry_guard_conc(nad_in);
     var glucose: f64 = p.glucose;
     if (_ry_trace_on() == 1) {
-        var h[24];
-        var b[256];
-        var e = _ry_ev(&h, &b, 256, "rasayan::glycolysis", "glycolysis_tick");
-        _ry_ev_f(e, "dt", dt);
-        _ry_ev_f(e, "atp", atp);
-        _ry_ev_f(e, "adp", adp);
-        _ry_ev_f(e, "glucose", glucose);
-        _ry_trace(e);
+        _ry_trace_f4("rasayan::glycolysis", "glycolysis_tick", "dt", dt, "atp", atp, "adp", adp, "glucose", glucose);
     }
     var g6p: f64 = p.g6p;
     var f6p: f64 = p.f6p;

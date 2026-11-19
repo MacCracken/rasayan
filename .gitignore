@@ -1,14 +1,13 @@
 # Build output
 /build/
 
-# Frozen Rust oracle (rust-old/): keep its sources AND its Cargo.lock (the oracle must rebuild
-# against its exact pins); ignore only what cargo builds inside it.
+# The frozen Rust 1.2.0 crate (rust-old/): the functional spec, read as text and never built (ADR 0005). Its sources
+# and Cargo.lock stay as tagged; a cargo build left over from before the port must never be committed.
 /rust-old/target/
 /rust-old/**/__pycache__/
 /rust-old/coverage/
 
-# Golden-value generator (scripts/oracle/, a cargo crate): its Cargo.lock is committed too
-/scripts/oracle/target/
+# The reference tooling (scripts/oracle/, Python and MPFR)
 /scripts/**/__pycache__/
 
 # Editor / IDE

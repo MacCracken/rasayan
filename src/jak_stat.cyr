@@ -147,13 +147,7 @@ fn ry_jak_stat_state_tick(p: *RyJakStatState, c: *RyJakStatConfig, cytokine: f64
     }
     var cyt: f64 = _ry_guard_unit(cytokine);
     if (_ry_trace_on() == 1) {
-        var hd[24];
-        var b[256];
-        var e = _ry_ev(&hd, &b, 256, "rasayan::jak_stat", "jak_stat_tick");
-        _ry_ev_f(e, "dt", dt);
-        _ry_ev_f(e, "cytokine", cyt);
-        _ry_ev_f(e, "stat_dimer", p.stat_dimer);
-        _ry_trace(e);
+        _ry_trace_f3("rasayan::jak_stat", "jak_stat_tick", "dt", dt, "cytokine", cyt, "stat_dimer", p.stat_dimer);
     }
     # SOCS inhibition of JAK.
     var socs_inhibition: f64 = 1.0 / (1.0 + p.socs / c.socs_ki);

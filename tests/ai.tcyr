@@ -172,6 +172,26 @@ fn doc_example(): i64 {
     return 0;
 }
 
+# 2.0.1: the settings return 1 on success, a token holding CR or LF is refused (sandhi would drop the header and send
+# the request unauthenticated), and a turn whose role is none is a caller error, not out-of-memory.
+fn hardening() {
+    test_group("ai: 2.0.1 hardening");
+    var c: RyBiochemClient;
+    ry_biochem_client_new(&c, "http://127.0.0.1:1", "llama3");
+    assert_eq(ry_biochem_client_with_deadlines(&c, 1000, 500), 1, "with_deadlines: 1, as its siblings");
+    assert_eq(ry_biochem_client_with_token(&c, "good"), 1, "a plain token: 1");
+    assert_eq(ry_biochem_client_with_token(&c, "abc\r\nX-Evil: 1"), 0, "CR LF in a token: 0");
+    assert_eq(ry_biochem_client_with_token(&c, "abc\n"), 0, "LF alone: 0");
+    assert(same(c.token, "good") == 1, "the token unchanged");
+    var r: RyInferenceResponse;
+    var turns[16];                               # one RyMessage
+    store64(&turns, 99);
+    store64(&turns + 8, "hello");
+    var t, v = ry_biochem_client_chat(&c, &turns, 1, &r);
+    assert(is_err_result(t) == 1 && v == RY_ERR_INVALID_PARAMETER, "a role that is none: Err(INVALID_PARAMETER)");
+    return 0;
+}
+
 # Runs the ai suite.
 fn main() {
     alloc_init();
@@ -179,6 +199,7 @@ fn main() {
     settings();
     unreachable();
     events();
+    hardening();
     return assert_summary();
 }
 

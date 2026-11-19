@@ -144,13 +144,8 @@ fn ry_nuclear_receptor_state_tick(p: *RyNuclearReceptorState, c: *RyNuclearRecep
     }
     var hormone: f64 = _ry_guard_conc(hormone_in);
     if (_ry_trace_on() == 1) {
-        var hd[24];
-        var b[256];
-        var e = _ry_ev(&hd, &b, 256, "rasayan::nuclear_receptor", "nuclear_receptor_tick");
-        _ry_ev_f(e, "dt", dt);
-        _ry_ev_f(e, "hormone", hormone);
-        _ry_ev_f(e, "nuclear", p.nuclear_active);
-        _ry_trace(e);
+        _ry_trace_f3("rasayan::nuclear_receptor", "nuclear_receptor_tick", "dt", dt, "hormone", hormone,
+          "nuclear", p.nuclear_active);
     }
     # Ligand binding in the cytoplasm: free → bound, capped at the free pool.
     var k_bind: f64 = ry_michaelis_menten(hormone, c.binding_vmax, c.binding_km);
@@ -206,7 +201,7 @@ fn ry_nuclear_receptor_state_to_json(sb, p: *RyNuclearReceptorState): Result {
 }
 
 # The NuclearReceptorState at node `v` of a parsed document, by serde's rules, into the 24 bytes at `w`: 1, or 0 for a
-# refusal. The signaling network's readers call it for its nested value.
+# refusal.
 #must_use
 fn _ry_nuclear_receptor_state_from_node(v, w): i64 {
     return _ry_jr_f64_fields(v, w, 3, &_RY_NUCLEAR_RECEPTOR_STATE_FIELDS);

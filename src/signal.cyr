@@ -89,12 +89,7 @@ fn ry_second_messenger_validate(p: *RySecondMessenger): Result {
 fn ry_second_messenger_activate_gs(p: *RySecondMessenger, intensity: f64) {
     var camp: f64 = p.camp;
     if (_ry_trace_on() == 1) {
-        var h[24];
-        var b[256];
-        var e = _ry_ev(&h, &b, 256, "rasayan::signal", "activate_gs");
-        _ry_ev_f(e, "intensity", intensity);
-        _ry_ev_f(e, "camp_before", camp);
-        _ry_trace(e);
+        _ry_trace_f2("rasayan::signal", "activate_gs", "intensity", intensity, "camp_before", camp);
     }
     var i: f64 = _ry_guard_conc(intensity);
     var u: f64 = _ry_guard_unit(camp);
@@ -110,12 +105,7 @@ fn ry_second_messenger_activate_gs(p: *RySecondMessenger, intensity: f64) {
 fn ry_second_messenger_activate_gi(p: *RySecondMessenger, intensity: f64) {
     var before: f64 = p.camp;
     if (_ry_trace_on() == 1) {
-        var h[24];
-        var b[256];
-        var e = _ry_ev(&h, &b, 256, "rasayan::signal", "activate_gi");
-        _ry_ev_f(e, "intensity", intensity);
-        _ry_ev_f(e, "camp_before", before);
-        _ry_trace(e);
+        _ry_trace_f2("rasayan::signal", "activate_gi", "intensity", intensity, "camp_before", before);
     }
     var i: f64 = _ry_guard_conc(intensity);
     var camp: f64 = _ry_guard_unit(before);
@@ -133,13 +123,8 @@ fn ry_second_messenger_activate_gq(p: *RySecondMessenger, intensity: f64) {
     var ip3_in: f64 = p.ip3;
     var ca_in: f64 = p.calcium;
     if (_ry_trace_on() == 1) {
-        var h[24];
-        var b[256];
-        var e = _ry_ev(&h, &b, 256, "rasayan::signal", "activate_gq");
-        _ry_ev_f(e, "intensity", intensity);
-        _ry_ev_f(e, "ip3_before", ip3_in);
-        _ry_ev_f(e, "ca_before", ca_in);
-        _ry_trace(e);
+        _ry_trace_f3("rasayan::signal", "activate_gq", "intensity", intensity, "ip3_before", ip3_in,
+          "ca_before", ca_in);
     }
     var i: f64 = _ry_guard_conc(intensity);
     var ip3_before: f64 = _ry_guard_unit(ip3_in);
@@ -160,11 +145,7 @@ fn ry_second_messenger_activate_gq(p: *RySecondMessenger, intensity: f64) {
 fn ry_second_messenger_tick(p: *RySecondMessenger, dt: f64) {
     if (_ry_guard_valid_dt(dt) == 0) { return 0; }
     if (_ry_trace_on() == 1) {
-        var h[24];
-        var b[256];
-        var e = _ry_ev(&h, &b, 256, "rasayan::signal", "second_messenger_tick");
-        _ry_ev_f(e, "dt", dt);
-        _ry_trace(e);
+        _ry_trace_f1("rasayan::signal", "second_messenger_tick", "dt", dt);
     }
     var camp: f64 = p.camp;
     var cu: f64 = _ry_guard_unit(camp);

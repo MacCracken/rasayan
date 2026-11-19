@@ -201,13 +201,7 @@ fn _ry_mapk_state_tick_with_raf_inhibition(p: *RyMapkState, c: *RyMapkConfig, gr
     var gf: f64 = _ry_guard_unit(growth_factor);
     var raf_inhibition: f64 = _ry_guard_conc(raf_inhibition_in);
     if (_ry_trace_on() == 1) {
-        var hd[24];
-        var b[256];
-        var e = _ry_ev(&hd, &b, 256, "rasayan::mapk", "mapk_tick");
-        _ry_ev_f(e, "dt", dt);
-        _ry_ev_f(e, "growth_factor", gf);
-        _ry_ev_f(e, "erk", p.erk_pp);
-        _ry_trace(e);
+        _ry_trace_f3("rasayan::mapk", "mapk_tick", "dt", dt, "growth_factor", gf, "erk", p.erk_pp);
     }
     if (dt <= RY_MAPK_SUBSTEP_MAX_DT) {
         _ry_mapk_state_step(p, c, gf, raf_inhibition, dt, out);
@@ -219,7 +213,8 @@ fn _ry_mapk_state_tick_with_raf_inhibition(p: *RyMapkState, c: *RyMapkConfig, gr
     var top: f64 = f64_from(RY_MAPK_MAX_SUBSTEPS);
     var nc: f64 = _ry_clamp(up, 1.0, top);
     var n = _ry_f64_to_u32(nc);
-    var h: f64 = dt / f64_from(n);
+    var nf: f64 = f64_from(n);
+    var h: f64 = dt / nf;
     _ry_mapk_state_step(p, c, gf, raf_inhibition, h, out);
     var scratch: RyMapkFlux;
     var k = 1;

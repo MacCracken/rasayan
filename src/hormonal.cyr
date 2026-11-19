@@ -204,11 +204,7 @@ fn _ry_hormonal_state_tick_with_acth_feedback(p: *RyHormonalState, c: *RyHormona
   dt: f64, acth_feedback_ki: f64, out: *RyHormonalFlux) {
     if (_ry_guard_valid_dt(dt) == 0) {
         if (_ry_trace_on() == 1) {
-            var hd0[24];
-            var b0[256];
-            var e0 = _ry_ev(&hd0, &b0, 256, "rasayan::hormonal", "hormonal_tick skipped: invalid dt");
-            _ry_ev_f(e0, "dt", dt);
-            _ry_trace(e0);
+            _ry_trace_f1("rasayan::hormonal", "hormonal_tick skipped: invalid dt", "dt", dt);
         }
         ry_hormonal_flux_default(out);
         return 0;
@@ -220,13 +216,7 @@ fn _ry_hormonal_state_tick_with_acth_feedback(p: *RyHormonalState, c: *RyHormona
     var neural_activity: f64 = _ry_guard_conc(input.neural_activity);
     var cort0: f64 = p.cortisol;
     if (_ry_trace_on() == 1) {
-        var hd[24];
-        var b[256];
-        var e = _ry_ev(&hd, &b, 256, "rasayan::hormonal", "hormonal_tick");
-        _ry_ev_f(e, "dt", dt);
-        _ry_ev_f(e, "stress", stress);
-        _ry_ev_f(e, "cortisol", cort0);
-        _ry_trace(e);
+        _ry_trace_f3("rasayan::hormonal", "hormonal_tick", "dt", dt, "stress", stress, "cortisol", cort0);
     }
     # The HPA axis: CRH → ACTH → cortisol with negative feedback. CRH: basal + stress-driven, inhibited by cortisol
     # (the hypothalamic arm).

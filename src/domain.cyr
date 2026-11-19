@@ -6,8 +6,10 @@
 # A sequence is `(seq, n)`: n bytes of UTF-8 at seq (Rust's `&str`). Rust matches `chars()` and reports character
 # indices, and its wildcard (`x`) and exclusion (`{W}`) slots take any character, a non-ASCII one included; so the scan
 # steps by character and counts positions in characters, as src/ptm.cyr does. An ASCII byte is one character, any
-# other byte begins one that takes the continuation bytes after it (Rust's `chars()` for valid UTF-8; invalid input,
-# which a Rust `&str` cannot hold, is read the same way). Every result is exact (class A in tests/golden/domain.tsv).
+# other byte begins one that takes up to three continuation bytes after it (Rust's `chars()` for valid UTF-8; invalid
+# input, which a Rust `&str` cannot hold, is read the same way, a character never longer than UTF-8's four bytes, so
+# RY_DOMAIN_MAX_FRAGMENT_BYTES holds for any input: 2.0.1, where 2.0.0 let one character take any run of
+# continuation bytes). Every result is exact (class A in tests/golden/domain.tsv).
 #
 # The Cyrius forms (ADR 0002 rows 2–4):
 # - DomainType is `enum RyDomainType`, its values Rust's declaration order (append-only); CatalyticTriad is reserved,
@@ -140,7 +142,8 @@ fn _ry_domain_scan(seq, n, out: *RyDomainHit, cap): i64 {
                 tb = tb + 1;
                 if (lead >= 128) {
                     lead = 256;
-                    while (tb < n && (load8(seq + tb) & 192) == 128) { tb = tb + 1; }
+                    var cend = tb + 3;   # up to three continuation bytes: a character is at most 4 bytes
+                    while (tb < n && tb < cend && (load8(seq + tb) & 192) == 128) { tb = tb + 1; }
                 } elif (lead >= 97 && lead <= 122) {
                     lead = lead - 32;
                 }

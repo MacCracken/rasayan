@@ -228,8 +228,8 @@ fn fits() {
     put(&ss, 4, 5.0);
     put(&ss, 5, 10.0);
     mm_data(&data, &ss, 6, 8.0, 0.5);
-    ry_lineweaver_burk_fit(&data, 6, &lb);
-    ry_eadie_hofstee_fit(&data, 6, &eh);
+    assert_eq(ry_lineweaver_burk_fit(&data, 6, &lb), 1, "LB fits the six ideal points (Rust's unwrap)");
+    assert_eq(ry_eadie_hofstee_fit(&data, 6, &eh), 1, "EH fits the six ideal points (Rust's unwrap)");
     var k1: f64 = lb.km;
     var k2: f64 = eh.km;
     var v1: f64 = lb.vmax;
@@ -282,7 +282,7 @@ fn serde() {
     put(&ss, 2, 5.0);
     var data[48];
     mm_data(&data, &ss, 3, 10.0, 1.0);
-    ry_lineweaver_burk_fit(&data, 3, &fit);
+    assert_eq(ry_lineweaver_burk_fit(&data, 3, &fit), 1, "LB fits the three points (Rust's unwrap)");
     store64(sb + 8, 0);
     var tf, vf = ry_kinetic_fit_to_json(sb, &fit);
     var t6, v6 = ry_kinetic_fit_from_json(load64(sb), load64(sb + 8), &back);

@@ -200,13 +200,7 @@ fn ry_calcium_state_tick(p: *RyCalciumState, c: *RyCalciumConfig, ip3_level: f64
     }
     var ip3: f64 = _ry_guard_conc(ip3_level);
     if (_ry_trace_on() == 1) {
-        var hd[24];
-        var b[256];
-        var e = _ry_ev(&hd, &b, 256, "rasayan::calcium", "calcium_tick");
-        _ry_ev_f(e, "dt", dt);
-        _ry_ev_f(e, "ip3", ip3);
-        _ry_ev_f(e, "ca", p.cytoplasmic_ca);
-        _ry_trace(e);
+        _ry_trace_f3("rasayan::calcium", "calcium_tick", "dt", dt, "ip3", ip3, "ca", p.cytoplasmic_ca);
     }
     # ceil() of a finite positive ratio, clamped to [1, MAX_SUBSTEPS], so the conversion is exact.
     var q: f64 = dt / RY_CALCIUM_SUBSTEP_MAX_DT;
@@ -214,7 +208,8 @@ fn ry_calcium_state_tick(p: *RyCalciumState, c: *RyCalciumConfig, ip3_level: f64
     var top: f64 = f64_from(RY_CALCIUM_MAX_SUBSTEPS);
     var nc: f64 = _ry_clamp(up, 1.0, top);
     var n = _ry_f64_to_u32(nc);
-    var h: f64 = dt / f64_from(n);
+    var nf: f64 = f64_from(n);
+    var h: f64 = dt / nf;
     # IP3 is held for the tick; the gate's relaxation weight is capped at 1, a convex combination.
     var ip3_activation: f64 = ip3 / (c.ip3r_km_ip3 + ip3);
     var gw: f64 = c.ip3r_open_rate * h;

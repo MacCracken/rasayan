@@ -127,13 +127,7 @@ fn ry_pi3k_state_tick(p: *RyPi3kState, c: *RyPi3kConfig, receptor_activity: f64,
     }
     var ra: f64 = _ry_guard_unit(receptor_activity);
     if (_ry_trace_on() == 1) {
-        var hd[24];
-        var b[256];
-        var e = _ry_ev(&hd, &b, 256, "rasayan::pi3k", "pi3k_tick");
-        _ry_ev_f(e, "dt", dt);
-        _ry_ev_f(e, "receptor_activity", ra);
-        _ry_ev_f(e, "akt", p.akt_active);
-        _ry_trace(e);
+        _ry_trace_f3("rasayan::pi3k", "pi3k_tick", "dt", dt, "receptor_activity", ra, "akt", p.akt_active);
     }
     # PI3K produces PIP3, PTEN degrades it.
     var k_pi3k: f64 = ry_michaelis_menten(ra, c.pi3k_vmax, c.pi3k_km);

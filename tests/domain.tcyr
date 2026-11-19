@@ -313,6 +313,90 @@ fn forms() {
     return 0;
 }
 
+# ── invalid UTF-8 (2.0.1) ──
+var _T_RUN_LEN = 0;
+
+# The bytes head, then `k` runs (each the lead 0xC2 and `l` continuation bytes 0x80, which no `&str` holds), then tail
+# (C strings), on the heap; their length into _T_RUN_LEN.
+fn with_runs(head, k, l, tail) {
+    var nh = strlen(head);
+    var nt = strlen(tail);
+    var n = nh + k * (l + 1) + nt;
+    var p = alloc(n + 1);
+    memcpy(p, head, nh);
+    var o = nh;
+    var r = 0;
+    while (r < k) {
+        store8(p + o, 194);
+        memset(p + o + 1, 128, l);
+        o = o + l + 1;
+        r = r + 1;
+    }
+    memcpy(p + o, tail, nt);
+    _T_RUN_LEN = n;
+    return p;
+}
+
+# 2.0.1: invalid UTF-8 reads a character as at most four bytes, so every hit's fragment stays within
+# RY_DOMAIN_MAX_FRAGMENT_BYTES and writes its document.
+fn invalid_utf8() {
+    test_group("domain: invalid UTF-8 keeps every fragment within RY_DOMAIN_MAX_FRAGMENT_BYTES");
+    # Walker A, [AG]-x(4)-G-K-[ST]: four characters of a lead and three continuation bytes each fill x(4) (16 bytes);
+    # a fifth continuation byte would begin a fifth character, and the G would no longer be the sixth.
+    var s1 = with_runs("A", 4, 3, "GKS");
+    scan_n(s1, _T_RUN_LEN);
+    var w = nth_of(RY_DOMAIN_TYPE_WALKER_A, 0);
+    assert(w >= 0 && hit(w).fragment_len == 20, "A + 4 four-byte characters + GKS: Walker A, 20 bytes");
+    var s2 = with_runs("A", 4, 4, "GKS");
+    scan_n(s2, _T_RUN_LEN);
+    assert(of_type(RY_DOMAIN_TYPE_WALKER_A) == 0, "five-byte runs are two characters each: no Walker A");
+    var bounded = 1;
+    var written = 1;
+    var sb = str_builder_new();
+    var frag = alloc(RY_DOMAIN_MAX_FRAGMENT_BYTES);
+    var q = 0;
+    while (q < 4) {
+        var head = "A";
+        var k = 4;
+        var tail = "GKS";
+        if (q == 1) {
+            head = "KK";
+            k = 1;
+            tail = "K";
+        }
+        if (q == 2) {
+            head = "CAAAAC";
+            k = 3;
+            tail = "LAAAAAAAAHAAAAH";
+        }
+        if (q == 3) {
+            head = "RG";
+            k = 1;
+            tail = "D";
+        }
+        var l = 0;
+        while (l <= 40) {
+            var s = with_runs(head, k, l, tail);
+            scan_n(s, _T_RUN_LEN);
+            var j = 0;
+            while (j < _T_COUNT) {
+                if (hit(j).fragment_len > RY_DOMAIN_MAX_FRAGMENT_BYTES) { bounded = 0; }
+                var tf, fl = ry_domain_hit_fragment(s, hit(j), frag, RY_DOMAIN_MAX_FRAGMENT_BYTES);
+                if (is_err_result(tf) == 1) { bounded = 0; }
+                store64(sb + 8, 0);
+                var tj, vj = ry_domain_hit_to_json(sb, s, hit(j));
+                if (is_err_result(tj) == 1) { written = 0; }
+                j = j + 1;
+            }
+            l = l + 1;
+        }
+        q = q + 1;
+    }
+    assert(bounded == 1, "runs of 0 to 40 continuation bytes in the wildcards: each fragment within the bound");
+    assert(written == 1, "and each hit of a scan writes its document");
+    return 0;
+}
+
 # Runs the domain suite.
 fn main() {
     alloc_init();
@@ -322,6 +406,7 @@ fn main() {
     zipper_and_fingers();
     edges();
     forms();
+    invalid_utf8();
     return assert_summary();
 }
 

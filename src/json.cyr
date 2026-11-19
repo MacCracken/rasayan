@@ -133,8 +133,9 @@ fn _ry_jw_f64_array(a, sb, p, n): i64 {
 }
 
 # Appends a struct of `n` f64 fields at `w`, named by the NUL-separated list `names` (Rust's declaration order), as
-# serde_json writes it, one JSON object: 0, or -1 when the builder could not grow (nothing past the refused write is
-# written). The writer counterpart of _ry_jr_f64_fields.
+# serde_json writes it, one JSON object: 0, or -1 when the builder could not grow. After a refusal the later writes
+# whose reserve still fits go on, so on -1 the builder holds no document to read (the codecs return
+# Err(RY_ERR_OUT_OF_MEMORY)). The writer counterpart of _ry_jr_f64_fields.
 fn _ry_jw_f64_fields(a, sb, w, n, names): i64 {
     var e = _ry_jw_byte(a, sb, 123);
     var name = names;

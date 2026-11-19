@@ -6,7 +6,7 @@
 # reads bytes. For valid UTF-8 the answers are the same (port plan §2 item 6): every byte of a non-ASCII character is
 # >= 0x80, never an ASCII letter, so a function that rejects an unknown residue rejects it at its first byte, and one
 # that skips non-residues (composition, the net charge, the Bjellqvist termini) skips all its bytes. Invalid UTF-8,
-# which a Rust `&str` cannot hold, reads as unknown residues too.
+# which a Rust `&str` cannot hold, reads as unknown residues too, and a negative n as an empty sequence (2.0.1).
 #
 # Every operation is in Rust's order: tests/golden/protein.tsv compares each function with the oracle's bit for bit
 # where only + − × ÷ run (classes A and B) and at 0 ulp against the corrected oracle where the Henderson-Hasselbalch
@@ -26,7 +26,8 @@
 
 # Which published pKa values ry_isoelectric_point_with and ry_net_charge_with use (Rust's `PkaSet`): the free amino
 # acids (Lehninger, the default), Bjellqvist's 2-D gel set as ExPASy uses it (position-dependent termini), EMBOSS's
-# `Epk.dat`, and Kozlowski's IPC_protein. The values are append-only.
+# `Epk.dat`, and Kozlowski's IPC_protein. A value that is no set computes as Lehninger's (Rust's enum has no such
+# value); the JSON writer refuses it. The values are append-only.
 enum RyPkaSet {
     RY_PKA_SET_LEHNINGER = 0;
     RY_PKA_SET_BJELLQVIST = 1;
@@ -156,7 +157,7 @@ fn ry_try_lookup(code): Result {
 # character that is not a standard code (whitespace included). Mirrors `protein::molecular_weight`.
 #must_use
 fn ry_molecular_weight(seq, n, out): i64 {
-    if (n == 0) { return 0; }
+    if (n <= 0) { return 0; }
     var water: f64 = _RY_PROTEIN_WATER_AVG_MASS;
     var total: f64 = water;
     var i = 0;
@@ -179,7 +180,7 @@ fn ry_molecular_weight(seq, n, out): i64 {
 #must_use
 fn ry_composition(seq, n, out, cap): Result {
     var counts[208];
-    memset(&counts, 0, 208);
+    _ry_zero_words(&counts, 26);
     var i = 0;
     while (i < n) {
         var c = load8(seq + i);
@@ -217,7 +218,7 @@ fn ry_composition(seq, n, out, cap): Result {
 # R), each saturating at u32::MAX as Rust's. strict 1: 1, or 0 when any character is not a standard code (Rust's
 # `IonizableCounts::strict`); strict 0: other characters are ignored, and the result is 1 (`lenient`).
 fn _ry_protein_counts(seq, n, strict, counts): i64 {
-    memset(counts, 0, 56);
+    _ry_zero_words(counts, 7);
     var i = 0;
     while (i < n) {
         var c = load8(seq + i);
@@ -226,7 +227,10 @@ fn _ry_protein_counts(seq, n, strict, counts): i64 {
         var slot = 0 - 1;
         var j = 0;
         while (j < _RY_PROTEIN_SIDE_CHAIN_COUNT) {
-            if (_RY_PROTEIN_SIDE_CHAIN_CODE[j] == c) { slot = j; }
+            if (_RY_PROTEIN_SIDE_CHAIN_CODE[j] == c) {
+                slot = j;
+                break;                           # the seven codes are distinct: the first match is the only one
+            }
             j = j + 1;
         }
         if (slot >= 0) {
@@ -361,7 +365,7 @@ fn ry_net_charge(seq, n, ph: f64): f64 {
 # Mirrors `protein::isoelectric_point_with`.
 #must_use
 fn ry_isoelectric_point_with(seq, n, set, out): i64 {
-    if (n == 0) { return 0; }
+    if (n <= 0) { return 0; }
     var counts[56];
     if (_ry_protein_counts(seq, n, 1, &counts) == 0) { return 0; }
     var pka[72];
@@ -406,7 +410,7 @@ struct RyExtinctionCoefficient {
 # `protein::extinction_coefficient`.
 #must_use
 fn ry_extinction_coefficient(seq, n, out: *RyExtinctionCoefficient): i64 {
-    if (n == 0) { return 0; }
+    if (n <= 0) { return 0; }
     var n_trp = 0;
     var n_tyr = 0;
     var n_cys = 0;
@@ -780,7 +784,7 @@ fn _ry_cf_assign_turns(slots, flags, n, cand) {
 # `protein::chou_fasman`.
 #must_use
 fn ry_chou_fasman_a(a, seq, n, out, cap): Result {
-    if (n == 0) { return Ok(0); }
+    if (n <= 0) { return Ok(0); }
     var i = 0;
     while (i < n) {
         if (ry_lookup(load8(seq + i)) < 0) { return Ok(0); }

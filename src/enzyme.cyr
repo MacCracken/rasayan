@@ -358,6 +358,7 @@ fn _ry_enzyme_valid_fit(km: f64, vmax: f64): i64 {
 # (Km/Vmax)·(1/[S]) + 1/Vmax`, skipping zero, negative and non-finite points. 1 with *out filled, or 0 (None) when
 # fewer than 2 usable points remain, the regression is degenerate, or the fitted Km or Vmax is not finite and > 0.
 # Mirrors `enzyme::lineweaver_burk_fit`.
+#must_use
 fn ry_lineweaver_burk_fit(data, n, out: *RyKineticFit): i64 {
     var r[24];
     if (_ry_enzyme_linear_regression(data, n, 1, &r) == 0) { return 0; }
@@ -376,6 +377,7 @@ fn ry_lineweaver_burk_fit(data, n, out: *RyKineticFit): i64 {
 # Fits Km and Vmax by Eadie-Hofstee linearization, `v = Vmax − Km·(v/[S])` (slope −Km, intercept Vmax): less
 # sensitive than Lineweaver-Burk to outliers at extreme concentrations. Same filtering and None cases. Mirrors
 # `enzyme::eadie_hofstee_fit`.
+#must_use
 fn ry_eadie_hofstee_fit(data, n, out: *RyKineticFit): i64 {
     var r[24];
     if (_ry_enzyme_linear_regression(data, n, 2, &r) == 0) { return 0; }
@@ -488,16 +490,18 @@ fn ry_known_enzyme(i, out: *RyKnownEnzyme): i64 {
 #must_use
 fn ry_lookup_enzyme(name, len): i64 {
     if (len <= 0) { return 0 - 1; }
-    var c0 = load8(name);
-    if (c0 >= 65 && c0 <= 90) { c0 = c0 + 32; }
     var r = 0;
     while (r < RY_KNOWN_ENZYME_COUNT) {
-        var e = &_RY_KNOWN_ENZYME_NAME_BYTES + _RY_KNOWN_ENZYME_NAME_OFF[r];
-        # The first byte, case-folded, before the length: most entries differ there.
-        var e0 = load8(e);
-        if (e0 >= 65 && e0 <= 90) { e0 = e0 + 32; }
+        var off = _RY_KNOWN_ENZYME_NAME_OFF[r];
+        var e = &_RY_KNOWN_ENZYME_NAME_BYTES + off;
+        # The length first, as `eq_ignore_ascii_case` tests it: from the offsets (the next name starts past this one's
+        # NUL), strlen only for the last row.
         var el = 0;
-        if (e0 == c0) { el = strlen(e); }
+        if (r + 1 < RY_KNOWN_ENZYME_COUNT) {
+            el = _RY_KNOWN_ENZYME_NAME_OFF[r + 1] - off - 1;
+        } else {
+            el = strlen(e);
+        }
         if (el == len) {
             var same = 1;
             var k = 0;

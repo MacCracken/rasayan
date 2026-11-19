@@ -3,8 +3,9 @@
 #
 # A sequence is `(seq, n)`: n bytes of UTF-8 (Rust's `&str`), read as bytes. For valid UTF-8 that gives Rust's
 # `chars()` answers (port plan §2 item 6): every function rejects a non-residue, and no byte of a non-ASCII character
-# is an ASCII letter. Every result is integer arithmetic, exact (class A in tests/golden/alignment.tsv), with Rust's
-# saturating `i32` sums.
+# is an ASCII letter. A negative n, which no `&str` has, reads as an empty sequence (2.0.1; 2.0.0's Needleman-Wunsch
+# read before its scratch for one). Every result is integer arithmetic, exact (class A in tests/golden/alignment.tsv),
+# with Rust's saturating `i32` sums.
 #
 # The Cyrius forms (ADR 0002 rows 2, 10):
 # - Matrix is `enum RyMatrix`, its values Rust's declaration order (append-only); the matrices are the generated i8
@@ -18,7 +19,10 @@
 # - Matrix and AlignmentScore write `ry_<type>_to_json` (and `_a`, on an allocator).
 
 # The substitution matrices (Rust's `Matrix`): BLOSUM62, the database-search default, and PAM250, for distant
-# relatives. The values are append-only.
+# relatives. BLOSUM62 is NCBI's (Henikoff & Henikoff 1992), cell for cell; PAM250 is Dayhoff's 1978 log-odds matrix as
+# printed (Atlas of Protein Sequence and Structure 5, suppl. 3), which differs from NCBI's recomputed PAM250 in four
+# pairs: A–F and N–F (−4 against −3), G–P and N–P (−1 against 0). A value that is no matrix scores as BLOSUM62 in
+# the scoring functions (Rust's enum has no such value); the JSON writer refuses it. The values are append-only.
 enum RyMatrix {
     RY_MATRIX_BLOSUM62 = 0;
     RY_MATRIX_PAM250 = 1;
@@ -109,7 +113,7 @@ struct RyAlignmentScore {
 # Mirrors `alignment::score_alignment`.
 #must_use
 fn ry_score_alignment(seq_a, na, seq_b, nb, matrix, out: *RyAlignmentScore): i64 {
-    if (na == 0 || na != nb) { return 0; }
+    if (na <= 0 || na != nb) { return 0; }
     var tab = _ry_alignment_table(matrix);
     var score = 0;
     var identities = 0;
@@ -158,7 +162,7 @@ fn ry_needleman_wunsch_a(a, seq_a, na, seq_b, nb, matrix, gap_penalty, out): Res
         if (_ry_alignment_index(load8(seq_b + k)) < 0) { return Ok(0); }
         k = k + 1;
     }
-    if (na == 0 || nb == 0) { return Ok(0); }
+    if (na <= 0 || nb <= 0) { return Ok(0); }
     var gap = _ry_alignment_sat(gap_penalty);
     var rows = seq_a;
     var nr = na;

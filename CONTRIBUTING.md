@@ -52,7 +52,8 @@ milestone part at a time:
 - `cyrius fmt` and `cyrius lint` clean; `cyrius doc --check` — every public fn documented
 - Append-only enums (`RY_` members); `#must_use` on pure functions
 - No aborts in library code (`+?`, `-?`, `*?`, `panic`, `unwrap`, `assert_fatal`)
-- Logging through sakshi spans and `log_*` events, never `println`
+- Logging through the level-gated event helpers (`_ry_trace`, `_ry_debug`, `_ry_warn`), never a raw
+  `sakshi_span_*` (it has no level check) and never `println`
 - See `CLAUDE.md` for the f64 hygiene rules and toolchain workarounds
 
 ## Testing

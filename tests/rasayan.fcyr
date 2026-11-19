@@ -1510,14 +1510,16 @@ fn fuzz_ptm(data, len) {
         if (len != 0 || count != 0 - 1) { _fz_bad = _fz_bad + 1; }
         return 0;
     }
-    # The characters as src/ptm.cyr reads them: an ASCII byte, or any other byte and the continuation bytes after it.
+    # The characters as src/ptm.cyr reads them: an ASCII byte, or any other byte and up to three continuation bytes
+    # after it (2.0.1).
     var chars = 0;
     var b = 0;
     while (b < len) {
         var lead = load8(data + b);
         b = b + 1;
         if (lead >= 128) {
-            while (b < len && (load8(data + b) & 192) == 128) { b = b + 1; }
+            var cend = b + 3;            # at most three continuation bytes: a character is at most 4 bytes
+            while (b < len && b < cend && (load8(data + b) & 192) == 128) { b = b + 1; }
         }
         chars = chars + 1;
     }
@@ -1567,7 +1569,8 @@ fn fuzz_domain(data, len) {
         var lead = load8(data + b);
         b = b + 1;
         if (lead >= 128) {
-            while (b < len && (load8(data + b) & 192) == 128) { b = b + 1; }
+            var cend = b + 3;            # at most three continuation bytes: a character is at most 4 bytes
+            while (b < len && b < cend && (load8(data + b) & 192) == 128) { b = b + 1; }
         }
         chars = chars + 1;
     }

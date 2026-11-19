@@ -109,15 +109,15 @@ fn ry_register_tools(d): i64 {
             registered = registered + 1;
             if (_ry_debug_on() == 1) {
                 var hd[24];
-                var b[256];
-                var ev = _ry_ev(&hd, &b, 256, "rasayan::mcp", "registered MCP tool");
+                var b[_RY_EV_CAP];
+                var ev = _ry_ev(&hd, &b, _RY_EV_CAP, "rasayan::mcp", "registered MCP tool");
                 _ry_ev_s(ev, "tool", name, strlen(name));
                 _ry_debug(ev);
             }
         } elif (_ry_warn_on() == 1) {
             var hw[24];
-            var bw[512];
-            var ew = _ry_ev(&hw, &bw, 512, "rasayan::mcp", "failed to register MCP tool");
+            var bw[_RY_EV_CAP];
+            var ew = _ry_ev(&hw, &bw, _RY_EV_CAP, "rasayan::mcp", "failed to register MCP tool");
             _ry_ev_s(ew, "tool", name, strlen(name));
             var why = bote_err_reason(e);
             if (why != 0) { _ry_ev_s(ew, "error", why, _ry_mcp_min(strlen(why), 200)); }
@@ -186,12 +186,17 @@ fn _ry_mcp_f64(v, key): (i64, f64) {
     return (0, 0.0);
 }
 
-# Argument `key` as serde_json's `as_str` reads it: the Str, or 0 for anything else or none.
+# Argument `key` as serde_json's `as_str` reads it: the Str, or 0 for anything else or none. A string whose bytes are
+# not UTF-8 is none too: serde_json refuses such a document before a Rust handler sees it, and bote passes the bytes
+# through (2.0.1; a 2.0.0 handler read them, and the ptm and domain replies could then carry bytes the scan never
+# wrote).
 #must_use
 fn _ry_mcp_str(v, key): i64 {
     var x = bayan_json_v_obj_get_by_cstr(v, key);
     if (x == 0 || bayan_json_v_tag(x) != JTAG_STR) { return 0; }
-    return bayan_json_v_str(x);
+    var s = bayan_json_v_str(x);
+    if (_ry_utf8_valid(str_data(s), str_len(s)) == 0) { return 0; }
+    return s;
 }
 
 # Argument `key` as serde_json's `as_i64` reads it: (1, n) for an integer, (0, 0) for anything else or none.
@@ -272,9 +277,10 @@ fn _ry_mcp_rawi(a, sb, n): i64 {
     return 0;
 }
 
-# Appends x in Rust's Display form (`inf`, `NaN`, `1e300`): 0, or -1.
+# Appends x in Rust's Display form (`inf`, `NaN`, `1e300` as its 301 digits): 0, or -1. The reserve is the longest
+# Display form, −5e-324's 327 bytes, so the write never grows the builder past it (2.0.0 reserved 40).
 fn _ry_mcp_rawf(a, sb, x: f64): i64 {
-    if (_sb_grow_a(a, sb, 40) != 0) { return 0 - 1; }
+    if (_sb_grow_a(a, sb, 336) != 0) { return 0 - 1; }
     _ry_fmt_f64_display(sb, x);
     return 0;
 }
@@ -1113,12 +1119,13 @@ fn _ry_mcp_ptm_a(a, args, n): i64 {
     if (r != 0) { return r; }
     var seq = load64(&q);
     var len = load64(&q + 8);
-    var cap = RY_PTM_MAX_SITES_PER_RESIDUE * len + 1;
-    var sites: *RyPtmSite = _ry_mcp_as_sites(alloc_via(a, cap * 40));   # a RyPtmSite is five words
+    if (len <= 0) { return _ry_mcp_err(a, "empty sequence"); }
+    # The sites are counted first and their records allocated exactly, as Rust's Vec holds them: the request's arena
+    # keeps its chunks, and RY_PTM_MAX_SITES_PER_RESIDUE · len records would be 12 MB at the length limit.
+    var count = _ry_ptm_scan(seq, len, 0, 0);
+    var sites: *RyPtmSite = _ry_mcp_as_sites(alloc_via(a, count * 40 + 40));   # a RyPtmSite is five words
     if (sites == 0) { return _RY_MCP_OOM; }
-    var t, count = ry_scan_ptm_sites(seq, len, sites, cap);
-    if (is_err_result(t) == 1) { return _RY_MCP_OOM; }
-    if (count < 0) { return _ry_mcp_err(a, "empty sequence"); }
+    if (_ry_ptm_scan(seq, len, sites, count) != count) { return _RY_MCP_OOM; }
     var sb = _ry_mcp_open(a);
     if (sb == 0) { return _RY_MCP_OOM; }
     var e = _ry_mcp_ki(a, sb, "count", 1, count);
@@ -1129,6 +1136,7 @@ fn _ry_mcp_ptm_a(a, args, n): i64 {
         var s: *RyPtmSite = sites + k;           # a typed pointer: k records on
         var m[24];
         var tm, ml = ry_ptm_site_motif(seq, s, &m, 24);
+        if (is_err_result(tm) == 1) { return _ry_mcp_err(a, "motif over 24 bytes"); }   # never, for a scan's site
         var res[8];
         store8(&res, s.residue);
         if (k > 0) { e = e | _ry_jw_byte(a, sb, 44); }
@@ -1161,12 +1169,13 @@ fn _ry_mcp_domain_a(a, args, n): i64 {
     if (r != 0) { return r; }
     var seq = load64(&q);
     var len = load64(&q + 8);
-    var cap = RY_DOMAIN_MAX_HITS_PER_RESIDUE * len + 1;
-    var hits: *RyDomainHit = _ry_mcp_as_hits(alloc_via(a, cap * 40));   # a RyDomainHit is five words
+    if (len <= 0) { return _ry_mcp_err(a, "empty sequence"); }
+    # Counted first and allocated exactly, as the ptm handler's sites (RY_DOMAIN_MAX_HITS_PER_RESIDUE · len records
+    # would be 36 MB at the length limit).
+    var count = _ry_domain_scan(seq, len, 0, 0);
+    var hits: *RyDomainHit = _ry_mcp_as_hits(alloc_via(a, count * 40 + 40));   # a RyDomainHit is five words
     if (hits == 0) { return _RY_MCP_OOM; }
-    var t, count = ry_scan_domains(seq, len, hits, cap);
-    if (is_err_result(t) == 1) { return _RY_MCP_OOM; }
-    if (count < 0) { return _ry_mcp_err(a, "empty sequence"); }
+    if (_ry_domain_scan(seq, len, hits, count) != count) { return _RY_MCP_OOM; }
     var frag = alloc_via(a, RY_DOMAIN_MAX_FRAGMENT_BYTES);
     var sb = _ry_mcp_open(a);
     if (sb == 0 || frag == 0) { return _RY_MCP_OOM; }
@@ -1177,6 +1186,7 @@ fn _ry_mcp_domain_a(a, args, n): i64 {
     while (k < count) {
         var h: *RyDomainHit = hits + k;          # a typed pointer: k records on
         var tf, fl = ry_domain_hit_fragment(seq, h, frag, RY_DOMAIN_MAX_FRAGMENT_BYTES);
+        if (is_err_result(tf) == 1) { return _ry_mcp_err(a, "fragment over 100 bytes"); }   # never, for a scan's hit
         if (k > 0) { e = e | _ry_jw_byte(a, sb, 44); }
         e = e | _ry_jw_byte(a, sb, 123);
         e = e | _ry_mcp_ki(a, sb, "end", 1, h.end);

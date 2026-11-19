@@ -216,6 +216,82 @@ fn events() {
     return 0;
 }
 
+# The f64 with bits `b` (an untyped word into an f64 local keeps its bits).
+fn fb(b): f64 {
+    var x: f64 = b;
+    return x;
+}
+
+# The Display text of x, its length into *n.
+fn display_of(x: f64, n) {
+    var sb = str_builder_new();
+    _ry_fmt_f64_display(sb, x);
+    store64(n, load64(sb + 8));
+    return load64(sb);
+}
+
+# 2.0.1: an event allocates nothing at any value. Each field's Display form (up to 327 bytes, −5e-324's) fits a
+# _RY_EV_CAP buffer whole, a caller's text past the buffer is cut at its end, and the failure texts do the same; in
+# 2.0.0 the 256-byte buffers grew onto the never-freed heap (and a refused grow exits the process).
+fn extremes() {
+    test_group("logging: events at extreme values allocate nothing");
+    sakshi_set_emit_hook(&_ev_hook);
+    _ry_log_apply(LOG_TRACE);
+    var tiny: f64 = fb(0x8000000000000001);   # −5e-324: 327 bytes in Display form
+    var huge: f64 = fb(0x7FEFFFFFFFFFFFFF);   # f64::MAX: 309 digits
+    var nt = 0;
+    var nh = 0;
+    var pt = display_of(tiny, &nt);
+    var ph = display_of(huge, &nh);
+    assert_eq(nt, 327, "−5e-324 is 327 bytes in Display form");
+    var used = alloc_used();
+    var h[24];
+    var b[_RY_EV_CAP];
+    var e = _ry_ev(&h, &b, _RY_EV_CAP, "rasayan::etc", "etc_tick");
+    _ry_ev_f(e, "dt", tiny);
+    _ry_ev_f(e, "nadh", huge);
+    _ry_ev_f(e, "fadh2", tiny);
+    _ry_ev_f(e, "oxygen", huge);
+    _ry_ev_f(e, "adp", tiny);
+    _ry_trace(e);
+    assert_eq(alloc_used(), used, "five extreme fields: no heap byte");
+    var want = 22 + 4 + nt + 6 + nh + 7 + nt + 8 + nh + 5 + nt;   # `rasayan::etc: etc_tick` and ` key=value` five times
+    assert_eq(_ev_len, want, "the whole text, every digit");
+    assert_eq(memeq(&_ev_buf + 26, pt, nt), 1, "the first field's digits");
+    # A caller's text longer than the buffer (a model name) is cut at its end.
+    var long = alloc(3000);
+    memset(long, 109, 3000);
+    used = alloc_used();
+    var h2[24];
+    var b2[_RY_EV_CAP];
+    var e2 = _ry_ev(&h2, &b2, _RY_EV_CAP, "rasayan::ai", "rasayan::ai query");
+    _ry_ev_s(e2, "model", long, 3000);
+    _ry_ev_i(e2, "prompt_len", 42);
+    _ry_debug(e2);
+    assert_eq(alloc_used(), used, "a 3,000-byte text: no heap byte");
+    assert_eq(_ev_len, _RY_EV_CAP, "cut at the buffer's end");
+    # The failure texts: two extreme values in one, and a long name.
+    used = alloc_used();
+    var code = _ry_fail_f(RY_ERR_INVALID_PARAMETER, "km", tiny, "must be >= ", 1, tiny);
+    assert_eq(code, RY_ERR_INVALID_PARAMETER, "the code back");
+    assert_eq(_ev_len, 38 + 2 * nt, "`invalid parameter: km = <v> (must be >= <min>)` whole");
+    var code2 = _ry_fail_text(RY_ERR_UNKNOWN_PATHWAY, long, 3000);
+    assert_eq(code2, RY_ERR_UNKNOWN_PATHWAY, "the code back");
+    assert_eq(alloc_used(), used, "the failure texts: no heap byte");
+    assert_eq(_ev_len, _RY_EV_CAP, "a 3,000-byte name cut at the buffer's end");
+    # A small buffer still holds what fits and nothing past it.
+    var h3[24];
+    var b3[32];
+    var e3 = _ry_ev(&h3, &b3, 32, "rasayan::calcium", "calcium_tick");
+    _ry_ev_f(e3, "dt", huge);
+    _ry_trace(e3);
+    assert_eq(_ev_len, 32, "a 32-byte buffer: 32 bytes");
+    assert_eq(alloc_used(), used, "and no heap byte");
+    sakshi_clear_emit_hook();
+    _ry_log_apply(LOG_INFO);
+    return 0;
+}
+
 # Runs the logging suite.
 fn main() {
     alloc_init();
@@ -224,6 +300,7 @@ fn main() {
     level_of();
     init();
     events();
+    extremes();
     return assert_summary();
 }
 

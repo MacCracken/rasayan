@@ -90,6 +90,27 @@ Needleman-Wunsch and score_alignment. They are integer byte loops with no transc
 are closest. The MCP tools and the ai client have no Rust benchmark: their Cyrius-only measurements are in the M8
 sections.
 
+## 2.0.1: the P(-1) audit
+
+The method was A/B: 2.0.0's tree (`git archive` of the 2.0.0 commit) and 2.0.1's, alternated four times
+(old→new twice, then new→old twice), each number the minimum of its four `cyrius bench` runs. Other projects' builds
+were running on the machine (load 2.4–2.8), so a difference under about 5% is not a result. The median of 2.0.1 over
+2.0.0 is 0.99 across the 123 benchmarks.
+
+| Benchmark | Rust 1.2.0 | Cyrius 2.0.0 | Cyrius 2.0.1 | Cyrius / Rust | What changed |
+|---|---|---|---|---|---|
+| composition | 292 ns | 519 ns | 252 ns | 0.86× | the 26 counts zeroed as words, not 208 bytes by the stdlib's byte-loop `memset` |
+| enzyme_lookup | 4.43 ns | 87 ns | 58 ns | 13× | each entry's length from the generated offsets (no `strlen`), tested first |
+| net_charge | 143 ns | 1.74 µs | 1.59 µs | 11× | the counts zeroed as words; the side-chain match stops at its first hit |
+
+The ticks are within 5% of 2.0.0. MAPK, PI3K, JAK-STAT, calcium and the network measure 4–5% slower, while
+glycolysis, TCA, signaling and bioenergy measure 2–4% faster. That is code placement, not the changes: every function
+after `src/error.cyr` moved, and PI3K's tick with its 2.0.0 event block put back measures the same 153 ns. One
+measurement shaped the event fix. The first version kept each event's 2 KB buffer (`_RY_EV_CAP`) in the tick's frame,
+and that cost the ticks 5–10% with the event filtered out: jak_stat 165 → 181 ns, etc 187 → 207, metabolic
+115 → 129. So the 25 TRACE events build in `_ry_trace_f1` … `_ry_trace_f5`, which hold the buffer in their own frame.
+A written event costs what it did (4.7–5.0 µs for three f64 fields to the ring buffer).
+
 ## M1 (Cyrius only: the layers are crate-private in Rust, inlined into every tick)
 
 | Benchmark | Cyrius (ns) | Notes |

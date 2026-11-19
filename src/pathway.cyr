@@ -102,18 +102,28 @@ const _RY_NETFLUX_TOTALS = 472;
 const _RY_NETFLUX_SIZE = 496;
 const _RY_NETTICK_SIZE = 536;
 
-# ── defaults ──
+# Each offset is the records before it: checked at compile time, so a field added to a nested record stops the build
+# here, not the nested reads and writes in silence (2.0.1).
+#assert _RY_NET_TCA == sizeof(RyGlycolysisState), "_RY_NET_TCA: the glycolysis state";
+#assert _RY_NET_ETC == _RY_NET_TCA + sizeof(RyTcaState), "_RY_NET_ETC: the TCA state";
+#assert _RY_NET_BETA_OX == _RY_NET_ETC + sizeof(RyEtcState), "_RY_NET_BETA_OX: the ETC state";
+#assert _RY_NET_AMINO == _RY_NET_BETA_OX + sizeof(RyBetaOxState), "_RY_NET_AMINO: the beta-oxidation state";
+#assert _RY_NET_POOLS == _RY_NET_AMINO + sizeof(RyAminoCatabState), "_RY_NET_POOLS: the amino-acid state";
+#assert _RY_NET_SIZE == sizeof(RyMetabolicNetwork), "_RY_NET_SIZE: the network";
+#assert _RY_NETCFG_TCA == sizeof(RyGlycolysisConfig), "_RY_NETCFG_TCA: the glycolysis config";
+#assert _RY_NETCFG_ETC == _RY_NETCFG_TCA + sizeof(RyTcaConfig), "_RY_NETCFG_ETC: the TCA config";
+#assert _RY_NETCFG_BETA_OX == _RY_NETCFG_ETC + sizeof(RyEtcConfig), "_RY_NETCFG_BETA_OX: the ETC config";
+#assert _RY_NETCFG_AMINO == _RY_NETCFG_BETA_OX + sizeof(RyBetaOxConfig), "_RY_NETCFG_AMINO: the beta-oxidation config";
+#assert _RY_NETCFG_SIZE == sizeof(RyNetworkConfig), "_RY_NETCFG_SIZE: the network config";
+#assert _RY_NETFLUX_TCA == sizeof(RyGlycolysisFlux), "_RY_NETFLUX_TCA: the glycolysis flux";
+#assert _RY_NETFLUX_ETC == _RY_NETFLUX_TCA + sizeof(RyTcaFlux), "_RY_NETFLUX_ETC: the TCA flux";
+#assert _RY_NETFLUX_BETA_OX == _RY_NETFLUX_ETC + sizeof(RyEtcFlux), "_RY_NETFLUX_BETA_OX: the ETC flux";
+#assert _RY_NETFLUX_AMINO == _RY_NETFLUX_BETA_OX + sizeof(RyBetaOxFlux), "_RY_NETFLUX_AMINO: the beta-oxidation flux";
+#assert _RY_NETFLUX_TOTALS == _RY_NETFLUX_AMINO + sizeof(RyAminoCatabFlux), "_RY_NETFLUX_TOTALS: the amino-acid flux";
+#assert _RY_NETFLUX_SIZE == sizeof(RyNetworkFlux), "_RY_NETFLUX_SIZE: the network flux";
+#assert _RY_NETTICK_SIZE == sizeof(RyNetworkTick), "_RY_NETTICK_SIZE: the network tick";
 
-# Zeroes the `words` 8-byte words at `w`: the stdlib's memset stores a byte at a time (a 536-byte tick 2 µs, this
-# 67-word loop about 70 ns), and every zeroed network value is a whole number of words.
-fn _ry_pathway_zero(w, words) {
-    var k = 0;
-    while (k < words) {
-        store64(w + 8 * k, 0);
-        k = k + 1;
-    }
-    return 0;
-}
+# ── defaults ──
 
 # Fills *out with Rust's MetabolicNetwork::default(): every pathway at its default, ATP 6, ADP 0.5, NAD+/NADH 700,
 # full oxygen and malonyl-CoA 0.01 mM (src/pathway_data.cyr).
@@ -156,19 +166,19 @@ fn ry_network_environment_default(out: *RyNetworkEnvironment) {
 
 # Fills *out with Rust's NetworkFlux::default(): every field 0.
 fn ry_network_flux_default(out: *RyNetworkFlux) {
-    _ry_pathway_zero(out, 62);
+    _ry_zero_words(out, 62);
     return 0;
 }
 
 # Fills *out with Rust's NetworkExchange::default(): every field 0.
 fn ry_network_exchange_default(out: *RyNetworkExchange) {
-    _ry_pathway_zero(out, 5);
+    _ry_zero_words(out, 5);
     return 0;
 }
 
 # Fills *out with Rust's NetworkTick::default(): every field 0.
 fn ry_network_tick_default(out: *RyNetworkTick) {
-    _ry_pathway_zero(out, 67);
+    _ry_zero_words(out, 67);
     return 0;
 }
 
@@ -506,6 +516,9 @@ struct _RyPathwayProduction {
 const _RY_PROD_BETA_OX = 120;
 const _RY_PROD_AMINO = 184;
 const _RY_PROD_TCA = 280;
+#assert _RY_PROD_BETA_OX == sizeof(RyGlycolysisFlux), "_RY_PROD_BETA_OX: the glycolysis flux";
+#assert _RY_PROD_AMINO == _RY_PROD_BETA_OX + sizeof(RyBetaOxFlux), "_RY_PROD_AMINO: the beta-oxidation flux";
+#assert _RY_PROD_TCA == _RY_PROD_AMINO + sizeof(RyAminoCatabFlux), "_RY_PROD_TCA: the amino-acid flux";
 
 # The producing half of a network step of length `h` at NAD+/NADH ratio `ratio`, into *out: glycolysis with PFK-1
 # inhibited by citrate (the Randle cycle), β-oxidation with CPT-I seeing the caller's malonyl-CoA plus the ACC-derived
@@ -700,18 +713,12 @@ fn _ry_pathway_substeps(dt: f64): i64 {
 fn ry_metabolic_network_tick_in(p: *RyMetabolicNetwork, c: *RyNetworkConfig, env: *RyNetworkEnvironment, dt: f64,
   out: *RyNetworkTick) {
     if (_ry_guard_valid_dt(dt) == 0) {
-        _ry_pathway_zero(out, 67);
+        _ry_zero_words(out, 67);
         return 0;
     }
     if (_ry_trace_on() == 1) {
-        var hd[24];
-        var b[256];
-        var e = _ry_ev(&hd, &b, 256, "rasayan::pathway", "network_tick");
-        _ry_ev_f(e, "dt", dt);
-        _ry_ev_f(e, "atp", p.atp);
-        _ry_ev_f(e, "adp", p.adp);
-        _ry_ev_f(e, "nad_ratio", p.nad_ratio);
-        _ry_trace(e);
+        _ry_trace_f4("rasayan::pathway", "network_tick", "dt", dt, "atp", p.atp, "adp", p.adp,
+          "nad_ratio", p.nad_ratio);
     }
     var steps = _ry_pathway_substeps(dt);
     if (steps == 1) {
@@ -721,7 +728,7 @@ fn ry_metabolic_network_tick_in(p: *RyMetabolicNetwork, c: *RyNetworkConfig, env
     var n: f64 = f64_from(steps);
     var h: f64 = dt / n;
     var weight: f64 = h / dt;
-    _ry_pathway_zero(out, 67);
+    _ry_zero_words(out, 67);
     var wo = out;
     var sub: RyNetworkTick;
     var ws = &sub;                               # a plain address: the flux and exchange inside it
@@ -767,7 +774,7 @@ fn ry_metabolic_network_tick(p: *RyMetabolicNetwork, c: *RyNetworkConfig, dt: f6
 fn ry_metabolic_network_run_to_steady_state(p: *RyMetabolicNetwork, c: *RyNetworkConfig, dt: f64, tolerance: f64,
   max_steps, out: *RyNetworkFlux): i64 {
     if (max_steps < 1 || _ry_guard_valid_dt(dt) == 0) {
-        _ry_pathway_zero(out, 62);
+        _ry_zero_words(out, 62);
         return 0;
     }
     ry_metabolic_network_tick(p, c, dt, out);
@@ -793,15 +800,22 @@ fn ry_metabolic_network_run_to_steady_state(p: *RyMetabolicNetwork, c: *RyNetwor
     if (_ry_debug_on() == 1) {
         var shown: f64 = out.net_atp;
         if (seeded == 1) { shown = ema; }
-        var hd[24];
-        var b[256];
-        var e = _ry_ev(&hd, &b, 256, "rasayan::pathway", "run_to_steady_state hit max_steps without converging");
-        _ry_ev_i(e, "max_steps", max_steps);
-        _ry_ev_f(e, "tolerance", tolerance);
-        _ry_ev_f(e, "ema_net_atp", shown);
-        _ry_debug(e);
+        _ry_pathway_unconverged_event(max_steps, tolerance, shown);
     }
     return max_steps;
+}
+
+# run_to_steady_state's DEBUG event when the run ends unconverged (Rust's `debug!(max_steps, tolerance, ema_net_atp,
+# …)`), in its own frame: the run's loop then carries no event buffer.
+fn _ry_pathway_unconverged_event(max_steps, tolerance: f64, shown: f64) {
+    var hd[24];
+    var b[_RY_EV_CAP];
+    var e = _ry_ev(&hd, &b, _RY_EV_CAP, "rasayan::pathway", "run_to_steady_state hit max_steps without converging");
+    _ry_ev_i(e, "max_steps", max_steps);
+    _ry_ev_f(e, "tolerance", tolerance);
+    _ry_ev_f(e, "ema_net_atp", shown);
+    _ry_debug(e);
+    return 0;
 }
 
 # ── JSON (P7: serde_json's documents) ──

@@ -431,6 +431,20 @@ fn serde() {
     return 0;
 }
 
+# 2.0.1: Rust's chain_length is a u32; a longer one is refused by validate (it wrote JSON that did not read back).
+fn u32_chain() {
+    test_group("beta_oxidation: the chain length fits Rust's u32");
+    var c: RyBetaOxConfig;
+    ry_beta_ox_config_default(&c);
+    c.chain_length = 4294967294;
+    var t1, v1 = ry_beta_ox_config_validate(&c);
+    c.chain_length = 4294967296;
+    var t2, v2 = ry_beta_ox_config_validate(&c);
+    assert(is_err_result(t1) == 0, "4294967294 (even, the largest u32 one) validates");
+    assert(is_err_result(t2) == 1 && v2 == RY_ERR_INVALID_PARAMETER, "4294967296 is refused");
+    return 0;
+}
+
 # Runs the β-oxidation suite.
 fn main() {
     alloc_init();
@@ -443,6 +457,7 @@ fn main() {
     network();
     events();
     serde();
+    u32_chain();
     return assert_summary();
 }
 

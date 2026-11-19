@@ -5,8 +5,9 @@
 
 ## Version
 
-**2.0.0** — the Cyrius port, released at M9 (`VERSION`; the maintainer tags it). The Rust crate stays at **1.2.0**, frozen
-in `rust-old/` as the functional spec.
+**2.0.1** — the P(-1) audit of the 2.0.0 port: security and robustness fixes, compile-time layout checks, exact
+speedups and the documentation, no API change (`VERSION`; the maintainer tags it). 2.0.0 is the Cyrius port, released
+at M9. The Rust crate stays at **1.2.0**, frozen in `rust-old/` as the functional spec.
 
 ## Port progress
 
@@ -73,6 +74,7 @@ in `rust-old/` as the functional spec.
 | **M8 — the integrations** | ✅ complete: the MCP tools (`[lib.mcp]`) and the hoosh client (`[lib.ai]`), `[lib.full]` with both. 1,371 golden rows of their own; every Rust test ported |
 | M9 — release 2.0.0 | ✅ `VERSION` 2.0.0 (`cyrius.cyml` reads it); `docs/examples/basic.cyr` (`examples/basic.rs`) with `basic.expected` written by `gen.py` and gated byte for byte; the two doc tests ported (`tests/glycolysis.tcyr` `doc_usage`, `tests/ai.tcyr` `doc_example`); the last four benchmark twins (48 of 48) and the summary table; `docs/guides/migration-2.0.md`, the README and the getting-started guide; the CHANGELOG's 2.0.0 section. `scripts/gates.sh` green (538 s). Tagging is the maintainer's |
 | **The port** | ✅ complete: every Rust module, public item (surface parity 0 missing), test (723 of 723), benchmark (48 of 48) and example ported; 125,051 golden rows, every one matching on x86_64 ELF, PE and aarch64 (81 accepted under ADRs 2 and 4) |
+| 2.0.1 — P(-1) audit | ✅ four independent reviews of `src/` against `rust-old/`, every finding checked in the code. Fixed: the MCP ptm/domain replies' unchecked accessor tags (bytes the scan never wrote, for a sequence that is not UTF-8), Needleman-Wunsch's read before its scratch for a negative length, events growing onto the heap (and `_sb_die`) for a long Display value, the ai client's ignored header refusals and CR/LF tokens, the MCP scans' worst-case records (36 MB). `#assert` layout checks for every hand-written offset. composition 519 → 252 ns, enzyme_lookup 87 → 58 ns. CI's `cargo test` job replaced by the Python/MPFR reference checks. 48 new checks; parity unchanged (124,970 ok, 81 accepted) |
 
 ## Golden corpus
 
@@ -154,10 +156,10 @@ Raised by the M0 probes; each is decided when its milestone starts.
   `src/constants_private.cyr`, `src/*_data.cyr`), the vendored `src/mathx.cyr` (1,277 lines: the vendored functions
   and rasayan's own helpers) and the vendored `src/fmtf.cyr` (408 lines, impetus's shortest-digit printer by ushma's
   rule, `scripts/vendor_fmtf.py`; M1 part 3b); `src/main.cyr` is the scaffold. `[lib]` bundles them, in dependency
-  order, into `dist/rasayan.cyr` (18,728 lines, sidecar `str`); `[lib.mcp]` into `dist/rasayan-mcp.cyr` (those
-  and `src/mcp_data.cyr`, `src/mcp.cyr`: 20,316 lines; its consumer declares bote); `[lib.ai]` into
-  `dist/rasayan-ai.cyr` (those and `src/ai_data.cyr`, `src/ai_client_data.cyr`, `src/ai.cyr`, `src/ai_http.cyr`: 19,488
-  lines; its consumer declares sandhi); `[lib.full]`, both, into `dist/rasayan-full.cyr` (21,075 lines); `distlib
+  order, into `dist/rasayan.cyr` (18,757 lines, sidecar `str`); `[lib.mcp]` into `dist/rasayan-mcp.cyr` (those
+  and `src/mcp_data.cyr`, `src/mcp.cyr`: 20,355 lines; its consumer declares bote); `[lib.ai]` into
+  `dist/rasayan-ai.cyr` (those and `src/ai_data.cyr`, `src/ai_client_data.cyr`, `src/ai.cyr`, `src/ai_http.cyr`: 19,539
+  lines; its consumer declares sandhi); `[lib.full]`, both, into `dist/rasayan-full.cyr` (21,136 lines); `distlib
   --check` is clean
 
 ## Parity harness
@@ -204,15 +206,15 @@ Raised by the M0 probes; each is decided when its milestone starts.
   golden bits), `tests/tables.tcyr` (77 checks: every generated file compiled together, `src/mathx_data.cyr`
   included, a sample of cells bit for bit), `tests/parity.tcyr` (the golden corpus, above), `tests/guard.tcyr`
   (98: Rust's guard tests and its 4 error-display integration tests, the error codes, each refusal's event text),
-  `tests/integrate.tcyr` (16: Rust's integrate tests), `tests/logging.tcyr` (87), `tests/json.tcyr` (57),
-  `tests/enzyme.tcyr` (140: Rust's 82 enzyme tests), `tests/membrane.tcyr` (85: Rust's 29 membrane tests),
+  `tests/integrate.tcyr` (16: Rust's integrate tests), `tests/logging.tcyr` (100: the events at extreme values since 2.0.1), `tests/json.tcyr` (57),
+  `tests/enzyme.tcyr` (143: Rust's 82 enzyme tests), `tests/membrane.tcyr` (85: Rust's 29 membrane tests),
   `tests/signal.tcyr` (79: Rust's 24 signal tests, the four events' text), `tests/metabolism.tcyr` (98: Rust's 28
   metabolism tests, both events' text), `tests/energy.tcyr` (93: Rust's 32 energy tests, both events' text),
-  `tests/protein.tcyr` (380: Rust's 78 protein tests), `tests/alignment.tcyr` (28: Rust's 21 alignment tests),
-  `tests/ptm.tcyr` (37: Rust's 16 ptm tests), `tests/domain.tcyr` (35: Rust's 24 domain tests), `tests/glycolysis.tcyr`
+  `tests/protein.tcyr` (384: Rust's 78 protein tests), `tests/alignment.tcyr` (31: Rust's 21 alignment tests),
+  `tests/ptm.tcyr` (41: Rust's 16 ptm tests, invalid UTF-8), `tests/domain.tcyr` (39: Rust's 24 domain tests, invalid UTF-8), `tests/glycolysis.tcyr`
   (61: Rust's 25 glycolysis tests, the event's text), `tests/tca.tcyr` (55: Rust's 26 TCA tests and 2 integration
   tests, the event's text), `tests/etc.tcyr` (55: Rust's 24 ETC tests and 3 integration tests, the event's text),
-  `tests/beta_oxidation.tcyr` (49: Rust's 23 β-oxidation tests and 3 integration tests, the event's text),
+  `tests/beta_oxidation.tcyr` (51: Rust's 23 β-oxidation tests and 3 integration tests, the event's text),
   `tests/amino_catabolism.tcyr` (41: Rust's 23 amino-acid catabolism tests and 4 integration tests, the event's
   text), `tests/pathway.tcyr` (78: Rust's 34 network tests and its 4 network integration tests, both events' text),
   `tests/mapk.tcyr` (31: Rust's 17 MAPK tests and its 2 integration tests, the event's text), `tests/pi3k.tcyr`
@@ -223,8 +225,8 @@ Raised by the M0 probes; each is decided when its milestone starts.
   integration tests, the event's text), `tests/signaling.tcyr` (23: Rust's 13 signaling tests and its 3 integration
   tests, the event's text), `tests/neurotransmitter.tcyr` (40: Rust's 31 neurotransmitter tests and its 2
   integration tests, both events' text), `tests/hormonal.tcyr` (42: Rust's 25 hormonal tests and its 4 integration
-  tests, both events' text), `tests/mcp.tcyr` (21: Rust's 31 mcp tests, the dispatcher ones through bote, the
-  registration event), `tests/ai.tcyr` (13: Rust's 4 ai tests, every call with no server, the settings, the events),
+  tests, both events' text), `tests/mcp.tcyr` (30: Rust's 31 mcp tests, the dispatcher ones through bote, the
+  registration event, invalid UTF-8 arguments and the scans' memory), `tests/ai.tcyr` (19: Rust's 4 ai tests, every call with no server, the settings, the events, the 2.0.1 hardening),
   the
   fuzz harness (50,000 inputs through `RASAYAN_LOG`, the JSON readers and the five M2 struct codecs, each accepted
   document written and read back, a SecondMessenger stepped and kept in [0, 1], a MetabolicState's charge in [0, 1]
@@ -274,6 +276,9 @@ jak_stat_tick 46.9 → 160, calcium_tick 40.2 → 153, receptor_tick 10.2 → 83
 round trip 12.0 µs, tools/list 50.3 µs, the kinetics handler 3.5 µs; the ai client's
 query body 7.3 µs, a chat answer read 7.9 µs. The rest
 arrive with their milestones.
+2.0.1 (the P(-1) audit, A/B against 2.0.0 at load 2.4–2.8; `docs/benchmarks-rust-v-cyrius.md`): composition 519 →
+252 ns (Rust 292), enzyme_lookup 87 → 58 (Rust 4.43), net_charge 1.74 → 1.59 µs; median 0.99 over the 123
+benchmarks, every tick within 5% (code placement).
 Probe measurements (`port-parity.md` §3, measured not gated): the implicit NADH solves 582 / 259 ns
 (`balanced_nad_ratio` / `end_of_step_nadh`; Rust 155 / 98 ns); the network's 264-byte probe copy 11 ns; a
 level-gated trace event around MM +11 ns filtered out (a raw sakshi span +204 ns); a bote `tools/call` round trip
@@ -298,7 +303,7 @@ Rust crate (crates.io): mastishk 1.1.0, sharira 1.1.0, kiran 1.0.0. No Cyrius co
 
 ## Next
 
-The maintainer's: tag 2.0.0. Then `roadmap.md`'s 2.0.x items. First comes retiring `rust-old/`: `gen.py`,
+The maintainer's: tag 2.0.0 and 2.0.1. Then `roadmap.md`'s 2.0.x items. First comes retiring `rust-old/`: `gen.py`,
 `validate.py`, the surface and ledger gates and the probes read it, so they change before it is deleted. Then the
 consumers' move to 2.0, the upstream drafts, performance and docs; then 2.1.x onward.
 
